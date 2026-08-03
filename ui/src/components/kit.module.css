@@ -1,0 +1,643 @@
+/*
+  Primitive kit styles. Tokens only — no raw hex, no raw radii, no magic ms
+  (durations that matter to choreography live in ../theme/motion.ts; the short
+  hover/press transitions below are the 120ms chrome transition from
+  vercel-design.md §4 and are intentionally CSS, not Motion).
+*/
+
+/* ─────────────────────────────── Button ──────────────────────────────── */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  box-shadow: var(--ring-inset);
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--bg-elevated-hi);
+  box-shadow: var(--ring-inset-hover);
+}
+
+.button:active:not(:disabled) {
+  box-shadow: var(--ring-inset-active);
+  transform: scale(0.98);
+}
+
+.button:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.buttonSm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.buttonLg {
+  height: 36px;
+  padding: 0 16px;
+}
+
+.buttonPrimary {
+  background: var(--accent);
+  color: #0a0a0a;
+  box-shadow: none;
+}
+.buttonPrimary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  box-shadow: none;
+}
+.buttonPrimary:active:not(:disabled) {
+  background: var(--accent-active);
+  box-shadow: none;
+}
+
+.buttonGhost {
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+.buttonGhost:hover:not(:disabled) {
+  background: var(--accent-fill-8);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+.buttonGhost:active:not(:disabled) {
+  background: var(--accent-fill-16);
+  box-shadow: none;
+}
+
+.buttonDanger {
+  color: var(--error);
+}
+.buttonDanger:hover:not(:disabled) {
+  background: var(--error-fill);
+  box-shadow: var(--ring-inset-hover);
+}
+
+.buttonBlock {
+  width: 100%;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+.iconButton:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-elevated-hi);
+}
+.iconButton:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.iconButton:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+.iconButtonPlate {
+  background: var(--bg-elevated);
+  box-shadow: var(--ring-inset);
+}
+.iconButtonSm {
+  width: 22px;
+  height: 22px;
+}
+.iconButtonDanger:hover:not(:disabled) {
+  color: var(--error);
+  background: var(--error-fill);
+}
+
+/* ─────────────────────────── Toggle / PowerPill ──────────────────────── */
+
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.switchOn {
+  background: var(--block-fill-25, var(--accent-fill-25));
+  box-shadow: inset 0 0 0 1px var(--block-accent, var(--accent));
+}
+.switchKnob {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+}
+.switchOn .switchKnob {
+  background: var(--block-accent, var(--accent));
+}
+.switch:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.powerPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+.powerPillOn {
+  color: var(--block-accent, var(--accent));
+  background: var(--block-fill-8, var(--accent-fill-8));
+  box-shadow: inset 0 0 0 1px var(--block-accent, var(--accent));
+}
+.powerLed {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-app);
+  box-shadow: inset 0 0 0 1px var(--border-hover);
+}
+.powerPillOn .powerLed {
+  background: var(--block-accent, var(--accent));
+  box-shadow: 0 0 6px 1px var(--block-glow, var(--accent-glow));
+}
+
+/* ───────────────────────────── Segmented ─────────────────────────────── */
+
+.segmented {
+  position: relative;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+}
+.segment {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 34px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: color 120ms ease;
+}
+.segment:hover {
+  color: var(--text-primary);
+}
+.segmentActive {
+  color: var(--text-primary);
+}
+.segmentPill {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: 4px;
+  background: var(--bg-elevated-hi);
+  box-shadow: var(--ring-inset-hover);
+}
+.segmentDot {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* ─────────────────────────────── Menu ────────────────────────────────── */
+
+.menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-menu);
+}
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-primary);
+  text-align: left;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.menuItem:hover:not(:disabled) {
+  background: var(--accent-fill-8);
+}
+.menuItemSelected {
+  color: var(--text-primary);
+  background: var(--bg-elevated-hi);
+}
+.menuItemDestructive {
+  color: var(--error);
+}
+.menuItemDestructive:hover:not(:disabled) {
+  background: var(--error-fill);
+}
+.menuItem:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.menuItemLabel {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menuItemHint {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.menuSeparator {
+  height: 1px;
+  margin: 4px -4px;
+  background: var(--border);
+}
+.menuSectionLabel {
+  padding: 6px 8px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.menuScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+}
+
+/* ────────────────────────────── Tooltip ──────────────────────────────── */
+
+/* Tight wrapper so the tooltip can measure the trigger without a ref. */
+.tooltipAnchor {
+  display: inline-flex;
+  align-items: center;
+}
+.tooltip {
+  position: fixed;
+  z-index: 70;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated-hi);
+  box-shadow: var(--shadow-tooltip);
+  font-size: 11px;
+  color: var(--text-primary);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ─────────────────────────────── Modal ───────────────────────────────── */
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-overlay);
+  /* Unprefixed backdrop-filter only lands in Safari 18; every WebKit down to the
+     macOS 11 baseline needs the prefixed name. */
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+.modalPanel {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100% - 64px));
+  max-height: calc(100% - 96px);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+}
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 48px;
+  padding: 0 12px 0 20px;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.modalTitle {
+  font-size: 13px;
+  font-weight: 600;
+}
+.modalBody {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+}
+.modalFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  height: 56px;
+  padding: 0 20px;
+  box-shadow: inset 0 1px 0 var(--border);
+}
+
+/* ─────────────────────────────── Toast ───────────────────────────────── */
+
+.toastStack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.toast {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 320px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated-hi);
+  box-shadow: var(--shadow-toast);
+  font-size: 13px;
+  overflow: hidden;
+}
+.toastIcon {
+  flex: none;
+  margin-top: 1px;
+}
+.toastMessage {
+  flex: 1;
+}
+.toastProgress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  transform-origin: left center;
+}
+
+/* ─────────────────────────────── Meter ───────────────────────────────── */
+
+.meter {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  overflow: hidden;
+}
+.meterVertical {
+  flex-direction: column-reverse;
+  width: 8px;
+  height: 100%;
+}
+.meterHorizontal {
+  flex-direction: row;
+  width: 100%;
+  height: 8px;
+}
+.meterSegment {
+  position: relative;
+  flex: 1;
+  border-radius: 1.5px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.meterSegmentFill {
+  position: absolute;
+  inset: 0;
+  border-radius: 1.5px;
+}
+.meterHold {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  opacity: 0.9;
+  pointer-events: none;
+}
+.meterHoldHorizontal {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: auto;
+  width: 2px;
+  height: auto;
+}
+
+/* ─────────────────────────────── Knob ────────────────────────────────── */
+
+.knob {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  touch-action: none;
+  cursor: ns-resize;
+  user-select: none;
+}
+.knobDial {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+.knobSvg {
+  overflow: visible;
+}
+.knobTrack {
+  stroke: var(--border);
+}
+.knobValue {
+  stroke: var(--block-accent, var(--accent));
+  filter: none;
+}
+.knobFace {
+  fill: var(--bg-elevated);
+  stroke: var(--border);
+}
+.knobPointer {
+  stroke: var(--block-accent, var(--accent));
+  stroke-linecap: round;
+}
+.knobLabel {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.knobReadout {
+  font-family: var(--font-mono);
+  font-feature-settings:
+    "tnum" 1,
+    "zero" 1;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.knobDisabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+/* sm knobs live in the 56px footer band: 40px dial + 2px gap + 12px label = 54px. */
+.knobSizeSm {
+  gap: 2px;
+}
+.knobSizeSm .knobLabel {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+/* ──────────────────────── Kbd / EmptyState / Loading ─────────────────── */
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  box-shadow:
+    inset 0 0 0 1px var(--border-hover),
+    0 1px 0 var(--border);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text-secondary);
+}
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+.emptyIcon {
+  color: var(--text-tertiary);
+  opacity: 0.4;
+}
+.emptyMessage {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.emptyHint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.emptyAction {
+  margin-top: 4px;
+}
+
+.spinner {
+  color: var(--text-secondary);
+  animation: tubamp-spin 700ms linear infinite;
+}
+
+.skeleton {
+  background:
+    linear-gradient(
+      100deg,
+      transparent 30%,
+      rgba(255, 255, 255, 0.06) 50%,
+      transparent 70%
+    ),
+    var(--bg-surface);
+  background-size: 200% 100%;
+  animation: tubamp-shimmer 1.6s ease-in-out infinite;
+}
+
+/* ─────────────────────────────── Panels ──────────────────────────────── */
+
+.card {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--ring-inset);
+}
+
+.sectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+
+.microLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}

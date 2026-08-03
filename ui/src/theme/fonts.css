@@ -1,0 +1,59 @@
+/*
+  Geist Sans / Geist Mono, self-hosted (no CDN — the WebView has no network).
+  Files vendored from the `geist` npm package v1.7.2 (OFL-1.1, see ./fonts/OFL.txt);
+  only the 4 sans + 3 mono static weights actually used by the type scale in
+  docs/research/vercel-design.md §2 are shipped.
+
+  `font-display: block` (not `swap`): in a fixed 1120×700 frame a very short
+  invisible-text period reads better than a fallback-font layout jump.
+*/
+
+@font-face {
+  font-family: "Geist Sans";
+  src: url("./fonts/geist-sans/Geist-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Geist Sans";
+  src: url("./fonts/geist-sans/Geist-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Geist Sans";
+  src: url("./fonts/geist-sans/Geist-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Geist Sans";
+  src: url("./fonts/geist-sans/Geist-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("./fonts/geist-mono/GeistMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("./fonts/geist-mono/GeistMono-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("./fonts/geist-mono/GeistMono-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}

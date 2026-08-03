@@ -1,0 +1,456 @@
+/*
+  Param dock styles. Tokens only — the block accent arrives as `--block-accent`
+  from the `[data-block]` attribute on `.dock`, so nothing here names a colour.
+*/
+
+/*
+  The dock owns its own surface: App.module.css `.dock` is only a positioning
+  box with `pointer-events: none`, so when nothing is selected the board shows
+  through instead of an empty rounded card.
+*/
+.dock {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: auto;
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-dock);
+}
+
+/* ─────────────────────────────── header ──────────────────────────────── */
+
+.header {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 46px;
+  padding: 0 14px 0 18px;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
+/* Accent wash behind the header only, fading out across 60% of its width. */
+.header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    var(--block-fill-16),
+    transparent 60%
+  );
+  pointer-events: none;
+}
+
+.headerIcon {
+  position: relative;
+  display: inline-flex;
+  color: var(--block-accent);
+}
+
+.titleWrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-right: auto;
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+}
+
+.underline {
+  width: 48px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--block-accent);
+}
+
+.headerActions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ──────────────────────────────── body ───────────────────────────────── */
+
+.body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+}
+
+/* Every morph candidate occupies the same grid cell, so popLayout's overlap
+   crossfades in place instead of stacking two bodies vertically. */
+.bodyInner {
+  grid-area: 1 / 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 18px;
+  overflow: hidden;
+}
+
+/* Bodies that stack an extra row above the generic knob row (cab, mod). */
+.stackBody {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 620px;
+}
+
+.centeredSection {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ────────────────────────────── knob rows ────────────────────────────── */
+
+.knobRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.knobCell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100px;
+}
+
+/* ───────────────────────────── amp body ──────────────────────────────── */
+
+.ampBody {
+  display: flex;
+  align-items: stretch;
+  gap: 20px;
+  width: 100%;
+  height: 100%;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.column:first-child {
+  flex: 1;
+}
+
+.divider {
+  flex: none;
+  width: 1px;
+  margin: 6px 0;
+  background: var(--border);
+}
+
+.captionRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.caption {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.attribution {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.footerNote {
+  margin-right: auto;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+}
+
+.modelLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.modelName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.modelNameEmpty {
+  composes: modelName;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.chipLive,
+.chipDown {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.chipLive {
+  color: var(--block-accent);
+  background: var(--block-fill-16);
+  box-shadow: inset 0 0 0 1px var(--block-accent);
+}
+
+.chipDown {
+  color: var(--warning);
+  background: var(--warning-fill);
+  box-shadow: inset 0 0 0 1px var(--warning);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.actionRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.levels {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.fieldStack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ───────────────────────────── file rows ─────────────────────────────── */
+
+.fileRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px 0 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease;
+}
+
+.select:hover {
+  background: var(--bg-elevated-hi);
+  box-shadow: var(--ring-inset-hover);
+  color: var(--text-primary);
+}
+
+.selectValue {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.selectPlaceholder {
+  composes: selectValue;
+  color: var(--text-tertiary);
+}
+
+/* ────────────────────────── fields / sliders ─────────────────────────── */
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fieldDisabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.fieldLabel {
+  width: 46px;
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.sliderTrack {
+  position: relative;
+  width: 104px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+  cursor: ew-resize;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.sliderFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--block-accent);
+}
+
+.readout {
+  min-width: 44px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+/* ───────────────────────── downloads / TONE3000 ──────────────────────── */
+
+.downloadStrip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.downloadRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.downloadName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.progressTrack {
+  flex: 1;
+  min-width: 80px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--block-accent);
+  transition: width 120ms linear;
+}
+
+.toneList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.toneRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+}
+
+.toneInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.toneName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.toneProgress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 140px;
+}

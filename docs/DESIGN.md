@@ -43,11 +43,13 @@ input), comp/drive pre-amp, ambience post. NAM captures are typically amp/preamp
 so a separate IR cab block is the NAM-ecosystem convention (unlike ToneX's inseparable
 captures). Mono through NAM (models are mono), stereo afterward.
 
-UI (Cortex Control-inspired, spec in docs/UI-REDESIGN.md): header (presets, A/B,
-settings) / signal-chain lane of accent-colored icon tiles (drag-reorder, [+] add,
-right-click remove, power LEDs) / parameter panel for the selected block / footer with
-trim+level knobs and segmented meters. Headless UI screenshots: `tubamp_uishot`
-target (tools/UiSnapshot.cpp) renders the real editor to a PNG without a window.
+UI (Cortex Control-inspired): header (presets, A/B, settings) / signal-chain lane of
+accent-colored icon tiles (drag-reorder, [+] add, right-click remove, power LEDs) /
+parameter panel for the selected block / footer with trim+level knobs and segmented
+meters. It is a React SPA in `ui/`, hosted in a WebBrowserComponent by
+`src/WebEditor.*` — spec and bridge contract in docs/REACT-UI.md. There is no headless
+screenshot target any more (a WKWebView does not render into a JUCE Graphics context);
+UI iteration goes through `npm run dev` and the mock bridge in a browser.
 
 ## NAM engine rules (real-time safety)
 
@@ -104,4 +106,5 @@ mod (type/rate/depth/mix), delay (time/feedback/mix), reverb (size/damping/mix),
 | `src/library/ModelLibrary.*` | scan/import models+IRs | juce::File |
 | `src/library/PresetManager.*` | presets, A/B, favorites | JSON via juce::var |
 | `src/library/Tone3000Client.*` | PKCE OAuth, search/models/download | juce::URL, StreamingSocket |
-| `src/ui/*`, `src/PluginEditor.*` | amp-style UI | custom LookAndFeel |
+| `src/WebEditor.*` | editor shell: relays, native functions, resource provider | `juce::WebBrowserComponent` |
+| `ui/` | the UI itself (React + TS + Vite SPA) | bundled into the binary as a zip |

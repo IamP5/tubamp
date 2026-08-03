@@ -1,0 +1,100 @@
+/* App shell: fixed 1120×700, header / board / dock / footer. */
+
+.root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: var(--app-w);
+  height: var(--app-h);
+  margin: 0 auto;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      120% 60% at 50% -10%,
+      rgba(255, 255, 255, 0.035),
+      transparent 60%
+    ),
+    var(--bg-app);
+}
+
+.header {
+  flex: none;
+  height: var(--header-h);
+  box-shadow: inset 0 -1px 0 var(--border);
+  overflow: hidden;
+  z-index: 2;
+}
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+/*
+  The board fills the whole stage and paints full-bleed — the dot grid runs
+  behind and around the dock. Its *geometry* still respects `--dock-inset`
+  (board.module.css `.stage` / layout.ts DOCK_INSET), so the chain lane is
+  centred in the band above the dock and never settles underneath it.
+*/
+.board {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/*
+  The param dock is an overlay card floating over the board's bottom edge, not a
+  layout sibling: with nothing selected the Panel renders nothing and the board
+  shows through (no empty rounded box). The wrapper is purely a positioning box
+  — the surface (background, ring, radius) belongs to the panel itself.
+*/
+.dock {
+  position: absolute;
+  left: var(--dock-gap);
+  right: var(--dock-gap);
+  bottom: var(--dock-gap);
+  height: var(--dock-h);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/*
+  Entrance layer only (motion-design.md §2.1: "param panel fades/slides in
+  last"). The Panel's own AnimatePresence runs `initial={false}`, so first mount
+  is deliberately silent there and this wrapper supplies the one-shot arrival.
+*/
+.dockInner {
+  height: 100%;
+}
+
+/*
+  No `overflow: hidden` here: the band holds nothing scrollable, and clipping it
+  would swallow the trim knobs' value bubbles, which sit above the band's top
+  edge. `.root` still clips at the window edge.
+*/
+.footer {
+  flex: none;
+  height: var(--footer-h);
+  box-shadow: inset 0 1px 0 var(--border);
+  background: var(--bg-surface);
+  z-index: 2;
+}
+
+/* Dev-only affordance: makes it obvious the mock bridge is driving the UI. */
+.mockBadge {
+  position: fixed;
+  left: 50%;
+  top: 6px;
+  transform: translateX(-50%);
+  z-index: 100;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--warning-fill);
+  box-shadow: inset 0 0 0 1px var(--warning);
+  color: var(--warning);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
