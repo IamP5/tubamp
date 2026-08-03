@@ -215,6 +215,28 @@ const MODELS_DIR = "/Users/dev/Music/tubamp/models";
 const IRS_DIR = "/Users/dev/Music/tubamp/irs";
 const PRESETS_DIR = "/Users/dev/Music/tubamp/presets";
 
+/**
+ * `metadata.gear_type` per mock capture, covering all three states the real
+ * library shows: an amp-only capture, two rigs taken through a cab, and a
+ * capture that declares no gear at all (which must stay silent, not read as
+ * amp-only). Keyed by display name; anything missing is the silent case.
+ */
+const MOCK_GEAR: Record<string, string> = {
+  "Marshall JCM800 Crunch": "amp",
+  "Fender Twin Clean": "amp",
+  "Mesa Rectifier Modern": "amp_cab",
+  "Vox AC30 Top Boost": "amp_mic",
+};
+
+/** Mirrors `gearIncludesCab()` in src/dsp/NamEngine.cpp. */
+function mockGear(name: string): Pick<ModelInfo, "gearType" | "includesCab"> {
+  const gearType = MOCK_GEAR[name];
+  return {
+    gearType,
+    includesCab: gearType !== undefined && /cab|mic|full_rig/.test(gearType),
+  };
+}
+
 const loadedModel: ModelInfo = {
   path: `${MODELS_DIR}/Marshall JCM800 Crunch.nam`,
   name: "Marshall JCM800 Crunch",
@@ -222,6 +244,7 @@ const loadedModel: ModelInfo = {
   loudnessDb: -13.4,
   inputLevelDbu: 12.5,
   outputLevelDbu: 11.2,
+  ...mockGear("Marshall JCM800 Crunch"),
   isSlimmable: true,
   latencySamples: 90,
 };
@@ -614,6 +637,7 @@ export const mockBridge: Bridge = {
       ...loadedModel,
       path: entry.path,
       name: entry.name,
+      ...mockGear(entry.name),
       isSlimmable: !entry.name.toLowerCase().includes("lite"),
       latencySamples: 90,
     };
@@ -656,6 +680,7 @@ export const mockBridge: Bridge = {
       ...loadedModel,
       path: entry.path,
       name: entry.name,
+      ...mockGear(entry.name),
       isSlimmable: true,
       latencySamples: 90,
     };

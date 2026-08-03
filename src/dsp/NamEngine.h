@@ -43,6 +43,16 @@ public:
         std::optional<double> loudnessDb;   // metadata.loudness if present
         std::optional<double> inputLevelDbu;
         std::optional<double> outputLevelDbu;
+
+        // metadata.gear_type, lower_snake and with TONE3000's "T3K-Null" placeholder
+        // folded to empty. Empty means "the capture doesn't say" — most captures
+        // trained outside TONE3000's exporter carry no gear fields at all.
+        juce::String gearType;
+
+        // True when gearType describes a rig captured through a cabinet (amp_cab,
+        // amp_mic, the pedal_* variants, a bare cab). Loading an IR on top of one
+        // of those stacks a second cabinet, which the UI warns about.
+        bool includesCab = false;
     };
 
     /** Synchronously loads and stages a model. Returns an error string on failure,

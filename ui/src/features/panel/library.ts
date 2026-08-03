@@ -43,6 +43,31 @@ export function isEngineLive(model: ModelInfo | null): boolean {
   return model !== null && model.sampleRateHz > 0;
 }
 
+/**
+ * Badge text for a capture that was taken through a cabinet, or null when it
+ * wasn't — or, just as often, when it doesn't say.
+ *
+ * DOMAIN: `gear_type` is optional in the NAM format. TONE3000's exporter writes
+ * it (`amp_cab`, `amp_mic`, …), hand-trained captures usually don't, so a
+ * missing gear type means "unknown" and must produce no badge at all — claiming
+ * "AMP ONLY" for an unlabelled full rig would be worse than staying quiet.
+ */
+export function rigLabel(model: ModelInfo | null): string | null {
+  if (!model?.includesCab) return null;
+
+  switch (model.gearType) {
+    case "cab":
+      return "CAB";
+    case "full_rig":
+      return "FULL RIG";
+    case "pedal_amp_cab":
+    case "pedal_amp_mic":
+      return "PEDAL + AMP + CAB";
+    default:
+      return "AMP + CAB";
+  }
+}
+
 /** "48 kHz" — the native status line rounds to whole kHz. */
 export function formatSampleRate(hz: number): string {
   return `${Math.round(hz / 1000)} kHz`;

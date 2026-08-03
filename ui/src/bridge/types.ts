@@ -151,6 +151,14 @@ export interface ModelInfo {
   loudnessDb?: number;
   inputLevelDbu?: number;
   outputLevelDbu?: number;
+  /** `metadata.gear_type` from the .nam, lower_snake (`amp`, `amp_cab`,
+   *  `pedal_amp_mic`, …). Absent when the capture declares none — most files
+   *  trained outside TONE3000's exporter carry no gear fields, and absence must
+   *  never be read as "amp only". */
+  gearType?: string;
+  /** Derived C++-side from `gearType`: the capture already went through a
+   *  cabinet, so the Cab block would stack a second one on top of it. */
+  includesCab: boolean;
   isSlimmable: boolean;
   latencySamples: number;
 }

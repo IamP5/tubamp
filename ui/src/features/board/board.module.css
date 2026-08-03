@@ -189,6 +189,18 @@
   pointer-events: none;
 }
 
+/* Full-rig conflict: a static amber ring, under the selection ring. */
+.cardWarnRing {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* --warning #ffb224 at 40% / 10%; literal rgba, see the note at the top. */
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 178, 36, 0.4),
+    0 0 0 3px rgba(255, 178, 36, 0.1);
+  pointer-events: none;
+}
+
 /* Drag lift: the same trick for the drop shadow. */
 .cardLiftShadow {
   position: absolute;
@@ -239,6 +251,39 @@
 
 .cardBypassed .cardName {
   color: var(--text-tertiary);
+}
+
+/* Card note pill ("+ CAB" / "2× CAB"), pinned under the block name. */
+.cardNoteAnchor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 5px;
+  justify-content: center;
+}
+
+.cardNote {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  background: var(--bg-app);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.cardNoteWarn {
+  color: var(--warning);
+  /* --warning #ffb224 at 10% / 45%; literal rgba, see the note at the top. */
+  background: rgba(255, 178, 36, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 36, 0.45);
 }
 
 /* Power LED: 16px hit zone, 6px dot (native parity). */

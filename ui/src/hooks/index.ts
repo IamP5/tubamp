@@ -1,6 +1,7 @@
 export { useSliderParam, type SliderParam } from "./useSliderParam";
 export { useToggleParam, type ToggleParam } from "./useToggleParam";
 export { useComboParam, type ComboParam } from "./useComboParam";
+export { useRigCab, type RigCab } from "./useRigCab";
 export {
   useMeters,
   dbToMeterPosition,

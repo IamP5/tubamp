@@ -106,7 +106,8 @@ t3kSetFavorite(toneId: number, favorite: boolean): { error?: string }
 interface UiState {
   chainOrder: string[]
   model: ModelInfo | null       // { path, name, sampleRateHz, loudnessDb?, inputLevelDbu?,
-                                //   outputLevelDbu?, isSlimmable, latencySamples }
+                                //   outputLevelDbu?, gearType?, includesCab,
+                                //   isSlimmable, latencySamples }
   ir: FileEntry | null          // { path, name }
   models: FileEntry[]
   irs: FileEntry[]
@@ -190,6 +191,14 @@ Fixed 1120×700 viewport, `--bg-app` with subtle radial wash, dot-grid stage.
   status + T3K + knobs + out-mode + slim when isSlimmable), cab (IR mgmt + cut
   knobs). Selection fallback: amp → first → none (but newly added block is
   force-selected). Selection is UI-local state only.
+- **Full-rig captures**: when the loaded model declares a gear type taken through
+  a cabinet (`includesCab`, from the .nam's `metadata.gear_type`), the amp states
+  it and the cab warns about it — an "AMP + CAB" chip in the amp panel, a "+ CAB"
+  pill on the amp card, and, only while both blocks are actually in the path
+  (`useRigCab().doubleCab`), a "2× CAB" pill plus amber ring on the cab card and a
+  notice with a "Bypass cab" action in the cab panel's action row. Informational
+  only: nothing is bypassed automatically, and a capture with no gear metadata
+  (most hand-trained files) shows nothing at all.
 - **Header (48px)**: brand dot + wordmark; preset pill (prev | name menu | next |
   save); A/B segmented control (click recall, shift-click capture, tooltips,
   slot has-state dots); T3K status glyph; settings gear.

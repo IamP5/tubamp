@@ -362,6 +362,8 @@ juce::var WebEditor::modelVar() const
                          { "loudnessDb",     optionalVar (info.loudnessDb) },
                          { "inputLevelDbu",  optionalVar (info.inputLevelDbu) },
                          { "outputLevelDbu", optionalVar (info.outputLevelDbu) },
+                         { "gearType",       nullableStringVar (info.gearType) },
+                         { "includesCab",    info.includesCab },
                          { "isSlimmable",    proc.namEngine.isSlimmable() },
                          { "latencySamples", proc.getLatencySamples() } });
 }

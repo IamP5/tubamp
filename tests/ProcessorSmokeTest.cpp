@@ -197,9 +197,17 @@ int main (int argc, char** argv)
     const bool namActive = proc.namEngine.hasModel();
     const double delta = std::abs (wetRms - dryRms);
 
+    const auto info = proc.namEngine.getModelInfo();
+
     std::printf ("sr=%.0f dryRMS=%.5f wetRMS=%.5f delta=%.5f hasModel=%d latency=%d\n",
                  sampleRate, dryRms, wetRms, delta, (int) namActive,
                  proc.namEngine.getLatencySamples());
+
+    // Descriptive metadata: read out of the .nam directly (nam_core drops it), and
+    // the reason the UI can flag a capture that already contains a cabinet.
+    std::printf ("gearType=%s includesCab=%d\n",
+                 info.gearType.isEmpty() ? "(none)" : info.gearType.toRawUTF8(),
+                 (int) info.includesCab);
 
     const bool modelPass = namActive && delta > 1.0e-4;
     std::printf (modelPass ? "PASS: model audibly changes the signal\n"

@@ -229,7 +229,8 @@
 }
 
 .chipLive,
-.chipDown {
+.chipDown,
+.chipRig {
   flex: none;
   padding: 1px 6px;
   border-radius: 999px;
@@ -250,6 +251,71 @@
   color: var(--warning);
   background: var(--warning-fill);
   box-shadow: inset 0 0 0 1px var(--warning);
+}
+
+/* "AMP + CAB": the capture carries its own cabinet. Amber like the cab notice it
+   explains, but outline-only — it states a fact, it does not report a fault. */
+.chipRig {
+  color: var(--warning);
+  background: transparent;
+  /* --warning #ffb224 at 45%; literal rgba, see tokens.css on color-mix. */
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 36, 0.45);
+}
+
+/* ── full-rig notice in the cab panel's action row ── */
+
+/* Hugs its text next to the browse button; shrinks (and ellipsises) before it
+   would push anything out of the row. */
+.rigNoticeAnchor {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.rigNotice,
+.rigNoticeMuted {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.rigNotice {
+  background: var(--warning-fill);
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 36, 0.32);
+}
+
+/* Already bypassed: the advice has been taken, so it drops to a plain reminder. */
+.rigNoticeMuted {
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-tertiary);
+}
+
+.rigNoticeIcon {
+  flex: none;
+  color: var(--warning);
+}
+
+.rigNoticeMuted .rigNoticeIcon {
+  color: var(--text-tertiary);
+}
+
+.rigNoticeText {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rigNoticeAction {
+  flex: none;
 }
 
 .hint {

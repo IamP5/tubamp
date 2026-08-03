@@ -24,11 +24,13 @@ import { useStore } from "../../store";
 import { FileRow } from "./FileRow";
 import { ParamMenu } from "./ParamMenu";
 import { ParamSlider } from "./ParamSlider";
-import { formatSampleRate, isEngineLive } from "./library";
+import { formatSampleRate, isEngineLive, rigLabel } from "./library";
 import s from "./panel.module.css";
 
 const NO_MODEL = "No model — load a NAM capture";
 const T3K_HINT = "Add your TONE3000 publishable key to browse captures.";
+const RIG_TIP =
+  "This capture was taken through a cabinet — the Cab block would stack a second one on top of it.";
 
 export function AmpBody() {
   const model = useStore((st) => st.model);
@@ -47,6 +49,7 @@ export function AmpBody() {
   const calInput = useToggleParam("amp_cal_input");
 
   const live = isEngineLive(model);
+  const rig = rigLabel(model);
   // IR downloads share the same progress map; they belong to the cab, not here.
   const active = Object.entries(downloads).filter(
     ([id]) => pending[Number(id)]?.kind !== "wav",
@@ -72,6 +75,11 @@ export function AmpBody() {
               <span className={live ? s.chipLive : s.chipDown}>
                 {live ? "LIVE" : "NOT RUNNING"}
               </span>
+              {rig && (
+                <Tooltip label={RIG_TIP} placement="top">
+                  <span className={s.chipRig}>{rig}</span>
+                </Tooltip>
+              )}
               {live && (
                 <span className={s.meta}>
                   {formatSampleRate(model.sampleRateHz)}

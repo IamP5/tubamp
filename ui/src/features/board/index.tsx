@@ -38,10 +38,11 @@ import {
   type MotionValue,
 } from "motion/react";
 import type { BlockId } from "../../bridge/types";
+import { useRigCab } from "../../hooks";
 import { useStore } from "../../store";
 import { spring, stagger, tween } from "../../theme/motion";
 import { EmptyState, PlusIcon, cx } from "../../components";
-import { BlockCard } from "./BlockCard";
+import { BlockCard, type CardNote } from "./BlockCard";
 import { Connectors } from "./Connectors";
 import {
   AddBlockButton,
@@ -58,6 +59,18 @@ import s from "./board.module.css";
 
 const INSTANT = { duration: 0 } as const;
 const EMPTY: ReadonlySet<string> = new Set();
+
+/* Full-rig captures (see useRigCab): the amp states it, the cab warns about it. */
+const AMP_NOTE: CardNote = {
+  label: "+ CAB",
+  tip: "This capture was taken through a cabinet — it already includes the speaker.",
+  tone: "info",
+};
+const CAB_NOTE: CardNote = {
+  label: "2× CAB",
+  tip: "The loaded capture already includes a cab, so this IR stacks a second one.",
+  tone: "warn",
+};
 
 /** Staggered board build-in (motion-design.md §2.1), gated on reduced motion. */
 const LANE_VARIANTS = {
@@ -80,6 +93,16 @@ export function Board() {
   const reduced = useReducedMotion() ?? false;
   const toggles = useBlockToggles();
   const bypassed = useMemo(() => bypassedBlocks(toggles), [toggles]);
+  const rigCab = useRigCab();
+
+  const noteFor = useCallback(
+    (id: BlockId): CardNote | undefined => {
+      if (id === "amp") return rigCab.captureHasCab ? AMP_NOTE : undefined;
+      if (id === "cab") return rigCab.doubleCab ? CAB_NOTE : undefined;
+      return undefined;
+    },
+    [rigCab.captureHasCab, rigCab.doubleCab],
+  );
 
   const nodes = useNodeMotion();
   const laneRef = useRef<HTMLDivElement | null>(null);
@@ -210,6 +233,7 @@ export function Board() {
                   enabled={toggles[id].value}
                   dragging={drag.dragId === id}
                   reduced={reduced}
+                  note={noteFor(id)}
                   paramIndex={toggles[id].parameterIndex}
                   onPointerDown={onCardPointerDown}
                   onToggle={toggles[id].toggle}

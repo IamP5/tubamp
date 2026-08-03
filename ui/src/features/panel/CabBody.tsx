@@ -7,21 +7,28 @@
  * Both routes go through the store here, which toasts the error — the
  * inconsistency the inventory doc flags is fixed, not reproduced.
  */
-import { Button, DownloadIcon, PlusIcon, Tooltip } from "../../components";
+import { AlertIcon, Button, DownloadIcon, PlusIcon, Tooltip } from "../../components";
+import { useRigCab, useToggleParam } from "../../hooks";
 import { useStore } from "../../store";
 import { FileRow } from "./FileRow";
 import { KnobRow } from "./KnobRow";
 import { KNOB_SPECS } from "./knobSpecs";
+import { rigLabel } from "./library";
 import s from "./panel.module.css";
 
 export function CabBody() {
   const ir = useStore((st) => st.ir);
   const irs = useStore((st) => st.irs);
+  const model = useStore((st) => st.model);
   const loadIr = useStore((st) => st.loadIr);
   const clearIr = useStore((st) => st.clearIr);
   const importIr = useStore((st) => st.importIr);
   const openT3kBrowser = useStore((st) => st.openT3kBrowser);
   const toast = useStore((st) => st.toast);
+
+  const cabOn = useToggleParam("cab_on");
+  const { captureHasCab, doubleCab } = useRigCab();
+  const rig = rigLabel(model);
 
   return (
     <div className={s.stackBody}>
@@ -67,6 +74,40 @@ export function CabBody() {
           >
             Browse TONE3000 IRs
           </Button>
+
+          {/* Rides the action row rather than a row of its own: the dock is a
+              fixed 232px and the cab body already fills it. */}
+          {captureHasCab && (
+            <Tooltip
+              label={
+                doubleCab
+                  ? `${model?.name} is tagged ${rig} — its capture already contains the speaker, so this IR puts a second cabinet in series.`
+                  : `${model?.name} is tagged ${rig} — its capture already contains the speaker.`
+              }
+              placement="top"
+              className={s.rigNoticeAnchor}
+            >
+              <div
+                className={doubleCab ? s.rigNotice : s.rigNoticeMuted}
+                role="status"
+              >
+                <AlertIcon size={13} className={s.rigNoticeIcon} />
+                <span className={s.rigNoticeText}>
+                  Capture already includes a cab
+                </span>
+                {doubleCab && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className={s.rigNoticeAction}
+                    onClick={() => cabOn.setValue(false)}
+                  >
+                    Bypass cab
+                  </Button>
+                )}
+              </div>
+            </Tooltip>
+          )}
         </div>
       </section>
 

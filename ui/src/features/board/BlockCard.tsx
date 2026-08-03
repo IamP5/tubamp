@@ -15,7 +15,15 @@ import { motion, type Variants } from "motion/react";
 import type { BlockId } from "../../bridge/types";
 import { BLOCK_INFO } from "../../theme/blocks";
 import { spring, tween } from "../../theme/motion";
-import { Menu, Tooltip, cx, useMenu, MoreIcon, TrashIcon } from "../../components";
+import {
+  AlertIcon,
+  Menu,
+  Tooltip,
+  cx,
+  useMenu,
+  MoreIcon,
+  TrashIcon,
+} from "../../components";
 import type { MenuEntry } from "../../components";
 import { BlockGlyph, PowerGlyph } from "../../components";
 import { CARD_H, CARD_W } from "./layout";
@@ -34,6 +42,19 @@ export const CARD_VARIANTS_REDUCED: Variants = {
   exit: { opacity: 0, transition: tween.instant },
 };
 
+/**
+ * A standing remark about the card, shown as a pill under its name: today only
+ * the full-rig pair (the amp card states that its capture carries a cab, the cab
+ * card warns that it is stacking a second one). Purely informational — a note
+ * never changes what the block does.
+ */
+export interface CardNote {
+  label: string;
+  tip: string;
+  /** "warn" adds the alert glyph and an amber ring around the whole card. */
+  tone: "info" | "warn";
+}
+
 export interface BlockCardProps {
   id: BlockId;
   node: NodeMotion;
@@ -41,6 +62,7 @@ export interface BlockCardProps {
   enabled: boolean;
   dragging: boolean;
   reduced: boolean;
+  note?: CardNote;
   /** APVTS index of the `*_on` parameter — Logic's touch-to-select reads this. */
   paramIndex: number;
   onPointerDown(event: ReactPointerEvent<HTMLElement>, id: BlockId): void;
@@ -60,6 +82,7 @@ export function BlockCard({
   enabled,
   dragging,
   reduced,
+  note,
   paramIndex,
   onPointerDown,
   onToggle,
@@ -122,6 +145,9 @@ export function BlockCard({
         >
           {/* Pre-baked shadow / ring layers: only their opacity ever animates. */}
           <div className={s.cardFace} />
+          {/* Below the selection ring on purpose — selecting a warned card must
+              still read as selected. */}
+          {note?.tone === "warn" && <div className={s.cardWarnRing} />}
           <motion.div
             className={s.cardRing}
             initial={false}
@@ -139,6 +165,26 @@ export function BlockCard({
             <BlockGlyph block={id} size={30} className={s.cardIcon} />
             <span className={s.cardName}>{info.shortName}</span>
           </div>
+
+          {note && (
+            <Tooltip
+              label={note.tip}
+              placement="bottom"
+              className={s.cardNoteAnchor}
+            >
+              <span
+                className={cx(
+                  s.cardNote,
+                  note.tone === "warn" && s.cardNoteWarn,
+                )}
+              >
+                {note.tone === "warn" && (
+                  <AlertIcon size={10} strokeWidth={1.8} />
+                )}
+                {note.label}
+              </span>
+            </Tooltip>
+          )}
 
           <Tooltip label={enabled ? "Bypass" : "Enable"} placement="top">
             <button

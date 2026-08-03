@@ -49,6 +49,142 @@ double getNamSampleRate (const std::unique_ptr<nam::DSP>& model)
     return reported <= 0.0 ? kAssumedModelSampleRate : reported;
 }
 
+/** Parses the JSON object that follows a key whose closing quote sits at `from - 1`,
+    or a void var when what follows is not an object (a same-named string value, a
+    truncated file). String-aware brace matching, so a '{' inside a metadata string
+    cannot unbalance the count. */
+juce::var parseObjectAfterKey (const char* data, size_t size, size_t from)
+{
+    auto skipSpace = [data, size] (size_t i)
+    {
+        while (i < size && juce::CharacterFunctions::isWhitespace ((juce::juce_wchar) data[i]))
+            ++i;
+
+        return i;
+    };
+
+    size_t i = skipSpace (from);
+
+    if (i >= size || data[i] != ':')
+        return {};
+
+    i = skipSpace (i + 1);
+
+    if (i >= size || data[i] != '{')
+        return {};
+
+    const size_t start = i;
+    int depth = 0;
+    bool inString = false, escaped = false;
+
+    for (; i < size; ++i)
+    {
+        const char c = data[i];
+
+        if (inString)
+        {
+            if (escaped)        escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"')  inString = false;
+
+            continue;
+        }
+
+        if (c == '"')       inString = true;
+        else if (c == '{')  ++depth;
+        else if (c == '}' && --depth == 0)
+            return juce::JSON::parse (juce::String::fromUTF8 (data + start, (int) (i + 1 - start)));
+    }
+
+    return {};
+}
+
+/** Byte-scans a .nam for its *top-level* "metadata" object and parses only that.
+
+    nam_core never hands the metadata over: get_dsp() lifts loudness and the two
+    calibration levels out of it and drops the rest, so the gear fields have to be
+    read from the file directly. Handing the whole document to juce::JSON instead
+    would mean re-parsing megabytes of weights for a handful of strings, and A2
+    container files repeat a "metadata" key inside every submodel — hence the depth
+    tracking, which only accepts the object at depth 1.
+
+    Returns a void var when the file has no top-level metadata. */
+juce::var readTopLevelMetadata (const juce::File& namFile)
+{
+    const juce::MemoryMappedFile mapped (namFile, juce::MemoryMappedFile::readOnly);
+    const auto* data = static_cast<const char*> (mapped.getData());
+    const auto size = mapped.getSize();
+
+    if (data == nullptr || size == 0)
+        return {};
+
+    int depth = 0;
+    bool inString = false, escaped = false;
+    size_t tokenStart = 0;
+
+    for (size_t i = 0; i < size; ++i)
+    {
+        const char c = data[i];
+
+        if (inString)
+        {
+            if (escaped)
+            {
+                escaped = false;
+            }
+            else if (c == '\\')
+            {
+                escaped = true;
+            }
+            else if (c == '"')
+            {
+                inString = false;
+
+                if (depth == 1 && i - tokenStart == 8
+                    && std::memcmp (data + tokenStart, "metadata", 8) == 0)
+                {
+                    // A string value that happens to read "metadata" parses as void
+                    // and the scan simply carries on to the real key.
+                    if (auto metadata = parseObjectAfterKey (data, size, i + 1); ! metadata.isVoid())
+                        return metadata;
+                }
+            }
+
+            continue;
+        }
+
+        switch (c)
+        {
+            case '"':               inString = true; tokenStart = i + 1; break;
+            case '{': case '[':     ++depth; break;
+            case '}': case ']':     --depth; break;
+            default:                break;
+        }
+    }
+
+    return {};
+}
+
+/** TONE3000's exporter writes "T3K-Null" wherever the uploader left a field blank,
+    and its catalog spells the value "amp-cab" where the NAM trainer writes
+    "amp_cab". Both spellings collapse onto the trainer's. */
+juce::String normaliseGearType (const juce::String& raw)
+{
+    const auto value = raw.trim().toLowerCase().replaceCharacter ('-', '_');
+
+    if (value == "t3k_null" || value == "null" || value == "none")
+        return {};
+
+    return value;
+}
+
+/** True for the gear types whose capture already ran through a speaker: amp_cab,
+    amp_mic, the pedal_amp_* variants, a full rig, or a bare cab. */
+bool gearIncludesCab (const juce::String& gearType)
+{
+    return gearType.contains ("cab") || gearType.contains ("mic") || gearType.contains ("full_rig");
+}
+
 /** Port of the official plugin's ResamplingNAM: wraps a nam::DSP running at its own
     native rate and transparently resamples host audio in and out of it.
 
@@ -253,6 +389,17 @@ juce::String NamEngine::loadModel (const juce::File& namFile)
 
     if (model->HasOutputLevel())
         newInfo.outputLevelDbu = model->GetOutputLevel();
+
+    // Second pass over the file, for the descriptive metadata get_dsp() discarded.
+    // Failure here is never fatal: a capture that declares no gear just reads as
+    // "unknown" and the UI stays silent about cabs.
+    const auto metadata = readTopLevelMetadata (namFile);
+
+    if (auto* fields = metadata.getDynamicObject())
+    {
+        newInfo.gearType = normaliseGearType (fields->getProperty ("gear_type").toString());
+        newInfo.includesCab = gearIncludesCab (newInfo.gearType);
+    }
 
     // The wrapper is not the slimmable object — the encapsulated model is. Take the
     // interface pointer now; ownership moves, the object itself does not.
