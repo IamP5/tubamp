@@ -240,7 +240,13 @@
   color: var(--text-tertiary);
 }
 
+/* Truncates: the card is a fixed 112px and an fx slot's note carries a hosted
+   plugin's name, which has no length limit at all. */
 .cardName {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 600;
@@ -273,10 +279,21 @@
   font-size: 8px;
   font-weight: 600;
   letter-spacing: 0.08em;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-tertiary);
   background: var(--bg-app);
   box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* The pill is a flex box, so the ellipsis has to live on the text child — the
+   label beside it is an icon that must never shrink. */
+.cardNoteText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cardNoteWarn {

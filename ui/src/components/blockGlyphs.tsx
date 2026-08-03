@@ -132,6 +132,23 @@ export const ReverbGlyph = (p: GlyphProps) => (
   </Glyph>
 );
 
+/**
+ * External-AU slot: a module body with pins on both sides.
+ *
+ * No native ancestor — the fx slots postdate BlockIcons.h. Drawn in the same unit
+ * box and stroke-only convention as the ported glyphs, and deliberately generic:
+ * one glyph serves all three slots, because what is in the slot is named in text,
+ * not iconography.
+ */
+export const FxGlyph = (p: GlyphProps) => (
+  <Glyph {...p}>
+    {/* Rounded rect (0.22, 0.22, 0.56, 0.56, corner 0.06). */}
+    <path d="M0.28 0.22H0.72A0.06 0.06 0 0 1 0.78 0.28V0.72A0.06 0.06 0 0 1 0.72 0.78H0.28A0.06 0.06 0 0 1 0.22 0.72V0.28A0.06 0.06 0 0 1 0.28 0.22Z" />
+    <path d="M0.22 0.36H0.08M0.22 0.64H0.08" />
+    <path d="M0.78 0.36H0.92M0.78 0.64H0.92" />
+  </Glyph>
+);
+
 export const BLOCK_GLYPH: Record<BlockId, (p: GlyphProps) => ReactNode> = {
   gate: GateGlyph,
   comp: CompGlyph,
@@ -142,6 +159,9 @@ export const BLOCK_GLYPH: Record<BlockId, (p: GlyphProps) => ReactNode> = {
   mod: ModGlyph,
   delay: DelayGlyph,
   reverb: ReverbGlyph,
+  fx1: FxGlyph,
+  fx2: FxGlyph,
+  fx3: FxGlyph,
 };
 
 /** Dispatch, mirroring `icons::makeIcon (chain::BlockId)`. */

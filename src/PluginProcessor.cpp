@@ -45,9 +45,15 @@ float valueOf (const std::atomic<float>* p, float fallback = 0.0f) noexcept
     return p != nullptr ? p->load (std::memory_order_relaxed) : fallback;
 }
 
-/** Drops duplicates and clamps ids, keeping the caller's ordering. Unlike
+/** Drops duplicates and out-of-range ids, keeping the caller's ordering. Unlike
     chain::fromString this preserves an empty order: the user is allowed to strip the
-    chain down to nothing (the editor shows its empty state for that). */
+    chain down to nothing (the editor shows its empty state for that).
+
+    Out-of-range ids are dropped rather than clamped: clamping would silently turn an
+    id this build does not know about into whichever block happens to sit at the end
+    of the enum, which was harmless when there was only one trailing block type but
+    now means "a stale token becomes FX Slot 3". Dropping is the same tolerance
+    chain::fromString already applies to unknown tokens. */
 chain::Order sanitiseOrder (const chain::Order& order)
 {
     chain::Order result;
@@ -55,9 +61,12 @@ chain::Order sanitiseOrder (const chain::Order& order)
 
     for (auto id : order)
     {
-        const auto index = (size_t) juce::jlimit (0, chain::numBlockTypes - 1, (int) id);
+        const auto index = (int) id;
 
-        if (! std::exchange (seen[index], true))
+        if (index < 0 || index >= chain::numBlockTypes)
+            continue;
+
+        if (! std::exchange (seen[(size_t) index], true))
             result.push_back ((chain::BlockId) index);
     }
 
@@ -126,8 +135,21 @@ TubampAudioProcessor::TubampAudioProcessor()
     pp.reverbDamping = raw (params::reverbDamping);
     pp.reverbMix     = raw (params::reverbMix);
 
+    pp.fxOn[0]       = raw (params::fx1On);
+    pp.fxOn[1]       = raw (params::fx2On);
+    pp.fxOn[2]       = raw (params::fx3On);
+
     pendingSlim.store (valueOf (raw (params::ampSlim)), std::memory_order_relaxed);
     apvts.addParameterListener (params::ampSlim, this);
+
+    // Single chokepoint: FxHost fires this before retiring any instance, whatever
+    // caused the retire (UI, preset, A/B, host state restore), so the editor always
+    // gets to close a hosted plugin's window before the plugin behind it dies.
+    fxHost.onSlotRetiring = [this] (int slot)
+    {
+        if (onFxSlotRetiring != nullptr)
+            onFxSlotRetiring (slot);
+    };
 
     presets.createFactoryPresetsIfMissing();
 }
@@ -137,6 +159,17 @@ TubampAudioProcessor::~TubampAudioProcessor()
     apvts.removeParameterListener (params::ampSlim, this);
     cancelPendingUpdate();
     *aliveFlag = false;
+
+    // Before anything else: nothing may call back into this half-destroyed processor,
+    // and every hosted instance must die here on the message thread.
+    fxHost.onSlotRetiring = nullptr;
+    onFxSlotRetiring = nullptr;
+    onFxSlotChanged = nullptr;
+
+    for (int slot = 0; slot < chain::numFxSlots; ++slot)
+        fxHost.clear (slot);
+
+    fxHost.collectGarbage();
     namEngine.collectGarbage();
 }
 
@@ -152,6 +185,361 @@ void TubampAudioProcessor::parameterChanged (const juce::String& parameterID, fl
 void TubampAudioProcessor::handleAsyncUpdate()
 {
     namEngine.setSlimSize ((double) pendingSlim.load (std::memory_order_relaxed));
+
+    if (fxRebuildPending.exchange (false, std::memory_order_acq_rel))
+    {
+        // The host changed sample rate or channel count. The hosted instances were
+        // prepared for the old one and are being bypassed; rebuild them from scratch.
+        // Re-preparing them in place is not an option — see the FxHost class comment.
+        for (int slot = 0; slot < chain::numFxSlots; ++slot)
+        {
+            refreshFxState (slot);
+            fxHost.clear (slot);
+            instantiateFxSlot (slot);
+        }
+    }
+
+    fxHost.collectGarbage();
+}
+
+//==============================================================================
+TubampAudioProcessor::FxSlotInfo TubampAudioProcessor::getFxSlotInfo (int slot) const
+{
+    FxSlotInfo info;
+
+    if (slot < 0 || slot >= chain::numFxSlots)
+        return info;
+
+    {
+        const juce::ScopedLock sl (fxLock);
+        const auto& record = fxRecords[(size_t) slot];
+
+        info.identifier = record.desc.fileOrIdentifier;
+        info.name = record.desc.name;
+        info.manufacturer = record.desc.manufacturerName;
+        info.occupied = record.occupied;
+        info.missing = record.missing;
+        info.loading = record.loading;
+        info.error = record.error;
+    }
+
+    info.live = fxHost.isLive (slot);
+    info.latencySamples = fxHost.latencyFor (slot);
+
+    return info;
+}
+
+void TubampAudioProcessor::notifyFxSlotChanged (int slot)
+{
+    if (onFxSlotChanged != nullptr)
+        onFxSlotChanged (slot);
+}
+
+void TubampAudioProcessor::loadFxPlugin (int slot, const juce::String& identifier)
+{
+    if (slot < 0 || slot >= chain::numFxSlots)
+        return;
+
+    if (identifier.isEmpty())
+    {
+        clearFxPlugin (slot);
+        return;
+    }
+
+    {
+        const juce::ScopedLock sl (fxLock);
+        auto& record = fxRecords[(size_t) slot];
+
+        record.desc = fxCatalog.descriptionFor (identifier);
+        record.state.reset();
+        record.occupied = true;
+        record.missing = false;
+        record.loading = true;
+        record.error = {};
+    }
+
+    // Drop whatever was running before the replacement arrives: the slot passes audio
+    // through in the meantime, which is honest, and the retire hook closes any editor
+    // window still showing the outgoing plugin.
+    fxHost.clear (slot);
+    updateLatency();
+
+    notifyFxSlotChanged (slot);
+    instantiateFxSlot (slot);
+}
+
+void TubampAudioProcessor::clearFxPlugin (int slot)
+{
+    if (slot < 0 || slot >= chain::numFxSlots)
+        return;
+
+    {
+        const juce::ScopedLock sl (fxLock);
+        fxRecords[(size_t) slot] = FxRecord { {}, {}, false, false, false, {},
+                                              fxRecords[(size_t) slot].epoch + 1 };
+    }
+
+    fxHost.clear (slot);
+    updateLatency();
+    notifyFxSlotChanged (slot);
+}
+
+juce::AudioProcessor* TubampAudioProcessor::getFxInstance (int slot)
+{
+    return fxHost.peekInstance (slot);
+}
+
+void TubampAudioProcessor::instantiateFxSlot (int slot)
+{
+    juce::PluginDescription desc;
+    juce::MemoryBlock state;
+    uint32_t epoch = 0;
+
+    {
+        const juce::ScopedLock sl (fxLock);
+        auto& record = fxRecords[(size_t) slot];
+
+        if (! record.occupied)
+            return;
+
+        // Every instantiation supersedes any earlier one still in flight, so a burst
+        // of A/B recalls or preset loads can never land an older plugin last.
+        epoch = ++record.epoch;
+        desc = record.desc;
+        state = record.state;
+        record.loading = true;
+        record.error = {};
+    }
+
+    const double rate = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
+    const int block = getBlockSize() > 0 ? getBlockSize() : 512;
+
+    std::weak_ptr<bool> alive = aliveFlag;
+
+    fxCatalog.createAsync (desc, rate, block,
+        [this, alive, slot, epoch, state] (std::unique_ptr<juce::AudioProcessor> instance,
+                                           const juce::String& error) mutable
+        {
+            // Both guards destroy `instance` right here, on the message thread, which
+            // is the only thread allowed to destroy a hosted AudioUnit.
+            auto locked = alive.lock();
+
+            if (locked == nullptr || ! *locked)
+                return;
+
+            {
+                const juce::ScopedLock sl (fxLock);
+
+                if (fxRecords[(size_t) slot].epoch != epoch)
+                    return; // superseded while we were loading
+            }
+
+            const auto fail = [this, slot, epoch] (const juce::String& message)
+            {
+                {
+                    const juce::ScopedLock sl (fxLock);
+                    auto& record = fxRecords[(size_t) slot];
+
+                    if (record.epoch != epoch)
+                        return;
+
+                    record.loading = false;
+                    record.missing = true;
+                    record.error = message;
+                }
+
+                notifyFxSlotChanged (slot);
+            };
+
+            if (instance == nullptr)
+            {
+                fail (error.isNotEmpty() ? error : juce::String ("Could not load this plugin"));
+                return;
+            }
+
+            if (const auto prepareError = fxHost.loadInstance (slot, std::move (instance), &state);
+                prepareError.isNotEmpty())
+            {
+                fail (prepareError);
+                return;
+            }
+
+            {
+                const juce::ScopedLock sl (fxLock);
+                auto& record = fxRecords[(size_t) slot];
+                record.loading = false;
+                record.missing = false;
+                record.error = {};
+            }
+
+            updateLatency();
+            notifyFxSlotChanged (slot);
+        });
+}
+
+void TubampAudioProcessor::refreshFxState (int slot)
+{
+    if (slot < 0 || slot >= chain::numFxSlots)
+        return;
+
+    // Safe on the message thread: an instance only becomes garbage when its successor
+    // is staged, and only this thread stages, so the newest instance of a slot cannot
+    // be destroyed underneath us (FxHost.h).
+    auto* instance = fxHost.peekInstance (slot);
+
+    if (instance == nullptr)
+        return;
+
+    juce::MemoryBlock captured;
+    instance->getStateInformation (captured);
+
+    const juce::ScopedLock sl (fxLock);
+    auto& record = fxRecords[(size_t) slot];
+
+    if (record.occupied)
+        record.state = std::move (captured);
+}
+
+void TubampAudioProcessor::refreshAllFxState()
+{
+    for (int slot = 0; slot < chain::numFxSlots; ++slot)
+        refreshFxState (slot);
+}
+
+//==============================================================================
+juce::ValueTree TubampAudioProcessor::fxSlotsTree() const
+{
+    juce::ValueTree tree ("FXSLOTS");
+
+    const juce::ScopedLock sl (fxLock);
+
+    for (int slot = 0; slot < chain::numFxSlots; ++slot)
+    {
+        const auto& record = fxRecords[(size_t) slot];
+
+        if (! record.occupied)
+            continue;
+
+        juce::ValueTree child ("SLOT");
+        child.setProperty ("index", slot, nullptr);
+        child.setProperty ("plugin", record.desc.fileOrIdentifier, nullptr);
+        child.setProperty ("name", record.desc.name, nullptr);
+        child.setProperty ("manufacturer", record.desc.manufacturerName, nullptr);
+
+        // Written even for a slot whose plugin is missing on this machine: the blob is
+        // the user's settings, and dropping it would turn "open the project on the
+        // other laptop" into silent data loss.
+        if (record.state.getSize() > 0)
+            child.setProperty ("state", record.state.toBase64Encoding(), nullptr);
+
+        tree.appendChild (child, nullptr);
+    }
+
+    return tree;
+}
+
+std::array<TubampAudioProcessor::FxRecord, chain::numFxSlots>
+TubampAudioProcessor::parseFxSlotsTree (const juce::ValueTree& tree) const
+{
+    std::array<FxRecord, chain::numFxSlots> parsed;
+
+    if (! tree.isValid())
+        return parsed;
+
+    for (const auto& child : tree)
+    {
+        if (! child.hasType ("SLOT"))
+            continue;
+
+        const int slot = (int) child.getProperty ("index", -1);
+
+        if (slot < 0 || slot >= chain::numFxSlots)
+            continue;
+
+        const juce::String identifier = child.getProperty ("plugin", juce::String()).toString();
+
+        if (identifier.isEmpty())
+            continue;
+
+        auto& record = parsed[(size_t) slot];
+        record.occupied = true;
+        record.desc.pluginFormatName = "AudioUnit";
+        record.desc.fileOrIdentifier = identifier;
+        record.desc.name = child.getProperty ("name", juce::String()).toString();
+        record.desc.manufacturerName = child.getProperty ("manufacturer", juce::String()).toString();
+
+        const juce::String encoded = child.getProperty ("state", juce::String()).toString();
+
+        if (encoded.isNotEmpty())
+            record.state.fromBase64Encoding (encoded);
+    }
+
+    return parsed;
+}
+
+void TubampAudioProcessor::applyFxRecords (const std::array<FxRecord, chain::numFxSlots>& incoming)
+{
+    for (int slot = 0; slot < chain::numFxSlots; ++slot)
+    {
+        const auto& want = incoming[(size_t) slot];
+
+        // Same plugin already loaded: push the settings into the running instance
+        // instead of tearing it down. This is what makes A/B between two variants of
+        // the same rig gapless — rebuilding an AudioUnit takes long enough to hear.
+        bool reuseInPlace = false;
+
+        {
+            const juce::ScopedLock sl (fxLock);
+            const auto& have = fxRecords[(size_t) slot];
+
+            reuseInPlace = want.occupied && have.occupied && ! have.missing && ! have.loading
+                           && have.desc.fileOrIdentifier == want.desc.fileOrIdentifier
+                           && fxHost.isLive (slot);
+        }
+
+        if (reuseInPlace)
+        {
+            if (auto* instance = fxHost.peekInstance (slot); instance != nullptr && want.state.getSize() > 0)
+                instance->setStateInformation (want.state.getData(), (int) want.state.getSize());
+
+            {
+                const juce::ScopedLock sl (fxLock);
+                fxRecords[(size_t) slot].state = want.state;
+            }
+
+            notifyFxSlotChanged (slot);
+            continue;
+        }
+
+        if (! want.occupied)
+        {
+            // Absent fx state must clear the slot, exactly like a preset without a
+            // modelPath clears the model. Leaving it loaded would let a plugin survive
+            // a preset switch and then be written into the next save.
+            const juce::ScopedLock sl (fxLock);
+            const bool wasOccupied = fxRecords[(size_t) slot].occupied;
+            const auto nextEpoch = fxRecords[(size_t) slot].epoch + 1;
+            fxRecords[(size_t) slot] = FxRecord { {}, {}, false, false, false, {}, nextEpoch };
+
+            if (! wasOccupied)
+                continue;
+        }
+        else
+        {
+            const juce::ScopedLock sl (fxLock);
+            auto& record = fxRecords[(size_t) slot];
+            const auto nextEpoch = record.epoch + 1;
+            record = want;
+            record.epoch = nextEpoch;
+            record.loading = true;
+        }
+
+        fxHost.clear (slot);
+        notifyFxSlotChanged (slot);
+        instantiateFxSlot (slot);
+    }
+
+    updateLatency();
 }
 
 float TubampAudioProcessor::ampInputDb() const noexcept
@@ -205,6 +593,19 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 
     namEngine.prepare (sampleRate, juce::jmax (1, samplesPerBlock));
 
+    // Records the configuration only — it must not touch the hosted instances. The
+    // host can call prepareToPlay while holding our callback lock (Logic does, on the
+    // kAudioUnitProperty_OfflineRender path taken by every bounce), and preparing a
+    // hosted AudioUnit from there deadlocks against CoreAudio's own mutex. Slots whose
+    // instance no longer matches the configuration pass audio through until the
+    // message thread has rebuilt them, which is what this async update kicks off.
+    if (fxHost.prepare (sampleRate, juce::jmax (1, getTotalNumOutputChannels()),
+                        juce::jmax (1, samplesPerBlock)))
+    {
+        fxRebuildPending.store (true, std::memory_order_release);
+        triggerAsyncUpdate();
+    }
+
     monoScratch.setSize (1, juce::jmax (1, samplesPerBlock), false, false, true);
     monoScratch.clear();
 
@@ -249,6 +650,9 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // Adopt a staged model before anything reads it. The latency report moves below,
     // once the decoded order says whether the amp block is actually in the path.
     namEngine.applyStaging();
+    fxHost.applyStaging();
+
+    auto* const playHead = getPlayHead();
 
     if (numSamples <= 0 || numOutputChannels <= 0)
         return;
@@ -288,13 +692,11 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const bool gateOn = isOn (pp.gateOn);
     const bool ampOn = isOn (pp.ampOn);
 
-    // Report latency from here, where the topology is known: only an amp block that
-    // actually runs delays the signal. Hosts tolerate latency changes reported from
-    // the audio thread (same contract as the old staging-time report).
+    // Report latency from here, where the topology is known: only blocks that are
+    // actually in the path delay the signal. Hosts tolerate latency changes reported
+    // from the audio thread (same contract as the old staging-time report).
     {
-        const int wantedLatency = (present[(size_t) chain::BlockId::amp] && ampOn)
-                                      ? namEngine.getLatencySamples()
-                                      : 0;
+        const int wantedLatency = computeWantedLatency (present, ampOn);
 
         if (wantedLatency != getLatencySamples())
             setLatencySamples (wantedLatency);
@@ -503,6 +905,16 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                 break;
             }
+
+            // --- external AudioUnit slots
+            case chain::BlockId::fx1:
+            case chain::BlockId::fx2:
+            case chain::BlockId::fx3:
+            {
+                const int slot = chain::fxSlotIndex (order[(size_t) i]);
+                fxHost.process (slot, buffer, numSamples, isOn (pp.fxOn[slot]), playHead);
+                break;
+            }
         }
     }
 
@@ -530,20 +942,37 @@ juce::AudioProcessorEditor* TubampAudioProcessor::createEditor()
    #endif
 }
 
-void TubampAudioProcessor::updateLatency()
+int TubampAudioProcessor::computeWantedLatency (const std::array<bool, chain::numBlockTypes>& present,
+                                                bool ampOn) const noexcept
 {
     // The resampler's latency only reaches the signal when the amp block actually
     // runs: present in the published order AND enabled. Otherwise report zero so
     // hosts don't compensate for a delay that never happens.
+    int latency = (present[(size_t) chain::BlockId::amp] && ampOn) ? namEngine.getLatencySamples() : 0;
+
+    // A loaded FX slot contributes its plugin's latency whether or not the slot is
+    // bypassed: fxN_on is a normal automatable parameter, and letting an automation
+    // lane move the reported latency mid-playback would shift the track against every
+    // other one in the project (hosts only re-apply delay compensation at transport
+    // boundaries). FxHost holds a bypassed slot at the same latency instead.
+    for (int slot = 0; slot < chain::numFxSlots; ++slot)
+        if (present[(size_t) chain::BlockId::fx1 + (size_t) slot])
+            latency += fxHost.latencyFor (slot);
+
+    return latency;
+}
+
+void TubampAudioProcessor::updateLatency()
+{
     std::array<chain::BlockId, chain::numBlockTypes> order {};
     const int numBlocks = chain::unpackTo (packedChain.load (std::memory_order_relaxed), order);
 
-    bool ampPresent = false;
+    std::array<bool, chain::numBlockTypes> present {};
 
     for (int i = 0; i < numBlocks; ++i)
-        ampPresent = ampPresent || order[(size_t) i] == chain::BlockId::amp;
+        present[(size_t) order[(size_t) i]] = true;
 
-    setLatencySamples (ampPresent && isOn (pp.ampOn) ? namEngine.getLatencySamples() : 0);
+    setLatencySamples (computeWantedLatency (present, isOn (pp.ampOn)));
 }
 
 //==============================================================================
@@ -634,6 +1063,13 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     // juce::String's refcount is atomic; only concurrent reassignment races).
     juce::String modelPathCopy, irPathCopy;
 
+    // Hosts may call this from a save thread, where reading a hosted plugin's state is
+    // not safe — the cached blob is used instead. On the message thread (Cmd-S, project
+    // close) there is no such constraint, so take the fresh values: otherwise a tweak
+    // made in an open plugin window seconds before saving would be lost.
+    if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+        refreshAllFxState();
+
     {
         const juce::ScopedLock sl (pathLock);
         modelPathCopy = loadedModelPath;
@@ -652,6 +1088,7 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
                       nullptr);
 
     root.appendChild (apvts.copyState(), nullptr);
+    root.appendChild (fxSlotsTree(), nullptr);
 
     if (auto xml = root.createXml())
         copyXmlToBinary (*xml, destData);
@@ -683,9 +1120,13 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
     // UI-facing copy and the notification are message-thread only.
     publishChainOrder (order);
 
+    // A missing FXSLOTS child parses to three empty records, which clears every slot —
+    // the same contract as a missing modelPath clearing the model.
+    const auto fxIncoming = parseFxSlotsTree (root.getChildWithName ("FXSLOTS"));
+
     // Model/IR loading does file IO and prewarm; it must never happen here if the
     // host restores state from a non-message thread.
-    auto restore = [this, modelPath, irPath, order]
+    auto restore = [this, modelPath, irPath, order, fxIncoming]
     {
         if (modelPath.isNotEmpty() && juce::File (modelPath).existsAsFile())
             loadModel (juce::File (modelPath));
@@ -697,6 +1138,7 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
         else
             clearIr();
 
+        applyFxRecords (fxIncoming);
         adoptChainOrder (order);
     };
 
@@ -725,12 +1167,17 @@ juce::var TubampAudioProcessor::captureStateVar()
             paramValues->setProperty (juce::Identifier (ranged->paramID),
                                       (double) ranged->convertFrom0to1 (ranged->getValue()));
 
+    // Message thread (presets, A/B), so the hosted instances can be asked for their
+    // current state directly rather than served from the cache.
+    refreshAllFxState();
+
     auto* state = new juce::DynamicObject();
     state->setProperty ("version", kStateVersion);
     state->setProperty ("params", juce::var (paramValues));
     state->setProperty ("modelPath", loadedModelPath);
     state->setProperty ("irPath", loadedIrPath);
     state->setProperty ("chainOrder", chain::toString (uiChainOrder));
+    state->setProperty ("fxSlots", fxSlotsTree().toXmlString());
 
     return juce::var (state);
 }
@@ -783,6 +1230,11 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
         else
             clearIr();
     }
+
+    // Presets and A/B slots written before the fx slots existed have no "fxSlots":
+    // the void var stringifies to "", which parses to three empty records and clears
+    // every slot — the same treatment a preset without a modelPath gets.
+    applyFxRecords (parseFxSlotsTree (juce::ValueTree::fromXml (obj->getProperty ("fxSlots").toString())));
 
     // Message thread only (PresetManager, A/B), so adopting directly is safe; the
     // audio thread already got the order via publishChainOrder above.

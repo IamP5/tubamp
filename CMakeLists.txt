@@ -134,6 +134,10 @@ juce_add_plugin(tubamp
     AU_COPY_DIR                 "$ENV{HOME}/Library/Audio/Plug-Ins/Components"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT  "tubamp needs audio input for the standalone app."
+    # Hosts third-party AudioUnit effects in the chain's FX slots (src/dsp/FxHost.h).
+    # The keyword form is required over a bare JUCE_PLUGINHOST_AU define: it also links
+    # CoreAudioKit and AudioUnit, which the AU/Standalone link steps need.
+    PLUGINHOST_AU               TRUE
     # No-op on macOS (the module default already enables WebKit) but required the
     # day a Linux/Windows target appears.
     NEEDS_WEB_BROWSER           TRUE)
@@ -263,6 +267,35 @@ target_link_libraries(tubamp_smoke PRIVATE
     juce::juce_audio_utils
     juce::juce_dsp
     juce::juce_recommended_config_flags)
+
+# ---------------------------------------------------------------------------
+# Headless probe for the external-AU slots: the only automated coverage of the
+# code paths that need a real AudioUnit. Unlike tubamp_smoke this one IS built with
+# hosting enabled, so it can enumerate the machine's plugins, load one into a slot
+# and verify the audio, latency and state behaviour end to end without a DAW.
+# ---------------------------------------------------------------------------
+if(APPLE)
+    juce_add_console_app(tubamp_fxprobe PRODUCT_NAME "tubamp_fxprobe")
+    target_sources(tubamp_fxprobe PRIVATE
+        tools/FxProbe.cpp
+        ${tubamp_core_sources})
+    target_include_directories(tubamp_fxprobe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_definitions(tubamp_fxprobe PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_PLUGINHOST_AU=1
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_STANDALONE_APPLICATION=1
+        TUBAMP_HEADLESS=1
+        TUBAMP_T3K_CLIENT_ID="${TUBAMP_T3K_CLIENT_ID}")
+    target_link_libraries(tubamp_fxprobe PRIVATE
+        nam_core
+        juce::juce_audio_utils
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        "-framework AudioUnit"
+        "-framework CoreAudioKit")
+endif()
 
 # Note: the former `tubamp_uishot` target (tools/UiSnapshot.cpp) is gone. Its whole
 # job was editor->createComponentSnapshot(), and an NSViewComponent-hosted WKWebView

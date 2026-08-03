@@ -10,10 +10,13 @@ import { create } from "zustand";
 import {
   bridge,
   isBlockId,
+  fxSlotIndexOf,
   type AbSlot,
   type AbState,
   type BlockId,
   type FileEntry,
+  type FxSlotIndex,
+  type FxSlotState,
   type ModelInfo,
   type PresetInfo,
   type T3kBrowseKind,
@@ -65,6 +68,9 @@ export interface AppState {
   currentPresetName: string;
   ab: AbState;
   t3k: T3kState;
+  /** Always three entries, indexed by slot — see `normaliseFxSlots`. */
+  fxSlots: FxSlotState[];
+  fxSupported: boolean;
 
   /* UI-local state */
   selected: BlockId | null;
@@ -106,6 +112,12 @@ export interface AppActions {
   abCapture(slot: AbSlot): Promise<void>;
   abRecall(slot: AbSlot): Promise<void>;
 
+  /* external AudioUnit slots — the outcome always arrives as `fxSlotChanged`,
+     never as the return value, so none of these three writes `fxSlots`. */
+  loadFxPlugin(slot: FxSlotIndex, identifier: string): Promise<void>;
+  clearFxPlugin(slot: FxSlotIndex): Promise<void>;
+  openFxEditor(slot: FxSlotIndex): Promise<void>;
+
   /* TONE3000 */
   t3kConfigure(): Promise<void>;
   t3kSignOut(): Promise<void>;
@@ -137,6 +149,34 @@ function toBlockIds(tokens: string[]): BlockId[] {
   return tokens.filter(isBlockId);
 }
 
+function emptyFxSlot(slot: FxSlotIndex): FxSlotState {
+  return {
+    slot,
+    identifier: "",
+    name: "",
+    manufacturer: "",
+    occupied: false,
+    missing: false,
+    live: false,
+    loading: false,
+    latencySamples: 0,
+    error: "",
+    hasEditor: false,
+    params: [],
+  };
+}
+
+/**
+ * Three entries, always. Every consumer indexes this array by slot, so a short
+ * (or absent) payload from a build without plugin hosting must not turn into
+ * `undefined` reads scattered across the panel and the board.
+ */
+function normaliseFxSlots(slots: readonly FxSlotState[] | undefined): FxSlotState[] {
+  return [0, 1, 2].map(
+    (i) => slots?.[i] ?? emptyFxSlot(i as FxSlotIndex),
+  );
+}
+
 let nextToastId = 1;
 
 const initialState: AppState = {
@@ -150,6 +190,10 @@ const initialState: AppState = {
   currentPresetName: "",
   ab: { activeSlot: 0, aHasState: false, bHasState: false },
   t3k: { configured: false, authenticated: false, username: null },
+  fxSlots: normaliseFxSlots(undefined),
+  // Assumed off until hydration says otherwise: claiming hosting works and then
+  // withdrawing it reads as a bug, the other way round reads as a slow load.
+  fxSupported: false,
   selected: null,
   tone: null,
   downloads: {},
@@ -188,6 +232,8 @@ export const useStore = create<Store>()((set, get) => {
         currentPresetName: state.currentPresetName,
         ab: state.ab,
         t3k: state.t3k,
+        fxSlots: normaliseFxSlots(state.fxSlots),
+        fxSupported: state.fxSupported,
         selected: fallbackSelection(order, get().selected),
       });
     },
@@ -294,6 +340,25 @@ export const useStore = create<Store>()((set, get) => {
 
     async abRecall(slot) {
       await bridge.abRecall(slot);
+    },
+
+    /* ────────────────────── external AudioUnit slots ─────────────────── */
+
+    // Resolving only means the request was accepted; the instance is created on
+    // another thread and reports itself through `fxSlotChanged`. Anything that
+    // waits on this promise for a *loaded* plugin is waiting on the wrong thing.
+    async loadFxPlugin(slot, identifier) {
+      const res = await bridge.fxLoad(slot, identifier);
+      reportError(res.error);
+    },
+
+    async clearFxPlugin(slot) {
+      await bridge.fxClear(slot);
+    },
+
+    async openFxEditor(slot) {
+      const res = await bridge.fxOpenEditor(slot);
+      reportError(res.error);
     },
 
     /* ─────────────────────────── TONE3000 ────────────────────────────── */
@@ -447,6 +512,19 @@ export function connectStore(): () => void {
       void autoLoad(path, pending);
     }),
 
+    bridge.on("fxSlotChanged", ({ slot, state }) => {
+      set((s) => {
+        const fxSlots = s.fxSlots.slice();
+        fxSlots[slot] = state;
+        return { fxSlots };
+      });
+    }),
+
+    // `fxParamValues` is deliberately NOT wired here. It arrives at meter rate
+    // for up to a hundred parameters at once, and a store write would re-render
+    // the whole grid every frame; like `meters`, it is consumed straight off the
+    // bridge into motion values (features/panel/FxParamGrid.tsx).
+
     bridge.on("t3kError", ({ message, modelId }) => {
       // A download that failed never sends t3kComplete, so its progress row has
       // to be cleared here or it stays on the tone picker forever.
@@ -473,6 +551,15 @@ export function connectStore(): () => void {
 
 export const selectSelectedBlock = (s: Store): BlockId | null => s.selected;
 export const selectChainOrder = (s: Store): BlockId[] => s.chainOrder;
+
+/** The slot behind an fx block; null for the nine built-in blocks. */
+export function selectFxSlotFor(block: BlockId | null) {
+  return (s: Store): FxSlotState | null => {
+    if (block === null) return null;
+    const index = fxSlotIndexOf(block);
+    return index < 0 ? null : (s.fxSlots[index] ?? null);
+  };
+}
 
 /** Blocks not currently in the chain, in the frozen enum order (add-menu order). */
 export function selectAbsentBlocks(s: Store): BlockId[] {

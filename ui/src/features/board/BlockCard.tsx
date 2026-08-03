@@ -43,10 +43,10 @@ export const CARD_VARIANTS_REDUCED: Variants = {
 };
 
 /**
- * A standing remark about the card, shown as a pill under its name: today only
- * the full-rig pair (the amp card states that its capture carries a cab, the cab
- * card warns that it is stacking a second one). Purely informational — a note
- * never changes what the block does.
+ * A standing remark about the card, shown as a pill under its name: the full-rig
+ * pair (the amp card states that its capture carries a cab, the cab card warns
+ * that it is stacking a second one) and, on an fx slot, the hosted plugin's name.
+ * Purely informational — a note never changes what the block does.
  */
 export interface CardNote {
   label: string;
@@ -181,7 +181,7 @@ export function BlockCard({
                 {note.tone === "warn" && (
                   <AlertIcon size={10} strokeWidth={1.8} />
                 )}
-                {note.label}
+                <span className={s.cardNoteText}>{note.label}</span>
               </span>
             </Tooltip>
           )}

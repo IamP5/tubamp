@@ -12,7 +12,7 @@
  * y = 0 is the shared vertical centre line of every node. The lane is centred on
  * the stage by translating its container by `-totalWidth / 2`.
  */
-import type { BlockId } from "../../bridge/types";
+import { BLOCK_IDS, type BlockId } from "../../bridge/types";
 
 /** Block card face, per docs/REACT-UI.md §UX structure. */
 export const CARD_W = 112;
@@ -58,11 +58,29 @@ export const CANCEL_PAD_X = 24;
 export const CANCEL_PAD_Y = 48;
 
 /**
- * Box the connector SVG occupies inside the lane container, in lane units. It is
- * generously oversized (a full 9-block chain is ~1670 wide) and offset so that
- * SVG user-space (0, 0) — after the inner `translate` — is the lane origin.
+ * Widest the lane can ever be: both terminals plus every block type, since a
+ * chain holding all of them has no [+] node left to show. Derived rather than
+ * measured — this used to be a hand-picked 2400 sized for the nine built-in
+ * blocks, and the three fx slots pushed a full chain (2036) past the end of the
+ * connector SVG, clipping the last segment.
  */
-export const CONNECTOR_SVG = { left: -400, top: -160, w: 2400, h: 320 } as const;
+const LANE_MAX_W =
+  TERMINAL_W + GAP + BLOCK_IDS.length * SLOT_STRIDE + TERMINAL_W;
+
+/** Slack on each side, so a card dragged off the end still has wire under it. */
+const CONNECTOR_PAD = 400;
+
+/**
+ * Box the connector SVG occupies inside the lane container, in lane units,
+ * offset so that SVG user-space (0, 0) — after the inner `translate` — is the
+ * lane origin.
+ */
+export const CONNECTOR_SVG = {
+  left: -CONNECTOR_PAD,
+  top: -160,
+  w: LANE_MAX_W + CONNECTOR_PAD * 2,
+  h: 320,
+} as const;
 
 /**
  * `icons::makeFlowArrow()` from the deleted BlockIcons.h, scaled to the same 7px

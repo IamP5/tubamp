@@ -26,10 +26,33 @@ enum class BlockId : int
     eq,
     mod,
     delay,
-    reverb
+    reverb,
+
+    // External AudioUnit slots. Unlike the nine built-in blocks these carry no DSP
+    // of their own: each hosts a third-party AU effect chosen by the user (see
+    // dsp/FxHost.h). They are absent from defaultOrder() — a slot only enters the
+    // chain when the user adds it — and an empty slot is a bit-exact pass-through.
+    fx1,
+    fx2,
+    fx3
 };
 
-inline constexpr int numBlockTypes = 9;
+inline constexpr int numBlockTypes = 12;
+
+/** The three external-AU slots are contiguous at the end of the enum; FxHost indexes
+    its slot array with (id - fx1). */
+inline constexpr int numFxSlots = 3;
+
+inline constexpr bool isFxSlot (BlockId id) noexcept
+{
+    return id >= BlockId::fx1 && id <= BlockId::fx3;
+}
+
+/** 0..numFxSlots-1 for an fx block, -1 otherwise. */
+inline constexpr int fxSlotIndex (BlockId id) noexcept
+{
+    return isFxSlot (id) ? (int) id - (int) BlockId::fx1 : -1;
+}
 
 struct BlockInfo
 {
@@ -50,6 +73,9 @@ inline constexpr std::array<BlockInfo, numBlockTypes> blockInfos { {
     { BlockId::mod,    "mod",    "Modulation", "MOD",    "mod_on" },
     { BlockId::delay,  "delay",  "Delay",      "DELAY",  "delay_on" },
     { BlockId::reverb, "reverb", "Reverb",     "REVERB", "reverb_on" },
+    { BlockId::fx1,    "fx1",    "FX Slot 1",  "FX 1",   "fx1_on" },
+    { BlockId::fx2,    "fx2",    "FX Slot 2",  "FX 2",   "fx2_on" },
+    { BlockId::fx3,    "fx3",    "FX Slot 3",  "FX 3",   "fx3_on" },
 } };
 
 inline const BlockInfo& infoFor (BlockId id) noexcept
@@ -116,8 +142,14 @@ inline Order fromString (const juce::String& text)
 }
 
 // --- lock-free packing -------------------------------------------------------
-// Layout: bits [0..3] = count (0..9), then entry i in bits [4+4i .. 7+4i].
-// 9 entries * 4 bits + 4 = 40 bits used.
+// Layout: bits [0..3] = count, then entry i in bits [4+4i .. 7+4i].
+// 12 entries * 4 bits + 4 = 52 bits used of 64.
+//
+// Both fields are 4 bits wide, so the encoding tops out at 15 block types; the
+// static_asserts below are the tripwire for anyone adding a 16th.
+
+static_assert (numBlockTypes <= 15, "block ids and the count share a 4-bit field");
+static_assert (4 + 4 * numBlockTypes <= 64, "packed order must fit in a uint64");
 
 inline uint64_t pack (const Order& order) noexcept
 {

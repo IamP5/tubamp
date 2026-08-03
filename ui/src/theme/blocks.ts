@@ -17,6 +17,12 @@ export const BLOCK_ACCENT: Record<BlockId, string> = {
   mod: "#4ade80",
   delay: "#818cf8",
   reverb: "#22d3ee",
+  /* One hue for all three external-AU slots: they are one kind of block, and
+     three more distinct hues next to the nine built-ins would read as three more
+     built-ins. Which slot it is comes from the caption ("FX 1"), not the colour. */
+  fx1: "#e879f9",
+  fx2: "#e879f9",
+  fx3: "#e879f9",
 };
 
 export interface BlockInfo {
@@ -82,6 +88,27 @@ export const BLOCK_INFO: Record<BlockId, BlockInfo> = {
     displayName: "Reverb",
     shortName: "REVERB",
     enableParamId: "reverb_on",
+  },
+  /* The slot's own identity. Once a plugin is loaded the dock header shows the
+     plugin's name instead, but the card caption stays "FX 1" — the slot is the
+     thing that lives in the chain, the plugin is what is in it. */
+  fx1: {
+    id: "fx1",
+    displayName: "FX Slot 1",
+    shortName: "FX 1",
+    enableParamId: "fx1_on",
+  },
+  fx2: {
+    id: "fx2",
+    displayName: "FX Slot 2",
+    shortName: "FX 2",
+    enableParamId: "fx2_on",
+  },
+  fx3: {
+    id: "fx3",
+    displayName: "FX Slot 3",
+    shortName: "FX 3",
+    enableParamId: "fx3_on",
   },
 };
 

@@ -149,6 +149,10 @@
   --block-mod: #4ade80;
   --block-delay: #818cf8;
   --block-reverb: #22d3ee;
+  /* The three external-AU slots deliberately share one hue — see BLOCK_ACCENT. */
+  --block-fx1: #e879f9;
+  --block-fx2: #e879f9;
+  --block-fx3: #e879f9;
 }
 
 /*
@@ -245,4 +249,28 @@
   --block-fill-25: rgba(34, 211, 238, 0.25);
   --block-glow: rgba(34, 211, 238, 0.35);
   --block-dim: rgb(27, 126, 143);
+}
+[data-block="fx1"] {
+  --block-accent: var(--block-fx1);
+  --block-fill-8: rgba(232, 121, 249, 0.08);
+  --block-fill-16: rgba(232, 121, 249, 0.16);
+  --block-fill-25: rgba(232, 121, 249, 0.25);
+  --block-glow: rgba(232, 121, 249, 0.35);
+  --block-dim: rgb(136, 76, 149);
+}
+[data-block="fx2"] {
+  --block-accent: var(--block-fx2);
+  --block-fill-8: rgba(232, 121, 249, 0.08);
+  --block-fill-16: rgba(232, 121, 249, 0.16);
+  --block-fill-25: rgba(232, 121, 249, 0.25);
+  --block-glow: rgba(232, 121, 249, 0.35);
+  --block-dim: rgb(136, 76, 149);
+}
+[data-block="fx3"] {
+  --block-accent: var(--block-fx3);
+  --block-fill-8: rgba(232, 121, 249, 0.08);
+  --block-fill-16: rgba(232, 121, 249, 0.16);
+  --block-fill-25: rgba(232, 121, 249, 0.25);
+  --block-glow: rgba(232, 121, 249, 0.35);
+  --block-dim: rgb(136, 76, 149);
 }

@@ -20,12 +20,30 @@ export const BLOCK_IDS = [
   "mod",
   "delay",
   "reverb",
+  "fx1",
+  "fx2",
+  "fx3",
 ] as const;
 
 export type BlockId = (typeof BLOCK_IDS)[number];
 
 export function isBlockId(value: string): value is BlockId {
   return (BLOCK_IDS as readonly string[]).includes(value);
+}
+
+/** The three external-AudioUnit slots, in slot-index order. */
+export const FX_BLOCK_IDS = ["fx1", "fx2", "fx3"] as const;
+
+export type FxBlockId = (typeof FX_BLOCK_IDS)[number];
+
+export function isFxBlockId(value: string): value is FxBlockId {
+  return (FX_BLOCK_IDS as readonly string[]).includes(value);
+}
+
+/** 0 | 1 | 2 for an fx block, -1 otherwise. Mirrors chain::fxSlotIndex. */
+export function fxSlotIndexOf(block: BlockId): FxSlotIndex | -1 {
+  const index = (FX_BLOCK_IDS as readonly string[]).indexOf(block);
+  return index < 0 ? -1 : (index as FxSlotIndex);
 }
 
 /* ─────────────────────────── parameter identifiers ─────────────────────── */
@@ -63,7 +81,7 @@ export const SLIDER_PARAM_IDS = [
   "reverb_mix",
 ] as const;
 
-/** 10 toggle params. */
+/** 13 toggle params. */
 export const TOGGLE_PARAM_IDS = [
   "gate_on",
   "comp_on",
@@ -75,6 +93,9 @@ export const TOGGLE_PARAM_IDS = [
   "delay_on",
   "reverb_on",
   "amp_cal_input",
+  "fx1_on",
+  "fx2_on",
+  "fx3_on",
 ] as const;
 
 /** 2 combo params. */
@@ -190,6 +211,59 @@ export interface T3kState {
   username: string | null;
 }
 
+/* ──────────────────── external AudioUnit slots (fx1..fx3) ──────────────────── */
+
+export type FxSlotIndex = 0 | 1 | 2;
+
+/** One installed AudioUnit effect, as listed by the picker. Discovered from the
+ *  component registry without instantiating anything, so this list is cheap and
+ *  never runs third-party code. */
+export interface FxPluginEntry {
+  /** `PluginDescription::fileOrIdentifier` — the only field needed to load it. */
+  identifier: string;
+  name: string;
+  manufacturer: string;
+  version: string;
+}
+
+/** One parameter of a hosted plugin. Unlike tubamp's own parameters these are
+ *  discovered at load time, so they carry their own metadata rather than being
+ *  looked up in a frozen table. */
+export interface FxParamInfo {
+  index: number;
+  name: string;
+  /** Unit suffix the plugin reports ("dB", "Hz", "%"), often empty. */
+  label: string;
+  /** Normalised 0..1 — the only representation a hosted parameter guarantees. */
+  value: number;
+  /** The plugin's own formatted display string for `value`. */
+  text: string;
+}
+
+export interface FxSlotState {
+  slot: FxSlotIndex;
+  /** Empty when no plugin is assigned. */
+  identifier: string;
+  name: string;
+  manufacturer: string;
+  /** A plugin is assigned to this slot. */
+  occupied: boolean;
+  /** Assigned but not runnable here — almost always "not installed on this
+   *  machine". Its saved settings are preserved and re-saved untouched. */
+  missing: boolean;
+  /** An instance is actually processing. */
+  live: boolean;
+  /** Instantiation in flight. */
+  loading: boolean;
+  latencySamples: number;
+  /** Why the slot is not live, when it isn't. */
+  error: string;
+  /** The plugin ships its own editor window (as opposed to a generic one). */
+  hasEditor: boolean;
+  /** Empty until the plugin is live. */
+  params: FxParamInfo[];
+}
+
 export interface UiState {
   /** Chain tokens in order; `[]` = deliberately empty chain (the "-" sentinel). */
   chainOrder: string[];
@@ -201,6 +275,11 @@ export interface UiState {
   currentPresetName: string;
   ab: AbState;
   t3k: T3kState;
+  /** Always three entries, indexed by slot. */
+  fxSlots: FxSlotState[];
+  /** False in builds compiled without plugin hosting; the FX panels then explain
+   *  themselves instead of showing an empty picker. */
+  fxSupported: boolean;
 }
 
 export interface T3kModel {
@@ -300,6 +379,12 @@ export interface BridgeEventMap {
    *  the store can drop that model's progress row; absent for select-flow and
    *  configuration errors, which have no model context. */
   t3kError: { message: string; modelId?: number };
+  /** A slot's plugin, status or parameter list changed — anything structural. */
+  fxSlotChanged: { slot: FxSlotIndex; state: FxSlotState };
+  /** Parameter values only, pushed for the slot the user is looking at. Values and
+   *  texts are index-aligned with that slot's `params`. Separate from
+   *  `fxSlotChanged` because it fires at meter rate and must not churn the list. */
+  fxParamValues: { slot: FxSlotIndex; values: number[]; texts: string[] };
 }
 
 export type BridgeEventName = keyof BridgeEventMap;
@@ -380,4 +465,33 @@ export interface Bridge {
   /** Favorite/unfavorite on TONE3000. UI updates optimistically and reverts
    *  on `{error}`. */
   t3kSetFavorite(toneId: number, favorite: boolean): Promise<ErrorResult>;
+
+  /* --- external AudioUnit slots --------------------------------------------
+   *
+   * Hosted parameters do NOT go through JUCE relays. Relays need a static id at
+   * editor-construction time, but a hosted plugin's parameter list is unknown
+   * until it loads and changes when it is replaced. So these are plain native
+   * calls out and a metered event back — which also means hosted parameters are
+   * not visible to host automation in this version (the slot's own `fxN_on`
+   * bypass is a normal APVTS parameter and automates as usual).
+   */
+
+  /** Installed AUv2 effects, sorted by manufacturer. Cheap: a component-registry
+   *  walk that instantiates nothing. */
+  fxListPlugins(): Promise<{ plugins: FxPluginEntry[]; supported: boolean }>;
+  /** Assigns and instantiates asynchronously; `fxSlotChanged` reports the outcome.
+   *  Resolving without an error only means the request was accepted. */
+  fxLoad(slot: FxSlotIndex, identifier: string): Promise<ErrorResult>;
+  fxClear(slot: FxSlotIndex): Promise<void>;
+  /** Opens the plugin's own window — a native window, which is also the only way
+   *  its text fields get keyboard focus inside a host like Logic. */
+  fxOpenEditor(slot: FxSlotIndex): Promise<ErrorResult>;
+  /** `value` is normalised 0..1. */
+  fxSetParam(slot: FxSlotIndex, index: number, value: number): Promise<void>;
+  /** Wrap drags so the plugin sees a proper gesture. */
+  fxBeginGesture(slot: FxSlotIndex, index: number): Promise<void>;
+  fxEndGesture(slot: FxSlotIndex, index: number): Promise<void>;
+  /** Which slot should receive `fxParamValues` pushes; -1 for none. Set as the
+   *  selected block changes so we only meter what is on screen. */
+  fxWatchSlot(slot: FxSlotIndex | -1): Promise<void>;
 }

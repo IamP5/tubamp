@@ -88,6 +88,11 @@ export const TOGGLE_SPECS: readonly {
   { id: "mod_on", name: "Mod On", def: true },
   { id: "delay_on", name: "Delay On", def: true },
   { id: "reverb_on", name: "Reverb On", def: true },
+  /* External AU slots ship enabled: an empty slot is a pass-through anyway, so
+     "on" only starts costing anything once a plugin is actually loaded. */
+  { id: "fx1_on", name: "FX 1 On", def: true },
+  { id: "fx2_on", name: "FX 2 On", def: true },
+  { id: "fx3_on", name: "FX 3 On", def: true },
   { id: "amp_cal_input", name: "Calibrate Input", def: false },
 ];
 
@@ -107,14 +112,16 @@ export const COMBO_SPECS: readonly {
 ];
 
 /**
- * APVTS layout order (the 9 enables first, then Parameters.cpp order). Used for
- * `parameterIndex` in the mock, so Logic's touch-to-select behaves like the real
- * plugin when developing against the mock.
+ * APVTS layout order (the 12 block enables first, then Parameters.cpp order).
+ * Used for `parameterIndex` in the mock, so Logic's touch-to-select behaves like
+ * the real plugin when developing against the mock. The fx-slot bypasses sit
+ * with the other enables rather than at the end — that is where Parameters.cpp
+ * adds them, and every later index shifts by three because of it.
  */
 export const PARAM_INDEX: Readonly<Record<string, number>> = Object.fromEntries(
   [
     "gate_on", "comp_on", "drive_on", "amp_on", "cab_on", "eq_on", "mod_on",
-    "delay_on", "reverb_on",
+    "delay_on", "reverb_on", "fx1_on", "fx2_on", "fx3_on",
     "input_trim", "output_level", "gate_threshold",
     "comp_threshold", "comp_ratio", "comp_attack", "comp_release", "comp_makeup",
     "drive_gain", "drive_tone", "drive_level",

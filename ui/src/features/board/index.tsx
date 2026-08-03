@@ -37,7 +37,11 @@ import {
   useReducedMotion,
   type MotionValue,
 } from "motion/react";
-import type { BlockId } from "../../bridge/types";
+import {
+  fxSlotIndexOf,
+  type BlockId,
+  type FxSlotState,
+} from "../../bridge/types";
 import { useRigCab } from "../../hooks";
 import { useStore } from "../../store";
 import { spring, stagger, tween } from "../../theme/motion";
@@ -72,6 +76,40 @@ const CAB_NOTE: CardNote = {
   tone: "warn",
 };
 
+/**
+ * An fx card keeps its slot caption ("FX 1") and carries the hosted plugin as a
+ * note, the same channel the amp/cab pair uses for secondary information — the
+ * card is the slot, the note is what is currently in it.
+ */
+function fxNote(state: FxSlotState | undefined): CardNote | undefined {
+  if (!state) return undefined;
+  if (!state.occupied)
+    return {
+      label: "EMPTY",
+      tip: "No plugin loaded — this slot passes audio through untouched.",
+      tone: "info",
+    };
+  if (state.loading)
+    return { label: "LOADING", tip: `Loading ${state.name}…`, tone: "info" };
+  if (state.missing)
+    return {
+      label: state.name,
+      tip: `${state.name} is not installed on this machine. Its settings are preserved.`,
+      tone: "warn",
+    };
+  if (!state.live)
+    return {
+      label: state.name,
+      tip: state.error || `${state.name} is not running.`,
+      tone: "warn",
+    };
+  return {
+    label: state.name,
+    tip: `${state.name} — ${state.manufacturer}`,
+    tone: "info",
+  };
+}
+
 /** Staggered board build-in (motion-design.md §2.1), gated on reduced motion. */
 const LANE_VARIANTS = {
   hidden: {},
@@ -94,14 +132,16 @@ export function Board() {
   const toggles = useBlockToggles();
   const bypassed = useMemo(() => bypassedBlocks(toggles), [toggles]);
   const rigCab = useRigCab();
+  const fxSlots = useStore((st) => st.fxSlots);
 
   const noteFor = useCallback(
     (id: BlockId): CardNote | undefined => {
       if (id === "amp") return rigCab.captureHasCab ? AMP_NOTE : undefined;
       if (id === "cab") return rigCab.doubleCab ? CAB_NOTE : undefined;
-      return undefined;
+      const slot = fxSlotIndexOf(id);
+      return slot < 0 ? undefined : fxNote(fxSlots[slot]);
     },
-    [rigCab.captureHasCab, rigCab.doubleCab],
+    [fxSlots, rigCab.captureHasCab, rigCab.doubleCab],
   );
 
   const nodes = useNodeMotion();

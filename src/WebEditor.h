@@ -5,6 +5,7 @@
 
 #include "PluginProcessor.h"
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -19,6 +20,12 @@ struct SinglePageBrowser : juce::WebBrowserComponent
     using WebBrowserComponent::WebBrowserComponent;
     bool pageAboutToLoad (const juce::String& newURL) override;
 };
+
+/** Native window hosting a third-party plugin's own editor. It has to be a real
+    top-level window rather than anything inside our WebView: a WKWebView cannot
+    parent a JUCE Component, and a native window is also the only way the hosted
+    plugin's text fields get keyboard focus inside Logic. */
+struct FxEditorWindow;
 
 /**
     Fixed 1120x700 WebView editor.
@@ -67,7 +74,13 @@ private:
     juce::var modelVar() const;
     juce::var irVar() const;
     juce::var t3kVar() const;
+    juce::var fxSlotVar (int slot) const;
+    juce::var fxSlotsVar() const;
     juce::var uiStateVar() const;
+
+    /** Hosted parameters of a live slot, as {index,name,label,value,text}. Empty for
+        an empty or non-live slot. */
+    juce::var fxParamsVar (int slot) const;
 
     // --- events
     void emit (const juce::Identifier& eventId, const juce::var& payload);
@@ -81,6 +94,19 @@ private:
     /** Failure of a per-model download. The modelId lets the UI drop that model's
         progress row; the 1-arg overload is for errors with no model context. */
     void emitT3kError (const juce::String& message, juce::int64 modelId);
+    void emitFxSlotChanged (int slot);
+
+    /** Closes the native window showing a slot's plugin. Called before the processor
+        retires that instance — an AudioProcessor must outlive its editor. */
+    void closeFxWindow (int slot);
+
+    /** The hosted parameter the given slot's control is currently dragging, or -1.
+        Set from the bridge's gesture calls so the metered push does not fight a drag
+        that is already in flight. */
+    juce::AudioProcessorParameter* fxParamFor (int slot, int index) const;
+
+    /** Balances any gesture left open on a hosted parameter. */
+    void endOutstandingFxGesture();
 
     /** Nothing in the processor announces "the loaded model/IR changed" (the old
         editor polled at 4 Hz for exactly this reason), and a preset load or host
@@ -114,6 +140,23 @@ private:
     juce::String lastModelPath, lastIrPath;
     int lastLatencySamples = -1;
     int pollDivider = 0;
+
+    // --- external AudioUnit slots
+    //
+    // Declared after `web` so they are destroyed before it, and torn down explicitly
+    // in the destructor anyway: a hosted editor must never outlive our editor, because
+    // the processor is free to retire the instance behind it once we stop listening.
+    std::array<std::unique_ptr<FxEditorWindow>, chain::numFxSlots> fxWindows;
+
+    /** Slot whose parameter values are pushed on the timer, or -1. Only the slot the
+        user is actually looking at is metered. */
+    int watchedFxSlot = -1;
+
+    /** Hosted parameter currently held by a UI gesture, as {slot, index}, or {-1,-1}.
+        The metered push skips it so an in-flight drag is never fought by an echo. */
+    int gestureSlot = -1, gestureParam = -1;
+
+    int fxPollDivider = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WebEditor)
 };

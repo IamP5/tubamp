@@ -60,11 +60,38 @@
   margin-right: auto;
 }
 
+.titleLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Truncates because an fx slot puts the hosted plugin's name here, and plugin
+   names run far longer than any built-in block's. */
 .title {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-primary);
+}
+
+/* "FX 1" next to the plugin name: which slot this is stays visible even once the
+   header stops saying it. */
+.headerSlotTag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--block-accent);
+  background: var(--block-fill-16);
 }
 
 .underline {
@@ -439,6 +466,178 @@
   font-size: 10px;
   color: var(--text-secondary);
   text-align: right;
+}
+
+/* ─────────────────────────── external AU slots ───────────────────────── */
+
+/* The dock never grows for a hosted plugin: the head is fixed and the parameter
+   grid takes whatever height is left, scrolling inside it. */
+.fxBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.fxHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.fxIdentity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.fxName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.fxMaker {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+}
+
+.fxAnchor {
+  display: inline-flex;
+}
+
+.fxCentre {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  text-align: center;
+}
+
+.fxLoading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── the plugin's own parameters ── */
+
+/* Two columns: a hosted plugin can expose a hundred parameters and the dock is
+   a fixed 232px, so the list scrolls here rather than anywhere else. */
+.fxGrid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Rows keep their own height instead of stretching to fill the grid, so a
+     four-parameter plugin does not spread across the whole dock. */
+  align-content: start;
+  column-gap: 20px;
+  row-gap: 1px;
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.fxGrid::-webkit-scrollbar {
+  width: 8px;
+}
+
+.fxGrid::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  background-color: var(--border-hover);
+}
+
+.fxGrid::-webkit-scrollbar-thumb:hover {
+  background-color: var(--border-active);
+}
+
+.fxParamRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  min-width: 0;
+}
+
+.fxParamName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.fxParamTrack {
+  composes: sliderTrack;
+  flex: none;
+  width: 84px;
+}
+
+/* Wide enough for the plugin's own string ("15 ips", "-12.4 dB"), which we can
+   neither shorten nor predict. */
+.fxParamReadout {
+  composes: readout;
+  flex: none;
+  min-width: 64px;
+}
+
+/* ── assigned but not running ── */
+
+.fxNotice {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--warning-fill);
+  /* --warning #ffb224 at 32%; literal rgba, see tokens.css on color-mix. */
+  box-shadow: inset 0 0 0 1px rgba(255, 178, 36, 0.32);
+}
+
+.fxNoticeIcon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warning);
+}
+
+.fxNoticeCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.fxNoticeTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.fxNoticeText {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
 }
 
 /* ───────────────────────── downloads / TONE3000 ──────────────────────── */

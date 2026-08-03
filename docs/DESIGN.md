@@ -14,6 +14,9 @@ Research backing every decision here lives in `docs/research/`.
 - NAM engine: NeuralAmpModelerCore v0.5.4 (`NAM_SAMPLE_FLOAT=1`, `NAM_ENABLE_A2_FAST`),
   sources globbed into a `nam_core` static lib, force-loaded on macOS
   (architectures self-register via static initializers).
+- Plugin hosting for the FX slots: `PLUGINHOST_AU TRUE` on `juce_add_plugin` — the
+  keyword form, not a bare `JUCE_PLUGINHOST_AU` define, because it also links
+  CoreAudioKit/AudioUnit for the AU and Standalone link steps.
 - Resampling: `ResamplingNAM` pattern from the official plugin using
   `dsp::ResamplingContainer` from AudioDSPTools (submodule of the core repo).
   Latency reported via `setLatencySamples`.
@@ -22,7 +25,8 @@ Research backing every decision here lives in `docs/research/`.
 
 ```
 Input Trim → [ user-arranged blocks: Gate | Comp | Drive | NAM | Cab IR | EQ | Mod
-              | Delay | Reverb — drag to reorder, add/remove, per-block bypass ]
+              | Delay | Reverb | FX 1 | FX 2 | FX 3 — drag to reorder, add/remove,
+              per-block bypass ]
            → DC Blocker → Output Level
 ```
 
@@ -42,6 +46,18 @@ Default-order rationale (competitor research): gate first (largest S/N headroom 
 input), comp/drive pre-amp, ambience post. NAM captures are typically amp/preamp-only,
 so a separate IR cab block is the NAM-ecosystem convention (unlike ToneX's inseparable
 captures). Mono through NAM (models are mono), stereo afterward.
+
+**FX 1–3 (external AudioUnit slots)** are the three blocks that carry no DSP of their
+own: each hosts one third-party AU effect the user picks, anywhere in the order. They
+are the only blocks absent from `defaultOrder()` — a slot enters the chain when the
+user adds it — and an empty or not-yet-instantiated slot is a bit-exact pass-through,
+which is what lets the order reach the audio thread long before the instances behind it
+exist (state restore relies on exactly that). The plugin assignment and its state blob
+live in plugin state under `FXSLOTS`, like the model/IR paths; only `fxN_on` is a
+parameter. Hosting a real AU inside an AU forced four decisions against the obvious
+implementation — metadata-only discovery, never preparing a hosted instance from
+`prepareToPlay`, latency that ignores bypass, and never destroying an instance on the
+audio thread. Each one has a specific failure mode behind it: **docs/AU-SLOTS.md**.
 
 UI (Cortex Control-inspired): header (presets, A/B, settings) / signal-chain lane of
 accent-colored icon tiles (drag-reorder, [+] add, right-click remove, power LEDs) /
@@ -93,7 +109,11 @@ Design:
 
 See `src/Parameters.h` — the single source of truth. Blocks: input, gate, comp, drive,
 amp (NAM in/out gain + normalize), cab (+ low/high cut), eq (bass/mid/treble/presence),
-mod (type/rate/depth/mix), delay (time/feedback/mix), reverb (size/damping/mix), output.
+mod (type/rate/depth/mix), delay (time/feedback/mix), reverb (size/damping/mix), output,
+plus `fx1_on`/`fx2_on`/`fx3_on` — the FX slots' bypasses, appended at the end so every
+pre-existing id keeps its index. Those three are the *only* parameters the FX slots
+contribute: a hosted plugin's own parameters are not exposed to the host (they have no
+id until the plugin loads — docs/AU-SLOTS.md §Known limitations).
 
 ## Module map
 
@@ -103,6 +123,8 @@ mod (type/rate/depth/mix), delay (time/feedback/mix), reverb (size/damping/mix),
 | `src/Parameters.h` | param ids + layout | header-only |
 | `src/dsp/NamEngine.*` | load/stage/swap + ResamplingNAM + normalize | NAM core |
 | `src/dsp/FxBlocks.{h,cpp}` | Drive, ToneStackEQ, Modulation, DelayFx, ReverbFx, CabSim | thin `juce::dsp` wrappers |
+| `src/dsp/FxHost.{h,cpp}` | the three external-AU slots: staged swap, bypass latency, deferred re-prepare | threading contract in the class comment |
+| `src/dsp/FxCatalog.{h,cpp}` | AU discovery (metadata-only) + async instantiation | AudioComponent registry walk |
 | `src/library/ModelLibrary.*` | scan/import models+IRs | juce::File |
 | `src/library/PresetManager.*` | presets, A/B, favorites | JSON via juce::var |
 | `src/library/Tone3000Client.*` | PKCE OAuth, search/models/download | juce::URL, StreamingSocket |

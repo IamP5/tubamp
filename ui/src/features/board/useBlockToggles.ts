@@ -1,7 +1,7 @@
 /**
  * Every block's `*_on` parameter, bound once at board level.
  *
- * Nine fixed `useToggleParam` calls (BLOCK_IDS is frozen, so the hook count is
+ * Twelve fixed `useToggleParam` calls (BLOCK_IDS is frozen, so the hook count is
  * constant) — the card LEDs, the kebab menu labels and the connector dimming all
  * read from the same snapshot, and none of them has to subscribe individually.
  * Replaces the native view's 100ms `refreshFromParams` poll with a real
@@ -22,7 +22,10 @@ export function useBlockToggles(): BlockToggles {
   const mod = useToggleParam("mod_on");
   const delay = useToggleParam("delay_on");
   const reverb = useToggleParam("reverb_on");
-  return { gate, comp, drive, amp, cab, eq, mod, delay, reverb };
+  const fx1 = useToggleParam("fx1_on");
+  const fx2 = useToggleParam("fx2_on");
+  const fx3 = useToggleParam("fx3_on");
+  return { gate, comp, drive, amp, cab, eq, mod, delay, reverb, fx1, fx2, fx3 };
 }
 
 /** Blocks currently bypassed — the set the connector layer dims against. */

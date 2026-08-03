@@ -105,6 +105,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     addFloat (layout, reverbDamping, "Reverb Damping", { 0.0f, 1.0f, 0.001f }, 0.5f);
     addFloat (layout, reverbMix,     "Reverb Mix",     { 0.0f, 1.0f, 0.001f }, 0.25f);
 
+    // --- external AudioUnit slots
+    //
+    // Appended at the very end, deliberately, even though they belong with the other
+    // block enables above. Inserting them there would shift the index of every
+    // parameter that follows, and while the AU parameter *ids* are content hashes (so
+    // saved automation survives), the indices are what reach the host for
+    // touch-to-select and what order a generic editor lists. Growing the list only at
+    // the end costs nothing and changes nothing that already exists.
+    //
+    // On by default so that adding a slot and loading a plugin into it is audible
+    // without a second click; an empty slot is a pass-through either way.
+    addBool (layout, fx1On, "FX 1 On", true);
+    addBool (layout, fx2On, "FX 2 On", true);
+    addBool (layout, fx3On, "FX 3 On", true);
+
     return layout;
 }
 } // namespace params

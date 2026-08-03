@@ -23,12 +23,13 @@ import {
   TrashIcon,
 } from "../../components";
 import { useToggleParam } from "../../hooks";
-import { useStore } from "../../store";
+import { selectFxSlotFor, useStore } from "../../store";
 import { BLOCK_INFO } from "../../theme/blocks";
 import { duration, ease, spring } from "../../theme/motion";
-import type { BlockId } from "../../bridge";
+import { fxSlotIndexOf, type BlockId } from "../../bridge";
 import { AmpBody } from "./AmpBody";
 import { CabBody } from "./CabBody";
+import { FxSlotBody } from "./FxSlotBody";
 import { ModBody } from "./ModBody";
 import { KnobRow } from "./KnobRow";
 import { KNOB_SPECS } from "./knobSpecs";
@@ -92,6 +93,11 @@ function PanelHeader({ block }: { block: BlockId }) {
   const info = BLOCK_INFO[block];
   const power = useToggleParam(info.enableParamId);
   const removeBlock = useStore((st) => st.removeBlock);
+  const fxSlot = useStore(selectFxSlotFor(block));
+
+  // A loaded slot is known by what is in it, not by which slot it is — the slot
+  // number moves to a tag beside the name so both stay visible.
+  const loadedName = fxSlot?.occupied ? fxSlot.name : "";
 
   return (
     <header className={s.header}>
@@ -100,7 +106,14 @@ function PanelHeader({ block }: { block: BlockId }) {
       </span>
 
       <div className={s.titleWrap}>
-        <span className={s.title}>{info.displayName}</span>
+        <span className={s.titleLine}>
+          <span className={s.title} title={loadedName || undefined}>
+            {loadedName || info.displayName}
+          </span>
+          {loadedName && (
+            <span className={s.headerSlotTag}>{info.shortName}</span>
+          )}
+        </span>
         <motion.span
           layoutId="panel-accent"
           className={s.underline}
@@ -132,5 +145,7 @@ function BlockBody({ block }: { block: BlockId }) {
   if (block === "amp") return <AmpBody />;
   if (block === "cab") return <CabBody />;
   if (block === "mod") return <ModBody />;
+  const fxSlot = fxSlotIndexOf(block);
+  if (fxSlot !== -1) return <FxSlotBody slot={fxSlot} />;
   return <KnobRow specs={KNOB_SPECS[block]} />;
 }

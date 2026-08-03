@@ -12,6 +12,8 @@ import type {
   ComboParamId,
   ComboParamState,
   ErrorResult,
+  FxPluginEntry,
+  FxSlotIndex,
   ImportResult,
   SliderParamId,
   SliderParamState,
@@ -129,6 +131,8 @@ const emptyUiState: UiState = {
   currentPresetName: "",
   ab: { activeSlot: 0, aHasState: false, bHasState: false },
   t3k: { configured: false, authenticated: false, username: null },
+  fxSlots: [],
+  fxSupported: false,
 };
 
 export const juceBridge: Bridge = {
@@ -229,4 +233,34 @@ export const juceBridge: Bridge = {
     ),
   t3kSetFavorite: (toneId, favorite) =>
     call<ErrorResult>("t3kSetFavorite", {}, toneId, favorite),
+
+  /* --- external AudioUnit slots ------------------------------------------- */
+
+  // A build without plugin hosting still answers, with `supported: false` — the
+  // panel explains itself rather than offering an empty picker, so the fallback
+  // must not look like "no plugins installed".
+  fxListPlugins: () =>
+    call<{ plugins: FxPluginEntry[]; supported: boolean }>("fxListPlugins", {
+      plugins: [],
+      supported: false,
+    }),
+  fxLoad: (slot: FxSlotIndex, identifier) =>
+    call<ErrorResult>("fxLoad", {}, slot, identifier),
+  fxClear: async (slot: FxSlotIndex) => {
+    await native("fxClear")(slot);
+  },
+  fxOpenEditor: (slot: FxSlotIndex) =>
+    call<ErrorResult>("fxOpenEditor", {}, slot),
+  fxSetParam: async (slot: FxSlotIndex, index, value) => {
+    await native("fxSetParam")(slot, index, value);
+  },
+  fxBeginGesture: async (slot: FxSlotIndex, index) => {
+    await native("fxBeginGesture")(slot, index);
+  },
+  fxEndGesture: async (slot: FxSlotIndex, index) => {
+    await native("fxEndGesture")(slot, index);
+  },
+  fxWatchSlot: async (slot) => {
+    await native("fxWatchSlot")(slot);
+  },
 };

@@ -63,14 +63,29 @@ in a normal browser. `tubamp_smoke` keeps building exactly as today
   drive_level, amp_input, amp_output, amp_cal_level, amp_slim, cab_lowcut,
   cab_highcut, eq_bass, eq_mid, eq_treble, mod_rate, mod_depth, mod_mix,
   delay_time, delay_feedback, delay_mix, reverb_size, reverb_damping, reverb_mix
-- Toggles (10): gate_on, comp_on, drive_on, amp_on, cab_on, eq_on, mod_on,
-  delay_on, reverb_on, amp_cal_input
+- Toggles (13): gate_on, comp_on, drive_on, amp_on, cab_on, eq_on, mod_on,
+  delay_on, reverb_on, amp_cal_input, fx1_on, fx2_on, fx3_on
 - Combos (2): amp_out_mode, mod_type
 
 JS uses `getSliderState(id)` etc. from the vendored frontend lib; wrap in hooks
 (`useSliderParam`, `useToggleParam`, `useComboParam`) that subscribe to BOTH
 `valueChangedEvent` and `propertiesChangedEvent` (properties arrive async) and
 call `sliderDragStarted/Ended` around gestures (host automation touch).
+
+**These lists are the whole relay surface.** A hosted plugin's parameters are NOT
+relays and never enter `SLIDER_PARAM_IDS` / `paramMeta` / `useSliderParam` — see
+§External AudioUnit slots below. The 29 sliders stay 29.
+
+### Chain blocks
+
+Twelve block types (`chain::BlockInfo`, `BLOCK_IDS` in `bridge/types.ts`): the nine
+built-ins `gate, comp, drive, amp, cab, eq, mod, delay, reverb`, plus the three
+external-AudioUnit slots `fx1, fx2, fx3` ("FX Slot 1..3", short name "FX 1".."FX 3").
+The fx blocks are absent from the default order — they only appear in the chain once
+the user adds them from the [+] picker — and an fx block with no plugin assigned is a
+pass-through, so it is legal to have one in the chain forever without loading anything.
+Everything else about them is ordinary block behaviour: drag to reorder, remove, and
+a `fxN_on` power LED wired to a normal automatable APVTS toggle.
 
 ### Native functions (all return JSON; names verbatim)
 
@@ -100,6 +115,16 @@ t3kSignIn(): void                           // standard OAuth flow; t3kStatus/t3
 t3kBrowse(req: T3kBrowseRequest): T3kBrowseResult      // one catalog page (or {error})
 t3kListModels(toneId: number): { models?: T3kModel[]; error?: string }
 t3kSetFavorite(toneId: number, favorite: boolean): { error?: string }
+
+// --- external AudioUnit slots (fx1..fx3), see §External AudioUnit slots
+fxListPlugins(): { plugins: FxPluginEntry[]; supported: boolean }
+fxLoad(slot: FxSlotIndex, identifier: string): { error?: string }   // async; fxSlotChanged reports the outcome
+fxClear(slot: FxSlotIndex): void
+fxOpenEditor(slot: FxSlotIndex): { error?: string }   // the plugin's own native window
+fxSetParam(slot: FxSlotIndex, index: number, value01: number): void
+fxBeginGesture(slot: FxSlotIndex, index: number): void
+fxEndGesture(slot: FxSlotIndex, index: number): void
+fxWatchSlot(slot: FxSlotIndex | -1): void             // which slot gets fxParamValues; -1 = none
 ```
 
 ```ts
@@ -115,6 +140,29 @@ interface UiState {
   currentPresetName: string
   ab: { activeSlot: 0 | 1; aHasState: boolean; bHasState: boolean }
   t3k: { configured: boolean; authenticated: boolean; username: string | null }
+  fxSlots: FxSlotState[]        // always 3 entries, indexed by slot
+  fxSupported: boolean          // false in builds without JUCE_PLUGINHOST_AU;
+                                // the FX panels then explain themselves
+}
+type FxSlotIndex = 0 | 1 | 2
+interface FxPluginEntry { identifier; name; manufacturer; version }  // identifier ==
+                                // PluginDescription::fileOrIdentifier, the only field
+                                // needed to load it
+interface FxParamInfo { index: number; name: string; label: string;
+                        value: number /* 0..1 */; text: string /* plugin's own */ }
+interface FxSlotState {
+  slot: FxSlotIndex
+  identifier: string; name: string; manufacturer: string
+  occupied: boolean   // a plugin is assigned
+  missing: boolean    // assigned but not runnable here (almost always: not installed
+                      // on this machine). Its saved settings are preserved and
+                      // re-saved untouched — never present this as "empty"
+  live: boolean       // an instance is actually processing
+  loading: boolean    // instantiation in flight
+  latencySamples: number
+  error: string       // why it is not live, when it isn't
+  hasEditor: boolean  // ships its own editor window
+  params: FxParamInfo[]   // empty until live
 }
 interface T3kModel { id: number; name: string; modelUrl: string; size: string;
                      architecture: string; kind: "nam" | "wav" }
@@ -142,6 +190,12 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
                                                           // C++ downloads into models dir, fires
                                                           // libraryChanged; UI decides loadModel(path)
 "t3kError"       { message: string; modelId?: number }  // modelId => clear that download row
+"fxSlotChanged"  { slot: FxSlotIndex, state: FxSlotState }   // anything structural:
+                                                    // plugin, status, param list
+"fxParamValues"  { slot: FxSlotIndex, values: number[], texts: string[] }
+                                                    // meter-rate; index-aligned with
+                                                    // that slot's params; only for the
+                                                    // slot set by fxWatchSlot()
 ```
 
 C++ side notes (see juce-webview.md for exact API):
@@ -158,10 +212,55 @@ C++ side notes (see juce-webview.md for exact API):
 - All async completion callbacks guard with the aliveFlag/SafePointer patterns
   already used in the codebase.
 
+### External AudioUnit slots (fx1..fx3)
+
+Design record with the reasoning behind each rule: **docs/AU-SLOTS.md**. What the UI
+has to know:
+
+**Hosted plugin parameters are not host-automatable in this version.** JUCE's
+`WebSliderRelay` (and every other relay) is constructed with a static parameter id at
+editor-construction time and attached to one APVTS parameter. A hosted plugin's
+parameter list does not exist until the user picks a plugin, and it changes wholesale
+when the slot is reloaded — there is no id to freeze, so there is no relay, so there is
+no APVTS parameter, so Logic never sees these parameters and cannot write an automation
+lane for them. The consequence is deliberate and must be visible in the UI (the FX panel
+says so), not discovered by a user whose automation lane silently does nothing.
+
+The slot's own **`fxN_on` bypass is a normal APVTS bool** and automates exactly like
+every other block's power switch — that is the automatable handle a slot offers. It is
+also why a bypassed-but-loaded slot keeps reporting its plugin's latency (see
+AU-SLOTS.md §(c)); the UI must not present bypass as "the plugin costs nothing now".
+
+So hosted params ride plain native calls and one metered event, never relays:
+
+- The list arrives in `FxSlotState.params` (`fxSlotChanged` / `getUiState`), each entry
+  carrying its own `index`, `name`, `label`, `value`, `text` — hosted params are
+  discovered, not looked up in a frozen table.
+- Values are **always normalised 0..1**. That is the only representation a hosted
+  parameter guarantees; the number to *show* is the plugin's own `text`, never a
+  reconstructed unit string.
+- Dragging calls `fxSetParam(slot, index, value01)` wrapped in
+  `fxBeginGesture` / `fxEndGesture`, so the plugin sees a proper gesture.
+- Live values arrive as `fxParamValues` — values and texts index-aligned with `params`,
+  pushed only for the slot named by `fxWatchSlot()`. Call `fxWatchSlot` as the selected
+  block changes (and `fxWatchSlot(-1)` when leaving an fx block) so we only meter what
+  is on screen. It is separate from `fxSlotChanged` precisely because it fires at meter
+  rate and must not churn the parameter list or the React tree.
+- `fxOpenEditor(slot)` opens the plugin's *own native* window. On Logic that is also the
+  only place its text fields get keyboard focus — same limitation as our own preset-name
+  prompt.
+
+Slot rendering follows `FxSlotState`, in this order: `!fxSupported` → explain, no
+picker; `!occupied` → picker (`fxListPlugins()`, cheap, call it on demand); `loading` →
+spinner; `missing` → name + `error`, and say the settings are kept; `live` → params +
+"Open editor" when `hasEditor`. `latencySamples` belongs on screen whenever non-zero.
+
 ### Mock bridge (`ui/src/bridge/mock.ts`)
 
-Auto-selected when `window.__JUCE__` is absent. Full fake `UiState` (9 blocks,
-a loaded model with metadata, 6 presets, library entries, t3k configured+authed),
+Auto-selected when `window.__JUCE__` is absent. Full fake `UiState` (the 9 built-in
+blocks in the chain plus three fx slots, `fxSupported: true` with a fake plugin list
+and one occupied slot with parameters, a loaded model with metadata, 6 presets,
+library entries, t3k configured+authed),
 param states with real ranges/skew from `docs/research/current-ui-inventory.md`,
 fake 30 Hz meters (musical envelope), simulated t3k select/download flows with
 progress, latency ~90 samples. Dev-only code path; tree-shaken out is NOT required
@@ -189,7 +288,9 @@ Fixed 1120×700 viewport, `--bg-app` with subtle radial wash, dot-grid stage.
   pill, remove affordance). Bodies per current-ui-inventory.md: generic knob rows
   (gate/comp/drive/eq/delay/reverb), mod (type combo + knobs), amp (model mgmt +
   status + T3K + knobs + out-mode + slim when isSlimmable), cab (IR mgmt + cut
-  knobs). Selection fallback: amp → first → none (but newly added block is
+  knobs), fx1/fx2/fx3 (plugin picker or loaded-plugin header + "Open editor" +
+  a generic knob grid over `FxSlotState.params` — see §External AudioUnit slots;
+  never `useSliderParam`). Selection fallback: amp → first → none (but newly added block is
   force-selected). Selection is UI-local state only.
 - **Full-rig captures**: when the loaded model declares a gear type taken through
   a cabinet (`includesCab`, from the .nam's `metadata.gear_type`), the amp states

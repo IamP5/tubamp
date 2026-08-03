@@ -52,16 +52,23 @@ const char* const kSliderIds[] = {
 const char* const kToggleIds[] = {
     params::gateOn,  params::compOn,  params::driveOn, params::ampOn,
     params::cabOn,   params::eqOn,    params::modOn,   params::delayOn,
-    params::reverbOn, params::ampCalInput };
+    params::reverbOn, params::ampCalInput,
+    params::fx1On,   params::fx2On,   params::fx3On };
 
 const char* const kComboIds[] = { params::ampOutMode, params::modType };
 
 static_assert (std::size (kSliderIds) == 29, "29 float params are frozen");
-static_assert (std::size (kToggleIds) == 10, "10 bool params are frozen");
+static_assert (std::size (kToggleIds) == 13, "10 frozen bool params + 3 fx-slot bypasses");
 static_assert (std::size (kComboIds) == 2, "2 choice params are frozen");
+
+/** Upper bound on hosted parameters surfaced to the UI. A handful of plugins publish
+    thousands; serializing all of them into every slot payload would cost more than it
+    is worth when the plugin's own window is one click away. */
+constexpr int kMaxHostedParams = 256;
 
 //==============================================================================
 juce::var makeObject (std::initializer_list<std::pair<const char*, juce::var>> props)
+
 {
     juce::DynamicObject::Ptr d { new juce::DynamicObject };
 
@@ -206,7 +213,55 @@ juce::WebBrowserComponent::Resource missingBundlePage()
         "<code>TUBAMP_BUNDLED_UI=OFF</code> build.</p></div>",
         "text/html");
 }
+
+/** Hosted parameters are plain AudioProcessorParameters, not RangedAudioParameters,
+    so the only value representation they all guarantee is normalised 0..1 plus the
+    plugin's own formatted string. That is exactly what crosses the bridge. */
+juce::var hostedParamVar (const juce::AudioProcessorParameter& param, int index)
+{
+    const float value = param.getValue();
+
+    return makeObject ({ { "index", index },
+                         { "name",  param.getName (64) },
+                         { "label", param.getLabel() },
+                         { "value", (double) value },
+                         { "text",  param.getText (value, 32) } });
+}
 } // namespace
+
+//==============================================================================
+struct FxEditorWindow final : public juce::DocumentWindow
+{
+    FxEditorWindow (juce::AudioProcessor& processor, const juce::String& title,
+                    std::function<void()> onCloseRequested)
+        : DocumentWindow (title, juce::Colours::black, DocumentWindow::closeButton),
+          onClose (std::move (onCloseRequested))
+    {
+        setUsingNativeTitleBar (true);
+
+        // A plugin that ships no editor still gets a usable window: JUCE's generic
+        // editor renders its parameter list. Better than a dead menu item.
+        auto* editor = processor.hasEditor() ? processor.createEditorIfNeeded() : nullptr;
+
+        if (editor == nullptr)
+            editor = new juce::GenericAudioProcessorEditor (processor);
+
+        setContentOwned (editor, true);
+        setResizable (editor->isResizable(), false);
+        centreWithSize (getWidth(), getHeight());
+        setVisible (true);
+    }
+
+    void closeButtonPressed() override
+    {
+        if (onClose != nullptr)
+            onClose();
+    }
+
+    std::function<void()> onClose;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FxEditorWindow)
+};
 
 //==============================================================================
 bool SinglePageBrowser::pageAboutToLoad (const juce::String& newURL)
@@ -252,6 +307,18 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
     proc.onChainChanged          = [this] { emitChainChanged(); };
     proc.library.onChanged       = [this] { emitLibraryChanged(); };
     proc.presets.onPresetChanged = [this] { emitPresetChanged(); pollModelAndIr (true); };
+    proc.onFxSlotChanged         = [this] (int slot) { emitFxSlotChanged (slot); };
+
+    // Fires before the processor retires a slot's instance, whatever caused it — the
+    // panel, a preset load, an A/B recall or a host state restore. The window showing
+    // that instance has to go first: an AudioProcessor must outlive its editor.
+    proc.onFxSlotRetiring = [this] (int slot)
+    {
+        if (gestureSlot == slot)
+            endOutstandingFxGesture();
+
+        closeFxWindow (slot);
+    };
 
     lastModelPath = proc.getLoadedModelPath();
     lastIrPath = proc.getLoadedIrPath();
@@ -283,6 +350,25 @@ WebEditor::~WebEditor()
     proc.onChainChanged = nullptr;
     proc.library.onChanged = nullptr;
     proc.presets.onPresetChanged = nullptr;
+    proc.onFxSlotChanged = nullptr;
+
+    // Every hosted editor dies with us. A window left open would be showing a plugin
+    // the processor is free to retire the moment we stop listening for the hook —
+    // and the hook itself must not outlive the windows it closes.
+    endOutstandingFxGesture();
+    proc.onFxSlotRetiring = nullptr;
+
+    for (auto& window : fxWindows)
+        window.reset();
+}
+
+void WebEditor::endOutstandingFxGesture()
+{
+    if (gestureSlot >= 0)
+        if (auto* param = fxParamFor (gestureSlot, gestureParam))
+            param->endChangeGesture();
+
+    gestureSlot = gestureParam = -1;
 }
 
 void WebEditor::resized()
@@ -396,7 +482,81 @@ juce::var WebEditor::uiStateVar() const
                          { "presets",           presetListVar() },
                          { "currentPresetName", proc.presets.getCurrentPresetName() },
                          { "ab",                abVar() },
-                         { "t3k",               t3kVar() } });
+                         { "t3k",               t3kVar() },
+                         { "fxSlots",           fxSlotsVar() },
+                         { "fxSupported",       FxCatalog::isSupported() } });
+}
+
+//==============================================================================
+juce::AudioProcessorParameter* WebEditor::fxParamFor (int slot, int index) const
+{
+    auto* instance = proc.getFxInstance (slot);
+
+    if (instance == nullptr)
+        return nullptr;
+
+    const auto& all = instance->getParameters();
+
+    return juce::isPositiveAndBelow (index, all.size()) ? all[index] : nullptr;
+}
+
+juce::var WebEditor::fxParamsVar (int slot) const
+{
+    juce::Array<juce::var> out;
+
+    if (auto* instance = proc.getFxInstance (slot))
+    {
+        const auto& all = instance->getParameters();
+        const int count = juce::jmin (all.size(), kMaxHostedParams);
+
+        // Never skip: array position and `index` must stay identical, because the
+        // metered fxParamValues push is index-aligned with this list and a hole in one
+        // of the two would silently shift every value onto the wrong control.
+        for (int i = 0; i < count; ++i)
+        {
+            if (auto* param = all[i])
+                out.add (hostedParamVar (*param, i));
+            else
+                out.add (makeObject ({ { "index", i }, { "name", juce::String() },
+                                       { "label", juce::String() }, { "value", 0.0 },
+                                       { "text", juce::String() } }));
+        }
+    }
+
+    return out;
+}
+
+juce::var WebEditor::fxSlotVar (int slot) const
+{
+    const auto info = proc.getFxSlotInfo (slot);
+
+    // hasEditor is read from the instance rather than the record: a plugin only
+    // answers it once it exists, and it decides whether the panel offers "Open plugin
+    // window" as the plugin's own UI or as the generic fallback.
+    auto* instance = proc.getFxInstance (slot);
+
+    return makeObject ({ { "slot",            slot },
+                         { "identifier",      info.identifier },
+                         { "name",            info.name },
+                         { "manufacturer",    info.manufacturer },
+                         { "occupied",        info.occupied },
+                         { "missing",         info.missing },
+                         { "live",            info.live },
+                         { "loading",         info.loading },
+                         { "latencySamples",  info.latencySamples },
+                         { "error",           info.error },
+                         { "hasEditor",       instance != nullptr && instance->hasEditor() },
+                         { "params",          fxParamsVar (slot) } });
+}
+
+juce::var WebEditor::fxSlotsVar() const
+{
+    juce::Array<juce::var> out;
+
+    for (int slot = 0; slot < chain::numFxSlots; ++slot)
+        out.add (fxSlotVar (slot));
+
+    return out;
 }
 
 //==============================================================================
@@ -452,6 +612,26 @@ void WebEditor::emitT3kError (const juce::String& message, juce::int64 modelId)
                                     { "modelId", modelId } }));
 }
 
+void WebEditor::emitFxSlotChanged (int slot)
+{
+    if (slot < 0 || slot >= chain::numFxSlots)
+        return;
+
+    emit ("fxSlotChanged", makeObject ({ { "slot", slot }, { "state", fxSlotVar (slot) } }));
+}
+
+void WebEditor::closeFxWindow (int slot)
+{
+    if (slot < 0 || slot >= chain::numFxSlots)
+        return;
+
+    fxWindows[(size_t) slot].reset();
+
+    // A window we just closed cannot be the one being metered.
+    if (watchedFxSlot == slot)
+        gestureSlot = gestureParam = -1;
+}
+
 void WebEditor::pollModelAndIr (bool forceEmit)
 {
     const auto modelPath = proc.getLoadedModelPath();
@@ -478,6 +658,46 @@ void WebEditor::timerCallback()
     {
         pollDivider = 0;
         pollModelAndIr (false);
+    }
+
+    // Hosted parameter values, 10 Hz, for the one slot the user is looking at. A
+    // hosted plugin can move its own parameters (its window, an LFO, a preset change)
+    // and nothing notifies us, so this is a poll by necessity — but only ever over
+    // one visible slot's parameters, never all three.
+    if (++fxPollDivider >= 3)
+    {
+        fxPollDivider = 0;
+
+        if (watchedFxSlot >= 0)
+        {
+            if (auto* instance = proc.getFxInstance (watchedFxSlot))
+            {
+                const auto& all = instance->getParameters();
+                const int count = juce::jmin (all.size(), kMaxHostedParams);
+
+                juce::Array<juce::var> values, texts;
+
+                for (int i = 0; i < count; ++i)
+                {
+                    auto* param = all[i];
+
+                    if (param == nullptr)
+                    {
+                        values.add (0.0);
+                        texts.add (juce::String());
+                        continue;
+                    }
+
+                    const float value = param->getValue();
+                    values.add ((double) value);
+                    texts.add (param->getText (value, 32));
+                }
+
+                emit ("fxParamValues", makeObject ({ { "slot",   watchedFxSlot },
+                                                     { "values", values },
+                                                     { "texts",  texts } }));
+            }
+        }
     }
 }
 
@@ -905,6 +1125,114 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                     if (safeThis != nullptr)
                         complete (resultVar (error));
                 });
+        })
+        //======================================================================
+        // External AudioUnit slots. Hosted parameters deliberately do not go through
+        // relays: a relay needs a static id at construction time, and a hosted
+        // plugin's parameter list only exists once it has loaded.
+        .withNativeFunction ("fxListPlugins", [this] (auto&, auto complete)
+        {
+            juce::Array<juce::var> plugins;
+
+            for (const auto& entry : proc.fxCatalog.enumerateEffects())
+                plugins.add (makeObject ({ { "identifier",   entry.identifier },
+                                           { "name",         entry.name },
+                                           { "manufacturer", entry.manufacturer },
+                                           { "version",      entry.version } }));
+
+            complete (makeObject ({ { "plugins",   plugins },
+                                    { "supported", FxCatalog::isSupported() } }));
+        })
+        .withNativeFunction ("fxLoad", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            const int slot = (int) args[0];
+
+            if (slot < 0 || slot >= chain::numFxSlots)
+            {
+                complete (resultVar ("Invalid slot"));
+                return;
+            }
+
+            // Asynchronous by design: the outcome arrives as fxSlotChanged. Resolving
+            // here only means the request was accepted.
+            proc.loadFxPlugin (slot, args[1].toString());
+            complete (resultVar ({}));
+        })
+        .withNativeFunction ("fxClear", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            proc.clearFxPlugin ((int) args[0]);
+            complete ({});
+        })
+        .withNativeFunction ("fxOpenEditor", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            const int slot = (int) args[0];
+
+            if (slot < 0 || slot >= chain::numFxSlots)
+            {
+                complete (resultVar ("Invalid slot"));
+                return;
+            }
+
+            auto* instance = proc.getFxInstance (slot);
+
+            if (instance == nullptr)
+            {
+                complete (resultVar ("No plugin is loaded in this slot."));
+                return;
+            }
+
+            if (auto& window = fxWindows[(size_t) slot]; window != nullptr)
+            {
+                window->toFront (true);
+                complete (resultVar ({}));
+                return;
+            }
+
+            fxWindows[(size_t) slot] = std::make_unique<FxEditorWindow> (
+                *instance,
+                proc.getFxSlotInfo (slot).name,
+                [this, slot] { closeFxWindow (slot); });
+
+            complete (resultVar ({}));
+        })
+        .withNativeFunction ("fxSetParam", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            if (auto* param = fxParamFor ((int) args[0], (int) args[1]))
+                param->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, (float) (double) args[2]));
+
+            complete ({});
+        })
+        .withNativeFunction ("fxBeginGesture", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            // Gestures must balance, so an unfinished one is closed before a new one
+            // opens — a pointer capture lost to a window switch would otherwise leave
+            // the hosted plugin thinking it is still being dragged.
+            endOutstandingFxGesture();
+
+            const int slot = (int) args[0], index = (int) args[1];
+
+            if (auto* param = fxParamFor (slot, index))
+            {
+                param->beginChangeGesture();
+                gestureSlot = slot;
+                gestureParam = index;
+            }
+
+            complete ({});
+        })
+        .withNativeFunction ("fxEndGesture", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            if ((int) args[0] == gestureSlot && (int) args[1] == gestureParam)
+                endOutstandingFxGesture();
+
+            complete ({});
+        })
+        .withNativeFunction ("fxWatchSlot", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            const int slot = (int) args[0];
+            watchedFxSlot = (slot >= 0 && slot < chain::numFxSlots) ? slot : -1;
+            fxPollDivider = 0;
+            complete ({});
         })
         .withNativeFunction ("t3kSetFavorite", [this] (const juce::Array<juce::var>& args, auto complete)
         {

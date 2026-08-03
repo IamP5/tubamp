@@ -26,6 +26,11 @@ inline constexpr auto eqOn      = "eq_on";
 inline constexpr auto modOn     = "mod_on";
 inline constexpr auto delayOn   = "delay_on";
 inline constexpr auto reverbOn  = "reverb_on";
+// External AudioUnit slots (dsp/FxHost.h). Appended after the original nine so the
+// AU parameter list only ever grows — existing indices are untouched.
+inline constexpr auto fx1On     = "fx1_on";
+inline constexpr auto fx2On     = "fx2_on";
+inline constexpr auto fx3On     = "fx3_on";
 
 // Input / output
 inline constexpr auto inputTrim   = "input_trim";    // dB  [-24, 24]

@@ -5,7 +5,9 @@
  *
  * `amp` is deliberately empty: every amp control lives in AmpBody, exactly like
  * the native panel. `cab` and `mod` keep their generic row *and* get an extra
- * body above it (IR row / type combo).
+ * body above it (IR row / type combo). The fx slots are empty too — a hosted
+ * plugin's parameters are discovered at load time, so they can never appear in a
+ * static table of tubamp's own slider ids (FxSlotBody renders them instead).
  */
 import type { BlockId, SliderParamId } from "../../bridge";
 
@@ -55,4 +57,8 @@ export const KNOB_SPECS: Record<BlockId, readonly KnobSpec[]> = {
     { id: "reverb_damping", label: "DAMP" },
     { id: "reverb_mix", label: "MIX" },
   ],
+  /* Hosted plugins bring their own parameters — see FxSlotBody. */
+  fx1: [],
+  fx2: [],
+  fx3: [],
 };

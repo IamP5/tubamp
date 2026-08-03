@@ -5,8 +5,15 @@ import reactHooks from "eslint-plugin-react-hooks";
 
 export default tseslint.config(
   {
-    // Vendored JUCE frontend lib + build output are not ours to lint.
-    ignores: ["dist", "src/juce/index.js", "src/juce/check_native_interop.js"],
+    // Vendored JUCE frontend lib + build output are not ours to lint. `.vite` is
+    // the dev server's dependency-optimizer cache, which appears after the first
+    // `npm run dev` and is pre-bundled third-party code.
+    ignores: [
+      "dist",
+      ".vite",
+      "src/juce/index.js",
+      "src/juce/check_native_interop.js",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

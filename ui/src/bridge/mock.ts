@@ -18,6 +18,10 @@ import type {
   ComboProperties,
   ErrorResult,
   FileEntry,
+  FxParamInfo,
+  FxPluginEntry,
+  FxSlotIndex,
+  FxSlotState,
   ImportResult,
   ModelInfo,
   PresetInfo,
@@ -209,6 +213,275 @@ const combos = new Map<ComboParamId, MockCombo>(
   COMBO_SPECS.map((s) => [s.id, new MockCombo(s)]),
 );
 
+/* ─────────────────────── external AudioUnit simulation ─────────────────── */
+
+/**
+ * A fake AU catalog for the three fx slots. It exists to make every state the
+ * real host can produce reachable in the browser, so it deliberately includes
+ * the awkward cases: a name far longer than any column, a two-character name,
+ * several manufacturers, a plugin with sixty parameters, one that only speaks in
+ * steps, one that reports unit labels, and one that always fails to instantiate.
+ */
+interface MockFxParam {
+  name: string;
+  /** Unit suffix the plugin reports; often empty, exactly like the real thing. */
+  label: string;
+  /** Normalised default. */
+  def: number;
+  /** The plugin's own formatting of a normalised value. */
+  format(value: number): string;
+}
+
+interface MockFxPlugin {
+  identifier: string;
+  name: string;
+  manufacturer: string;
+  version: string;
+  hasEditor: boolean;
+  /** Installed, listed, and dies on instantiation — the third failure mode after
+   *  "not installed" (missing) and "loads fine". */
+  failsToLoad?: boolean;
+  latencySamples: number;
+  params: MockFxParam[];
+}
+
+const pct = (v: number): string => `${Math.round(v * 100)} %`;
+const dB = (min: number, max: number) => (v: number) =>
+  `${(min + v * (max - min)).toFixed(1)} dB`;
+/** Log-spaced, like every frequency control a real plugin exposes. */
+const hz = (min: number, max: number) => (v: number) =>
+  `${Math.round(min * Math.pow(max / min, v))} Hz`;
+const step =
+  (choices: readonly string[]) =>
+  (v: number): string =>
+    choices[Math.min(choices.length - 1, Math.floor(v * choices.length))]!;
+
+function fxParam(
+  name: string,
+  def: number,
+  label = "",
+  format: (value: number) => string = pct,
+): MockFxParam {
+  return { name, label, def, format };
+}
+
+/** The 60-parameter case: a plugin whose list cannot fit the dock without
+ *  scrolling, which is the whole point of testing against it. */
+function bandParams(): MockFxParam[] {
+  const params: MockFxParam[] = [];
+  for (let band = 1; band <= 20; band += 1) {
+    params.push(
+      fxParam(`Band ${band} Gain`, 0.5, "dB", dB(-24, 24)),
+      fxParam(`Band ${band} Freq`, 0.5, "Hz", hz(20, 20000)),
+      fxParam(`Band ${band} Q`, 0.35, "", (v) => (0.1 + v * 9.9).toFixed(2)),
+    );
+  }
+  return params;
+}
+
+const FX_PLUGINS: MockFxPlugin[] = [
+  {
+    identifier: "com.anodized.vc2a",
+    name: "Valve Compressor VC-2A",
+    manufacturer: "Anodized Audio",
+    version: "2.1.0",
+    hasEditor: true,
+    latencySamples: 0,
+    params: [
+      fxParam("Peak Reduction", 0.4),
+      fxParam("Gain", 0.5),
+      fxParam("Emphasis", 0.25),
+      fxParam("Mix", 1),
+    ],
+  },
+  {
+    identifier: "com.northfold.spectral",
+    name: "Spectral Convolution Workstation Mk III (Surround Edition)",
+    manufacturer: "Northfold DSP",
+    version: "3.0.4",
+    hasEditor: true,
+    latencySamples: 1024,
+    params: bandParams(),
+  },
+  {
+    identifier: "com.northfold.eq",
+    name: "EQ",
+    manufacturer: "Northfold DSP",
+    version: "1.4.2",
+    hasEditor: false,
+    latencySamples: 0,
+    params: [
+      fxParam("Low Shelf", 0.5, "dB", dB(-18, 18)),
+      fxParam("Low Freq", 0.2, "Hz", hz(20, 1000)),
+      fxParam("High Shelf", 0.5, "dB", dB(-18, 18)),
+      fxParam("High Freq", 0.8, "Hz", hz(1000, 20000)),
+      fxParam("Output", 0.5, "dB", dB(-12, 12)),
+    ],
+  },
+  {
+    identifier: "com.kilohertz.tape",
+    name: "Studer-Style Tape",
+    manufacturer: "Kilohertz Labs",
+    version: "1.0.9",
+    hasEditor: true,
+    latencySamples: 64,
+    params: [
+      fxParam("Machine", 0, "", step(["A80", "A812", "B67", "M15"])),
+      fxParam("Speed", 0.5, "ips", step(["7.5 ips", "15 ips", "30 ips"])),
+      fxParam("Formula", 0.5, "", step(["456", "GP9", "SM911"])),
+      fxParam("Bias", 0.5, "", (v) => `${(v * 10 - 5).toFixed(1)}`),
+      fxParam("Drive", 0.35, "dB", dB(0, 24)),
+      fxParam("Wow & Flutter", 0.2),
+    ],
+  },
+  {
+    identifier: "com.vermilion.panic",
+    name: "Kernel Panic Reverb",
+    manufacturer: "Vermilion Audio",
+    version: "0.9.0-beta",
+    hasEditor: true,
+    failsToLoad: true,
+    latencySamples: 0,
+    params: [],
+  },
+  {
+    identifier: "com.t0audio.utility",
+    name: "Utility",
+    manufacturer: "t0audio",
+    version: "1.0.0",
+    hasEditor: false,
+    latencySamples: 0,
+    params: [
+      fxParam("Gain", 0.5, "dB", dB(-24, 24)),
+      fxParam("Pan", 0.5, "", (v) => `${Math.round(v * 200 - 100)} L/R`),
+      fxParam("Phase", 0, "", step(["Normal", "Inverted"])),
+    ],
+  },
+];
+
+/** Assigned to slot 3 and absent from the catalog: the "you opened this session
+ *  on a machine without that plugin" case, whose settings must survive untouched. */
+const MISSING_FX = {
+  identifier: "com.obsidian.tapedelay",
+  name: "Obsidian Tape Delay",
+  manufacturer: "Obsidian Instruments",
+};
+
+function findFxPlugin(identifier: string): MockFxPlugin | undefined {
+  return FX_PLUGINS.find((p) => p.identifier === identifier);
+}
+
+function emptyFxSlot(slot: FxSlotIndex): FxSlotState {
+  return {
+    slot,
+    identifier: "",
+    name: "",
+    manufacturer: "",
+    occupied: false,
+    missing: false,
+    live: false,
+    loading: false,
+    latencySamples: 0,
+    error: "",
+    hasEditor: false,
+    params: [],
+  };
+}
+
+/** Normalised values per slot, index-aligned with the loaded plugin's params. */
+const fxValues: number[][] = [[], [], []];
+const fxLoaded: (MockFxPlugin | null)[] = [null, null, null];
+
+function fxParamInfos(plugin: MockFxPlugin, slot: FxSlotIndex): FxParamInfo[] {
+  return plugin.params.map((p, index) => {
+    const value = fxValues[slot][index] ?? p.def;
+    return { index, name: p.name, label: p.label, value, text: p.format(value) };
+  });
+}
+
+function liveFxSlot(plugin: MockFxPlugin, slot: FxSlotIndex): FxSlotState {
+  return {
+    slot,
+    identifier: plugin.identifier,
+    name: plugin.name,
+    manufacturer: plugin.manufacturer,
+    occupied: true,
+    missing: false,
+    live: true,
+    loading: false,
+    latencySamples: plugin.latencySamples,
+    error: "",
+    hasEditor: plugin.hasEditor,
+    params: fxParamInfos(plugin, slot),
+  };
+}
+
+function emitFxSlot(slot: FxSlotIndex, next: FxSlotState): void {
+  state.fxSlots[slot] = next;
+  emit("fxSlotChanged", { slot, state: structuredClone(next) });
+}
+
+/* Slot 2 opens with a plugin already live and slot 3 with one that is missing,
+   so the two states that are otherwise a chore to reach are on screen at once. */
+function initialFxSlots(): FxSlotState[] {
+  const preloaded = FX_PLUGINS[0]!;
+  fxLoaded[1] = preloaded;
+  fxValues[1] = preloaded.params.map((p) => p.def);
+  return [
+    emptyFxSlot(0),
+    liveFxSlot(preloaded, 1),
+    {
+      ...emptyFxSlot(2),
+      ...MISSING_FX,
+      occupied: true,
+      missing: true,
+      error: `${MISSING_FX.name} is not installed on this machine.`,
+    },
+  ];
+}
+
+/**
+ * Metered parameter push for the watched slot, on the same ~30 Hz rAF cadence as
+ * the C++ editor timer. Parameter 0 is swept by a slow LFO on purpose: it stands
+ * in for a plugin moving its own parameters, which is what makes the drag guard
+ * in FxParamGrid worth having (and visibly broken if it is removed).
+ */
+let fxWatched: FxSlotIndex | -1 = -1;
+let fxRaf = 0;
+let lastFxEmit = 0;
+
+function fxTick(now: number): void {
+  fxRaf = requestAnimationFrame(fxTick);
+  if (now - lastFxEmit < 1000 / 30) return;
+  lastFxEmit = now;
+
+  const slot = fxWatched;
+  if (slot === -1) return;
+  const plugin = fxLoaded[slot];
+  if (!plugin || plugin.params.length === 0) return;
+
+  const values = plugin.params.map((p, i) => {
+    if (i === 0) return 0.5 + 0.45 * Math.sin(now / 900);
+    return fxValues[slot][i] ?? p.def;
+  });
+  emit("fxParamValues", {
+    slot,
+    values,
+    texts: values.map((v, i) => plugin.params[i]!.format(v)),
+  });
+}
+
+function startFxMeter(): void {
+  if (fxRaf || typeof requestAnimationFrame !== "function") return;
+  fxRaf = requestAnimationFrame(fxTick);
+}
+
+function stopFxMeter(): void {
+  if (!fxRaf) return;
+  cancelAnimationFrame(fxRaf);
+  fxRaf = 0;
+}
+
 /* ────────────────────────────── mock plugin state ──────────────────────── */
 
 const MODELS_DIR = "/Users/dev/Music/tubamp/models";
@@ -276,6 +549,10 @@ const state: UiState = {
   currentPresetName: "Crunch Rhythm",
   ab: { activeSlot: 0, aHasState: true, bHasState: false },
   t3k: { configured: true, authenticated: true, username: "mock_user" },
+  // The fx tokens are absent from chainOrder above because they are absent from
+  // chain::defaultOrder() — a slot only enters the path when the user adds it.
+  fxSlots: initialFxSlots(),
+  fxSupported: true,
 };
 
 function snapshot(): UiState {
@@ -840,5 +1117,93 @@ export const mockBridge: Bridge = {
       }
     }
     return delay<ErrorResult>({}, 150);
+  },
+
+  /* --- external AudioUnit slots ------------------------------------------- */
+
+  fxListPlugins: async () => {
+    const plugins: FxPluginEntry[] = FX_PLUGINS.map(
+      ({ identifier, name, manufacturer, version }) => ({
+        identifier,
+        name,
+        manufacturer,
+        version,
+      }),
+    );
+    // A registry walk, not an instantiation — fast even with a big plugin folder.
+    return delay({ plugins, supported: state.fxSupported }, 90);
+  },
+
+  fxLoad: async (slot: FxSlotIndex, identifier) => {
+    const plugin = findFxPlugin(identifier);
+    if (!plugin)
+      return delay<ErrorResult>({ error: "That plugin is no longer installed." });
+
+    fxLoaded[slot] = null;
+    fxValues[slot] = [];
+    emitFxSlot(slot, {
+      ...emptyFxSlot(slot),
+      identifier,
+      name: plugin.name,
+      manufacturer: plugin.manufacturer,
+      occupied: true,
+      loading: true,
+      hasEditor: plugin.hasEditor,
+    });
+
+    // Instantiation is asynchronous in the real host (the AU is created on a
+    // background thread and swapped in), and slow enough to be worth a state.
+    await delay(null, 900);
+    if (plugin.failsToLoad) {
+      emitFxSlot(slot, {
+        ...emptyFxSlot(slot),
+        identifier,
+        name: plugin.name,
+        manufacturer: plugin.manufacturer,
+        occupied: true,
+        error: `${plugin.name} failed to initialise (AudioUnit error -10863).`,
+      });
+      return {} satisfies ErrorResult;
+    }
+
+    fxLoaded[slot] = plugin;
+    fxValues[slot] = plugin.params.map((p) => p.def);
+    emitFxSlot(slot, liveFxSlot(plugin, slot));
+    return {} satisfies ErrorResult;
+  },
+
+  fxClear: async (slot: FxSlotIndex) => {
+    fxLoaded[slot] = null;
+    fxValues[slot] = [];
+    await delay(null, 0);
+    emitFxSlot(slot, emptyFxSlot(slot));
+  },
+
+  // There is no window to open in a browser; reporting it keeps the button's
+  // failure path (a toast) exercised in dev.
+  fxOpenEditor: async (slot: FxSlotIndex) =>
+    delay<ErrorResult>(
+      fxLoaded[slot]
+        ? { error: "The mock bridge has no plugin window to open." }
+        : { error: "Nothing is loaded in this slot." },
+      120,
+    ),
+
+  fxSetParam: async (slot: FxSlotIndex, index, value) => {
+    const plugin = fxLoaded[slot];
+    if (!plugin || index < 0 || index >= plugin.params.length) return;
+    fxValues[slot][index] = Math.min(1, Math.max(0, value));
+    await delay(null, 0);
+  },
+
+  /* Host automation touch: nothing to tell outside the plugin. */
+  fxBeginGesture: async () => {},
+  fxEndGesture: async () => {},
+
+  fxWatchSlot: async (slot) => {
+    fxWatched = slot;
+    if (slot < 0) stopFxMeter();
+    else startFxMeter();
+    await delay(null, 0);
   },
 };

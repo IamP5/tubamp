@@ -12,6 +12,9 @@ state, not a parameter):
 Input Trim → Gate → Comp → Drive → [NAM MODEL] → Cab IR → EQ → Mod → Delay → Reverb → Output
 ```
 
+Plus three **FX slots** that are not in the default order — add one anywhere in the
+chain and drop a third-party AudioUnit effect into it.
+
 - **NAM engine**: NeuralAmpModelerCore v0.5.4 with the A2 fast path enabled
   (`NAM_ENABLE_A2_FAST`). Loads A1, A2, slimmable-container and LSTM `.nam` files;
   automatic resampling when the host rate differs from the model's native rate;
@@ -21,6 +24,12 @@ Input Trim → Gate → Comp → Drive → [NAM MODEL] → Cab IR → EQ → Mod
   Requires your own TONE3000 publishable API key (Settings gear → paste
   `t3k_pub_…` key; create one at tone3000.com → Settings → API Keys, redirect URI
   `http://127.0.0.1:53682/callback`). Manual `.nam`/IR import works with no setup.
+- **FX slots**: three blocks that host your own AudioUnit effects (AUv2, effects
+  only) anywhere in the chain — picked from a menu that never instantiates
+  anything to build itself, saved with the project including each plugin's own
+  settings, and preserved intact when you open the project on a machine that does
+  not have the plugin. Each slot's bypass is automatable; the hosted plugin's own
+  parameters are not (design notes: `docs/AU-SLOTS.md`).
 - **Presets**: JSON presets with model + IR references, favorites, tags,
   and true A/B compare slots.
 
