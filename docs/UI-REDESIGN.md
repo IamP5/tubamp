@@ -1,5 +1,9 @@
 # tubamp UI/UX redesign — buildable signal path + modern dark UI
 
+> Historical. The JUCE-component UI this describes (`src/ui/*`, `src/PluginEditor.*`)
+> has been replaced by the React SPA in `ui/`; see docs/REACT-UI.md. The interaction
+> and layout goals below still hold — the file paths and ownership notes do not.
+
 Goal: replace the fixed two-row panel grid with a **Cortex Control / TONEX-style**
 interface: a horizontal, user-buildable signal chain of block tiles (drag to reorder,
 add/remove, per-block bypass), a large parameter panel for the selected block, and a
