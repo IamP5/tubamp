@@ -1,0 +1,17 @@
+# Build
+build/
+cmake-build-*/
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.xcodeproj
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# JUCE / CMake artifacts
+CMakeUserPresets.json
+compile_commands.json
