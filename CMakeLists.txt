@@ -63,6 +63,49 @@ if(APPLE)
 endif()
 
 # ---------------------------------------------------------------------------
+# Web UI (ui/ = Vite + React + TypeScript SPA hosted in a WebBrowserComponent)
+#
+#   ON  : npm ci + npm run build in ui/, zip dist/, bake it into the binary and
+#         serve it from the resource provider at juce://juce.backend/.
+#   OFF : no Node required, nothing baked in; the editor loads the Vite dev
+#         server (http://localhost:5173) instead. `npm run dev` in ui/.
+# ---------------------------------------------------------------------------
+option(TUBAMP_BUNDLED_UI "Bundle the built web UI into the plugin binary" ON)
+
+# Where the editor loads its HTML from. Defaults to the complement of
+# TUBAMP_BUNDLED_UI, but it is its own knob: -DTUBAMP_BUNDLED_UI=OFF
+# -DTUBAMP_WEBUI_DEV=OFF gives a Node-free build that still points at the baked-in
+# resource provider (and so shows the "UI bundle missing" page rather than silently
+# depending on a dev server that is not running).
+if(TUBAMP_BUNDLED_UI)
+    set(tubamp_webui_dev_default OFF)
+else()
+    set(tubamp_webui_dev_default ON)
+endif()
+option(TUBAMP_WEBUI_DEV "Load the Vite dev server (http://localhost:5173) instead of the bundled UI"
+       ${tubamp_webui_dev_default})
+
+# A dev-server build is useless to a host and must never overwrite the installed
+# shipping component, so only release-shaped builds copy themselves into
+# ~/Library/Audio/Plug-Ins/Components. juce_add_plugin consumes this at call time.
+if(TUBAMP_WEBUI_DEV)
+    set(tubamp_copy_after_build FALSE)
+else()
+    set(tubamp_copy_after_build TRUE)
+endif()
+
+set(webui_dir "${CMAKE_CURRENT_SOURCE_DIR}/ui")
+
+# "juce-framework-frontend" is not published on npm and lives inside the
+# FetchContent'd (gitignored) JUCE checkout, so a package.json "file:" dependency
+# would break a clean `npm ci`. Vendor it into the Vite project at configure time
+# instead; both `npm run dev` and `npm run build` then resolve ./juce/index.js.
+if(EXISTS "${webui_dir}/package.json")
+    file(COPY "${JUCE_MODULES_DIR}/juce_gui_extra/native/javascript/"
+         DESTINATION "${webui_dir}/src/juce/")
+endif()
+
+# ---------------------------------------------------------------------------
 # Plugin target
 # ---------------------------------------------------------------------------
 juce_add_plugin(tubamp
@@ -73,24 +116,107 @@ juce_add_plugin(tubamp
     FORMATS                     AU Standalone
     AU_MAIN_TYPE                kAudioUnitType_Effect
     PRODUCT_NAME                "tubamp"
-    COPY_PLUGIN_AFTER_BUILD     TRUE
+    COPY_PLUGIN_AFTER_BUILD     ${tubamp_copy_after_build}
     AU_COPY_DIR                 "$ENV{HOME}/Library/Audio/Plug-Ins/Components"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT  "tubamp needs audio input for the standalone app."
-    NEEDS_WEB_BROWSER           FALSE)
+    # No-op on macOS (the module default already enables WebKit) but required the
+    # day a Linux/Windows target appears.
+    NEEDS_WEB_BROWSER           TRUE)
 
 file(GLOB_RECURSE tubamp_sources CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
 
+# DSP + state + library only: everything the headless console targets can compile.
+# WebEditor pulls in WebBrowserComponent / relays / Web*ParameterAttachment, all of
+# which live inside `#if JUCE_WEB_BROWSER` blocks and simply do not exist there.
+set(tubamp_core_sources ${tubamp_sources})
+list(FILTER tubamp_core_sources EXCLUDE REGEX "/src/WebEditor\\.(cpp|h)$")
+
 target_sources(tubamp PRIVATE ${tubamp_sources})
 target_include_directories(tubamp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
+# ---------------------------------------------------------------------------
+# Web UI: npm build -> ui/dist -> zip -> binary data
+# ---------------------------------------------------------------------------
+set(TUBAMP_WEBUI_ZIP_PREFIX "dist/")
+
+if(TUBAMP_BUNDLED_UI)
+    if(NOT EXISTS "${webui_dir}/package.json")
+        message(FATAL_ERROR
+            "TUBAMP_BUNDLED_UI=ON but ${webui_dir}/package.json is missing.\n"
+            "Scaffold ui/ first, or configure with -DTUBAMP_BUNDLED_UI=OFF to load "
+            "the Vite dev server (no Node needed at build time).")
+    endif()
+
+    find_program(NPM_EXECUTABLE npm REQUIRED)
+
+    set(webui_zip "${CMAKE_BINARY_DIR}/tubamp_webui.zip")
+
+    # Only the source trees are globbed recursively. GLOB_RECURSE with a literal
+    # (wildcard-free) trailing filename walks the WHOLE subtree looking for that
+    # name, so "${webui_dir}/package.json" would match every
+    # ui/node_modules/**/package.json and "${webui_dir}/index.html" would match the
+    # command's own output ui/dist/index.html — a self-referential dependency that
+    # Makefiles drop with a "Circular ... dependency" warning and Ninja rejects
+    # outright. Plain GLOB does not recurse, so the top-level literals stay literal.
+    # (public/ need not exist; a glob that matches nothing contributes nothing.)
+    file(GLOB_RECURSE webui_src_inputs CONFIGURE_DEPENDS
+        "${webui_dir}/src/*"
+        "${webui_dir}/public/*")
+    file(GLOB webui_root_inputs CONFIGURE_DEPENDS
+        "${webui_dir}/index.html"
+        "${webui_dir}/package.json"
+        "${webui_dir}/package-lock.json"
+        "${webui_dir}/vite.config.ts"
+        "${webui_dir}/tsconfig*.json")
+    set(webui_inputs ${webui_src_inputs} ${webui_root_inputs})
+    list(FILTER webui_inputs EXCLUDE REGEX "/node_modules/")
+
+    # OUTPUT-based so incremental builds skip npm entirely when nothing changed.
+    add_custom_command(
+        OUTPUT  "${webui_dir}/dist/index.html"
+        COMMAND "${NPM_EXECUTABLE}" ci --prefer-offline --no-audit
+        COMMAND "${NPM_EXECUTABLE}" run build
+        WORKING_DIRECTORY "${webui_dir}"
+        DEPENDS ${webui_inputs}
+        COMMENT "Building tubamp web UI (vite)"
+        VERBATIM)
+
+    # `cmake -E tar` stores paths relative to WORKING_DIRECTORY, so entries come out
+    # as "dist/index.html" — the resource provider prepends the same prefix.
+    add_custom_command(
+        OUTPUT  "${webui_zip}"
+        COMMAND "${CMAKE_COMMAND}" -E tar cf "${webui_zip}" --format=zip "dist"
+        WORKING_DIRECTORY "${webui_dir}"
+        DEPENDS "${webui_dir}/dist/index.html"
+        COMMENT "Zipping tubamp web UI"
+        VERBATIM)
+
+    add_custom_target(tubamp_webui DEPENDS "${webui_zip}")
+
+    # Vite emits content-hashed filenames, so per-file binary data would churn the
+    # generated symbol names on every build; the zip keeps one stable symbol
+    # (webui::tubamp_webui_zip / ...zipSize).
+    juce_add_binary_data(TubampWebUiData
+        HEADER_NAME WebUiData.h
+        NAMESPACE   webui
+        SOURCES     "${webui_zip}")
+    add_dependencies(TubampWebUiData tubamp_webui)
+
+    target_link_libraries(tubamp PRIVATE TubampWebUiData)
+endif()
+
 target_compile_definitions(tubamp PUBLIC
-    JUCE_WEB_BROWSER=0
+    JUCE_WEB_BROWSER=1
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
-    JUCE_DISPLAY_SPLASH_SCREEN=0)
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+    TUBAMP_HEADLESS=0
+    TUBAMP_BUNDLED_UI=$<BOOL:${TUBAMP_BUNDLED_UI}>
+    TUBAMP_WEBUI_DEV=$<BOOL:${TUBAMP_WEBUI_DEV}>
+    TUBAMP_WEBUI_ZIP_PREFIX="${TUBAMP_WEBUI_ZIP_PREFIX}")
 
 target_link_libraries(tubamp
     PRIVATE
@@ -108,38 +234,24 @@ target_link_libraries(tubamp
 juce_add_console_app(tubamp_smoke PRODUCT_NAME "tubamp_smoke")
 target_sources(tubamp_smoke PRIVATE
     tests/ProcessorSmokeTest.cpp
-    ${tubamp_sources})
+    ${tubamp_core_sources})
 target_include_directories(tubamp_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_definitions(tubamp_smoke PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_MODAL_LOOPS_PERMITTED=1
-    JUCE_STANDALONE_APPLICATION=1)
+    JUCE_STANDALONE_APPLICATION=1
+    TUBAMP_HEADLESS=1)
 target_link_libraries(tubamp_smoke PRIVATE
     nam_core
     juce::juce_audio_utils
     juce::juce_dsp
     juce::juce_recommended_config_flags)
 
-# ---------------------------------------------------------------------------
-# Headless UI snapshot: renders the real editor to a PNG (no window, no screen
-# permissions) for iterating on the UI outside a DAW. tools/UiSnapshot.cpp.
-# ---------------------------------------------------------------------------
-juce_add_console_app(tubamp_uishot PRODUCT_NAME "tubamp_uishot")
-target_sources(tubamp_uishot PRIVATE
-    tools/UiSnapshot.cpp
-    ${tubamp_sources})
-target_include_directories(tubamp_uishot PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_compile_definitions(tubamp_uishot PRIVATE
-    JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
-    JUCE_MODAL_LOOPS_PERMITTED=1
-    JUCE_STANDALONE_APPLICATION=1)
-target_link_libraries(tubamp_uishot PRIVATE
-    nam_core
-    juce::juce_audio_utils
-    juce::juce_dsp
-    juce::juce_recommended_config_flags)
+# Note: the former `tubamp_uishot` target (tools/UiSnapshot.cpp) is gone. Its whole
+# job was editor->createComponentSnapshot(), and an NSViewComponent-hosted WKWebView
+# does not render into a JUCE Graphics context. UI iteration now happens against
+# `npm run dev` + the mock bridge in a normal browser.
 
 # ---------------------------------------------------------------------------
 # THROWAWAY prototype: in-plugin TONE3000 browser UI options (3 variants).
@@ -147,10 +259,14 @@ target_link_libraries(tubamp_uishot PRIVATE
 # of the shipping plugin; see prototype/t3k-browser/README.md.
 # Run: prototype/t3k-browser/run.sh [--variant=A|B|C]
 # ---------------------------------------------------------------------------
-# Guarded: this throwaway prototype directory is not present in every
+# Guarded twice over: this throwaway prototype directory is not present in every
 # checkout (it predates the DSP/UI rewrite and isn't part of the shipping
-# plugin). Skip the target entirely rather than break `cmake --build`.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/prototype/t3k-browser/Main.cpp")
+# plugin), AND it links src/ui/TubampLookAndFeel.cpp, which the WebView rewrite
+# deleted along with the rest of src/ui/. A checkout that still has the
+# prototype would therefore fail to configure on a missing source file — skip
+# the target unless BOTH halves are actually present.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/prototype/t3k-browser/Main.cpp"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/TubampLookAndFeel.cpp")
 juce_add_gui_app(tubamp_proto_t3k_browser PRODUCT_NAME "tubamp_proto_t3k_browser")
 target_sources(tubamp_proto_t3k_browser PRIVATE
     prototype/t3k-browser/Main.cpp

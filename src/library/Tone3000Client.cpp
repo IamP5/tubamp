@@ -660,6 +660,9 @@ public:
                 {
                     out.flush();
                     destFile.deleteFile();
+                    // Report the cancel like every other outcome: a silent return
+                    // leaves the UI's progress row for this model up forever.
+                    fail ("Download canceled.");
                     return;
                 }
 

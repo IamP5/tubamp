@@ -1,5 +1,15 @@
 #include "PluginProcessor.h"
-#include "PluginEditor.h"
+
+// Console targets (tubamp_smoke) compile the DSP/state/library sources with
+// JUCE_WEB_BROWSER=0, where the WebView editor cannot compile at all. They set
+// TUBAMP_HEADLESS=1 and get JUCE's generic editor instead.
+#ifndef TUBAMP_HEADLESS
+ #define TUBAMP_HEADLESS 0
+#endif
+
+#if ! TUBAMP_HEADLESS
+ #include "WebEditor.h"
+#endif
 
 #include <array>
 #include <cmath>
@@ -513,7 +523,11 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 //==============================================================================
 juce::AudioProcessorEditor* TubampAudioProcessor::createEditor()
 {
-    return new TubampAudioProcessorEditor (*this);
+   #if TUBAMP_HEADLESS
+    return new juce::GenericAudioProcessorEditor (*this);
+   #else
+    return new WebEditor (*this);
+   #endif
 }
 
 void TubampAudioProcessor::updateLatency()
