@@ -25,6 +25,8 @@ import { Board } from "./features/board";
 import { Panel } from "./features/panel";
 import { Footer } from "./features/footer";
 import { SettingsSheet } from "./features/settings";
+// PROTOTYPE — THROWAWAY. Remove with ui/src/features/t3k-browser-prototype/.
+import { T3kBrowserPrototype } from "./features/t3k-browser-prototype";
 
 /** motion-design.md §2.1: the panel lands last, after the board has assembled. */
 const PANEL_DELAY = 0.28;
@@ -114,6 +116,8 @@ export function App() {
       <Toaster />
 
       {isMockBridge && <span className={s.mockBadge}>mock bridge</span>}
+
+      {import.meta.env.DEV && <T3kBrowserPrototype />}
     </div>
   );
 }
