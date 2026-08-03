@@ -178,6 +178,8 @@ export interface AbState {
 export interface T3kState {
   configured: boolean;
   authenticated: boolean;
+  /** TONE3000 username once known (fetched after sign-in); null before. */
+  username: string | null;
 }
 
 export interface UiState {
@@ -199,6 +201,74 @@ export interface T3kModel {
   modelUrl: string;
   size: string;
   architecture: string;
+  /** Derived C++-side from the file extension: .nam capture or .wav IR.
+   *  Routes the download destination (models/ vs irs/) and the auto-load call
+   *  (loadModel vs loadIr). */
+  kind: "nam" | "wav";
+}
+
+/* ─────────────────────── TONE3000 in-plugin browser ────────────────────── */
+
+export type T3kBrowseKind = "models" | "irs";
+export type T3kBrowseShelf = "all" | "favorites";
+export type T3kBrowseSort = "trending" | "newest" | "downloads";
+
+/**
+ * One page of the catalog. `kind` maps C++-side to
+ * `format=nam&architecture=2` (models) or `format=ir` (irs) — omitting
+ * `architecture` would silently exclude A2 (tone3000-api.md §6).
+ * `shelf: "favorites"` reads the bounded `/tones/favorited` list instead of
+ * `/tones/search` and filters/sorts client-side.
+ */
+export interface T3kBrowseRequest {
+  kind: T3kBrowseKind;
+  shelf: T3kBrowseShelf;
+  sort: T3kBrowseSort;
+  query: string;
+  /** Gear filter (amp | amp-cab | pedal); models only, null = all. */
+  gear: string | null;
+  /** 1-based. */
+  page: number;
+}
+
+export interface T3kCreator {
+  username: string;
+  avatarUrl: string | null;
+}
+
+export interface T3kTone {
+  id: number;
+  title: string;
+  description: string;
+  gear: string;
+  format: "nam" | "ir";
+  /** First catalog image; UI must fall back to a generated placeholder when
+   *  null or when the remote image fails to load inside the WebView. */
+  imageUrl: string | null;
+  creator: T3kCreator;
+  downloadsCount: number;
+  favoritesCount: number;
+  /** From the client's cached favorited-ids set, not the search payload. */
+  favorited: boolean;
+  makes: string[];
+  tags: string[];
+  sizes: string[];
+  /** a2_models_count for nam tones; irs_count for ir tones. */
+  modelsCount: number;
+  createdAt: string;
+}
+
+export interface T3kBrowseResult {
+  tones?: T3kTone[];
+  page?: number;
+  totalPages?: number;
+  total?: number;
+  error?: string;
+}
+
+export interface T3kModelsResult {
+  models?: T3kModel[];
+  error?: string;
 }
 
 /* ───────────────────────────────── events ─────────────────────────────── */
@@ -292,4 +362,14 @@ export interface Bridge {
   t3kStartSelectFlow(): Promise<void>;
   /** Async; `t3kProgress` / `t3kComplete` / `t3kError` follow. */
   t3kDownloadModel(model: T3kModel): Promise<void>;
+  /** Standard OAuth flow (system browser + loopback redirect), no tone
+   *  selection. Outcome arrives as `t3kStatus` (success) / `t3kError`. */
+  t3kSignIn(): Promise<void>;
+  /** One catalog page. Resolves with data or `{error}`; never rejects. */
+  t3kBrowse(request: T3kBrowseRequest): Promise<T3kBrowseResult>;
+  /** Downloadable files of one tone (A2-filtered for nam tones). */
+  t3kListModels(toneId: number): Promise<T3kModelsResult>;
+  /** Favorite/unfavorite on TONE3000. UI updates optimistically and reverts
+   *  on `{error}`. */
+  t3kSetFavorite(toneId: number, favorite: boolean): Promise<ErrorResult>;
 }

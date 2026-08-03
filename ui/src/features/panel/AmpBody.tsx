@@ -11,17 +11,14 @@
  *   alive forever for exactly this reason).
  * - Errors surface as toasts instead of the dual-purpose hint label.
  */
-import { useEffect, useState } from "react";
 import {
   Button,
   DownloadIcon,
   Knob,
   PlusIcon,
-  Spinner,
   Toggle,
   Tooltip,
 } from "../../components";
-import { bridge } from "../../bridge";
 import { useToggleParam } from "../../hooks";
 import { useStore } from "../../store";
 import { FileRow } from "./FileRow";
@@ -38,32 +35,22 @@ export function AmpBody() {
   const models = useStore((st) => st.models);
   const configured = useStore((st) => st.t3k.configured);
   const downloads = useStore((st) => st.downloads);
-  const tone = useStore((st) => st.tone);
+  const pending = useStore((st) => st.t3kPending);
   const loadModel = useStore((st) => st.loadModel);
   const clearModel = useStore((st) => st.clearModel);
   const importModel = useStore((st) => st.importModel);
   const t3kConfigure = useStore((st) => st.t3kConfigure);
   const t3kSignOut = useStore((st) => st.t3kSignOut);
-  const t3kStartSelectFlow = useStore((st) => st.t3kStartSelectFlow);
+  const openT3kBrowser = useStore((st) => st.openT3kBrowser);
   const toast = useStore((st) => st.toast);
 
   const calInput = useToggleParam("amp_cal_input");
 
-  /* The select flow is a browser round-trip: keep the button honest while it
-     runs. Resolution arrives as an event, never as the call's return value, and
-     either outcome (a tone, or an error/cancel) ends the wait. */
-  const [browsing, setBrowsing] = useState(false);
-  useEffect(() => {
-    const offTone = bridge.on("t3kToneSelected", () => setBrowsing(false));
-    const offError = bridge.on("t3kError", () => setBrowsing(false));
-    return () => {
-      offTone();
-      offError();
-    };
-  }, []);
-
   const live = isEngineLive(model);
-  const active = Object.entries(downloads);
+  // IR downloads share the same progress map; they belong to the cab, not here.
+  const active = Object.entries(downloads).filter(
+    ([id]) => pending[Number(id)]?.kind !== "wav",
+  );
 
   return (
     <div className={s.ampBody}>
@@ -125,17 +112,13 @@ export function AmpBody() {
         <div className={s.actionRow}>
           {configured ? (
             <>
+              {/* The catalog is browsed in the drawer now, not in the system
+                  browser's select flow. */}
               <Button
                 size="sm"
                 variant="primary"
-                icon={
-                  browsing ? <Spinner size={14} /> : <DownloadIcon size={14} />
-                }
-                disabled={browsing}
-                onClick={() => {
-                  setBrowsing(true);
-                  void t3kStartSelectFlow();
-                }}
+                icon={<DownloadIcon size={14} />}
+                onClick={() => openT3kBrowser("models")}
               >
                 Browse TONE3000
               </Button>
@@ -160,9 +143,7 @@ export function AmpBody() {
         {active.length > 0 && (
           <div className={s.downloadStrip}>
             {active.map(([id, progress]) => {
-              const name =
-                tone?.models.find((m) => String(m.id) === id)?.name ??
-                `Model ${id}`;
+              const name = pending[Number(id)]?.name ?? `Model ${id}`;
               return (
                 <div key={id} className={s.downloadRow}>
                   <span className={s.downloadName} title={name}>

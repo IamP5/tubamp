@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <map>
+#include <set>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -201,12 +203,96 @@ juce::String describeHttpError (const juce::var& json, int statusCode)
 constexpr int kLoopbackPortFirst = 53682;
 constexpr int kLoopbackPortLast = 53690;
 constexpr const char* kApiBase = "https://www.tone3000.com/api/v1";
+
+constexpr int kBrowsePageSize = 25;    // API max for /tones/search
+constexpr int kModelPageSize = 300;    // API max for /models: one request per tone
+constexpr int kMaxFavoritePages = 40;  // safety cap on paging the favorited list
+constexpr double kBrowseCacheMinutes = 4.0;
+
+/** Search sort wire value. best-match is the API's own default for a text
+    query, so a "trending" pick with a query in flight becomes relevance. */
+juce::String searchSort (const Tone3000Client::BrowseRequest& req)
+{
+    if (req.sort == "newest")
+        return "newest";
+    if (req.sort == "downloads")
+        return "downloads-all-time";
+
+    return req.query.isNotEmpty() ? "best-match" : "trending";
+}
+
+juce::StringArray namesOf (const juce::var& array)
+{
+    juce::StringArray out;
+    if (auto* arr = array.getArray())
+        for (auto& item : *arr)
+            out.add (item.getProperty ("name", juce::var()).toString());
+    return out;
+}
+
+juce::StringArray stringsOf (const juce::var& array)
+{
+    juce::StringArray out;
+    if (auto* arr = array.getArray())
+        for (auto& item : *arr)
+            out.add (item.toString());
+    return out;
+}
+
+Tone3000Client::Tone parseTone (const juce::var& item)
+{
+    Tone3000Client::Tone t;
+    t.id = static_cast<juce::int64> (item.getProperty ("id", juce::var (0)));
+    t.title = item.getProperty ("title", juce::var()).toString();
+    t.description = item.getProperty ("description", juce::var()).toString();
+    t.gear = item.getProperty ("gear", juce::var()).toString();
+    t.format = item.getProperty ("format", juce::var()).toString();
+    t.createdAt = item.getProperty ("created_at", juce::var()).toString();
+
+    if (auto* images = item.getProperty ("images", juce::var()).getArray())
+        if (! images->isEmpty())
+            t.imageUrl = images->getReference (0).toString();
+
+    const auto user = item.getProperty ("user", juce::var());
+    t.creator.username = user.getProperty ("username", juce::var()).toString();
+    t.creator.avatarUrl = user.getProperty ("avatar_url", juce::var()).toString();
+
+    t.downloadsCount = static_cast<juce::int64> (item.getProperty ("downloads_count", juce::var (0)));
+    t.favoritesCount = static_cast<juce::int64> (item.getProperty ("favorites_count", juce::var (0)));
+    t.makes = namesOf (item.getProperty ("makes", juce::var()));
+    t.tags = namesOf (item.getProperty ("tags", juce::var()));
+    t.sizes = stringsOf (item.getProperty ("sizes", juce::var()));
+
+    // models_count follows whatever architecture filter the request carried;
+    // the per-architecture breakdown is always present, so count from it.
+    t.modelsCount = static_cast<int> (item.getProperty (t.format == "ir" ? "irs_count" : "a2_models_count", juce::var (0)));
+
+    return t;
+}
 } // namespace
 
 //==============================================================================
 struct Tone3000Client::Impl
 {
-    Impl() { loadConfig(); }
+    /** Compile-time default client_id (CMake TUBAMP_T3K_CLIENT_ID). Publishable
+        keys are safe to embed — they only identify the app; auth is per-user
+        via PKCE. A key stored from Settings overrides it. */
+    static juce::String builtinClientId()
+    {
+       #ifdef TUBAMP_T3K_CLIENT_ID
+        return TUBAMP_T3K_CLIENT_ID;
+       #else
+        return {};
+       #endif
+    }
+
+    Impl()
+    {
+        loadConfig();
+        if (clientId.isEmpty())
+            clientId = builtinClientId();
+    }
+
     ~Impl();
 
     static juce::File getConfigFile() { return ModelLibrary::getRootDir().getChildFile ("tone3000.json"); }
@@ -223,6 +309,7 @@ struct Tone3000Client::Impl
 
         clientId = parsed.getProperty ("clientId", juce::var()).toString();
         refreshToken = parsed.getProperty ("refreshToken", juce::var()).toString();
+        username = parsed.getProperty ("username", juce::var()).toString();
     }
 
     void saveConfig() const
@@ -230,6 +317,7 @@ struct Tone3000Client::Impl
         auto* obj = new juce::DynamicObject();
         obj->setProperty ("clientId", clientId);
         obj->setProperty ("refreshToken", refreshToken);
+        obj->setProperty ("username", username);
 
         ModelLibrary::getRootDir().createDirectory();
         getConfigFile().replaceWithText (juce::JSON::toString (juce::var (obj)));
@@ -296,28 +384,79 @@ struct Tone3000Client::Impl
         return true;
     }
 
-    /** Blocking; call from a background thread only. */
-    juce::Array<Model> fetchModels (juce::int64 toneId, const juce::String& architecture)
+    /** Blocking; call from a background thread only. Authenticated API call
+        returning the parsed body; one forced refresh + retry when the access
+        token is rejected. Accepts the 204 the favorite endpoints answer with. */
+    bool apiRequest (const juce::URL& url, const juce::String& verb, juce::var& jsonOut, juce::String& errorOut)
     {
-        juce::String token;
-        { const juce::ScopedLock sl (lock); token = accessToken; }
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            if (! ensureValidAccessToken (errorOut))
+                return false;
 
+            juce::String token;
+            { const juce::ScopedLock sl (lock); token = accessToken; }
+
+            int statusCode = 0;
+            auto stream = url.createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+                              .withExtraHeaders ("Authorization: Bearer " + token + "\r\n")
+                              .withHttpRequestCmd (verb)
+                              .withConnectionTimeoutMs (15000)
+                              .withStatusCode (&statusCode));
+
+            if (stream == nullptr)
+            {
+                errorOut = "Could not reach TONE3000.";
+                return false;
+            }
+
+            jsonOut = juce::JSON::parse (stream->readEntireStreamAsString());
+
+            if (statusCode == 200 || statusCode == 201 || statusCode == 204)
+                return true;
+
+            if (statusCode == 401 && attempt == 0)
+            {
+                // Token rejected before its stated expiry: drop it so the next
+                // pass refreshes rather than replaying the same dead token.
+                const juce::ScopedLock sl (lock);
+                accessToken.clear();
+                accessTokenExpiry = {};
+                continue;
+            }
+
+            errorOut = statusCode == 401
+                         ? juce::String ("TONE3000 session expired; please sign in again.")
+                         : "TONE3000 request failed (" + describeHttpError (jsonOut, statusCode) + ").";
+            return false;
+        }
+
+        return false;
+    }
+
+    /** Blocking; call from a background thread only. Empty `architecture` means
+        no filter (ir tones); "2" is mandatory for nam - omitting it excludes A2. */
+    juce::Array<Model> fetchModels (juce::int64 toneId, const juce::String& architecture,
+                                    juce::String* errorOut = nullptr)
+    {
         juce::URL url (juce::String (kApiBase) + "/models");
         url = url.withParameter ("tone_id", juce::String (toneId))
-                 .withParameter ("page_size", "100")
-                 .withParameter ("architecture", architecture);
+                 .withParameter ("page_size", juce::String (kModelPageSize));
 
-        int statusCode = 0;
-        auto stream = url.createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
-                          .withExtraHeaders ("Authorization: Bearer " + token + "\r\n")
-                          .withConnectionTimeoutMs (15000)
-                          .withStatusCode (&statusCode));
+        if (architecture.isNotEmpty())
+            url = url.withParameter ("architecture", architecture);
 
         juce::Array<Model> result;
-        if (stream == nullptr || statusCode != 200)
-            return result;
+        juce::var json;
+        juce::String error;
 
-        auto json = juce::JSON::parse (stream->readEntireStreamAsString());
+        if (! apiRequest (url, "GET", json, error))
+        {
+            if (errorOut != nullptr)
+                *errorOut = error;
+            return result;
+        }
+
         if (auto* arr = json.getProperty ("data", juce::var()).getArray())
         {
             for (auto& item : *arr)
@@ -328,6 +467,7 @@ struct Tone3000Client::Impl
                 m.modelUrl = item.getProperty ("model_url", juce::var()).toString();
                 m.size = item.getProperty ("size", juce::var()).toString();
                 m.architecture = item.getProperty ("architecture_version", juce::var()).toString();
+                m.kind = juce::URL (m.modelUrl).getFileName().endsWithIgnoreCase (".wav") ? "wav" : "nam";
                 result.add (m);
             }
         }
@@ -335,24 +475,224 @@ struct Tone3000Client::Impl
         return result;
     }
 
+    /** Blocking; call from a background thread only. */
+    bool fetchUsername (juce::String& errorOut)
+    {
+        juce::var json;
+        if (! apiRequest (juce::URL (juce::String (kApiBase) + "/user"), "GET", json, errorOut))
+            return false;
+
+        const juce::ScopedLock sl (lock);
+        username = json.getProperty ("username", juce::var()).toString();
+        saveConfig();
+        return true;
+    }
+
+    /** Blocking; call from a background thread only. Pages the whole favorited
+        list (bounded, unlike search) and rebuilds the cached favorited-id set
+        from it; `tonesOut` is the same data, for the favorites shelf. */
+    bool fetchFavorited (juce::Array<Tone>& tonesOut, juce::String& errorOut)
+    {
+        std::set<juce::int64> ids;
+
+        for (int page = 1; page <= kMaxFavoritePages; ++page)
+        {
+            const auto url = juce::URL (juce::String (kApiBase) + "/tones/favorited")
+                                 .withParameter ("page", juce::String (page))
+                                 .withParameter ("page_size", juce::String (kBrowsePageSize));
+
+            juce::var json;
+            if (! apiRequest (url, "GET", json, errorOut))
+                return false;
+
+            if (auto* arr = json.getProperty ("data", juce::var()).getArray())
+            {
+                for (auto& item : *arr)
+                {
+                    auto tone = parseTone (item);
+                    ids.insert (tone.id);
+                    tonesOut.add (tone);
+                }
+            }
+
+            if (page >= static_cast<int> (json.getProperty ("total_pages", juce::var (1))))
+                break;
+        }
+
+        const juce::ScopedLock sl (lock);
+        favoritedIds = std::move (ids);
+        return true;
+    }
+
+    /** Blocking; call from a background thread only. */
+    bool browseSearch (const BrowseRequest& req, TonePage& pageOut, juce::String& errorOut)
+    {
+        auto url = juce::URL (juce::String (kApiBase) + "/tones/search")
+                       .withParameter ("page", juce::String (juce::jmax (1, req.page)))
+                       .withParameter ("page_size", juce::String (kBrowsePageSize))
+                       .withParameter ("sort", searchSort (req));
+
+        if (req.query.isNotEmpty())
+            url = url.withParameter ("query", req.query);
+
+        if (req.kind == "irs")
+        {
+            url = url.withParameter ("format", "ir");
+        }
+        else
+        {
+            // architecture=2 is not optional here: omitting it excludes every A2
+            // tone from the results (tone3000-api.md §6).
+            url = url.withParameter ("format", "nam").withParameter ("architecture", "2");
+
+            if (req.gear.isNotEmpty())
+                url = url.withParameter ("gears", req.gear);
+        }
+
+        juce::var json;
+        if (! apiRequest (url, "GET", json, errorOut))
+            return false;
+
+        if (auto* arr = json.getProperty ("data", juce::var()).getArray())
+            for (auto& item : *arr)
+                pageOut.tones.add (parseTone (item));
+
+        pageOut.page = static_cast<int> (json.getProperty ("page", juce::var (1)));
+        pageOut.totalPages = juce::jmax (1, static_cast<int> (json.getProperty ("total_pages", juce::var (1))));
+        pageOut.total = static_cast<juce::int64> (json.getProperty ("total", juce::var (0)));
+        return true;
+    }
+
+    /** Blocking; call from a background thread only. The favorited endpoint has
+        no filter/sort/page-size params of its own, so all of that is client-side. */
+    bool browseFavorites (const BrowseRequest& req, TonePage& pageOut, juce::String& errorOut)
+    {
+        juce::Array<Tone> all;
+        if (! fetchFavorited (all, errorOut))
+            return false;
+
+        const juce::String format = req.kind == "irs" ? "ir" : "nam";
+        juce::Array<Tone> matching;
+
+        for (auto& t : all)
+        {
+            if (t.format != format)
+                continue;
+            if (req.gear.isNotEmpty() && t.gear != req.gear)
+                continue;
+            if (req.query.isNotEmpty() && ! (t.title.containsIgnoreCase (req.query)
+                                             || t.creator.username.containsIgnoreCase (req.query)))
+                continue;
+
+            matching.add (t);
+        }
+
+        // No trending signal exists client-side, so "trending" keeps the
+        // endpoint's own order (most recently favorited first).
+        if (req.sort == "newest")
+            std::stable_sort (matching.begin(), matching.end(),
+                              [] (const Tone& a, const Tone& b) { return a.createdAt > b.createdAt; });
+        else if (req.sort == "downloads")
+            std::stable_sort (matching.begin(), matching.end(),
+                              [] (const Tone& a, const Tone& b) { return a.downloadsCount > b.downloadsCount; });
+
+        const int total = matching.size();
+        const int totalPages = juce::jmax (1, (total + kBrowsePageSize - 1) / kBrowsePageSize);
+        const int page = juce::jlimit (1, totalPages, req.page);
+        const int first = (page - 1) * kBrowsePageSize;
+
+        for (int i = first; i < juce::jmin (total, first + kBrowsePageSize); ++i)
+            pageOut.tones.add (matching.getReference (i));
+
+        pageOut.page = page;
+        pageOut.totalPages = totalPages;
+        pageOut.total = total;
+        return true;
+    }
+
+    static juce::String cacheKey (const BrowseRequest& req)
+    {
+        return req.kind + "|" + req.shelf + "|" + req.sort + "|" + req.gear + "|"
+             + juce::String (req.page) + "|" + req.query;
+    }
+
+    /** Blocking; call from a background thread only. Short-lived in-memory cache
+        only: the ToS forbids persisting the catalog, and search is heavily
+        rate-limited, so a page the user pages back to must not re-hit the API. */
+    bool browseBlocking (const BrowseRequest& req, TonePage& pageOut, juce::String& errorOut)
+    {
+        const auto key = cacheKey (req);
+
+        {
+            const juce::ScopedLock sl (lock);
+            const auto entry = browseCache.find (key);
+            if (entry != browseCache.end() && juce::Time::getCurrentTime() < entry->second.expiry)
+            {
+                pageOut = entry->second.page;
+                return true;
+            }
+        }
+
+        const bool ok = req.shelf == "favorites" ? browseFavorites (req, pageOut, errorOut)
+                                                 : browseSearch (req, pageOut, errorOut);
+        if (! ok)
+            return false;
+
+        const juce::ScopedLock sl (lock);
+
+        for (auto& t : pageOut.tones)
+            t.favorited = favoritedIds.count (t.id) > 0;
+
+        const auto now = juce::Time::getCurrentTime();
+        for (auto it = browseCache.begin(); it != browseCache.end();)
+            it = it->second.expiry < now ? browseCache.erase (it) : std::next (it);
+
+        browseCache[key] = { now + juce::RelativeTime::minutes (kBrowseCacheMinutes), pageOut,
+                             req.shelf == "favorites" };
+        return true;
+    }
+
+    /** Caller holds `lock`. Favoriting changes what the favorites shelf contains,
+        which no TTL can predict. */
+    void dropFavoritesCacheEntries()
+    {
+        for (auto it = browseCache.begin(); it != browseCache.end();)
+            it = it->second.favoritesShelf ? browseCache.erase (it) : std::next (it);
+    }
+
     // Forward-declared here (defined below, out-of-line) rather than at namespace
-    // scope: both need access to Impl's private token/lock state, and nesting
+    // scope: they need access to Impl's private token/lock state, and nesting
     // them inside Impl (a private member of Tone3000Client) keeps that access
     // implicit instead of requiring a public accessor surface.
-    class SelectFlowThread;
+    class AuthFlowThread;
     class DownloadThread;
+    class TaskThread;
 
-    void finishSelect (SelectFlowThread* t);
+    void finishAuth (AuthFlowThread* t);
     void finishDownload (DownloadThread* t);
+    void finishTask (TaskThread* t);
+
+    /** Message-thread only: runs one blocking job on a tracked background thread. */
+    void runTask (const char* threadName, std::function<void()> body);
+
+    struct CacheEntry
+    {
+        juce::Time expiry;
+        TonePage page;
+        bool favoritesShelf = false;
+    };
 
     juce::CriticalSection lock;
-    juce::String clientId, refreshToken, accessToken;
+    juce::String clientId, refreshToken, accessToken, username;
     juce::Time accessTokenExpiry;
+    std::set<juce::int64> favoritedIds;
+    std::map<juce::String, CacheEntry> browseCache;
 
-    std::unique_ptr<SelectFlowThread> selectThread;
+    std::unique_ptr<AuthFlowThread> authThread;
     std::vector<std::unique_ptr<DownloadThread>> downloadThreads;
+    std::vector<std::unique_ptr<TaskThread>> taskThreads;
 
-    // Guards the deferred cleanup lambdas in finishSelect/finishDownload below,
+    // Guards the deferred cleanup lambdas in finishAuth/finishDownload/finishTask below,
     // which capture `this` and run later on the message thread: if Impl is
     // destroyed before a queued cleanup dispatches, the flag (kept alive by the
     // shared_ptr copy captured in the lambda) tells it to no-op instead of
@@ -361,16 +701,30 @@ struct Tone3000Client::Impl
 };
 
 //==============================================================================
-/** Runs the Select flow end-to-end: PKCE, loopback listener, system-browser
-    launch, code exchange, model listing. One-shot; deletes itself (via the
+/** Runs a browser auth flow end-to-end: PKCE, loopback listener, system-browser
+    launch, code exchange, then either the picked tone's models (Select) or the
+    profile + favorites priming (Sign in). One-shot; deletes itself (via the
     owning Impl, on the message thread) once done. */
-class Tone3000Client::Impl::SelectFlowThread : public juce::Thread
+class Tone3000Client::Impl::AuthFlowThread : public juce::Thread
 {
 public:
-    SelectFlowThread (Tone3000Client::Impl& implIn,
-                      std::function<void (Tone3000Client::ToneModels)> onSelectedIn,
-                      std::function<void (juce::String)> onErrorIn)
-        : juce::Thread ("Tone3000 Select"), impl (implIn),
+    enum class Mode { signIn, selectTone };
+
+    /** Sign-in: plain /oauth/authorize, no tone is picked. */
+    AuthFlowThread (Tone3000Client::Impl& implIn,
+                    std::function<void()> onSignedInIn,
+                    std::function<void (juce::String)> onErrorIn)
+        : juce::Thread ("Tone3000 Sign-in"), mode (Mode::signIn), impl (implIn),
+          onSignedIn (std::move (onSignedInIn)), onError (std::move (onErrorIn))
+    {
+    }
+
+    /** Select flow: the authorize URL carries prompt=select_tone and the catalog
+        scoping params, and the callback carries the chosen tone_id. */
+    AuthFlowThread (Tone3000Client::Impl& implIn,
+                    std::function<void (Tone3000Client::ToneModels)> onSelectedIn,
+                    std::function<void (juce::String)> onErrorIn)
+        : juce::Thread ("Tone3000 Select"), mode (Mode::selectTone), impl (implIn),
           onSelected (std::move (onSelectedIn)), onError (std::move (onErrorIn))
     {
     }
@@ -415,11 +769,13 @@ public:
                                 .withParameter ("response_type", "code")
                                 .withParameter ("code_challenge", pkce.challenge)
                                 .withParameter ("code_challenge_method", "S256")
-                                .withParameter ("state", pkce.state)
-                                .withParameter ("prompt", "select_tone")
-                                .withParameter ("format", "nam")
-                                .withParameter ("architecture", "2")
-                                .withParameter ("preview", "true");
+                                .withParameter ("state", pkce.state);
+
+        if (mode == Mode::selectTone)
+            authorizeUrl = authorizeUrl.withParameter ("prompt", "select_tone")
+                                       .withParameter ("format", "nam")
+                                       .withParameter ("architecture", "2")
+                                       .withParameter ("preview", "true");
 
         if (! authorizeUrl.launchInDefaultBrowser())
         {
@@ -464,7 +820,7 @@ public:
 
         if (param ("canceled") == "true")
         {
-            fail ("Tone selection was canceled.");
+            fail (mode == Mode::selectTone ? "Tone selection was canceled." : "TONE3000 sign-in was canceled.");
             return;
         }
 
@@ -491,7 +847,7 @@ public:
             return;
         }
 
-        if (toneIdStr.isEmpty())
+        if (mode == Mode::selectTone && toneIdStr.isEmpty())
         {
             fail ("No tone was selected.");
             return;
@@ -501,6 +857,26 @@ public:
         if (! exchangeCode (code, pkce.verifier, redirectUri, clientId, tokenError))
         {
             fail (tokenError);
+            return;
+        }
+
+        if (mode == Mode::signIn)
+        {
+            juce::String error;
+            if (! impl.fetchUsername (error))
+            {
+                fail (error);
+                return;
+            }
+
+            // Primes the favorited-id set browse() stamps its results with; a
+            // failure here is not worth failing the sign-in over.
+            juce::Array<Tone3000Client::Tone> favorited;
+            impl.fetchFavorited (favorited, error);
+
+            auto signedIn = onSignedIn;
+            juce::MessageManager::callAsync ([signedIn] { if (signedIn) signedIn(); });
+            impl.finishAuth (this);
             return;
         }
 
@@ -515,7 +891,7 @@ public:
 
         auto cb = onSelected;
         juce::MessageManager::callAsync ([cb, result] { if (cb) cb (result); });
-        impl.finishSelect (this);
+        impl.finishAuth (this);
     }
 
 private:
@@ -582,10 +958,12 @@ private:
     {
         auto cb = onError;
         juce::MessageManager::callAsync ([cb, message] { if (cb) cb (message); });
-        impl.finishSelect (this);
+        impl.finishAuth (this);
     }
 
+    const Mode mode;
     Tone3000Client::Impl& impl;
+    std::function<void()> onSignedIn;
     std::function<void (Tone3000Client::ToneModels)> onSelected;
     std::function<void (juce::String)> onError;
     juce::StreamingSocket listener;
@@ -714,14 +1092,58 @@ private:
 };
 
 //==============================================================================
-void Tone3000Client::Impl::finishSelect (SelectFlowThread* t)
+/** One blocking API job (browse / list models / favorite) on its own thread.
+    One-shot; deletes itself (via the owning Impl, on the message thread) once
+    done. The body delivers its own result before returning. */
+class Tone3000Client::Impl::TaskThread : public juce::Thread
+{
+public:
+    TaskThread (Tone3000Client::Impl& implIn, const char* threadName, std::function<void()> bodyIn)
+        : juce::Thread (threadName), impl (implIn), body (std::move (bodyIn))
+    {
+    }
+
+    void run() override
+    {
+        if (body)
+            body();
+
+        impl.finishTask (this);
+    }
+
+private:
+    Tone3000Client::Impl& impl;
+    std::function<void()> body;
+};
+
+//==============================================================================
+void Tone3000Client::Impl::runTask (const char* threadName, std::function<void()> body)
+{
+    auto thread = std::make_unique<TaskThread> (*this, threadName, std::move (body));
+    auto* raw = thread.get();
+    taskThreads.push_back (std::move (thread));
+    raw->startThread();
+}
+
+void Tone3000Client::Impl::finishAuth (AuthFlowThread* t)
 {
     juce::MessageManager::callAsync ([this, t, alive = alive]
     {
         if (! *alive)
             return;
-        if (selectThread.get() == t)
-            selectThread.reset();
+        if (authThread.get() == t)
+            authThread.reset();
+    });
+}
+
+void Tone3000Client::Impl::finishTask (TaskThread* t)
+{
+    juce::MessageManager::callAsync ([this, t, alive = alive]
+    {
+        if (! *alive)
+            return;
+        taskThreads.erase (std::remove_if (taskThreads.begin(), taskThreads.end(),
+            [t] (const std::unique_ptr<TaskThread>& up) { return up.get() == t; }), taskThreads.end());
     });
 }
 
@@ -740,11 +1162,11 @@ Tone3000Client::Impl::~Impl()
 {
     *alive = false;
 
-    if (selectThread != nullptr)
+    if (authThread != nullptr)
     {
-        selectThread->cancel();
-        selectThread->stopThread (4000);
-        selectThread.reset();
+        authThread->cancel();
+        authThread->stopThread (4000);
+        authThread.reset();
     }
 
     for (auto& t : downloadThreads)
@@ -753,6 +1175,13 @@ Tone3000Client::Impl::~Impl()
         t->stopThread (4000);
     }
     downloadThreads.clear();
+
+    for (auto& t : taskThreads)
+    {
+        t->signalThreadShouldExit();
+        t->stopThread (8000);
+    }
+    taskThreads.clear();
 }
 
 //==============================================================================
@@ -762,7 +1191,9 @@ Tone3000Client::~Tone3000Client() = default;
 void Tone3000Client::setClientId (const juce::String& publishableKey)
 {
     const juce::ScopedLock sl (impl->lock);
-    impl->clientId = publishableKey;
+    // Clearing the override falls back to the built-in key, never to "unconfigured".
+    impl->clientId = publishableKey.isNotEmpty() ? publishableKey
+                                                 : Impl::builtinClientId();
     impl->saveConfig();
 }
 
@@ -793,14 +1224,124 @@ void Tone3000Client::startSelectFlow (std::function<void (ToneModels)> onToneSel
         return;
     }
 
-    if (impl->selectThread != nullptr)
+    if (impl->authThread != nullptr)
     {
         if (onError) onError ("A TONE3000 selection is already in progress.");
         return;
     }
 
-    impl->selectThread = std::make_unique<Impl::SelectFlowThread> (*impl, std::move (onToneSelected), std::move (onError));
-    impl->selectThread->startThread();
+    impl->authThread = std::make_unique<Impl::AuthFlowThread> (*impl, std::move (onToneSelected), std::move (onError));
+    impl->authThread->startThread();
+}
+
+void Tone3000Client::startSignIn (std::function<void()> onSuccess,
+                                  std::function<void (juce::String)> onError)
+{
+    if (! isConfigured())
+    {
+        if (onError) onError ("TONE3000 is not configured. Add your publishable key in Settings.");
+        return;
+    }
+
+    // One browser flow at a time: both kinds share the loopback port range.
+    if (impl->authThread != nullptr)
+    {
+        if (onError) onError ("A TONE3000 sign-in is already in progress.");
+        return;
+    }
+
+    impl->authThread = std::make_unique<Impl::AuthFlowThread> (*impl, std::move (onSuccess), std::move (onError));
+    impl->authThread->startThread();
+}
+
+juce::String Tone3000Client::getUsername() const
+{
+    const juce::ScopedLock sl (impl->lock);
+    return impl->username;
+}
+
+void Tone3000Client::browse (const BrowseRequest& request,
+                             std::function<void (TonePage)> onResult,
+                             std::function<void (juce::String)> onError)
+{
+    if (! isAuthenticated())
+    {
+        if (onError) onError ("Sign in to browse TONE3000.");
+        return;
+    }
+
+    auto* state = impl.get();
+    impl->runTask ("Tone3000 Browse", [state, request, onResult, onError]
+    {
+        TonePage page;
+        juce::String error;
+
+        if (state->browseBlocking (request, page, error))
+            juce::MessageManager::callAsync ([onResult, page] { if (onResult) onResult (page); });
+        else
+            juce::MessageManager::callAsync ([onError, error] { if (onError) onError (error); });
+    });
+}
+
+void Tone3000Client::listToneModels (juce::int64 toneId, bool isIr,
+                                     std::function<void (juce::Array<Model>)> onResult,
+                                     std::function<void (juce::String)> onError)
+{
+    if (! isAuthenticated())
+    {
+        if (onError) onError ("Sign in to browse TONE3000.");
+        return;
+    }
+
+    auto* state = impl.get();
+    impl->runTask ("Tone3000 Models", [state, toneId, isIr, onResult, onError]
+    {
+        juce::String error;
+        auto models = state->fetchModels (toneId, isIr ? juce::String() : juce::String ("2"), &error);
+
+        if (error.isNotEmpty())
+            juce::MessageManager::callAsync ([onError, error] { if (onError) onError (error); });
+        else
+            juce::MessageManager::callAsync ([onResult, models] { if (onResult) onResult (models); });
+    });
+}
+
+void Tone3000Client::setFavorite (juce::int64 toneId, bool favorite,
+                                  std::function<void()> onSuccess,
+                                  std::function<void (juce::String)> onError)
+{
+    if (! isAuthenticated())
+    {
+        if (onError) onError ("Sign in to favorite tones on TONE3000.");
+        return;
+    }
+
+    auto* state = impl.get();
+    impl->runTask ("Tone3000 Favorite", [state, toneId, favorite, onSuccess, onError]
+    {
+        const juce::URL url (juce::String (kApiBase) + "/tones/" + juce::String (toneId) + "/favorite");
+        juce::var json;
+        juce::String error;
+
+        if (! state->apiRequest (url, favorite ? "PUT" : "DELETE", json, error))
+        {
+            juce::MessageManager::callAsync ([onError, error] { if (onError) onError (error); });
+            return;
+        }
+
+        {
+            const juce::ScopedLock sl (state->lock);
+
+            if (favorite)
+                state->favoritedIds.insert (toneId);
+            else
+                state->favoritedIds.erase (toneId);
+
+            state->dropFavoritesCacheEntries();
+        }
+
+        juce::MessageManager::callAsync ([onSuccess] { if (onSuccess) onSuccess(); });
+    });
 }
 
 void Tone3000Client::downloadModel (const Model& model, const juce::File& destDir,
@@ -827,6 +1368,9 @@ void Tone3000Client::signOut()
     impl->accessToken.clear();
     impl->refreshToken.clear();
     impl->accessTokenExpiry = {};
+    impl->username.clear();
+    impl->favoritedIds.clear();
+    impl->browseCache.clear();
     impl->saveConfig();
 }
 } // namespace tubamp

@@ -25,6 +25,7 @@ import { Board } from "./features/board";
 import { Panel } from "./features/panel";
 import { Footer } from "./features/footer";
 import { SettingsSheet } from "./features/settings";
+import { T3kBrowser } from "./features/t3k-browser";
 
 /** motion-design.md §2.1: the panel lands last, after the board has assembled. */
 const PANEL_DELAY = 0.28;
@@ -109,6 +110,10 @@ export function App() {
       >
         {ready && <Footer />}
       </motion.footer>
+
+      {/* Docked over the stage's right edge, no backdrop: the board keeps
+          working while the catalog is open. */}
+      <T3kBrowser />
 
       <SettingsSheet open={settingsOpen} onClose={closeSettings} />
       <Toaster />

@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace tubamp
@@ -104,6 +105,11 @@ private:
 
     std::unique_ptr<juce::FileChooser> fileChooser;
     bool chooserActive = false;
+
+    /** toneId -> "is an IR tone". t3kListModels(toneId) carries no format (frozen
+        bridge contract) but the client needs one to pick the architecture filter;
+        every browse page we serialize feeds this, unknown ids mean nam. */
+    std::unordered_map<juce::int64, bool> toneIsIr;
 
     juce::String lastModelPath, lastIrPath;
     int lastLatencySamples = -1;

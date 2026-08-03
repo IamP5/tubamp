@@ -49,7 +49,7 @@ export function SettingsSheet({ open, onClose }: SettingsSheetProps) {
           <span className={cx(s.status, t3k.configured && s.statusOk)}>
             {t3k.configured
               ? t3k.authenticated
-                ? "Configured · signed in"
+                ? `Configured · ${t3k.username ?? "signed in"}`
                 : "Configured"
               : "Not configured"}
           </span>

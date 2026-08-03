@@ -15,7 +15,10 @@ import type {
   ImportResult,
   SliderParamId,
   SliderParamState,
+  T3kBrowseRequest,
+  T3kBrowseResult,
   T3kModel,
+  T3kModelsResult,
   ToggleParamId,
   ToggleParamState,
   UiState,
@@ -125,7 +128,7 @@ const emptyUiState: UiState = {
   presets: [],
   currentPresetName: "",
   ab: { activeSlot: 0, aHasState: false, bHasState: false },
-  t3k: { configured: false, authenticated: false },
+  t3k: { configured: false, authenticated: false, username: null },
 };
 
 export const juceBridge: Bridge = {
@@ -207,4 +210,23 @@ export const juceBridge: Bridge = {
   t3kDownloadModel: async (model: T3kModel) => {
     await native("t3kDownloadModel")(model);
   },
+  t3kSignIn: async () => {
+    await native("t3kSignIn")();
+  },
+  // A failed page must still resolve: the drawer renders `{error}` as a retry
+  // state, and a rejected promise would leave it stuck on the spinner.
+  t3kBrowse: (request: T3kBrowseRequest) =>
+    call<T3kBrowseResult>(
+      "t3kBrowse",
+      { error: "TONE3000 is not reachable." },
+      request,
+    ),
+  t3kListModels: (toneId) =>
+    call<T3kModelsResult>(
+      "t3kListModels",
+      { error: "Could not list this tone's files." },
+      toneId,
+    ),
+  t3kSetFavorite: (toneId, favorite) =>
+    call<ErrorResult>("t3kSetFavorite", {}, toneId, favorite),
 };

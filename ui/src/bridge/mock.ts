@@ -24,7 +24,11 @@ import type {
   SliderParamId,
   SliderParamState,
   SliderProperties,
+  T3kBrowseRequest,
+  T3kBrowseResult,
   T3kModel,
+  T3kModelsResult,
+  T3kTone,
   ToggleParamId,
   ToggleParamState,
   ToggleProperties,
@@ -248,7 +252,7 @@ const state: UiState = {
   ],
   currentPresetName: "Crunch Rhythm",
   ab: { activeSlot: 0, aHasState: true, bHasState: false },
-  t3k: { configured: true, authenticated: true },
+  t3k: { configured: true, authenticated: true, username: "mock_user" },
 };
 
 function snapshot(): UiState {
@@ -298,24 +302,194 @@ function startMeters(): void {
 
 /* ─────────────────────────────── T3K simulation ────────────────────────── */
 
+/**
+ * Fake TONE3000 catalog behind `t3kBrowse` / `t3kListModels` / `t3kSetFavorite`.
+ * It obeys the same rules the C++ client does (docs/research/tone3000-api.md):
+ * `kind` splits nam from ir, `shelf: "favorites"` is a server-side shelf rather
+ * than a client filter, and pages are 25 rows.
+ */
+const PAGE_SIZE = 25;
+
+type ToneSeed = [
+  title: string,
+  creator: string,
+  format: "nam" | "ir",
+  gear: string,
+  description: string,
+  downloads: number,
+  favorites: number,
+  makes: string[],
+  tags: string[],
+  sizes: string[],
+  createdAt: string,
+];
+
+const TONE_SEEDS: ToneSeed[] = [
+  ["Deluxe Reverb '65 — Edge of Breakup", "amalgam_audio", "nam", "amp", "Blackface AB763 captured at the sweet spot, vol 6. Touch-sensitive cleans that grit up when you dig in.", 48213, 3120, ["Fender"], ["clean", "blackface", "breakup"], ["standard", "lite", "feather"], "2026-03-14"],
+  ["JCM800 2203 — Full Stack Roar", "tonehound", "nam", "amp", "1982 JCM800, master at 8. The rock rhythm channel. Pairs best with a greenback IR.", 61540, 4470, ["Marshall"], ["rock", "crunch", "british"], ["standard", "lite"], "2025-11-02"],
+  ["AC30 Top Boost — Chime Machine", "brit_captures", "nam", "amp", "Vox AC30/6 TB, cut at noon. Jangle and chime with EL84 compression when pushed.", 35872, 2910, ["Vox"], ["chime", "british", "cleanish"], ["standard", "lite", "feather"], "2026-01-20"],
+  ["Dual Rectifier — Modern Scoop", "murkytones", "nam", "amp", "3-channel Recto, modern voicing, bold power. Tight palm mutes, huge low end.", 52108, 3350, ["Mesa/Boogie"], ["metal", "high-gain", "scooped"], ["standard", "lite"], "2025-09-18"],
+  ["5150 Block Letter — Lead Channel", "riffworks", "nam", "amp", "The classic brown sound sequel. Lead channel, gain at 6, resonance 4.", 44930, 3860, ["Peavey"], ["high-gain", "lead", "hot-rodded"], ["standard", "lite", "feather"], "2026-05-30"],
+  ["Princeton Reverb — Bedroom Cream", "amalgam_audio", "nam", "amp-cab", "Full-rig capture: '68 Princeton into its stock 10\" through a 57. Instant record-ready clean.", 29804, 2150, ["Fender"], ["clean", "full-rig", "lofi"], ["standard", "feather"], "2026-06-25"],
+  ["Plexi Super Lead — Vintage Growl", "tonehound", "nam", "amp", "1969 Super Lead jumped channels. Woody midrange growl, cleans up beautifully off the guitar volume.", 38455, 3020, ["Marshall"], ["classic-rock", "plexi", "vintage"], ["standard", "lite"], "2025-12-11"],
+  ["Bassman '59 — Tweed Warmth", "vintage_vault", "nam", "amp", "Tweed Bassman 4×10 combo head section. The circuit every amp copied. Warm, midrangey push.", 21600, 1740, ["Fender"], ["tweed", "vintage", "blues"], ["standard", "lite", "feather"], "2026-02-08"],
+  ["SLO-100 — Liquid Lead", "labtones", "nam", "amp", "Soldano SLO overdrive channel. Smooth, singing sustain — the LA session lead sound.", 26377, 2280, ["Soldano"], ["lead", "high-gain", "smooth"], ["standard", "lite"], "2026-04-19"],
+  ["BE-100 — Modern Brit Crunch", "riffworks", "nam", "amp", "Friedman BE channel, structure tight. Hot-rodded Marshall DNA with modern focus.", 31240, 2540, ["Friedman"], ["crunch", "modern", "british"], ["standard", "lite", "feather"], "2026-07-12"],
+  ["JC-120 — Glass Cleans", "murkytones", "nam", "amp", "Roland Jazz Chorus, bright switch on. The flattest, glassiest solid-state clean ever made.", 18922, 1490, ["Roland"], ["clean", "solid-state", "glassy"], ["standard", "feather", "nano"], "2026-07-28"],
+  ["Rockerverb 50 — Citrus Grind", "brit_captures", "nam", "amp", "Orange Rockerverb dirty channel. Thick, saturated British grind with that Orange midrange bark.", 15733, 1180, ["Orange"], ["stoner", "crunch", "thick"], ["standard", "lite"], "2026-07-20"],
+  ["Ecstasy Blue — Boutique Drive", "labtones", "nam", "amp", "Bogner Ecstasy blue channel, plexi mode. Refined boutique overdrive with 3D depth.", 12048, 986, ["Bogner"], ["boutique", "drive", "dynamic"], ["standard", "lite", "feather"], "2026-07-31"],
+  ["Dumble ODS — Holy Grail", "vintage_vault", "nam", "amp", "Overdrive Special #124 clone, OD channel. The most-imitated boutique voice, captured direct.", 40120, 4980, ["Dumble"], ["boutique", "smooth", "grail"], ["standard"], "2026-06-02"],
+  ["Klon-Boosted Plexi Stack", "riffworks", "nam", "amp-cab", "Full-rig: Klon into '71 plexi into 4×12. Ready-to-play classic rock lead rig.", 24310, 1870, ["Marshall", "Klon"], ["full-rig", "boosted", "lead"], ["standard", "lite"], "2026-07-05"],
+  ["Twin Reverb — Pedal Platform", "amalgam_audio", "nam", "amp", "'72 Twin at stage volume. Massive clean headroom — the definitive pedal platform.", 33590, 2400, ["Fender"], ["clean", "headroom", "platform"], ["standard", "lite", "feather"], "2025-10-27"],
+  ["Matchless DC30 — Class A Sparkle", "brit_captures", "nam", "amp", "DC30 channel 1, EF86 voice. Chimey class-A sparkle that sits perfectly in a mix.", 9840, 812, ["Matchless"], ["boutique", "chime", "class-a"], ["standard", "lite"], "2026-08-01"],
+  ["Two-Rock Classic — Studio Clean", "labtones", "nam", "amp", "Classic Reverb Signature. Big, bold, hi-fi cleans with Dumble lineage.", 11220, 940, ["Two-Rock"], ["clean", "boutique", "hifi"], ["standard", "feather"], "2026-07-25"],
+  ["RAT on the Edge", "pedal_lab", "nam", "pedal", "ProCo RAT distortion pedal capture, filter at 2 o'clock. Stack it in front of a clean amp model.", 8102, 640, ["ProCo"], ["pedal", "distortion", "stackable"], ["standard", "feather", "nano"], "2026-07-15"],
+  ["Tube Screamer TS808 — Mid Hump", "pedal_lab", "nam", "pedal", "The green machine at drive 3 / level 7. The eternal boost. A2 capture, nano available.", 14980, 1120, ["Ibanez"], ["pedal", "overdrive", "boost"], ["standard", "nano"], "2026-06-18"],
+  ["4×12 Greenback — 57+121 Blend", "ir_foundry", "ir", "cab", "1971 basketweave with G12M-25s. SM57 + R-121 blended at the cone/cap seam. The rock IR.", 55214, 5310, ["Marshall", "Celestion"], ["4x12", "greenback", "blend"], ["standard"], "2025-12-01"],
+  ["2×12 Alnico Blue — Vintage 30 Mix", "ir_foundry", "ir", "cab", "Open-back 2×12, Blue + V30 mix. Chime with body — made for AC30-style captures.", 31780, 2670, ["Vox", "Celestion"], ["2x12", "alnico", "open-back"], ["standard"], "2026-02-14"],
+  ["Mesa OS 4×12 — V30 Tight", "cab_army", "ir", "cab", "Oversized Recto cab, quad V30s, 57 slightly off-axis. Tight low end for high gain.", 42350, 3240, ["Mesa/Boogie"], ["4x12", "v30", "metal"], ["standard"], "2026-01-09"],
+  ["1×12 Deluxe — Royer Room", "studio_irs", "ir", "cab", "Oxford 12K5-6 in a '65 Deluxe combo, R-121 plus a touch of room. Vintage air.", 19240, 1580, ["Fender", "Oxford"], ["1x12", "vintage", "room"], ["standard"], "2026-05-22"],
+  ["4×10 Bassman Tweed Stack", "vintage_vault", "ir", "cab", "All four Jensen P10Rs blended. Tweed spank and grind, captured with vintage ribbons.", 12490, 1050, ["Fender", "Jensen"], ["4x10", "tweed", "jensen"], ["standard"], "2026-06-30"],
+  ["2×12 Lone Star — Fat & Wide", "cab_army", "ir", "cab", "Mesa Lone Star 2×12, MC90s, stereo-wide dual-mic. Big fat cleans and leads.", 8420, 720, ["Mesa/Boogie"], ["2x12", "wide", "clean"], ["standard"], "2026-07-27"],
+  ["112 Blue Alnico — Close 57", "studio_irs", "ir", "cab", "Single Celestion Blue in a Deluxe-style cab. The chime cap, close-miked and bright.", 15110, 1310, ["Celestion"], ["1x12", "alnico", "bright"], ["standard"], "2026-07-19"],
+  ["4×12 Uber — T75/V30 X-Pattern", "ir_foundry", "ir", "cab", "Bogner Uberkab X-pattern quad. Scooped T75 sizzle plus V30 mids in one IR.", 22870, 1740, ["Bogner", "Celestion"], ["4x12", "x-pattern", "modern"], ["standard"], "2026-04-03"],
+  ["Pine 1×10 — Lo-Fi Character", "studio_irs", "ir", "cab", "Vintage pine 1×10 with a worn ceramic speaker. Boxy on purpose — instant character.", 4310, 386, ["Supro"], ["1x10", "lofi", "character"], ["standard"], "2026-08-02"],
+];
+
+/** Inline thumbnail: exercises the <img> path, which a data URI reaches even
+ *  though the WebView origin blocks remote images. */
+function thumbnail(from: string, to: string): string {
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96">` +
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0" stop-color="${from}"/><stop offset="1" stop-color="${to}"/>` +
+    `</linearGradient></defs><rect width="96" height="96" fill="url(#g)"/></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+/** Every third tone carries art, one carries a dead URL, the rest none — so the
+ *  drawer's three art paths (image, broken image, no image) are all reachable. */
+function artFor(index: number): string | null {
+  if (index === 4) return "https://tone3000.test/missing.png";
+  if (index % 3 !== 0) return null;
+  const hue = (index * 47) % 360;
+  return thumbnail(`hsl(${hue} 55% 42%)`, `hsl(${(hue + 40) % 360} 45% 12%)`);
+}
+
+function seedToTone(seed: ToneSeed, id: number, index: number): T3kTone {
+  const [title, username, format, gear, description, downloadsCount, favoritesCount, makes, tags, sizes, createdAt] = seed;
+  return {
+    id,
+    title,
+    description,
+    gear,
+    format,
+    imageUrl: artFor(index),
+    creator: { username, avatarUrl: null },
+    downloadsCount,
+    favoritesCount,
+    favorited: false,
+    makes,
+    tags,
+    sizes,
+    modelsCount: format === "ir" ? 1 + (title.length % 3) : sizes.length,
+    createdAt,
+  };
+}
+
+/* Each nam tone also ships a second take: the catalog has to span more than one
+   25-row page for the "Load more" row to be reachable in dev. */
+const CATALOG: T3kTone[] = TONE_SEEDS.flatMap((seed, i) => {
+  const tone = seedToTone(seed, 100 + i, i);
+  if (tone.format === "ir") return [tone];
+  return [
+    tone,
+    {
+      ...tone,
+      id: tone.id + 1000,
+      title: `${tone.title} (take 2)`,
+      downloadsCount: Math.round(tone.downloadsCount * 0.4),
+      favoritesCount: Math.round(tone.favoritesCount * 0.35),
+      imageUrl: artFor(i + 1),
+      createdAt: "2026-08-03",
+    },
+  ];
+});
+
+const favorites = new Set<number>([101, 113, 120, 1104]);
+
+/** Deterministic trending score — recent-ish downloads bias, stable per tone. */
+function trendScore(tone: T3kTone): number {
+  return (
+    tone.downloadsCount * (0.6 + ((tone.id * 37) % 100) / 100) +
+    Date.parse(tone.createdAt) / 3.6e7
+  );
+}
+
+function browseCatalog(request: T3kBrowseRequest): T3kBrowseResult {
+  const needle = request.query.trim().toLowerCase();
+  let rows = CATALOG.filter((t) =>
+    request.kind === "irs" ? t.format === "ir" : t.format === "nam",
+  );
+  if (request.shelf === "favorites") rows = rows.filter((t) => favorites.has(t.id));
+  if (request.gear) rows = rows.filter((t) => t.gear === request.gear);
+  if (needle)
+    rows = rows.filter((t) =>
+      [t.title, t.description, t.creator.username, ...t.makes, ...t.tags]
+        .join(" ")
+        .toLowerCase()
+        .includes(needle),
+    );
+
+  const sorted = [...rows];
+  if (request.sort === "newest")
+    sorted.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  else if (request.sort === "downloads")
+    sorted.sort((a, b) => b.downloadsCount - a.downloadsCount);
+  else sorted.sort((a, b) => trendScore(b) - trendScore(a));
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const page = Math.min(Math.max(1, request.page), totalPages);
+  return {
+    tones: sorted
+      .slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+      .map((t) => ({ ...t, favorited: favorites.has(t.id) })),
+    page,
+    totalPages,
+    total: sorted.length,
+  };
+}
+
+/** Model ids are derived from the tone id so a download's identity survives
+ *  re-listing a tone. */
+function listToneModels(toneId: number): T3kModel[] {
+  const tone = CATALOG.find((t) => t.id === toneId);
+  if (!tone) return [];
+  if (tone.format === "ir") {
+    return Array.from({ length: tone.modelsCount }, (_, i) => ({
+      id: toneId * 10 + i,
+      name: `${tone.title} — position ${i + 1}`,
+      modelUrl: `https://tone3000.test/m/${toneId * 10 + i}.wav`,
+      size: "standard",
+      architecture: "",
+      kind: "wav" as const,
+    }));
+  }
+  return tone.sizes.map((size, i) => ({
+    id: toneId * 10 + i,
+    name: `${tone.title} (${size})`,
+    modelUrl: `https://tone3000.test/m/${toneId * 10 + i}.nam`,
+    size,
+    architecture: "2",
+    kind: "nam" as const,
+  }));
+}
+
+/* Select-flow tones (the `t3kStartSelectFlow` path, unchanged): the last one has
+   no models, which the native UI failed silently on and the React UI toasts. */
 const T3K_TONES: { toneId: number; models: T3kModel[] }[] = [
-  {
-    toneId: 41207,
-    models: [
-      { id: 90211, name: "JCM800 2203 — Crunch (Standard)", modelUrl: "https://tone3000.test/m/90211.nam", size: "Standard", architecture: "WaveNet" },
-      { id: 90212, name: "JCM800 2203 — Crunch (Lite)", modelUrl: "https://tone3000.test/m/90212.nam", size: "Lite", architecture: "WaveNet" },
-      { id: 90213, name: "JCM800 2203 — Crunch (Feather)", modelUrl: "https://tone3000.test/m/90213.nam", size: "Feather", architecture: "LSTM" },
-    ],
-  },
-  {
-    toneId: 55810,
-    models: [
-      { id: 77104, name: "AC30 Top Boost — Edge (Standard)", modelUrl: "https://tone3000.test/m/77104.nam", size: "Standard", architecture: "WaveNet" },
-      { id: 77105, name: "AC30 Top Boost — Edge (Nano)", modelUrl: "https://tone3000.test/m/77105.nam", size: "Nano", architecture: "LSTM" },
-    ],
-  },
-  /* A zero-model tone: the inventory doc flags this as a silent failure today —
-     the React UI must surface a toast instead. */
+  { toneId: 101, models: listToneModels(101) },
+  { toneId: 102, models: listToneModels(102) },
   { toneId: 60002, models: [] },
 ];
 
@@ -323,8 +497,11 @@ let nextTone = 0;
 const downloads = new Map<number, number>();
 
 /** `?t3kfail` makes every simulated download die half-way, so the failure path
- *  (t3kError carrying a modelId, progress row cleared) is reachable in dev. */
-const failDownloads = new URLSearchParams(window.location.search).has("t3kfail");
+ *  (t3kError carrying a modelId, progress row cleared) is reachable in dev;
+ *  `?t3kfavfail` does the same for the optimistic favorite toggle. */
+const search = new URLSearchParams(window.location.search);
+const failDownloads = search.has("t3kfail");
+const failFavorites = search.has("t3kfavfail");
 
 function simulateDownload(model: T3kModel): void {
   if (downloads.has(model.id)) return;
@@ -345,12 +522,17 @@ function simulateDownload(model: T3kModel): void {
       return;
     }
     downloads.delete(model.id);
+    // `kind` routes the file exactly as the C++ downloader does: models/ for
+    // captures, irs/ for impulse responses.
+    const isIr = model.kind === "wav";
     const entry: FileEntry = {
-      path: `${MODELS_DIR}/${model.name}.nam`,
+      path: `${isIr ? IRS_DIR : MODELS_DIR}/${model.name}.${model.kind}`,
       name: model.name,
     };
-    if (!state.models.some((m) => m.path === entry.path)) {
-      state.models = [...state.models, entry];
+    const shelf = isIr ? state.irs : state.models;
+    if (!shelf.some((f) => f.path === entry.path)) {
+      if (isIr) state.irs = [...state.irs, entry];
+      else state.models = [...state.models, entry];
       emit("libraryChanged", { models: [...state.models], irs: [...state.irs] });
     }
     emit("t3kComplete", { modelId: model.id, path: entry.path });
@@ -561,13 +743,15 @@ export const mockBridge: Bridge = {
 
   t3kConfigure: async () => {
     await delay(null, 600); // native AlertWindow key prompt
-    state.t3k = { configured: true, authenticated: true };
+    state.t3k = { configured: true, authenticated: true, username: "mock_user" };
     emit("t3kStatus", { ...state.t3k });
     return {} satisfies ErrorResult;
   },
 
+  // Signing out forgets the tokens, not the publishable key (Tone3000Client::
+  // signOut) — which is also what makes the drawer's sign-in splash reachable.
   t3kSignOut: async () => {
-    state.t3k = { configured: false, authenticated: false };
+    state.t3k = { ...state.t3k, authenticated: false, username: null };
     await delay(null, 0);
     emit("t3kStatus", { ...state.t3k });
   },
@@ -587,5 +771,49 @@ export const mockBridge: Bridge = {
   t3kDownloadModel: async (model: T3kModel) => {
     await delay(null, 0);
     simulateDownload(model);
+  },
+
+  t3kSignIn: async () => {
+    if (!state.t3k.configured) {
+      await delay(null, 200);
+      emit("t3kError", { message: "Add your TONE3000 key in Settings first." });
+      return;
+    }
+    await delay(null, 800); // system browser round-trip
+    state.t3k = { ...state.t3k, authenticated: true, username: "mock_user" };
+    emit("t3kStatus", { ...state.t3k });
+  },
+
+  t3kBrowse: async (request: T3kBrowseRequest) => {
+    if (!state.t3k.authenticated)
+      return delay<T3kBrowseResult>({ error: "Not signed in to TONE3000." }, 80);
+    return delay(browseCatalog(request), 220);
+  },
+
+  t3kListModels: async (toneId) => {
+    const models = listToneModels(toneId);
+    if (models.length === 0)
+      return delay<T3kModelsResult>(
+        { error: "That tone has no downloadable files." },
+        180,
+      );
+    return delay<T3kModelsResult>({ models }, 180);
+  },
+
+  t3kSetFavorite: async (toneId, favorite) => {
+    if (failFavorites)
+      return delay<ErrorResult>({ error: "TONE3000 rejected the favorite." }, 150);
+    // PUT/DELETE /tones/{id}/favorite are idempotent, so the count only moves
+    // when the flag actually changes.
+    const changed = favorite !== favorites.has(toneId);
+    if (favorite) favorites.add(toneId);
+    else favorites.delete(toneId);
+    if (changed) {
+      for (const tone of CATALOG) {
+        if (tone.id === toneId)
+          tone.favoritesCount = Math.max(0, tone.favoritesCount + (favorite ? 1 : -1));
+      }
+    }
+    return delay<ErrorResult>({}, 150);
   },
 };

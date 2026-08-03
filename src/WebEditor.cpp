@@ -93,6 +93,52 @@ juce::var optionalVar (const std::optional<double>& value)
     return value.has_value() ? juce::var { *value } : juce::var();
 }
 
+/** The bridge spells "absent" as JSON null, never as an empty string. */
+juce::var nullableStringVar (const juce::String& value)
+{
+    return value.isNotEmpty() ? juce::var { value } : juce::var();
+}
+
+juce::var stringArrayVar (const juce::StringArray& values)
+{
+    juce::Array<juce::var> out;
+
+    for (const auto& value : values)
+        out.add (juce::var { value });
+
+    return out;
+}
+
+juce::var t3kModelVar (const Tone3000Client::Model& model)
+{
+    return makeObject ({ { "id",           model.id },
+                         { "name",         model.name },
+                         { "modelUrl",     model.modelUrl },
+                         { "size",         model.size },
+                         { "architecture", model.architecture },
+                         { "kind",         model.kind } });
+}
+
+juce::var t3kToneVar (const Tone3000Client::Tone& tone)
+{
+    return makeObject ({ { "id",             tone.id },
+                         { "title",          tone.title },
+                         { "description",    tone.description },
+                         { "gear",           tone.gear },
+                         { "format",         tone.format },
+                         { "imageUrl",       nullableStringVar (tone.imageUrl) },
+                         { "creator",        makeObject ({ { "username",  tone.creator.username },
+                                                           { "avatarUrl", nullableStringVar (tone.creator.avatarUrl) } }) },
+                         { "downloadsCount", tone.downloadsCount },
+                         { "favoritesCount", tone.favoritesCount },
+                         { "favorited",      tone.favorited },
+                         { "makes",          stringArrayVar (tone.makes) },
+                         { "tags",           stringArrayVar (tone.tags) },
+                         { "sizes",          stringArrayVar (tone.sizes) },
+                         { "modelsCount",    tone.modelsCount },
+                         { "createdAt",      tone.createdAt } });
+}
+
 //==============================================================================
 #if TUBAMP_BUNDLED_UI
 const char* mimeForExtension (const juce::String& extension)
@@ -334,7 +380,8 @@ juce::var WebEditor::irVar() const
 juce::var WebEditor::t3kVar() const
 {
     return makeObject ({ { "configured",    proc.tone3000.isConfigured() },
-                         { "authenticated", proc.tone3000.isAuthenticated() } });
+                         { "authenticated", proc.tone3000.isAuthenticated() },
+                         { "username",      nullableStringVar (proc.tone3000.getUsername()) } });
 }
 
 juce::var WebEditor::uiStateVar() const
@@ -708,6 +755,30 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                     complete (resultVar ({}));
                 }), false);
         })
+        .withNativeFunction ("t3kSignIn", [this] (auto&, auto complete)
+        {
+            complete ({});   // fire and forget: the result arrives as an event
+
+            if (! proc.tone3000.isConfigured())
+            {
+                emitT3kError ("Add your TONE3000 publishable key in Settings to sign in.");
+                return;
+            }
+
+            juce::Component::SafePointer<WebEditor> safeThis (this);
+
+            proc.tone3000.startSignIn (
+                [safeThis]
+                {
+                    if (safeThis != nullptr)
+                        safeThis->emitT3kStatus();   // now carries the username too
+                },
+                [safeThis] (juce::String error)
+                {
+                    if (safeThis != nullptr)
+                        safeThis->emitT3kError (error);
+                });
+        })
         .withNativeFunction ("t3kSignOut", [this] (auto&, auto complete)
         {
             proc.tone3000.signOut();
@@ -746,11 +817,7 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                     juce::Array<juce::var> models;
 
                     for (const auto& model : toneModels.models)
-                        models.add (makeObject ({ { "id",           model.id },
-                                                  { "name",         model.name },
-                                                  { "modelUrl",     model.modelUrl },
-                                                  { "size",         model.size },
-                                                  { "architecture", model.architecture } }));
+                        models.add (t3kModelVar (model));
 
                     safeThis->emit ("t3kToneSelected",
                                     makeObject ({ { "toneId", toneModels.toneId },
@@ -760,6 +827,97 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                 {
                     if (safeThis != nullptr)
                         safeThis->emitT3kError (error);
+                });
+        })
+        .withNativeFunction ("t3kBrowse", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            if (! proc.tone3000.isConfigured())
+            {
+                complete (resultVar ("Add your TONE3000 publishable key in Settings to browse."));
+                return;
+            }
+
+            Tone3000Client::BrowseRequest request;
+
+            if (auto* object = args[0].getDynamicObject())
+            {
+                request.kind  = object->getProperty ("kind").toString();
+                request.shelf = object->getProperty ("shelf").toString();
+                request.sort  = object->getProperty ("sort").toString();
+                request.query = object->getProperty ("query").toString();
+                request.gear  = object->getProperty ("gear").toString();   // null -> empty = all
+                request.page  = juce::jmax (1, (int) object->getProperty ("page"));
+            }
+
+            // Resolved from the client's message-thread callback, arbitrarily later.
+            juce::Component::SafePointer<WebEditor> safeThis (this);
+
+            proc.tone3000.browse (request,
+                [safeThis, complete] (Tone3000Client::TonePage page)
+                {
+                    if (safeThis == nullptr)
+                        return;
+
+                    juce::Array<juce::var> tones;
+
+                    for (const auto& tone : page.tones)
+                    {
+                        safeThis->toneIsIr[tone.id] = tone.format == "ir";
+                        tones.add (t3kToneVar (tone));
+                    }
+
+                    complete (makeObject ({ { "tones",      juce::var { tones } },
+                                            { "page",       page.page },
+                                            { "totalPages", page.totalPages },
+                                            { "total",      page.total } }));
+                },
+                [safeThis, complete] (juce::String error)
+                {
+                    if (safeThis != nullptr)
+                        complete (resultVar (error));
+                });
+        })
+        .withNativeFunction ("t3kListModels", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            const auto toneId = (juce::int64) args[0];
+            const auto entry = toneIsIr.find (toneId);
+            const auto isIr = entry != toneIsIr.end() && entry->second;
+
+            juce::Component::SafePointer<WebEditor> safeThis (this);
+
+            proc.tone3000.listToneModels (toneId, isIr,
+                [safeThis, complete] (juce::Array<Tone3000Client::Model> models)
+                {
+                    if (safeThis == nullptr)
+                        return;
+
+                    juce::Array<juce::var> out;
+
+                    for (const auto& model : models)
+                        out.add (t3kModelVar (model));
+
+                    complete (makeObject ({ { "models", juce::var { out } } }));
+                },
+                [safeThis, complete] (juce::String error)
+                {
+                    if (safeThis != nullptr)
+                        complete (resultVar (error));
+                });
+        })
+        .withNativeFunction ("t3kSetFavorite", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            juce::Component::SafePointer<WebEditor> safeThis (this);
+
+            proc.tone3000.setFavorite ((juce::int64) args[0], (bool) args[1],
+                [safeThis, complete]
+                {
+                    if (safeThis != nullptr)
+                        complete (resultVar ({}));
+                },
+                [safeThis, complete] (juce::String error)
+                {
+                    if (safeThis != nullptr)
+                        complete (resultVar (error));
                 });
         })
         .withNativeFunction ("t3kDownloadModel", [this] (const juce::Array<juce::var>& args, auto complete)
@@ -775,6 +933,7 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                 model.modelUrl     = object->getProperty ("modelUrl").toString();
                 model.size         = object->getProperty ("size").toString();
                 model.architecture = object->getProperty ("architecture").toString();
+                model.kind         = object->getProperty ("kind").toString();
             }
 
             if (model.modelUrl.isEmpty())
@@ -785,8 +944,10 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
 
             juce::Component::SafePointer<WebEditor> safeThis (this);
             const auto modelId = model.id;
+            const auto destDir = model.kind == "wav" ? ModelLibrary::getIrsDir()
+                                                     : ModelLibrary::getModelsDir();
 
-            proc.tone3000.downloadModel (model, ModelLibrary::getModelsDir(),
+            proc.tone3000.downloadModel (model, destDir,
                 [safeThis, modelId] (float progress)
                 {
                     if (safeThis != nullptr)
@@ -805,8 +966,9 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                         return;
                     }
 
-                    // The client writes straight to disk, so ModelLibrary never fired.
-                    // The UI decides whether to loadModel(path) afterwards.
+                    // The client writes straight to disk, so ModelLibrary never fired;
+                    // the payload covers both dirs. The UI decides whether to
+                    // loadModel/loadIr(path) afterwards.
                     safeThis->emitLibraryChanged();
                     safeThis->emit ("t3kComplete",
                                     makeObject ({ { "modelId", modelId },

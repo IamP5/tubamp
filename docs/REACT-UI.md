@@ -90,9 +90,16 @@ setPresetFavorite(path: string, favorite: boolean): void
 abCapture(slot: 0 | 1): void
 abRecall(slot: 0 | 1): void
 t3kConfigure(): { error?: string }          // native AlertWindow prompt for publishable key
+                                            // (optional override — a default client_id is baked
+                                            // in via CMake TUBAMP_T3K_CLIENT_ID, so t3k is
+                                            // configured out of the box; empty input restores it)
 t3kSignOut(): void
 t3kStartSelectFlow(): void                  // async; results arrive as events
 t3kDownloadModel(model: T3kModel): void     // async; progress/completion as events
+t3kSignIn(): void                           // standard OAuth flow; t3kStatus/t3kError follow
+t3kBrowse(req: T3kBrowseRequest): T3kBrowseResult      // one catalog page (or {error})
+t3kListModels(toneId: number): { models?: T3kModel[]; error?: string }
+t3kSetFavorite(toneId: number, favorite: boolean): { error?: string }
 ```
 
 ```ts
@@ -106,9 +113,16 @@ interface UiState {
   presets: PresetInfo[]         // { name, path, favorite, tags }
   currentPresetName: string
   ab: { activeSlot: 0 | 1; aHasState: boolean; bHasState: boolean }
-  t3k: { configured: boolean; authenticated: boolean }
+  t3k: { configured: boolean; authenticated: boolean; username: string | null }
 }
-interface T3kModel { id: number; name: string; modelUrl: string; size: string; architecture: string }
+interface T3kModel { id: number; name: string; modelUrl: string; size: string;
+                     architecture: string; kind: "nam" | "wav" }
+// browser types (full definitions in ui/src/bridge/types.ts):
+// T3kBrowseRequest { kind: "models"|"irs"; shelf: "all"|"favorites";
+//                    sort: "trending"|"newest"|"downloads"; query; gear; page }
+// T3kTone { id, title, description, gear, format, imageUrl, creator{username,
+//           avatarUrl}, downloadsCount, favoritesCount, favorited, makes, tags,
+//           sizes, modelsCount, createdAt }
 ```
 
 ### Events (C++ → JS, `emitEventIfBrowserIsVisible`)
@@ -186,6 +200,27 @@ Fixed 1120×700 viewport, `--bg-app` with subtle radial wash, dot-grid stage.
 - **Overlays**: settings sheet, T3K tone-selected model list w/ download
   progress, toasts for errors (replaces silent failures where inventory doc
   flags them — e.g. zero-models tone now gets a toast).
+- **TONE3000 browser (`features/t3k-browser/`)**: a 380px inspector drawer
+  docked to the right edge, y=48 to the app bottom, spring slide-in, NO
+  backdrop — the board stays visible and interactive (validated by prototype
+  variant C, branch `prototype/t3k-browser`). Two stacked levels with push
+  navigation: level 1 browse (T3K mark + close; Models/IRs segmented; sort
+  menu; filter chips — favorites, gear; optional debounced search field;
+  compact 64px rows: 44px art, title, creator+gear+A2/IR badge, counts,
+  heart), level 2 tone detail (back chevron, art banner with "IN CHAIN" pill
+  when the loaded model belongs to the tone, creator/stats/heart, description,
+  make/tag chips, file rows with Get → progress → Loaded). Persistent footer:
+  "Powered by TONE3000" + loaded capture name. Opened from AmpBody (models
+  tab) and CabBody (IRs tab); unauthenticated state shows a TONE3000
+  partnership splash with Sign in (t3kSignIn) / key setup (t3kConfigure).
+  Tone art: `imageUrl` with a gradient placeholder fallback (remote images may
+  be blocked inside the WKWebView origin). Downloads auto-load on completion
+  (loadModel/loadIr by `model.kind`). Search is optional sugar — Logic gives
+  the WebView no keyboard; chips + sort must carry browsing alone.
+  Constraints from docs/research/tone3000-api.md: always `architecture=2` for
+  NAM (omitting excludes A2), `format=ir` for IRs, page_size 25, debounce +
+  per-session response cache C++-side only (no persistent catalog cache, ToS),
+  TONE3000 branding + creator attribution always visible.
 
 Knob primitive: rotary 270°, vertical drag (shift = fine), double-click = reset
 to default, wheel nudge; Geist Mono tabular readout; gesture → begin/endGesture.

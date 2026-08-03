@@ -16,6 +16,7 @@ import {
   type FileEntry,
   type ModelInfo,
   type PresetInfo,
+  type T3kBrowseKind,
   type T3kModel,
   type T3kState,
   type UiState,
@@ -35,6 +36,19 @@ export interface Toast {
 export interface T3kToneResult {
   toneId: number;
   models: T3kModel[];
+}
+
+/** What a download in flight is for — the completion event only carries a path. */
+export interface T3kPendingDownload {
+  name: string;
+  kind: T3kModel["kind"];
+  /** null for the select flow, which has no browser row to credit. */
+  toneId: number | null;
+}
+
+export interface T3kBrowserState {
+  open: boolean;
+  kind: T3kBrowseKind;
 }
 
 export interface AppState {
@@ -57,6 +71,15 @@ export interface AppState {
   tone: T3kToneResult | null;
   /** modelId → progress in [0,1] while a TONE3000 download is in flight. */
   downloads: Record<number, number>;
+  /** modelId → what that download is, for the completion handler. */
+  t3kPending: Record<number, T3kPendingDownload>;
+  /**
+   * toneId → paths this session downloaded from that tone. Session-scoped on
+   * purpose: nothing on disk records which tone a file came from, so the
+   * drawer's "IN CHAIN" pill can only be honest about downloads it saw.
+   */
+  t3kDownloaded: Record<number, string[]>;
+  browser: T3kBrowserState;
   toasts: Toast[];
 }
 
@@ -87,8 +110,11 @@ export interface AppActions {
   t3kConfigure(): Promise<void>;
   t3kSignOut(): Promise<void>;
   t3kStartSelectFlow(): Promise<void>;
-  t3kDownloadModel(model: T3kModel): Promise<void>;
+  /** `toneId` credits the download to a browser row; omit it for the select flow. */
+  t3kDownloadModel(model: T3kModel, toneId?: number): Promise<void>;
   dismissTone(): void;
+  openT3kBrowser(kind: T3kBrowseKind): void;
+  closeT3kBrowser(): void;
 
   /* toasts */
   toast(message: string, kind?: ToastKind, duration?: number): number;
@@ -123,10 +149,13 @@ const initialState: AppState = {
   presets: [],
   currentPresetName: "",
   ab: { activeSlot: 0, aHasState: false, bHasState: false },
-  t3k: { configured: false, authenticated: false },
+  t3k: { configured: false, authenticated: false, username: null },
   selected: null,
   tone: null,
   downloads: {},
+  t3kPending: {},
+  t3kDownloaded: {},
+  browser: { open: false, kind: "models" },
   toasts: [],
 };
 
@@ -282,13 +311,31 @@ export const useStore = create<Store>()((set, get) => {
       await bridge.t3kStartSelectFlow();
     },
 
-    async t3kDownloadModel(model) {
-      set((s) => ({ downloads: { ...s.downloads, [model.id]: 0 } }));
+    async t3kDownloadModel(model, toneId) {
+      set((s) => ({
+        downloads: { ...s.downloads, [model.id]: 0 },
+        t3kPending: {
+          ...s.t3kPending,
+          [model.id]: {
+            name: model.name,
+            kind: model.kind,
+            toneId: toneId ?? null,
+          },
+        },
+      }));
       await bridge.t3kDownloadModel(model);
     },
 
     dismissTone() {
       set({ tone: null });
+    },
+
+    openT3kBrowser(kind) {
+      set({ browser: { open: true, kind } });
+    },
+
+    closeT3kBrowser() {
+      set((s) => ({ browser: { ...s.browser, open: false } }));
     },
 
     /* ───────────────────────────── toasts ────────────────────────────── */
@@ -306,6 +353,29 @@ export const useStore = create<Store>()((set, get) => {
 });
 
 /* ───────────────────────── bridge event wiring ─────────────────────────── */
+
+/**
+ * Load a finished download into the slot its `kind` names — a capture goes to
+ * the amp, an IR to the cab. Goes to the bridge directly rather than through
+ * `loadModel`/`loadIr` so both outcomes report with the downloaded file's name,
+ * which is known here and not yet guaranteed to be in the library snapshot.
+ */
+async function autoLoad(
+  path: string,
+  pending: T3kPendingDownload | undefined,
+): Promise<void> {
+  const { toast, models } = useStore.getState();
+  const res =
+    pending?.kind === "wav"
+      ? await bridge.loadIr(path)
+      : await bridge.loadModel(path);
+  if (res.error) {
+    toast(res.error, "error", 6000);
+    return;
+  }
+  const name = pending?.name ?? models.find((m) => m.path === path)?.name;
+  toast(name ? `Loaded ${name}` : "Loaded", "success", 2500);
+}
 
 let wired = false;
 
@@ -356,14 +426,25 @@ export function connectStore(): () => void {
     ),
 
     bridge.on("t3kComplete", ({ modelId, path }) => {
+      const pending = get().t3kPending[modelId];
       set((s) => {
         const downloads = { ...s.downloads };
+        const t3kPending = { ...s.t3kPending };
         delete downloads[modelId];
-        return { downloads };
+        delete t3kPending[modelId];
+        const toneId = pending?.toneId;
+        const t3kDownloaded =
+          toneId == null
+            ? s.t3kDownloaded
+            : {
+                ...s.t3kDownloaded,
+                [toneId]: [...(s.t3kDownloaded[toneId] ?? []), path],
+              };
+        return { downloads, t3kPending, t3kDownloaded, tone: null };
       });
-      // C++ only downloads + refreshes the library; loading is the UI's call.
-      void get().loadModel(path);
-      set({ tone: null });
+      // C++ only downloads + refreshes the library; loading is the UI's call,
+      // and `kind` decides which slot the file belongs in.
+      void autoLoad(path, pending);
     }),
 
     bridge.on("t3kError", ({ message, modelId }) => {
@@ -372,8 +453,10 @@ export function connectStore(): () => void {
       if (modelId !== undefined) {
         set((s) => {
           const downloads = { ...s.downloads };
+          const t3kPending = { ...s.t3kPending };
           delete downloads[modelId];
-          return { downloads };
+          delete t3kPending[modelId];
+          return { downloads, t3kPending };
         });
       }
       get().toast(message, "error", 6000);
