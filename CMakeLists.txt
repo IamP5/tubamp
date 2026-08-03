@@ -85,6 +85,18 @@ endif()
 option(TUBAMP_WEBUI_DEV "Load the Vite dev server (http://localhost:5173) instead of the bundled UI"
        ${tubamp_webui_dev_default})
 
+# TONE3000 OAuth client_id baked into the binary so users need zero setup.
+# Publishable keys (t3k_pub_...) are designed to be safe client-side — they only
+# identify the app; user auth still happens per-user via PKCE. A key entered in
+# Settings (t3kConfigure) overrides this at runtime. Rotate via the cache entry
+# or the TUBAMP_T3K_CLIENT_ID environment variable at configure time.
+set(tubamp_t3k_client_id_default "t3k_pub_U1hZrLKf19O7-jl0wTbPyhERpluPpFcj")
+if(DEFINED ENV{TUBAMP_T3K_CLIENT_ID})
+    set(tubamp_t3k_client_id_default "$ENV{TUBAMP_T3K_CLIENT_ID}")
+endif()
+set(TUBAMP_T3K_CLIENT_ID "${tubamp_t3k_client_id_default}" CACHE STRING
+    "TONE3000 publishable key (OAuth client_id) baked into the plugin")
+
 # A dev-server build is useless to a host and must never overwrite the installed
 # shipping component, so only release-shaped builds copy themselves into
 # ~/Library/Audio/Plug-Ins/Components. juce_add_plugin consumes this at call time.
@@ -109,8 +121,10 @@ endif()
 # Plugin target
 # ---------------------------------------------------------------------------
 juce_add_plugin(tubamp
-    COMPANY_NAME                "Tuba"
-    BUNDLE_ID                   "com.tuba.tubamp"
+    COMPANY_NAME                "t0audio"
+    BUNDLE_ID                   "com.t0audio.tubamp"
+    # Frozen: hosts identify the AU as aufx/Tamp/Tuba (saved sessions, auval).
+    # The display name above can change; this code cannot.
     PLUGIN_MANUFACTURER_CODE    Tuba
     PLUGIN_CODE                 Tamp
     FORMATS                     AU Standalone
@@ -216,7 +230,8 @@ target_compile_definitions(tubamp PUBLIC
     TUBAMP_HEADLESS=0
     TUBAMP_BUNDLED_UI=$<BOOL:${TUBAMP_BUNDLED_UI}>
     TUBAMP_WEBUI_DEV=$<BOOL:${TUBAMP_WEBUI_DEV}>
-    TUBAMP_WEBUI_ZIP_PREFIX="${TUBAMP_WEBUI_ZIP_PREFIX}")
+    TUBAMP_WEBUI_ZIP_PREFIX="${TUBAMP_WEBUI_ZIP_PREFIX}"
+    TUBAMP_T3K_CLIENT_ID="${TUBAMP_T3K_CLIENT_ID}")
 
 target_link_libraries(tubamp
     PRIVATE
@@ -241,7 +256,8 @@ target_compile_definitions(tubamp_smoke PRIVATE
     JUCE_USE_CURL=0
     JUCE_MODAL_LOOPS_PERMITTED=1
     JUCE_STANDALONE_APPLICATION=1
-    TUBAMP_HEADLESS=1)
+    TUBAMP_HEADLESS=1
+    TUBAMP_T3K_CLIENT_ID="${TUBAMP_T3K_CLIENT_ID}")
 target_link_libraries(tubamp_smoke PRIVATE
     nam_core
     juce::juce_audio_utils

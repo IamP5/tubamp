@@ -44,7 +44,7 @@ killall -9 AudioComponentRegistrar   # force Logic to rescan
 auval -v aufx Tamp Tuba              # validate
 ```
 
-Open Logic Pro → insert **Audio Units → Tuba → tubamp** on an audio track.
+Open Logic Pro → insert **Audio Units → t0audio → tubamp** on an audio track.
 A Standalone app target (`tubamp_Standalone`) is also available for quick testing.
 
 ### Editor (web UI)
