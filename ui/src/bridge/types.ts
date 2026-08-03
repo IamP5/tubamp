@@ -264,6 +264,36 @@ export interface FxSlotState {
   params: FxParamInfo[];
 }
 
+/* ─────────────────────────── window size & embedding ───────────────────────── */
+
+export interface EditorSize {
+  width: number;
+  height: number;
+}
+
+export interface EditorSizeLimits extends EditorSize {
+  minWidth: number;
+  minHeight: number;
+  /** Largest size that actually fits the display the window is on — not an
+   *  arbitrary ceiling. Embedding a plugin bigger than this is refused. */
+  maxWidth: number;
+  maxHeight: number;
+}
+
+/** Which slot's plugin is currently drawn inside our window, and how big its editor
+ *  turned out to be. `slot` is -1 when nothing is embedded. */
+export interface FxEmbedState {
+  slot: FxSlotIndex | -1;
+  /** The hosted editor's own size. Provisional: some plugins only report a real
+   *  size once their view has been attached to a window, and a few change it
+   *  afterwards, so this can arrive more than once. */
+  width: number;
+  height: number;
+  /** Non-empty when embedding was refused — the plugin needs more room than the
+   *  display allows. The UI falls back to opening it in its own window. */
+  error: string;
+}
+
 export interface UiState {
   /** Chain tokens in order; `[]` = deliberately empty chain (the "-" sentinel). */
   chainOrder: string[];
@@ -277,6 +307,8 @@ export interface UiState {
   t3k: T3kState;
   /** Always three entries, indexed by slot. */
   fxSlots: FxSlotState[];
+  editorSize: EditorSizeLimits;
+  fxEmbed: FxEmbedState;
   /** False in builds compiled without plugin hosting; the FX panels then explain
    *  themselves instead of showing an empty picker. */
   fxSupported: boolean;
@@ -385,6 +417,11 @@ export interface BridgeEventMap {
    *  texts are index-aligned with that slot's `params`. Separate from
    *  `fxSlotChanged` because it fires at meter rate and must not churn the list. */
   fxParamValues: { slot: FxSlotIndex; values: number[]; texts: string[] };
+  /** The window changed size — including when we changed it ourselves, so the
+   *  page always has one source of truth. */
+  editorSizeChanged: EditorSizeLimits;
+  /** An embed mounted, unmounted, was refused, or reported a new size. */
+  fxEmbedChanged: FxEmbedState;
 }
 
 export type BridgeEventName = keyof BridgeEventMap;
@@ -494,4 +531,44 @@ export interface Bridge {
   /** Which slot should receive `fxParamValues` pushes; -1 for none. Set as the
    *  selected block changes so we only meter what is on screen. */
   fxWatchSlot(slot: FxSlotIndex | -1): Promise<void>;
+
+  /* --- window size ---------------------------------------------------------
+   *
+   * The window is resized by US, never by the host. JUCE's AU wrapper reverts a
+   * host-driven resize on the next parentSizeChanged, but propagates a
+   * plugin-driven one through childBoundsChanged -> resizeHostWindow. And the
+   * usual ResizableCornerComponent is useless here: it is a JUCE-painted child,
+   * and the WebView is a native view that covers it. So the grip is drawn in the
+   * page and calls setEditorSize.
+   */
+
+  getEditorSize(): Promise<EditorSizeLimits>;
+  /** Clamped to the limits; resolves with what was actually applied. */
+  setEditorSize(width: number, height: number): Promise<EditorSize>;
+
+  /* --- embedding a hosted plugin's own editor -------------------------------
+   *
+   * The hosted editor is a native view that is a SIBLING of the WebView, not
+   * part of the page. It composites above it, so the page cannot draw over the
+   * rectangle it occupies — treat that rectangle as a hole: reserve it, keep
+   * overlays clear of it, and hide it (fxSetEmbedVisible) whenever something
+   * must appear on top.
+   */
+
+  /** -1 unmounts. Resolves with an error when the plugin cannot fit the display,
+   *  in which case the caller should fall back to fxOpenEditor. */
+  fxSetEmbedSlot(slot: FxSlotIndex | -1): Promise<ErrorResult>;
+  /** Where the hole is, in CSS pixels relative to the page origin. */
+  fxSetEmbedRect(x: number, y: number, width: number, height: number): Promise<void>;
+  /** Hide without unmounting, for as long as an overlay needs to be on top. */
+  fxSetEmbedVisible(visible: boolean): Promise<void>;
+  /**
+   * The smallest window that can still show the current embed — the plugin's own
+   * size plus whatever chrome the page puts around it. Passing it here rather than
+   * resizing on demand is deliberate: it becomes the resize floor, so the grip
+   * simply stops at the embed's minimum instead of a grow-loop fighting the drag.
+   * Also grows the window once, immediately, if it is currently smaller.
+   * `0, 0` releases the floor.
+   */
+  fxSetEmbedMinWindow(width: number, height: number): Promise<void>;
 }

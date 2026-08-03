@@ -17,6 +17,18 @@ body,
   padding: 0;
 }
 
+/*
+  Centres the app shell inside the viewport. A no-op in the plugin, where the
+  shell is 100%×100% of a WebView that is exactly the window — it exists for the
+  mock bridge, whose "window" is a box smaller than the browser viewport so the
+  resize grip has something to actually resize (see features/resize).
+*/
+#root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 body {
   background: var(--bg-app);
   color: var(--text-primary);

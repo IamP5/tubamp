@@ -6,6 +6,7 @@ import { cx } from "./cx";
 import { duration, ease, spring } from "../theme/motion";
 import { IconButton } from "./Button";
 import { CloseIcon } from "./icons";
+import { useBlockingOverlay } from "./overlay";
 
 export interface ModalProps {
   open: boolean;
@@ -19,6 +20,13 @@ export interface ModalProps {
 }
 
 /** Centered dialog: fast dismissal, slightly slower deliberate entrance. */
+/** Holds the blocking-overlay registration for exactly as long as it is mounted —
+ *  which, inside AnimatePresence, is until the exit animation has finished. */
+function BlockingWhileMounted() {
+  useBlockingOverlay(true);
+  return null;
+}
+
 export function Modal({
   open,
   onClose,
@@ -29,6 +37,12 @@ export function Modal({
   className,
 }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+
+  /* The backdrop is animated (so it cannot be a <Scrim>), but it covers the whole
+     page just the same — declare it. Registered from inside the animated subtree
+     rather than on `open`, because an embedded plugin is a native view drawn above
+     the page: unhiding it the instant `open` flips false pops it back over a
+     backdrop that is still fading, and the modal appears to vanish behind it. */
 
   useEffect(() => {
     if (!open) return;
@@ -53,6 +67,7 @@ export function Modal({
             if (e.target === e.currentTarget) onClose();
           }}
         >
+          <BlockingWhileMounted />
           <motion.div
             ref={panelRef}
             role="dialog"

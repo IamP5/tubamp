@@ -284,6 +284,18 @@ void TubampAudioProcessor::clearFxPlugin (int slot)
     notifyFxSlotChanged (slot);
 }
 
+juce::Point<int> TubampAudioProcessor::getEditorSize() const
+{
+    const juce::ScopedLock sl (editorSizeLock);
+    return editorSize;
+}
+
+void TubampAudioProcessor::setEditorSize (juce::Point<int> size)
+{
+    const juce::ScopedLock sl (editorSizeLock);
+    editorSize = size;
+}
+
 juce::AudioProcessor* TubampAudioProcessor::getFxInstance (int slot)
 {
     return fxHost.peekInstance (slot);
@@ -1087,6 +1099,12 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
                       chain::toString (chain::unpack (packedChain.load (std::memory_order_relaxed))),
                       nullptr);
 
+    if (const auto size = getEditorSize(); size.x > 0 && size.y > 0)
+    {
+        root.setProperty ("editorWidth", size.x, nullptr);
+        root.setProperty ("editorHeight", size.y, nullptr);
+    }
+
     root.appendChild (apvts.copyState(), nullptr);
     root.appendChild (fxSlotsTree(), nullptr);
 
@@ -1108,6 +1126,9 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
 
     if (auto paramState = root.getChildWithName (apvts.state.getType()); paramState.isValid())
         apvts.replaceState (paramState);
+
+    setEditorSize ({ (int) root.getProperty ("editorWidth", 0),
+                     (int) root.getProperty ("editorHeight", 0) });
 
     const juce::String modelPath = root.getProperty ("modelPath", juce::String()).toString();
     const juce::String irPath = root.getProperty ("irPath", juce::String()).toString();

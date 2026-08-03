@@ -54,7 +54,7 @@ import {
   Terminal,
   absentBlocks,
 } from "./LaneNodes";
-import { CARD_H, DOCK_INSET, computeSlots, totalWidth } from "./layout";
+import { CARD_H, computeSlots, measureDockInset, totalWidth } from "./layout";
 import { useNodeMotion } from "./nodes";
 import { useBlockToggles, bypassedBlocks } from "./useBlockToggles";
 import { useChainDrag } from "./useChainDrag";
@@ -160,6 +160,10 @@ export function Board() {
   );
   const content = useMemo(() => ({ w: total, h: CARD_H + 56 }), [total]);
 
+  /* Read off `--dock-inset` rather than restated here (see ./layout.ts).
+     Memoised and constant, so it is a plain value and not state. */
+  const dockInset = measureDockInset();
+
   const {
     containerRef: stageRef,
     panX,
@@ -173,7 +177,7 @@ export function Board() {
     zoomBy,
     zoomTo,
     fit,
-  } = useStageTransform(content, reduced, DOCK_INSET);
+  } = useStageTransform(content, reduced, dockInset);
   const getZoom = useCallback(() => zoom.get(), [zoom]);
 
   const drag = useChainDrag({

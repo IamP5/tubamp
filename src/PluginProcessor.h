@@ -151,6 +151,12 @@ public:
 
     FxCatalog fxCatalog;
 
+    /** Last editor size, so reopening the window restores it. Deliberately part of the
+        plugin's own state and NOT of a preset: a preset is a sound, and recalling one
+        should never resize the user's window. Zero means "never set". */
+    juce::Point<int> getEditorSize() const;
+    void setEditorSize (juce::Point<int> size);
+
     juce::AudioProcessorValueTreeState apvts;
     NamEngine namEngine;
     FxHost fxHost;
@@ -217,6 +223,10 @@ private:
     /** Set when prepareToPlay saw a configuration change that invalidated the hosted
         instances; drained by handleAsyncUpdate on the message thread. */
     std::atomic<bool> fxRebuildPending { false };
+
+    /** Guards editorSize, which getStateInformation may read off the message thread. */
+    mutable juce::CriticalSection editorSizeLock;
+    juce::Point<int> editorSize;
 
     /** Message thread: (re)instantiates the plugin assigned to a slot from its record,
         restoring `state` into it. No-op for an unoccupied slot. */

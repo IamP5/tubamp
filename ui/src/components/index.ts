@@ -11,6 +11,16 @@ export { Tooltip } from "./Tooltip";
 export type { TooltipProps } from "./Tooltip";
 export { Modal } from "./Modal";
 export type { ModalProps } from "./Modal";
+export {
+  Scrim,
+  useBlockingOverlay,
+  onBlockingOverlaysChange,
+  blockingOverlaysOpen,
+  setEmbedHole,
+  embedHole,
+  useEmbedHole,
+  type HoleRect,
+} from "./overlay";
 export { Toaster } from "./Toast";
 export { Meter } from "./Meter";
 export type { MeterProps } from "./Meter";

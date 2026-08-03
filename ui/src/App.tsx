@@ -1,8 +1,10 @@
 /**
  * App shell — docs/REACT-UI.md §UX structure.
  *
- * Fixed 1120×700: header (48) · board (fills) · param dock (overlay card on the
- * board's bottom edge) · footer (56). The board is the app; the dock floats over
+ * Fluid: header (48) · board (fills) · param dock (overlay card on the board's
+ * bottom edge) · footer (56). The bands are fixed and everything spare goes to
+ * the board — see theme/tokens.css §App metrics for what grows and why, and for
+ * the derivation of the minimum size. The board is the app; the dock floats over
  * it rather than stealing layout, and both are mounted only once the first
  * `getUiState()` has resolved so nothing renders against empty state.
  *
@@ -11,19 +13,23 @@
  *  - global `contextmenu` suppression (Logic's WebView host has crashed on
  *    native context menus; every menu in this UI is ours),
  *  - the entrance choreography (motion-design.md §2.1),
- *  - Logic's "touch to select" parameter-under-mouse reporting.
+ *  - Logic's "touch to select" parameter-under-mouse reporting,
+ *  - the window's own corner grip, which has to live in the page (features/
+ *    resize explains why there is nowhere else to put it).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import s from "./App.module.css";
 import { bridge, isMockBridge } from "./bridge";
 import { useStore } from "./store";
-import { Toaster } from "./components";
+import { Toaster, cx } from "./components";
 import { duration, ease, spring } from "./theme/motion";
 import { Header } from "./features/header";
 import { Board } from "./features/board";
+import { FxEmbedStage } from "./features/embed";
 import { Panel } from "./features/panel";
 import { Footer } from "./features/footer";
+import { ResizeGrip, useEmulatedWindow } from "./features/resize";
 import { SettingsSheet } from "./features/settings";
 import { T3kBrowser } from "./features/t3k-browser";
 
@@ -33,6 +39,7 @@ const PANEL_DELAY = 0.28;
 export function App() {
   const hydrate = useStore((st) => st.hydrate);
   const ready = useStore((st) => st.ready);
+  const embedded = useStore((st) => st.fxEmbed.slot !== -1);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -62,9 +69,14 @@ export function App() {
     [],
   );
 
+  /* No-op under the real bridge, where the shell already is the window. */
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEmulatedWindow(rootRef);
+
   return (
     <div
-      className={s.root}
+      ref={rootRef}
+      className={cx(s.root, isMockBridge && s.rootMock)}
       onMouseMove={(e) => paramIndexUpdater.handleMouseMove(e.nativeEvent)}
     >
       <motion.header
@@ -83,7 +95,12 @@ export function App() {
         animate={{ opacity: 1 }}
         transition={{ duration: duration.fast, ease: ease.out }}
       >
-        <div className={s.board}>{ready && <Board />}</div>
+        {/* The board stays mounted under an embed so its pan/zoom survives;
+            `inert` because the panel above it is opaque but not a focus trap. */}
+        <div className={s.board} inert={embedded}>
+          {ready && <Board />}
+        </div>
+        {ready && <FxEmbedStage />}
         <div className={s.dock}>
           {ready && (
             <motion.div
@@ -117,6 +134,7 @@ export function App() {
 
       <SettingsSheet open={settingsOpen} onClose={closeSettings} />
       <Toaster />
+      <ResizeGrip />
 
       {isMockBridge && <span className={s.mockBadge}>mock bridge</span>}
     </div>

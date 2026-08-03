@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=1120, initial-scale=1" />
+    <!-- The editor is fluid and the WebView is exactly the window: the layout
+         viewport must be the real one. `width=1120` used to pin it to the old
+         fixed editor and would silently scale every other size. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <title>tubamp</title>
     <!-- Inline favicon: the resource provider serves no /favicon.ico, and a

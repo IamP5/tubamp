@@ -26,6 +26,7 @@ import {
   GearIcon,
   IconButton,
   SaveIcon,
+  Scrim,
   Segmented,
   StarIcon,
   Tooltip,
@@ -227,7 +228,7 @@ function PresetMenu({
     <AnimatePresence>
       {open && (
         <>
-          <div className={kit.menuScrim} onPointerDown={onClose} />
+          <Scrim className={kit.menuScrim} onPointerDown={onClose} />
           <motion.div
             ref={menuRef}
             role="menu"

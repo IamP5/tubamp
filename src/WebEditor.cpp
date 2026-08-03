@@ -66,6 +66,17 @@ static_assert (std::size (kComboIds) == 2, "2 choice params are frozen");
     is worth when the plugin's own window is one click away. */
 constexpr int kMaxHostedParams = 256;
 
+// Editor geometry. The window used to be frozen at 1120x700; it is now resizable, so
+// these are a starting point and a sane range rather than the truth.
+constexpr int kDefaultEditorWidth = 1120, kDefaultEditorHeight = 700;
+// Floor derived from the content, not picked: header + footer + the param dock + a
+// board band tall enough to show a card, and wide enough for the TONE3000 drawer to
+// open without covering the whole lane.
+constexpr int kMinEditorWidth = 900, kMinEditorHeight = 600;
+// Ceiling only to stop a stray drag creating an absurd window; large enough for any
+// hosted plugin editor measured so far.
+constexpr int kMaxEditorWidth = 3200, kMaxEditorHeight = 2000;
+
 //==============================================================================
 juce::var makeObject (std::initializer_list<std::pair<const char*, juce::var>> props)
 
@@ -317,6 +328,14 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
         if (gestureSlot == slot)
             endOutstandingFxGesture();
 
+        // Both places a hosted editor can live. An embedded one is just as fatal to
+        // leave behind as a windowed one: the instance behind it is about to die.
+        if (embedSlot == slot)
+        {
+            unmountEmbed();
+            emitEmbedChanged();
+        }
+
         closeFxWindow (slot);
     };
 
@@ -337,8 +356,16 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
     web->goToURL (juce::WebBrowserComponent::getResourceProviderRoot());
    #endif
 
-    setSize (1120, 700);
-    setResizable (false, false);
+    // Resizable, but the grip lives in the page: a ResizableCornerComponent would be a
+    // JUCE-painted child underneath a native WebView that covers the whole editor, so it
+    // would be neither visible nor clickable. See the setEditorSize native function.
+    setResizable (true, false);
+    setResizeLimits (kMinEditorWidth, kMinEditorHeight, kMaxEditorWidth, kMaxEditorHeight);
+
+    const auto saved = proc.getEditorSize();
+    setSize (saved.x > 0 ? juce::jlimit (kMinEditorWidth, kMaxEditorWidth, saved.x) : kDefaultEditorWidth,
+             saved.y > 0 ? juce::jlimit (kMinEditorHeight, kMaxEditorHeight, saved.y) : kDefaultEditorHeight);
+
     startTimerHz (30);
 }
 
@@ -356,10 +383,197 @@ WebEditor::~WebEditor()
     // the processor is free to retire the moment we stop listening for the hook —
     // and the hook itself must not outlive the windows it closes.
     endOutstandingFxGesture();
+    unmountEmbed();
     proc.onFxSlotRetiring = nullptr;
 
     for (auto& window : fxWindows)
         window.reset();
+}
+
+//==============================================================================
+juce::Rectangle<int> WebEditor::usableScreenArea() const
+{
+    // The display we are actually on, minus menu bar and dock. Feasibility of an embed
+    // is judged against this rather than kMaxEditorWidth/Height: a 3200x2000 ceiling
+    // says yes to plugins that could never fit a laptop screen.
+    const auto& displays = juce::Desktop::getInstance().getDisplays();
+
+    if (auto* display = displays.getDisplayForRect (getScreenBounds()))
+        return display->userArea;
+
+    return displays.getPrimaryDisplay() != nullptr ? displays.getPrimaryDisplay()->userArea
+                                                   : juce::Rectangle<int> { 0, 0, kMaxEditorWidth, kMaxEditorHeight };
+}
+
+juce::var WebEditor::editorSizeVar() const
+{
+    const auto screen = usableScreenArea();
+
+    // The reported minimum is the EFFECTIVE one: while a plugin is embedded the window
+    // cannot shrink below what that plugin needs, and the page's grip clamps against
+    // exactly these numbers.
+    return makeObject ({ { "width",     getWidth() },
+                         { "height",    getHeight() },
+                         { "minWidth",  juce::jmax (kMinEditorWidth, embedMinWindow.x) },
+                         { "minHeight", juce::jmax (kMinEditorHeight, embedMinWindow.y) },
+                         { "maxWidth",  juce::jmin (kMaxEditorWidth, screen.getWidth()) },
+                         { "maxHeight", juce::jmin (kMaxEditorHeight, screen.getHeight()) } });
+}
+
+void WebEditor::applyEmbedSizeFloor()
+{
+    const auto screen = usableScreenArea();
+
+    const int minW = juce::jlimit (kMinEditorWidth, juce::jmin (kMaxEditorWidth, screen.getWidth()),
+                                   juce::jmax (kMinEditorWidth, embedMinWindow.x));
+    const int minH = juce::jlimit (kMinEditorHeight, juce::jmin (kMaxEditorHeight, screen.getHeight()),
+                                   juce::jmax (kMinEditorHeight, embedMinWindow.y));
+
+    setResizeLimits (minW, minH, kMaxEditorWidth, kMaxEditorHeight);
+
+    // One deterministic grow, here, instead of a reactive loop reacting to its own
+    // resize events: that raced the relayout and overshot, and mid-drag it fought the
+    // user's hand.
+    if (getWidth() < minW || getHeight() < minH)
+        setSize (juce::jmax (getWidth(), minW), juce::jmax (getHeight(), minH));
+    else
+        emitEditorSizeChanged();
+}
+
+void WebEditor::emitEditorSizeChanged()
+{
+    emit ("editorSizeChanged", editorSizeVar());
+}
+
+juce::var WebEditor::embedVar (const juce::String& error) const
+{
+    return makeObject ({ { "slot",   embedSlot },
+                         { "width",  embedEditor != nullptr ? embedEditor->getWidth() : 0 },
+                         { "height", embedEditor != nullptr ? embedEditor->getHeight() : 0 },
+                         { "error",  error } });
+}
+
+void WebEditor::emitEmbedChanged (const juce::String& error)
+{
+    emit ("fxEmbedChanged", embedVar (error));
+}
+
+void WebEditor::unmountEmbed()
+{
+    if (embedEditor == nullptr)
+    {
+        embedSlot = -1;
+        return;
+    }
+
+    removeChildComponent (embedEditor.get());
+
+    // The hosted AU's own editor destructor calls editorBeingDeleted for us — but only
+    // when its Cocoa view actually got created (juce_AudioUnitPluginFormat.mm:75-84).
+    // A plugin whose view never arrived would otherwise leave a stale activeEditor and
+    // every later open would silently fall back to the generic editor.
+    auto* raw = embedEditor.get();
+    auto* instance = proc.getFxInstance (embedSlot);
+
+    embedEditor.reset();
+
+    if (instance != nullptr && instance->getActiveEditor() == raw)
+        instance->editorBeingDeleted (raw);
+
+    embedSlot = -1;
+    embedVisible = true;
+    lastEmbedSize = {};
+    embedTooSmall = false;
+
+    if (embedMinWindow != juce::Point<int>())
+    {
+        embedMinWindow = {};
+        applyEmbedSizeFloor();
+    }
+}
+
+juce::String WebEditor::setEmbedSlot (int slot)
+{
+    if (slot == embedSlot)
+        return {};
+
+    unmountEmbed();
+
+    if (slot < 0 || slot >= chain::numFxSlots)
+    {
+        emitEmbedChanged();
+        return {};
+    }
+
+    auto* instance = proc.getFxInstance (slot);
+
+    if (instance == nullptr)
+        return "No plugin is loaded in this slot.";
+
+    // One AudioProcessor has one active editor, so embedding and the pop-out window are
+    // mutually exclusive for a given slot.
+    closeFxWindow (slot);
+
+    auto* created = instance->hasEditor() ? instance->createEditorIfNeeded() : nullptr;
+
+    if (created == nullptr)
+        created = new juce::GenericAudioProcessorEditor (*instance);
+
+    // Judge feasibility against the display we are actually on, not against
+    // kMaxEditorWidth/Height: a 3200x2000 ceiling accepts plugins that could never fit
+    // a laptop screen, and we would only find out after mounting. The chrome around the
+    // hole (header, dock, footer, gutters) is what the window needs on top of the
+    // plugin itself. Refusing here is what makes the pop-out fallback reliable.
+    constexpr int kEmbedChromeWidth = 32, kEmbedChromeHeight = 48 + 32 + 244 + 56 + 24;
+    const auto screen = usableScreenArea();
+
+    if (created->getWidth() + kEmbedChromeWidth > screen.getWidth()
+        || created->getHeight() + kEmbedChromeHeight > screen.getHeight())
+    {
+        const auto needed = juce::String (created->getWidth()) + juce::String (" x ")
+                            + juce::String (created->getHeight());
+
+        if (instance->getActiveEditor() == created)
+            instance->editorBeingDeleted (created);
+
+        delete created;
+
+        return "This plugin's editor (" + needed + ") is too large to show inside tubamp on this display.";
+    }
+
+    embedEditor.reset (created);
+    embedTooSmall = false;
+    embedSlot = slot;
+    embedVisible = true;
+
+    addAndMakeVisible (*embedEditor);
+    embedEditor->toFront (false);
+
+    // The size is provisional on purpose. Some plugins report a placeholder until their
+    // view is attached, and a few resize themselves afterwards; childBoundsChanged
+    // republishes whenever that happens, so the page treats every size as the latest
+    // rather than the final one.
+    lastEmbedSize = embedEditor->getBounds();
+    resized();
+    emitEmbedChanged();
+
+    return {};
+}
+
+void WebEditor::childBoundsChanged (juce::Component* child)
+{
+    if (child == nullptr || child != embedEditor.get() || inEmbedLayout)
+        return;
+
+    // Fires for moves as well as resizes, and we move it ourselves in resized(); only a
+    // genuine size change is worth telling the page about.
+    const auto bounds = embedEditor->getBounds();
+
+    if (bounds.getWidth() == lastEmbedSize.getWidth() && bounds.getHeight() == lastEmbedSize.getHeight())
+        return;
+
+    lastEmbedSize = bounds;
+    emitEmbedChanged();
 }
 
 void WebEditor::endOutstandingFxGesture()
@@ -375,6 +589,46 @@ void WebEditor::resized()
 {
     if (web != nullptr)
         web->setBounds (getLocalBounds());
+
+    if (embedEditor != nullptr)
+    {
+        // The page tells us where the hole is; we only place the view in it. The rect
+        // arrives in CSS pixels, which are the same units as our logical pixels here —
+        // the WebView fills the editor 1:1 and JUCE applies no extra scale of its own.
+        const juce::ScopedValueSetter<bool> guard (inEmbedLayout, true);
+
+        const auto size = embedEditor->getBounds().withZeroOrigin();
+
+        // A hosted editor cannot be clipped or scaled: it is a native view, so it is
+        // bounded by the window and by nothing else in between. If the page has not
+        // reserved room for it yet, or has reserved less than it needs, showing it
+        // anyway would paint the plugin straight over the header and the dock. Hide it
+        // and say why — the page turns that into "needs more room / pop out".
+        const bool haveRect = ! embedRect.isEmpty();
+        const bool fits = haveRect
+                          && embedRect.getWidth() >= size.getWidth()
+                          && embedRect.getHeight() >= size.getHeight();
+
+        if (fits)
+            embedEditor->setTopLeftPosition (embedRect.getCentreX() - size.getWidth() / 2,
+                                             embedRect.getY());
+
+        embedEditor->setVisible (embedVisible && fits);
+
+        if (haveRect && ! fits && ! embedTooSmall)
+        {
+            embedTooSmall = true;
+            emitEmbedChanged ("The plugin's editor needs more room than the window has.");
+        }
+        else if (fits && embedTooSmall)
+        {
+            embedTooSmall = false;
+            emitEmbedChanged();
+        }
+    }
+
+    proc.setEditorSize ({ getWidth(), getHeight() });
+    emitEditorSizeChanged();
 }
 
 //==============================================================================
@@ -484,7 +738,9 @@ juce::var WebEditor::uiStateVar() const
                          { "ab",                abVar() },
                          { "t3k",               t3kVar() },
                          { "fxSlots",           fxSlotsVar() },
-                         { "fxSupported",       FxCatalog::isSupported() } });
+                         { "fxSupported",       FxCatalog::isSupported() },
+                         { "editorSize",        editorSizeVar() },
+                         { "fxEmbed",           embedVar ({}) } });
 }
 
 //==============================================================================
@@ -1181,6 +1437,14 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                 return;
             }
 
+            // A processor has exactly one active editor, so the embed has to go before
+            // the window can have it.
+            if (embedSlot == slot)
+            {
+                unmountEmbed();
+                emitEmbedChanged();
+            }
+
             if (auto& window = fxWindows[(size_t) slot]; window != nullptr)
             {
                 window->toFront (true);
@@ -1232,6 +1496,56 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
             const int slot = (int) args[0];
             watchedFxSlot = (slot >= 0 && slot < chain::numFxSlots) ? slot : -1;
             fxPollDivider = 0;
+            complete ({});
+        })
+        //======================================================================
+        // Window size. The page owns the resize grip because JUCE cannot give us one
+        // here: a ResizableCornerComponent is a JUCE-painted child and the WebView is a
+        // native view covering the whole editor, so the grip would be both invisible and
+        // unclickable. Nor can the host resize us — JUCE's AU wrapper reverts a
+        // host-driven resize on the next parentSizeChanged, while a plugin-driven
+        // setSize propagates out through childBoundsChanged -> resizeHostWindow.
+        .withNativeFunction ("getEditorSize", [this] (auto&, auto complete)
+        {
+            complete (editorSizeVar());
+        })
+        .withNativeFunction ("setEditorSize", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            const auto screen = usableScreenArea();
+
+            const int width = juce::jlimit (kMinEditorWidth, juce::jmin (kMaxEditorWidth, screen.getWidth()),
+                                            (int) args[0]);
+            const int height = juce::jlimit (kMinEditorHeight, juce::jmin (kMaxEditorHeight, screen.getHeight()),
+                                             (int) args[1]);
+
+            setSize (width, height);
+            complete (makeObject ({ { "width", getWidth() }, { "height", getHeight() } }));
+        })
+        //======================================================================
+        // Embedding a hosted editor.
+        .withNativeFunction ("fxSetEmbedSlot", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            complete (resultVar (setEmbedSlot ((int) args[0])));
+        })
+        .withNativeFunction ("fxSetEmbedRect", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            embedRect = { (int) args[0], (int) args[1], (int) args[2], (int) args[3] };
+            resized();
+            complete ({});
+        })
+        .withNativeFunction ("fxSetEmbedMinWindow", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            embedMinWindow = { (int) args[0], (int) args[1] };
+            applyEmbedSizeFloor();
+            complete ({});
+        })
+        .withNativeFunction ("fxSetEmbedVisible", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            embedVisible = (bool) args[0];
+
+            if (embedEditor != nullptr)
+                embedEditor->setVisible (embedVisible);
+
             complete ({});
         })
         .withNativeFunction ("t3kSetFavorite", [this] (const juce::Array<juce::var>& args, auto complete)

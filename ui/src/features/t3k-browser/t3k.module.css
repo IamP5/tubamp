@@ -1,7 +1,11 @@
 /*
-  TONE3000 browser drawer. Docked to the right edge of the fixed 1120×700 editor
-  from the header's bottom edge down; no backdrop, so the signal chain stays
-  visible and clickable while browsing.
+  TONE3000 browser drawer. Docked to the right edge of the editor from the
+  header's bottom edge down; no backdrop, so the signal chain stays visible and
+  clickable while browsing.
+
+  Its 380px is deliberately FIXED while the rest of the app is fluid: the row
+  layout (44px art + two text lines + counts) is designed at that width, and a
+  wider window should give the board the space, not the catalog.
 
   Transform/opacity only — nothing here animates layout, shadow or filter
   (motion-design.md §guardrails).
@@ -15,7 +19,8 @@
   z-index: 5;
   display: flex;
   flex-direction: column;
-  width: 380px;
+  /* min() so the drawer can never be wider than the window it docks into. */
+  width: min(380px, 100%);
   background: var(--bg-surface);
   box-shadow: var(--shadow-dock);
   font-family: var(--font-sans);

@@ -403,10 +403,20 @@
 
 /* ─────────────────────────────── Toast ───────────────────────────────── */
 
+/*
+  Bottom-right, but "bottom" is not the window's bottom: `bottom: 16px` put the
+  stack on the footer and then straight over the param dock, which is exactly
+  where a toast is least readable. --overlay-bottom clears the footer, the dock
+  and the board's zoom bar in one token (theme/tokens.css), so this stays right
+  when any of those three change height.
+*/
 .toastStack {
-  position: fixed;
+  /* Absolute, against the app shell, not the viewport: the mock bridge's
+     emulated window is smaller than the browser and a fixed stack would drift
+     outside it. In the plugin the shell *is* the window, so the two agree. */
+  position: absolute;
   right: 16px;
-  bottom: 16px;
+  bottom: var(--overlay-bottom);
   z-index: 90;
   display: flex;
   flex-direction: column;

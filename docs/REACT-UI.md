@@ -125,6 +125,15 @@ fxSetParam(slot: FxSlotIndex, index: number, value01: number): void
 fxBeginGesture(slot: FxSlotIndex, index: number): void
 fxEndGesture(slot: FxSlotIndex, index: number): void
 fxWatchSlot(slot: FxSlotIndex | -1): void             // which slot gets fxParamValues; -1 = none
+
+// --- window size + embedded hosted editor, see §Window size and embedding
+getEditorSize(): EditorSizeLimits
+setEditorSize(w: number, h: number): EditorSize            // clamped; returns what was applied
+fxSetEmbedSlot(slot: FxSlotIndex | -1): { error?: string } // -1 unmounts; error => pop out instead
+fxSetEmbedRect(x, y, w, h): void                           // the hole, in CSS px from the page origin
+fxSetEmbedVisible(visible: boolean): void                  // hide without unmounting
+fxSetEmbedMinWindow(w: number, h: number): void            // resize floor while embedded; grows
+                                                           // the window once if smaller; 0,0 releases
 ```
 
 ```ts
@@ -141,6 +150,9 @@ interface UiState {
   ab: { activeSlot: 0 | 1; aHasState: boolean; bHasState: boolean }
   t3k: { configured: boolean; authenticated: boolean; username: string | null }
   fxSlots: FxSlotState[]        // always 3 entries, indexed by slot
+  editorSize: EditorSizeLimits  // { width, height, minWidth, minHeight,
+                                //   maxWidth, maxHeight } — max = what fits the display
+  fxEmbed: FxEmbedState         // { slot: FxSlotIndex | -1, width, height, error }
   fxSupported: boolean          // false in builds without JUCE_PLUGINHOST_AU;
                                 // the FX panels then explain themselves
 }
@@ -196,6 +208,10 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
                                                     // meter-rate; index-aligned with
                                                     // that slot's params; only for the
                                                     // slot set by fxWatchSlot()
+"editorSizeChanged" EditorSizeLimits                // the window changed size, INCLUDING when
+                                                    // we changed it ourselves — one source of truth
+"fxEmbedChanged" FxEmbedState                       // an embed mounted, unmounted, was refused,
+                                                    // or reported a new size (can arrive twice)
 ```
 
 C++ side notes (see juce-webview.md for exact API):
@@ -260,15 +276,51 @@ spinner; `missing` → name + `error`, and say the settings are kept; `live` →
 Auto-selected when `window.__JUCE__` is absent. Full fake `UiState` (the 9 built-in
 blocks in the chain plus three fx slots, `fxSupported: true` with a fake plugin list
 and one occupied slot with parameters, a loaded model with metadata, 6 presets,
-library entries, t3k configured+authed),
+library entries, t3k configured+authed, an emulated window size the grip really
+resizes, one plugin whose embed is refused and one that reports its editor size
+twice),
 param states with real ranges/skew from `docs/research/current-ui-inventory.md`,
 fake 30 Hz meters (musical envelope), simulated t3k select/download flows with
 progress, latency ~90 samples. Dev-only code path; tree-shaken out is NOT required
 (guarded at runtime), but keep it in a separate chunk if trivial.
 
+### Window size and embedding
+
+Two facts drive this whole area, and neither is negotiable:
+
+1. **The window is resized only by us.** `ResizableCornerComponent` is a JUCE-painted
+   child and the WebView is a native view covering every one of them, so a real corner
+   grip would be invisible. An AU host cannot resize us either — JUCE's wrapper reverts a
+   host-driven resize on the next `parentSizeChanged` but propagates a plugin-driven one
+   through `childBoundsChanged` → `resizeHostWindow`. So the SPA **draws its own grip**
+   (`features/resize`, bottom-right, over the footer's padding gutter) and drives
+   `setEditorSize`. `editorSizeChanged` is the single source of truth for the current
+   size — it fires for our own writes too, so the page never assumes a request landed.
+2. **An embedded hosted editor is a native view composited ABOVE the WebView.** The page
+   cannot draw over it. It is a *hole*: `features/embed` reserves the rectangle, reports
+   it with `fxSetEmbedRect` (re-measured on any layout change, rate-limited to animation
+   frames), and calls `fxSetEmbedVisible(false)` whenever anything must appear on top.
+   Overlays never call that themselves — they declare themselves once
+   (`components/overlay.tsx`: `<Scrim>` or `useBlockingOverlay`) and the embed is the
+   only subscriber, so a future overlay cannot forget. `Tooltip` consults the same module
+   for the hole and flips placement rather than landing inside it.
+
+`fxEmbedChanged` can arrive **more than once** for one mount (many AUs only report a real
+size after their view attaches). The reserved box is sized from it each time and capped at
+the board band, which turns "does not fit" into a measurable shortfall — the embed then
+asks for a window that much bigger. It only ever grows: shrinking back would fight a user
+who sized the window deliberately.
+
+Minimum size **900×600**, derived in `theme/tokens.css` §App metrics from the widest dock
+body and the shortest usable board band; same numbers as `kMinEditorWidth/Height` in
+`src/WebEditor.cpp`. The C++ clamp is the one that matters (it owns the window).
+
 ## UX structure (the board is the app)
 
-Fixed 1120×700 viewport, `--bg-app` with subtle radial wash, dot-grid stage.
+Fluid viewport (min 900×600, see §Window size and embedding), `--bg-app` with subtle
+radial wash, dot-grid stage. The bands are fixed — header 48, footer 56, dock 232 — and
+everything spare goes to the board; block cards keep their fixed face, because the board's
+own zoom is the density control.
 
 - **Board (centerpiece, ~60% height)**: pan/zoom stage (wheel = zoom to cursor,
   ctrl/cmd+wheel fine zoom, space-drag / middle-drag / two-finger = pan,
@@ -288,8 +340,9 @@ Fixed 1120×700 viewport, `--bg-app` with subtle radial wash, dot-grid stage.
   pill, remove affordance). Bodies per current-ui-inventory.md: generic knob rows
   (gate/comp/drive/eq/delay/reverb), mod (type combo + knobs), amp (model mgmt +
   status + T3K + knobs + out-mode + slim when isSlimmable), cab (IR mgmt + cut
-  knobs), fx1/fx2/fx3 (plugin picker or loaded-plugin header + "Open editor" +
-  a generic knob grid over `FxSlotState.params` — see §External AudioUnit slots;
+  knobs), fx1/fx2/fx3 (plugin picker or loaded-plugin header + "Show editor here"
+  (embed, see §Window size and embedding) + "Open plugin window" + a generic knob
+  grid over `FxSlotState.params` — see §External AudioUnit slots;
   never `useSliderParam`). Selection fallback: amp → first → none (but newly added block is
   force-selected). Selection is UI-local state only.
 - **Full-rig captures**: when the loaded model declares a gear type taken through
@@ -310,7 +363,9 @@ Fixed 1120×700 viewport, `--bg-app` with subtle radial wash, dot-grid stage.
 - **Overlays**: settings sheet, T3K tone-selected model list w/ download
   progress, toasts for errors (replaces silent failures where inventory doc
   flags them — e.g. zero-models tone now gets a toast).
-- **TONE3000 browser (`features/t3k-browser/`)**: a 380px inspector drawer
+- **TONE3000 browser (`features/t3k-browser/`)**: a fixed 380px inspector drawer
+  (fixed while the rest is fluid: the row layout is designed at that width, and a
+  wider window should give the board the space, not the catalog)
   docked to the right edge, y=48 to the app bottom, spring slide-in, NO
   backdrop — the board stays visible and interactive (validated by prototype
   variant C, branch `prototype/t3k-browser`). Two stacked levels with push
@@ -362,4 +417,4 @@ one rAF driver; `prefers-reduced-motion` respected for entrance/zoom/A-B.
 ## Out of scope (unchanged)
 
 Parallel paths/splitter, multiple NAM slots, preset browser overlay with
-search/tags, resizable UI (fixed 1120×700; the board's own zoom covers density).
+search/tags.

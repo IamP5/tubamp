@@ -6,6 +6,7 @@
 //   tubamp_fxprobe                 list installed AUv2 effects
 //   tubamp_fxprobe <identifier>    load that plugin into slot 0 and exercise it
 //   tubamp_fxprobe --all           try every installed effect (slow; finds bad actors)
+//   tubamp_fxprobe --editors       report each plugin's own editor size
 //
 // This is the only automated coverage of the code paths that need a real AudioUnit;
 // tubamp_smoke deliberately builds without hosting.
@@ -117,6 +118,67 @@ bool pump (const std::function<bool()>& done, int timeoutMs)
     }
 
     return true;
+}
+
+/** Creates each plugin's own editor and reports the size it asks for. This answers one
+    question: could a hosted editor be embedded in tubamp's fixed 1120x700 window
+    instead of a separate one? The dock area available for it is 1120 x 596 (the 48 px
+    header and 56 px footer are fixed). */
+void measureEditors (tubamp::FxCatalog& catalog)
+{
+    constexpr int kAvailableW = 1120, kAvailableH = 596;
+
+    const auto entries = catalog.enumerateEffects();
+    int measured = 0, fits = 0, needsScroll = 0, noEditor = 0;
+
+    for (const auto& entry : entries)
+    {
+        std::unique_ptr<juce::AudioProcessor> instance;
+        bool done = false;
+
+        catalog.createAsync (catalog.descriptionFor (entry.identifier), kSampleRate, kBlockSize,
+                             [&] (std::unique_ptr<juce::AudioProcessor> created, const juce::String&)
+                             {
+                                 instance = std::move (created);
+                                 done = true;
+                             });
+
+        if (! pump ([&done] { return done; }, 15000) || instance == nullptr)
+            continue;
+
+        if (! instance->hasEditor())
+        {
+            ++noEditor;
+            std::printf ("  %-38s (no editor of its own)\n", entry.name.toRawUTF8());
+            instance.reset();
+            continue;
+        }
+
+        if (auto* editor = instance->createEditorIfNeeded())
+        {
+            const int w = editor->getWidth(), h = editor->getHeight();
+            const bool fitsHere = w <= kAvailableW && h <= kAvailableH;
+
+            ++measured;
+
+            if (fitsHere)
+                ++fits;
+            else
+                ++needsScroll;
+
+            std::printf ("  %-38s %4d x %4d  %s%s\n", entry.name.toRawUTF8(), w, h,
+                         fitsHere ? "fits" : "TOO BIG",
+                         editor->isResizable() ? "  (resizable)" : "");
+
+            instance->editorBeingDeleted (editor);
+            delete editor;
+        }
+
+        instance.reset();
+    }
+
+    std::printf ("\nmeasured=%d  fit in %dx%d=%d  too big=%d  no editor=%d\n",
+                 measured, kAvailableW, kAvailableH, fits, needsScroll, noEditor);
 }
 
 void listPlugins (const tubamp::FxCatalog& catalog)
@@ -268,6 +330,12 @@ int main (int argc, char* argv[])
     }
 
     const juce::String arg { argv[1] };
+
+    if (arg == "--editors")
+    {
+        measureEditors (catalog);
+        return 0;
+    }
 
     if (arg == "--all")
     {

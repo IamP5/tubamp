@@ -1,0 +1,37 @@
+/*
+  Corner grip. Sits in the footer's right-hand padding gutter (16px), so it
+  overlaps nothing, and above every in-page layer including a modal's backdrop —
+  a window control stays usable while a dialog is open, like a real one.
+
+  No motion of any kind: this is direct manipulation, and the only decoration is
+  a colour change, which global.css already collapses under
+  `prefers-reduced-motion`.
+*/
+.grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 95;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+  cursor: nwse-resize;
+  /* The pointer owns this gesture outright: no scroll, no selection, no
+     rubber-band, whatever the WebView would otherwise do with the drag. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: color 120ms ease;
+}
+
+.grip:hover {
+  color: var(--text-secondary);
+}
+
+.gripActive,
+.gripActive:hover {
+  color: var(--accent);
+}

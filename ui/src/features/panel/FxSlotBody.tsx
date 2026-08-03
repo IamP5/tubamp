@@ -12,6 +12,10 @@
  *  - The plugin's own parameters scroll inside this body. The dock is a fixed
  *    232px and a hosted plugin can expose a hundred parameters; the dock does not
  *    grow for them.
+ *
+ * This body is also where the plugin's own editor is mounted into our window
+ * ("Show editor here") and, crucially, where it is unmounted again: the embed is
+ * a native view that would otherwise outlive the panel that asked for it.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -53,6 +57,27 @@ function useWatchedSlot(slot: FxSlotIndex): void {
       if (watchedSlot !== slot) return;
       watchedSlot = -1;
       void bridge.fxWatchSlot(-1);
+    };
+  }, [slot]);
+}
+
+/* ────────────────────── the plugin's editor, in our window ─────────────────── */
+
+/**
+ * Tears the embed down when the body that asked for it goes away — selection
+ * moved to another block, the chain lost this one, or the dock closed.
+ *
+ * Guarded by ownership (`fxEmbedRequestedBy`) rather than by "is anything
+ * embedded", because the dock keeps an outgoing body mounted while it fades: the
+ * order bodies unmount in is not the order the user acted in, and a late cleanup
+ * must not tear down an embed its successor has already asked for.
+ */
+function useEmbedTeardown(slot: FxSlotIndex): void {
+  useEffect(() => {
+    return () => {
+      const store = useStore.getState();
+      if (store.fxEmbedRequestedBy !== slot) return;
+      void store.unembedFxEditor();
     };
   }, [slot]);
 }
@@ -173,14 +198,23 @@ export function FxSlotBody({ slot }: FxSlotBodyProps) {
   const loadFxPlugin = useStore((st) => st.loadFxPlugin);
   const clearFxPlugin = useStore((st) => st.clearFxPlugin);
   const openFxEditor = useStore((st) => st.openFxEditor);
+  const embedFxEditor = useStore((st) => st.embedFxEditor);
+  const unembedFxEditor = useStore((st) => st.unembedFxEditor);
+  const embedded = useStore((st) => st.fxEmbed.slot === slot);
 
   useWatchedSlot(slot);
+  useEmbedTeardown(slot);
 
   const pick = useCallback(
     (identifier: string) => void loadFxPlugin(slot, identifier),
     [loadFxPlugin, slot],
   );
   const remove = useCallback(() => void clearFxPlugin(slot), [clearFxPlugin, slot]);
+
+  const toggleEmbed = useCallback(() => {
+    if (embedded) void unembedFxEditor();
+    else void embedFxEditor(slot);
+  }, [embedFxEditor, embedded, slot, unembedFxEditor]);
 
   if (!supported) {
     return (
@@ -237,16 +271,23 @@ export function FxSlotBody({ slot }: FxSlotBodyProps) {
         <div className={s.actionRow}>
           <Tooltip
             label={
+              embedded
+                ? "Give the board back and put this editor away."
+                : "Draw this plugin's editor on the board. It is a native view over the page, so menus and dialogs will hide it while they are open."
+            }
+          >
+            <Button size="sm" variant="primary" onClick={toggleEmbed}>
+              {embedded ? "Hide editor" : "Show editor here"}
+            </Button>
+          </Tooltip>
+          <Tooltip
+            label={
               state.hasEditor
                 ? "Open the plugin's own window — the only place its text fields get a keyboard inside a host."
                 : "Open a generic editor window for this plugin."
             }
           >
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={() => void openFxEditor(slot)}
-            >
+            <Button size="sm" onClick={() => void openFxEditor(slot)}>
               Open plugin window
             </Button>
           </Tooltip>

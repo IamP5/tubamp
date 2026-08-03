@@ -10,6 +10,7 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import s from "./kit.module.css";
 import { cx } from "./cx";
+import { Scrim } from "./overlay";
 import { duration, ease } from "../theme/motion";
 
 export interface MenuItem {
@@ -92,7 +93,9 @@ export function Menu({
     <AnimatePresence>
       {open && (
         <>
-          <div className={s.menuScrim} onPointerDown={onClose} />
+          {/* Scrim, not a bare div: it also declares the menu as an overlay
+              drawn above the page (see ./overlay.tsx). */}
+          <Scrim className={s.menuScrim} onPointerDown={onClose} />
           <motion.div
             ref={menuRef}
             role="menu"

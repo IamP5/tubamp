@@ -11,6 +11,8 @@ import type {
   BridgeEventName,
   ComboParamId,
   ComboParamState,
+  EditorSize,
+  EditorSizeLimits,
   ErrorResult,
   FxPluginEntry,
   FxSlotIndex,
@@ -121,6 +123,22 @@ const comboStates = new Map<string, ComboParamState>();
 
 /* ────────────────────────────────── bridge ─────────────────────────────── */
 
+/**
+ * Only ever used when a native call fails outright. It has to be a size the page
+ * can lay out in rather than zeroes, because the grip clamps against it until
+ * the first `editorSizeChanged` lands — hence the minimum from
+ * theme/tokens.css, and a maximum that refuses to grow rather than one that
+ * invents a display size.
+ */
+const fallbackEditorSize: EditorSizeLimits = {
+  width: 1120,
+  height: 700,
+  minWidth: 900,
+  minHeight: 600,
+  maxWidth: 1120,
+  maxHeight: 700,
+};
+
 const emptyUiState: UiState = {
   chainOrder: [],
   model: null,
@@ -132,6 +150,8 @@ const emptyUiState: UiState = {
   ab: { activeSlot: 0, aHasState: false, bHasState: false },
   t3k: { configured: false, authenticated: false, username: null },
   fxSlots: [],
+  editorSize: fallbackEditorSize,
+  fxEmbed: { slot: -1, width: 0, height: 0, error: "" },
   fxSupported: false,
 };
 
@@ -263,4 +283,31 @@ export const juceBridge: Bridge = {
   fxWatchSlot: async (slot) => {
     await native("fxWatchSlot")(slot);
   },
+
+  /* --- window size --------------------------------------------------------- */
+
+  getEditorSize: () => call<EditorSizeLimits>("getEditorSize", fallbackEditorSize),
+  // Resolves with what C++ actually applied after clamping, which is not
+  // necessarily what was asked for; the authoritative broadcast is the
+  // `editorSizeChanged` event, which fires for this call too.
+  setEditorSize: (width, height) =>
+    call<EditorSize>("setEditorSize", { width, height }, width, height),
+
+  /* --- embedding a hosted plugin's own editor ------------------------------ */
+
+  fxSetEmbedSlot: (slot) => call<ErrorResult>("fxSetEmbedSlot", {}, slot),
+  fxSetEmbedRect: async (x, y, width, height) => {
+    await native("fxSetEmbedRect")(x, y, width, height);
+  },
+  fxSetEmbedMinWindow: async (width, height) => {
+    await native("fxSetEmbedMinWindow")(width, height);
+  },
+
+  fxSetEmbedVisible: async (visible) => {
+    await native("fxSetEmbedVisible")(visible);
+  },
 };
+
+/* The two new events (`editorSizeChanged`, `fxEmbedChanged`) need no wiring of
+   their own: `on()` above forwards any name in `BridgeEventMap` straight to the
+   JUCE backend's event bus, and C++ emits them under those exact names. */

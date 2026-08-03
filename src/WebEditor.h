@@ -21,14 +21,23 @@ struct SinglePageBrowser : juce::WebBrowserComponent
     bool pageAboutToLoad (const juce::String& newURL) override;
 };
 
-/** Native window hosting a third-party plugin's own editor. It has to be a real
-    top-level window rather than anything inside our WebView: a WKWebView cannot
-    parent a JUCE Component, and a native window is also the only way the hosted
-    plugin's text fields get keyboard focus inside Logic. */
+/** Separate top-level window for a third-party plugin's own editor.
+
+    A hosted editor can also be shown inside our window (see setEmbedSlot) — it is a
+    native view, so it can be a sibling of the WebView even though it can never be part
+    of the page. This window remains first-class regardless: it is the only way an
+    oversized editor can be shown at all, and the fallback if an embedded native view
+    turns out not to receive keyboard focus inside Logic. */
 struct FxEditorWindow;
 
 /**
-    Fixed 1120x700 WebView editor.
+    Resizable WebView editor.
+
+    The window is sized by us and only by us: JUCE's AU wrapper reverts a host-driven
+    resize on the next parentSizeChanged, while a plugin-driven setSize propagates out
+    through childBoundsChanged -> resizeHostWindow. The grip the user drags is drawn in
+    the page, because a ResizableCornerComponent would sit underneath a native WebView
+    that covers the whole editor.
 
     Owns:
       - one relay per frozen APVTS parameter (29 sliders / 10 toggles / 2 combos),
@@ -108,6 +117,36 @@ private:
     /** Balances any gesture left open on a hosted parameter. */
     void endOutstandingFxGesture();
 
+    // --- embedding a hosted editor in our own window
+    //
+    // The hosted editor is a native view, so it is a SIBLING of the WebView rather than
+    // anything inside the page, and it composites above it. The page reserves a
+    // rectangle and reports it; we put the view there. Nothing the page draws can cover
+    // it, which is why setEmbedVisible exists.
+
+    /** Mounts slot's editor as a child of this editor, or unmounts when slot < 0.
+        Returns an error when the plugin cannot fit the display. */
+    juce::String setEmbedSlot (int slot);
+    void unmountEmbed();
+    void emitEmbedChanged (const juce::String& error = {});
+    juce::var embedVar (const juce::String& error) const;
+
+    /** Reacts to a hosted editor resizing itself after attach — several plugins only
+        report a usable size once their view is in a window, and a few change it later. */
+    void childBoundsChanged (juce::Component* child) override;
+
+    juce::var editorSizeVar() const;
+
+    /** Applies embedMinWindow to the resize limits, and grows the window once if it is
+        currently smaller. Called on mount, on unmount, and whenever the page revises
+        the requirement. */
+    void applyEmbedSizeFloor();
+    void emitEditorSizeChanged();
+
+    /** Largest window that still fits the display we are on. Embedding is refused
+        against this, not against an arbitrary constant. */
+    juce::Rectangle<int> usableScreenArea() const;
+
     /** Nothing in the processor announces "the loaded model/IR changed" (the old
         editor polled at 4 Hz for exactly this reason), and a preset load or host
         state restore can swap either behind our back. Poll and emit on change. */
@@ -157,6 +196,26 @@ private:
     int gestureSlot = -1, gestureParam = -1;
 
     int fxPollDivider = 0;
+
+    /** The hosted editor currently drawn inside our window, and which slot it belongs
+        to (-1 when none). Not owned via the slot's FxEditorWindow — a plugin has one
+        active editor, so embedding and popping out are mutually exclusive. */
+    std::unique_ptr<juce::AudioProcessorEditor> embedEditor;
+    int embedSlot = -1;
+    bool embedVisible = true;
+
+    /** Where the page wants the hole, in its own CSS pixels. */
+    juce::Rectangle<int> embedRect;
+
+    /** Guards against re-entering the size push while we are the ones resizing. */
+    bool inEmbedLayout = false;
+    bool embedTooSmall = false;
+
+    /** Smallest window that can still show the current embed, as reported by the page
+        (plugin size + its chrome). Becomes the resize floor while embedded, which is
+        what stops a drag from shrinking the window out from under the plugin. */
+    juce::Point<int> embedMinWindow;
+    juce::Rectangle<int> lastEmbedSize;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WebEditor)
 };

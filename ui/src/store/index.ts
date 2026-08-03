@@ -14,7 +14,9 @@ import {
   type AbSlot,
   type AbState,
   type BlockId,
+  type EditorSizeLimits,
   type FileEntry,
+  type FxEmbedState,
   type FxSlotIndex,
   type FxSlotState,
   type ModelInfo,
@@ -71,6 +73,23 @@ export interface AppState {
   /** Always three entries, indexed by slot — see `normaliseFxSlots`. */
   fxSlots: FxSlotState[];
   fxSupported: boolean;
+  /**
+   * The window, and what it is allowed to become. Mirrored here rather than read
+   * off the bridge per use because it is low-rate structural state, like
+   * `fxSlots`: it changes when the user drags the grip or the host reopens us,
+   * not per frame. The grip itself still reads it with `getState()` mid-drag so
+   * a drag re-renders nothing.
+   */
+  editorSize: EditorSizeLimits;
+  /** Which slot's plugin is drawn inside our window, and how big it turned out. */
+  fxEmbed: FxEmbedState;
+  /**
+   * Which fx panel asked for the current embed. UI-local, and deliberately not
+   * derived from `fxEmbed.slot`: a mount request is in flight for a while before
+   * the event that confirms it, and the panel that asked can unmount in between —
+   * which is exactly the window in which the embed would be leaked.
+   */
+  fxEmbedRequestedBy: FxSlotIndex | -1;
 
   /* UI-local state */
   selected: BlockId | null;
@@ -117,6 +136,14 @@ export interface AppActions {
   loadFxPlugin(slot: FxSlotIndex, identifier: string): Promise<void>;
   clearFxPlugin(slot: FxSlotIndex): Promise<void>;
   openFxEditor(slot: FxSlotIndex): Promise<void>;
+  /** Draw the plugin's editor inside our window; falls back to its own window
+   *  when the host refuses (it does not fit the display). */
+  embedFxEditor(slot: FxSlotIndex): Promise<void>;
+  /** -1 to the bridge: unmounts whatever is embedded. */
+  unembedFxEditor(): Promise<void>;
+
+  /* window */
+  resizeEditor(width: number, height: number): void;
 
   /* TONE3000 */
   t3kConfigure(): Promise<void>;
@@ -194,6 +221,19 @@ const initialState: AppState = {
   // Assumed off until hydration says otherwise: claiming hosting works and then
   // withdrawing it reads as a bug, the other way round reads as a slow load.
   fxSupported: false,
+  // Placeholder for the ~one frame before hydration. The minimum is the real
+  // one (theme/tokens.css); the maximum is deliberately huge, because guessing
+  // small here would let the grip refuse a size the display can actually take.
+  editorSize: {
+    width: 1120,
+    height: 700,
+    minWidth: 900,
+    minHeight: 600,
+    maxWidth: 8192,
+    maxHeight: 8192,
+  },
+  fxEmbed: { slot: -1, width: 0, height: 0, error: "" },
+  fxEmbedRequestedBy: -1,
   selected: null,
   tone: null,
   downloads: {},
@@ -234,6 +274,10 @@ export const useStore = create<Store>()((set, get) => {
         t3k: state.t3k,
         fxSlots: normaliseFxSlots(state.fxSlots),
         fxSupported: state.fxSupported,
+        // `?? initial` rather than a hard read: a C++ build that predates these
+        // two fields must hydrate the rest of the snapshot, not crash the grip.
+        editorSize: state.editorSize ?? initialState.editorSize,
+        fxEmbed: state.fxEmbed ?? initialState.fxEmbed,
         selected: fallbackSelection(order, get().selected),
       });
     },
@@ -359,6 +403,36 @@ export const useStore = create<Store>()((set, get) => {
     async openFxEditor(slot) {
       const res = await bridge.fxOpenEditor(slot);
       reportError(res.error);
+    },
+
+    // Refusal is not an error the user can act on — the plugin's editor simply
+    // does not fit the display — so it is not a dead end either: open the
+    // plugin's own window instead and say why. The bridge also broadcasts the
+    // refusal as `fxEmbedChanged` (slot -1 + error); that path only updates
+    // state, so the toast is not doubled.
+    async embedFxEditor(slot) {
+      // Claimed before the await, so a panel that unmounts while the request is
+      // in flight still knows the embed is its to tear down.
+      set({ fxEmbedRequestedBy: slot });
+      const res = await bridge.fxSetEmbedSlot(slot);
+      if (!res.error) return;
+      set({ fxEmbedRequestedBy: -1 });
+      get().toast(`${res.error} Opening it in its own window.`, "warning", 6000);
+      const opened = await bridge.fxOpenEditor(slot);
+      reportError(opened.error);
+    },
+
+    async unembedFxEditor() {
+      set({ fxEmbedRequestedBy: -1 });
+      await bridge.fxSetEmbedSlot(-1);
+    },
+
+    /* ─────────────────────────────── window ──────────────────────────── */
+
+    // Fire-and-forget: `editorSizeChanged` is the single source of truth for the
+    // size, including for the sizes we ask for ourselves.
+    resizeEditor(width, height) {
+      void bridge.setEditorSize(width, height);
     },
 
     /* ─────────────────────────── TONE3000 ────────────────────────────── */
@@ -519,6 +593,15 @@ export function connectStore(): () => void {
         return { fxSlots };
       });
     }),
+
+    // The window is only ever resized by us or by the host reopening the
+    // editor, so this is structural state, not a stream — even though a grip
+    // drag briefly emits at frame rate. Nothing selects `editorSize` in a
+    // render-hot path (the grip reads it with `getState()` mid-drag), so those
+    // frames cost a store write and no re-render.
+    bridge.on("editorSizeChanged", (editorSize) => set({ editorSize })),
+
+    bridge.on("fxEmbedChanged", (fxEmbed) => set({ fxEmbed })),
 
     // `fxParamValues` is deliberately NOT wired here. It arrives at meter rate
     // for up to a hundred parameters at once, and a store write would re-render

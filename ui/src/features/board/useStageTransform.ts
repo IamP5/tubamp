@@ -28,7 +28,10 @@ import { animate, useMotionValue, type MotionValue } from "motion/react";
 import { spring } from "../../theme/motion";
 import { clamp } from "./layout";
 
-export const MIN_ZOOM = 0.5;
+/* 0.4, not 0.5: a full twelve-block chain is 2036 lane units, and framing that in
+   the 828px of lane the minimum window leaves needs 0.407. At 0.5 the FIT button
+   silently left both ends of a full chain cropped. */
+export const MIN_ZOOM = 0.4;
 export const MAX_ZOOM = 1.6;
 
 /** Wheel-delta → zoom-factor exponents (fine = ctrl/cmd, i.e. trackpad pinch). */
@@ -89,6 +92,19 @@ export function useStageTransform(
   const [panMode, setPanMode] = useState(false);
   const [panning, setPanning] = useState(false);
 
+  /**
+   * True once the user has zoomed or panned by hand.
+   *
+   * It decides what a window resize means. Until the user has touched the
+   * canvas, the framing is ours and re-fitting on resize is simply keeping the
+   * promise the initial fit made — the chain stays framed as the window grows,
+   * which is the whole point of a resizable editor. After they have taken
+   * control, re-fitting would yank the canvas out from under them on every
+   * frame of a grip drag, so a resize then only re-clamps the pan into the new
+   * bounds. "FIT" hands control back and re-arms the automatic framing.
+   */
+  const userAdjusted = useRef(false);
+
   /** Height of the band the dock does not cover. */
   const viewHeight = useCallback(
     (el: HTMLDivElement) => Math.max(el.clientHeight - insetBottom, 1),
@@ -133,6 +149,7 @@ export function useStageTransform(
       const z = zoom.get();
       const target = clamp(next, MIN_ZOOM, MAX_ZOOM);
       if (target === z) return;
+      userAdjusted.current = true;
       const wx = (clientX - cx - panX.get()) / z;
       const wy = (clientY - cy - panY.get()) / z;
       zoom.set(target);
@@ -147,6 +164,7 @@ export function useStageTransform(
    */
   const zoomTo = useCallback(
     (next: number) => {
+      userAdjusted.current = true;
       const from = zoom.get();
       const target = clamp(next, MIN_ZOOM, MAX_ZOOM);
       if (target === from) return;
@@ -175,6 +193,7 @@ export function useStageTransform(
       if (!el) return;
       const { w, h } = contentRef.current;
       if (w <= 0 || h <= 0) return;
+      userAdjusted.current = false;
       const target = clamp(
         Math.min(
           (el.clientWidth - FIT_PADDING) / w,
@@ -201,6 +220,36 @@ export function useStageTransform(
     fit(false);
   }, [fit]);
 
+  /**
+   * The stage is now fluid, so its size changes under a running transform: the
+   * user drags the window's grip, opens the T3K drawer, or the host hands us a
+   * different size at startup.
+   *
+   * Two responses, both required:
+   *  - the pan clamp is a fraction of the container, so a shrink leaves the pan
+   *    outside its own bounds until the next gesture snaps it back in one jump;
+   *    re-clamp every time.
+   *  - re-fit, but only while the framing is still ours (see `userAdjusted`),
+   *    and never animated: this fires once per frame of a grip drag, and a
+   *    spring chasing a target that moves every frame reads as lag, not motion.
+   */
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    /* Skip the observer's initial callback — the first fit already ran. */
+    let first = true;
+    const observer = new ResizeObserver(() => {
+      if (first) {
+        first = false;
+        return;
+      }
+      if (userAdjusted.current) setPan(panX.get(), panY.get());
+      else fit(false);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [fit, panX, panY, setPan]);
+
   /* ───────────────────────────────── wheel ─────────────────────────────── */
 
   useEffect(() => {
@@ -213,6 +262,7 @@ export function useStageTransform(
       const isPanGesture =
         !fine && (event.shiftKey || Math.abs(event.deltaX) > 0.5);
       if (isPanGesture) {
+        userAdjusted.current = true;
         setPan(panX.get() - event.deltaX, panY.get() - event.deltaY);
         return;
       }
@@ -279,6 +329,7 @@ export function useStageTransform(
       const el = event.currentTarget;
       el.setPointerCapture(event.pointerId);
       panningRef.current = true;
+      userAdjusted.current = true;
       setPanning(true);
 
       const startX = event.clientX;

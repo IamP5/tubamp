@@ -16,8 +16,11 @@ import type {
   ComboParamId,
   ComboParamState,
   ComboProperties,
+  EditorSize,
+  EditorSizeLimits,
   ErrorResult,
   FileEntry,
+  FxEmbedState,
   FxParamInfo,
   FxPluginEntry,
   FxSlotIndex,
@@ -232,6 +235,22 @@ interface MockFxParam {
   format(value: number): string;
 }
 
+/**
+ * What happens when this plugin's editor is asked to draw inside our window.
+ * Three behaviours worth having on hand, because each drives a different path
+ * through features/embed and none of them is reachable from the others.
+ */
+interface MockFxEmbed {
+  /** The editor's real size, once its view has attached. */
+  width: number;
+  height: number;
+  /** A first, wrong size reported before the view attaches — several real AUs
+   *  do this, and it is the only way to exercise the re-layout path. */
+  provisional?: { width: number; height: number };
+  /** Non-empty: embedding is refused and the caller must fall back to a window. */
+  refuse?: string;
+}
+
 interface MockFxPlugin {
   identifier: string;
   name: string;
@@ -242,6 +261,7 @@ interface MockFxPlugin {
    *  "not installed" (missing) and "loads fine". */
   failsToLoad?: boolean;
   latencySamples: number;
+  embed: MockFxEmbed;
   params: MockFxParam[];
 }
 
@@ -287,6 +307,7 @@ const FX_PLUGINS: MockFxPlugin[] = [
     version: "2.1.0",
     hasEditor: true,
     latencySamples: 0,
+    embed: { width: 520, height: 280 },
     params: [
       fxParam("Peak Reduction", 0.4),
       fxParam("Gain", 0.5),
@@ -301,6 +322,13 @@ const FX_PLUGINS: MockFxPlugin[] = [
     version: "3.0.4",
     hasEditor: true,
     latencySamples: 1024,
+    // The refusal case: an editor bigger than any display we could grow to.
+    embed: {
+      width: 2400,
+      height: 1400,
+      refuse:
+        "Spectral Convolution Workstation needs a 2400 x 1400 editor, which is larger than this display.",
+    },
     params: bandParams(),
   },
   {
@@ -310,6 +338,9 @@ const FX_PLUGINS: MockFxPlugin[] = [
     version: "1.4.2",
     hasEditor: false,
     latencySamples: 0,
+    // No editor of its own, so this is the host's generic one — still a native
+    // view, still a hole in the page.
+    embed: { width: 420, height: 200 },
     params: [
       fxParam("Low Shelf", 0.5, "dB", dB(-18, 18)),
       fxParam("Low Freq", 0.2, "Hz", hz(20, 1000)),
@@ -325,6 +356,14 @@ const FX_PLUGINS: MockFxPlugin[] = [
     version: "1.0.9",
     hasEditor: true,
     latencySamples: 64,
+    // Reports twice, and the real size is taller than the board band at any
+    // window this app opens at — so it also drives the "ask for a bigger
+    // window" path.
+    embed: {
+      width: 880,
+      height: 460,
+      provisional: { width: 320, height: 180 },
+    },
     params: [
       fxParam("Machine", 0, "", step(["A80", "A812", "B67", "M15"])),
       fxParam("Speed", 0.5, "ips", step(["7.5 ips", "15 ips", "30 ips"])),
@@ -342,6 +381,7 @@ const FX_PLUGINS: MockFxPlugin[] = [
     hasEditor: true,
     failsToLoad: true,
     latencySamples: 0,
+    embed: { width: 400, height: 300 },
     params: [],
   },
   {
@@ -351,6 +391,7 @@ const FX_PLUGINS: MockFxPlugin[] = [
     version: "1.0.0",
     hasEditor: false,
     latencySamples: 0,
+    embed: { width: 360, height: 160 },
     params: [
       fxParam("Gain", 0.5, "dB", dB(-24, 24)),
       fxParam("Pan", 0.5, "", (v) => `${Math.round(v * 200 - 100)} L/R`),
@@ -482,6 +523,135 @@ function stopFxMeter(): void {
   fxRaf = 0;
 }
 
+/* ───────────────────────── fake editor window ──────────────────────────── */
+
+/**
+ * The plugin window, emulated.
+ *
+ * In the plugin the WebView *is* the window and C++ owns its bounds. In a
+ * browser nothing can resize the tab, so the mock keeps a size of its own and
+ * the app shell renders at it (App.tsx writes it onto `--app-w`/`--app-h`).
+ * That is what makes the grip, the clamps and the fluid layout testable in dev
+ * — a grip that only ever reported "already at max" would test nothing.
+ *
+ * The browser viewport stands in for the display: a window bigger than it could
+ * not be dragged back, which is exactly what `maxWidth`/`maxHeight` mean.
+ */
+const MIN_EDITOR_W = 900;
+const MIN_EDITOR_H = 600;
+
+function clampNum(value: number, min: number, max: number): number {
+  return value < min ? min : value > max ? max : value;
+}
+
+function displayLimits(): { maxWidth: number; maxHeight: number } {
+  return {
+    maxWidth: Math.max(MIN_EDITOR_W, Math.floor(window.innerWidth)),
+    maxHeight: Math.max(MIN_EDITOR_H, Math.floor(window.innerHeight)),
+  };
+}
+
+/** Floor imposed by an embedded plugin; {0,0} when nothing is embedded. */
+let embedFloor = { width: 0, height: 0 };
+
+function setEmbedFloor(width: number, height: number): void {
+  embedFloor = { width, height };
+  const current = state.editorSize;
+  applyEditorSize(Math.max(current.width, width), Math.max(current.height, height));
+}
+
+function editorSizeFor(width: number, height: number): EditorSizeLimits {
+  const { maxWidth, maxHeight } = displayLimits();
+  /* The reported minimum is the EFFECTIVE one, matching C++: while a plugin is
+     embedded the window cannot shrink below what that plugin needs, and the grip
+     clamps against exactly these numbers. */
+  const minWidth = Math.min(Math.max(MIN_EDITOR_W, embedFloor.width), maxWidth);
+  const minHeight = Math.min(Math.max(MIN_EDITOR_H, embedFloor.height), maxHeight);
+
+  return {
+    width: Math.round(clampNum(width, minWidth, maxWidth)),
+    height: Math.round(clampNum(height, minHeight, maxHeight)),
+    minWidth,
+    minHeight,
+    maxWidth,
+    maxHeight,
+  };
+}
+
+/** Opens filling the "display", like a plugin window the host has just sized. */
+function initialEditorSize(): EditorSizeLimits {
+  return editorSizeFor(window.innerWidth, window.innerHeight);
+}
+
+function sameEditorSize(a: EditorSizeLimits, b: EditorSizeLimits): boolean {
+  return (
+    a.width === b.width &&
+    a.height === b.height &&
+    a.minWidth === b.minWidth &&
+    a.minHeight === b.minHeight &&
+    a.maxWidth === b.maxWidth &&
+    a.maxHeight === b.maxHeight
+  );
+}
+
+/** Applies + broadcasts, exactly like C++: the event fires for our own writes
+ *  too, so the page never has to remember what it asked for. */
+function applyEditorSize(width: number, height: number): EditorSize {
+  const next = editorSizeFor(width, height);
+  const changed = !sameEditorSize(next, state.editorSize);
+  state.editorSize = next;
+  if (changed) emit("editorSizeChanged", { ...next });
+  return { width: next.width, height: next.height };
+}
+
+/** Until the grip is used the emulated window tracks the browser window, the
+ *  way a plugin window tracks the size the host gave it. */
+let editorSizeDragged = false;
+
+window.addEventListener("resize", () => {
+  if (editorSizeDragged)
+    applyEditorSize(state.editorSize.width, state.editorSize.height);
+  else applyEditorSize(window.innerWidth, window.innerHeight);
+});
+
+/* ─────────────────────── embedded hosted editor ────────────────────────── */
+
+/** Timers for a mount in flight — a second request must cancel the first. */
+let embedTimers: number[] = [];
+
+function clearEmbedTimers(): void {
+  for (const id of embedTimers) window.clearTimeout(id);
+  embedTimers = [];
+}
+
+function setEmbed(next: FxEmbedState): void {
+  state.fxEmbed = next;
+  emit("fxEmbedChanged", { ...next });
+}
+
+/**
+ * What the page last said about the hole.
+ *
+ * Nothing composites above a browser page, so there is no native view to move
+ * or hide; the mock records the calls and publishes them as
+ * `window.__tubampEmbed`, which is how you check in dev that the rectangle
+ * really does track the layout and that opening a menu really does hide it.
+ */
+const embedReport = {
+  rect: { x: 0, y: 0, width: 0, height: 0 },
+  visible: true,
+  minWindow: { width: 0, height: 0 },
+};
+(window as unknown as { __tubampEmbed: typeof embedReport }).__tubampEmbed =
+  embedReport;
+
+/** Unmount when the slot's plugin goes away under it, as the real host must. */
+function dropEmbedFor(slot: FxSlotIndex): void {
+  if (state.fxEmbed.slot !== slot) return;
+  clearEmbedTimers();
+  setEmbed({ slot: -1, width: 0, height: 0, error: "" });
+}
+
 /* ────────────────────────────── mock plugin state ──────────────────────── */
 
 const MODELS_DIR = "/Users/dev/Music/tubamp/models";
@@ -552,6 +722,8 @@ const state: UiState = {
   // The fx tokens are absent from chainOrder above because they are absent from
   // chain::defaultOrder() — a slot only enters the path when the user adds it.
   fxSlots: initialFxSlots(),
+  editorSize: initialEditorSize(),
+  fxEmbed: { slot: -1, width: 0, height: 0, error: "" },
   fxSupported: true,
 };
 
@@ -1141,6 +1313,7 @@ export const mockBridge: Bridge = {
 
     fxLoaded[slot] = null;
     fxValues[slot] = [];
+    dropEmbedFor(slot);
     emitFxSlot(slot, {
       ...emptyFxSlot(slot),
       identifier,
@@ -1175,6 +1348,7 @@ export const mockBridge: Bridge = {
   fxClear: async (slot: FxSlotIndex) => {
     fxLoaded[slot] = null;
     fxValues[slot] = [];
+    dropEmbedFor(slot);
     await delay(null, 0);
     emitFxSlot(slot, emptyFxSlot(slot));
   },
@@ -1204,6 +1378,94 @@ export const mockBridge: Bridge = {
     fxWatched = slot;
     if (slot < 0) stopFxMeter();
     else startFxMeter();
+    await delay(null, 0);
+  },
+
+  /* --- window size --------------------------------------------------------- */
+
+  getEditorSize: async () => delay({ ...state.editorSize }, 40),
+
+  setEditorSize: async (width, height) => {
+    editorSizeDragged = true;
+    // Synchronous on purpose: this is called from a pointermove and the page
+    // relays out on the event it emits. A delay here would show as grip lag.
+    return applyEditorSize(width, height);
+  },
+
+  /* --- embedding a hosted plugin's own editor ------------------------------ */
+
+  fxSetEmbedSlot: async (slot) => {
+    clearEmbedTimers();
+
+    if (slot === -1) {
+      setEmbed({ slot: -1, width: 0, height: 0, error: "" });
+      return {} satisfies ErrorResult;
+    }
+
+    const plugin = fxLoaded[slot];
+    if (!plugin) {
+      await delay(null, 60);
+      return { error: "Nothing is loaded in this slot." } satisfies ErrorResult;
+    }
+
+    const { embed } = plugin;
+    if (embed.refuse) {
+      // Refused before anything mounts. Both channels carry it: the caller gets
+      // the error to fall back on, and the event tells every other listener the
+      // embed is not coming.
+      await delay(null, 120);
+      setEmbed({ slot: -1, width: 0, height: 0, error: embed.refuse });
+      return { error: embed.refuse } satisfies ErrorResult;
+    }
+
+    // Creating the view and attaching it takes a beat, and a plugin that only
+    // knows its real size afterwards reports twice.
+    const first = embed.provisional ?? embed;
+    embedTimers.push(
+      window.setTimeout(
+        () =>
+          setEmbed({
+            slot,
+            width: first.width,
+            height: first.height,
+            error: "",
+          }),
+        160,
+      ),
+    );
+    if (embed.provisional) {
+      embedTimers.push(
+        window.setTimeout(
+          () =>
+            setEmbed({
+              slot,
+              width: embed.width,
+              height: embed.height,
+              error: "",
+            }),
+          900,
+        ),
+      );
+    }
+    return {} satisfies ErrorResult;
+  },
+
+  fxSetEmbedRect: async (x, y, width, height) => {
+    embedReport.rect = { x, y, width, height };
+    await delay(null, 0);
+  },
+
+  fxSetEmbedMinWindow: async (width, height) => {
+    embedReport.minWindow = { width, height };
+    /* Same contract as C++: this is a floor, not a request. It raises the limits
+       the grip clamps against and grows once if we are already smaller — never a
+       reactive loop chasing its own resize events. */
+    setEmbedFloor(width, height);
+    await delay(null, 0);
+  },
+
+  fxSetEmbedVisible: async (visible) => {
+    embedReport.visible = visible;
     await delay(null, 0);
   },
 };

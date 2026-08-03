@@ -1,12 +1,23 @@
-/* App shell: fixed 1120×700, header / board / dock / footer. */
+/* App shell: fluid, header / board / dock / footer. */
 
+/*
+  Fills the window (--app-w/--app-h are 100%/100%). The mock bridge overrides
+  the two variables on this element to emulate a smaller window, which is why
+  they are variables and not literal percentages.
+
+  `flex: none` because #root centres the shell: without it the flex container
+  would stretch the shell back to the viewport and the emulated window would
+  never be visible.
+*/
 .root {
   position: relative;
+  flex: none;
   display: flex;
   flex-direction: column;
   width: var(--app-w);
   height: var(--app-h);
-  margin: 0 auto;
+  min-width: var(--min-app-w);
+  min-height: var(--min-app-h);
   overflow: hidden;
   background:
     radial-gradient(
@@ -81,9 +92,18 @@
   z-index: 2;
 }
 
+/*
+  Dev-only: the mock's emulated window is smaller than the browser viewport and
+  the letterbox around it is the same colour as the app, so draw its edge.
+*/
+.rootMock {
+  box-shadow: 0 0 0 1px var(--border);
+}
+
 /* Dev-only affordance: makes it obvious the mock bridge is driving the UI. */
 .mockBadge {
-  position: fixed;
+  /* Absolute, not fixed: it belongs to the emulated window, not the viewport. */
+  position: absolute;
   left: 50%;
   top: 6px;
   transform: translateX(-50%);

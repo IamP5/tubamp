@@ -40,9 +40,39 @@ export const FIRST_CARD_X = TERMINAL_W + GAP;
  * dock card), but the lane is centred — and zoom-to-fit framed — inside the band
  * ABOVE the dock, so a chain never settles underneath it.
  *
- * MUST equal `--dock-inset` in theme/tokens.css (`--dock-h` + `--dock-gap`).
+ * Used only as the fallback for `measureDockInset()` below, and as the value for
+ * any non-DOM caller. `--dock-inset` in theme/tokens.css is the real definition.
  */
 export const DOCK_INSET = 244;
+
+/**
+ * `--dock-inset` in CSS pixels.
+ *
+ * Measured, not copied. The token is a `calc()` of two other tokens, and
+ * `getComputedStyle().getPropertyValue()` hands an unregistered custom property
+ * back as its unresolved token stream ("calc(232px + 12px)") — which parses as
+ * 232. A throwaway element with `height: var(--dock-inset)` makes the engine do
+ * the arithmetic, so the dock's height can be retuned in one place and the
+ * board's geometry follows.
+ *
+ * Memoised, so it is safe to call from a render: the dock band is fixed even
+ * though the window is not, and the probe is created and removed synchronously.
+ */
+let measuredDockInset: number | null = null;
+
+export function measureDockInset(): number {
+  if (measuredDockInset !== null) return measuredDockInset;
+  if (typeof document === "undefined") return DOCK_INSET;
+  const probe = document.createElement("div");
+  probe.style.cssText =
+    "position:absolute;top:0;left:0;visibility:hidden;pointer-events:none;" +
+    "width:0;height:var(--dock-inset)";
+  document.body.appendChild(probe);
+  const measured = probe.getBoundingClientRect().height;
+  probe.remove();
+  measuredDockInset = measured > 0 ? measured : DOCK_INSET;
+  return measuredDockInset;
+}
 
 /** Vertical lift applied to a card while it is being dragged. */
 export const DRAG_LIFT = 6;

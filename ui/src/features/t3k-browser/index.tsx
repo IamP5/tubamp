@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { cx } from "../../components";
+import { cx, useBlockingOverlay } from "../../components";
 import { duration, ease, noMotion, spring } from "../../theme/motion";
 import { useStore } from "../../store";
 import type { T3kBrowseRequest, T3kTone } from "../../bridge";
@@ -41,6 +41,12 @@ function sameRequest(a: T3kBrowseRequest, b: T3kBrowseRequest): boolean {
 
 function Drawer() {
   const reduced = useReducedMotion() ?? false;
+
+  /* No backdrop, but it still covers the right third of the board band — which
+     is where an embedded plugin's native view sits, and that view would draw
+     straight over the drawer. Declaring it makes features/embed stand aside. */
+  useBlockingOverlay(true);
+
   const kind = useStore((st) => st.browser.kind);
   const close = useStore((st) => st.closeT3kBrowser);
   const authenticated = useStore((st) => st.t3k.authenticated);
