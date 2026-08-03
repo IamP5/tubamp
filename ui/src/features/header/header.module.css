@@ -1,0 +1,155 @@
+/*
+  Header bar (48px). Layout order (docs/REACT-UI.md §UX structure): brand →
+  preset pill → flexible spacer → A/B segmented → T3K status glyph → settings
+  gear. Tokens only — see ../../theme/tokens.css.
+*/
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 100%;
+  padding: 0 16px;
+  background: linear-gradient(to bottom, var(--bg-surface), var(--bg-elevated));
+}
+
+/* ── Brand ── */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 6px;
+}
+
+.brandDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 8px 1px var(--accent-glow);
+}
+
+.wordmark {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ── Preset pill ── */
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+}
+
+.pillName {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  min-width: 100px;
+  max-width: 220px;
+  padding: 0 10px;
+  border-radius: 999px;
+  transition: background-color 120ms ease;
+}
+
+.pillName:hover {
+  background: var(--bg-elevated-hi);
+}
+
+.pillNameText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.pillNamePlaceholder {
+  color: var(--text-tertiary);
+  font-style: normal;
+}
+
+/* ── Preset menu (custom — needs favorite/delete affordances the generic
+   Menu primitive doesn't support) ── */
+
+.presetMenu {
+  min-width: 260px;
+  padding: 4px;
+}
+
+.presetEmpty {
+  padding: 10px 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.presetRow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.presetRowMain {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  min-width: 0;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-primary);
+  transition: background-color 120ms ease;
+}
+
+.presetRowMain:hover {
+  background: var(--accent-fill-8);
+}
+
+.presetRowLabel {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.presetRowFavorite {
+  color: var(--text-tertiary);
+}
+
+.presetRowFavoriteOn {
+  color: var(--accent);
+}
+
+/* ── Spacer pushes A/B + T3K + settings to the right edge ── */
+
+.spacer {
+  flex: 1;
+}
+
+/* ── T3K status glyph ── */
+
+.t3k {
+  color: var(--text-tertiary);
+}
+
+.t3kConfigured {
+  color: var(--text-secondary);
+}
+
+.t3kAuthenticated {
+  color: var(--accent);
+}

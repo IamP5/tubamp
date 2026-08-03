@@ -1,0 +1,178 @@
+/* Global base: reset, font wiring, scrollbars, selection, reduced motion. */
+
+@import "./tokens.css";
+@import "./fonts.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+
+  /* Plugin UI, not a document: no text selection, no rubber band, no callouts. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: none;
+  overflow: hidden;
+  cursor: default;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote,
+dl,
+dd {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+svg {
+  display: block;
+}
+
+img,
+svg {
+  max-width: 100%;
+}
+
+a {
+  color: var(--blue-hover);
+  text-decoration: none;
+}
+
+/* Only real text-entry surfaces may select — everything else is chrome. */
+input,
+textarea,
+[data-selectable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+::selection {
+  background: var(--accent-fill-25);
+  color: var(--text-primary);
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Tabular numerics for every live-updating readout — without this, digit-width
+   jitter shimmers the layout at meter refresh rates. */
+.value-readout,
+[data-numeric="true"] {
+  font-family: var(--font-mono);
+  font-feature-settings:
+    "tnum" 1,
+    "zero" 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thin dark scrollbars (real CSS — this is a WebView, not host chrome). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-hover) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-hover);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--border-active);
+}
+
+@keyframes tubamp-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes tubamp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/*
+  Reduced motion: collapse CSS-driven decoration. Motion-library animations are
+  gated separately via `useReducedMotion()` (see theme/motion.ts helpers) so that
+  gesture-tracking transforms (knob drag, pan/zoom) keep working — they are
+  direct manipulation, not animation.
+*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

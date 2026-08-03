@@ -1,0 +1,248 @@
+/*
+  tubamp design tokens — implements docs/research/vercel-design.md §6 (and the
+  §1.x tables it summarises) verbatim. Dark only; there is no light branch.
+
+  Rule for every component in this app: consume these variables, never inline a
+  raw hex / radius / shadow.
+*/
+
+:root {
+  color-scheme: dark;
+
+  /* ── Geist raw scales (reference; build new semantic tokens from these) ── */
+  --geist-gray-100: #1a1a1a;
+  --geist-gray-200: #1f1f1f;
+  --geist-gray-300: #292929;
+  --geist-gray-400: #2e2e2e;
+  --geist-gray-500: #454545;
+  --geist-gray-600: #878787;
+  --geist-gray-700: #8f8f8f;
+  --geist-gray-800: #7d7d7d;
+  --geist-gray-900: #a1a1a1;
+  --geist-gray-1000: #ededed;
+  --geist-bg-100: #0a0a0a;
+  --geist-bg-200: #000000;
+
+  --geist-blue-100: #0f1c2e;
+  --geist-blue-200: #10233d;
+  --geist-blue-300: #0f2f57;
+  --geist-blue-400: #0d3868;
+  --geist-blue-500: #0a4380;
+  --geist-blue-600: #0090ff;
+  --geist-blue-700: #0072f5;
+  --geist-blue-800: #0062d1;
+  --geist-blue-900: #52a8ff;
+  --geist-blue-1000: #ebf6ff;
+
+  --geist-red-600: #e5484d;
+  --geist-red-700: #e5484d;
+  --geist-red-800: #d93036;
+  --geist-amber-700: #ffb224;
+  --geist-amber-800: #ff990a;
+  --geist-green-700: #45a557;
+  --geist-green-800: #398e4a;
+  --geist-teal-700: #12a594;
+  --geist-purple-700: #8e4ec6;
+  --geist-pink-700: #ea3e83;
+
+  /* ── Backgrounds ── */
+  --bg-app: #0a0a0a;
+  --bg-surface: #12151b;
+  --bg-elevated: #161a21;
+  --bg-elevated-hi: #1c222b;
+  --bg-overlay: rgba(10, 10, 10, 0.72);
+
+  /* ── Borders ── */
+  --border: #262e39;
+  --border-hover: #333d4b;
+  --border-active: #454f5e;
+
+  /* ── Text ── */
+  --text-primary: #e6eaf0;
+  --text-secondary: #8b95a6;
+  --text-tertiary: #5a6473;
+  --text-disabled: rgba(230, 234, 240, 0.35);
+
+  /*
+    ── Brand accent (warm tube glow) ──
+    The tints are literal rgba() rather than color-mix(): color-mix needs Safari
+    16.2, and the build baseline is safari14 / macOS 11, where the whole
+    declaration would be dropped at parse time (a `var()` fallback cannot rescue
+    it — var() always parses, so the invalid value becomes `unset`, not the
+    fallback). The cost is that the tints no longer track --accent
+    automatically: change the accent hex and you must recompute the four values
+    below with the same percentages.
+  */
+  --accent: #ff7a1a;
+  --accent-hover: #ff8f3d;
+  --accent-active: #e56a10;
+  --accent-fill-8: rgba(255, 122, 26, 0.08);
+  --accent-fill-16: rgba(255, 122, 26, 0.16);
+  --accent-fill-25: rgba(255, 122, 26, 0.25);
+  --accent-glow: rgba(255, 122, 26, 0.35);
+
+  /* ── Interactive / link accent (kept distinct from the 9 block hues) ── */
+  --blue: #0072f5;
+  --blue-hover: #0090ff;
+
+  /* ── Status ── */
+  --success: #45a557;
+  --success-fill: rgba(69, 165, 87, 0.12);
+  --warning: #ffb224;
+  --warning-fill: rgba(255, 178, 36, 0.12);
+  --error: #e5484d;
+  --error-fill: rgba(229, 72, 77, 0.12);
+
+  /* ── Focus ring: 2px solid ring with an offset gap, no blur ── */
+  --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--blue-hover);
+
+  /* ── Radii ── */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* ── Shadows (floating elements only; resting surfaces use inset rings) ── */
+  --shadow-menu:
+    0 0 0 1px var(--border), 0 4px 16px rgba(0, 0, 0, 0.5),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-tooltip: 0 0 0 1px var(--border), 0 4px 8px rgba(0, 0, 0, 0.4);
+  --shadow-drag:
+    0 0 0 1px var(--border-hover), 0 12px 32px rgba(0, 0, 0, 0.6),
+    0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-modal: 0 0 0 1px var(--border), 0 24px 64px rgba(0, 0, 0, 0.7);
+  --shadow-toast: 0 0 0 1px var(--border), 0 8px 24px rgba(0, 0, 0, 0.5);
+  /* Param dock: a card floating over the board, lighter than a modal. */
+  --shadow-dock: 0 0 0 1px var(--border), 0 16px 40px rgba(0, 0, 0, 0.55);
+  --ring-inset: inset 0 0 0 1px var(--border);
+  --ring-inset-hover: inset 0 0 0 1px var(--border-hover);
+  --ring-inset-active: inset 0 0 0 1px var(--border-active);
+
+  /* ── Typography ── */
+  --font-sans:
+    "Geist Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ── App metrics (fixed 1120×700 editor) ── */
+  --app-w: 1120px;
+  --app-h: 700px;
+  --header-h: 48px;
+  --footer-h: 56px;
+  /* Param dock: an overlay card floating over the board's bottom edge. */
+  --dock-h: 232px;
+  --dock-gap: 12px;
+  /* Board rows the dock covers. MUST stay in sync with DOCK_INSET in
+     features/board/layout.ts, which is the same number in JS. */
+  --dock-inset: calc(var(--dock-h) + var(--dock-gap));
+
+  /* ── Meter stops (PeakMeter parity: −60…+6 dB, breaks at −12 and −3) ── */
+  --meter-low: #34d399;
+  --meter-mid: #fbbf24;
+  --meter-high: #f87171;
+
+  /* ── Per-block accents ── */
+  --block-gate: #a78bfa;
+  --block-comp: #fbbf24;
+  --block-drive: #f97316;
+  --block-amp: #f43f5e;
+  --block-cab: #2dd4bf;
+  --block-eq: #60a5fa;
+  --block-mod: #4ade80;
+  --block-delay: #818cf8;
+  --block-reverb: #22d3ee;
+}
+
+/*
+  Per-block tint/glow variants. Any element carrying `data-block="<token>"`
+  (tile, panel root, knob group, connector segment) picks up the whole set;
+  components then reference --block-accent / --block-fill-*. `blockCssVars()` in
+  ./blocks.ts produces the identical set as inline styles for cases where the
+  attribute is inconvenient (portalled menus, SVG connectors).
+
+  These were once one color-mix() set on [data-block] deriving everything from
+  var(--block-accent). color-mix needs Safari 16.2 and the baseline is safari14,
+  so each block now spells its tints out. The values are mechanical: the four
+  fills are the accent's channels at 8/16/25/35% alpha, and --block-dim is
+  55% accent over --bg-surface (#12151b) flattened to an opaque rgb(). To change
+  a block's colour, recompute its six lines together — they are one unit.
+*/
+[data-block] {
+  --block-accent: var(--accent);
+  --block-fill-8: rgba(255, 122, 26, 0.08);
+  --block-fill-16: rgba(255, 122, 26, 0.16);
+  --block-fill-25: rgba(255, 122, 26, 0.25);
+  --block-glow: rgba(255, 122, 26, 0.35);
+  --block-dim: rgb(148, 77, 26);
+}
+
+[data-block="gate"] {
+  --block-accent: var(--block-gate);
+  --block-fill-8: rgba(167, 139, 250, 0.08);
+  --block-fill-16: rgba(167, 139, 250, 0.16);
+  --block-fill-25: rgba(167, 139, 250, 0.25);
+  --block-glow: rgba(167, 139, 250, 0.35);
+  --block-dim: rgb(100, 86, 150);
+}
+[data-block="comp"] {
+  --block-accent: var(--block-comp);
+  --block-fill-8: rgba(251, 191, 36, 0.08);
+  --block-fill-16: rgba(251, 191, 36, 0.16);
+  --block-fill-25: rgba(251, 191, 36, 0.25);
+  --block-glow: rgba(251, 191, 36, 0.35);
+  --block-dim: rgb(146, 115, 32);
+}
+[data-block="drive"] {
+  --block-accent: var(--block-drive);
+  --block-fill-8: rgba(249, 115, 22, 0.08);
+  --block-fill-16: rgba(249, 115, 22, 0.16);
+  --block-fill-25: rgba(249, 115, 22, 0.25);
+  --block-glow: rgba(249, 115, 22, 0.35);
+  --block-dim: rgb(145, 73, 24);
+}
+[data-block="amp"] {
+  --block-accent: var(--block-amp);
+  --block-fill-8: rgba(244, 63, 94, 0.08);
+  --block-fill-16: rgba(244, 63, 94, 0.16);
+  --block-fill-25: rgba(244, 63, 94, 0.25);
+  --block-glow: rgba(244, 63, 94, 0.35);
+  --block-dim: rgb(142, 44, 64);
+}
+[data-block="cab"] {
+  --block-accent: var(--block-cab);
+  --block-fill-8: rgba(45, 212, 191, 0.08);
+  --block-fill-16: rgba(45, 212, 191, 0.16);
+  --block-fill-25: rgba(45, 212, 191, 0.25);
+  --block-glow: rgba(45, 212, 191, 0.35);
+  --block-dim: rgb(33, 126, 117);
+}
+[data-block="eq"] {
+  --block-accent: var(--block-eq);
+  --block-fill-8: rgba(96, 165, 250, 0.08);
+  --block-fill-16: rgba(96, 165, 250, 0.16);
+  --block-fill-25: rgba(96, 165, 250, 0.25);
+  --block-glow: rgba(96, 165, 250, 0.35);
+  --block-dim: rgb(61, 100, 150);
+}
+[data-block="mod"] {
+  --block-accent: var(--block-mod);
+  --block-fill-8: rgba(74, 222, 128, 0.08);
+  --block-fill-16: rgba(74, 222, 128, 0.16);
+  --block-fill-25: rgba(74, 222, 128, 0.25);
+  --block-glow: rgba(74, 222, 128, 0.35);
+  --block-dim: rgb(49, 132, 83);
+}
+[data-block="delay"] {
+  --block-accent: var(--block-delay);
+  --block-fill-8: rgba(129, 140, 248, 0.08);
+  --block-fill-16: rgba(129, 140, 248, 0.16);
+  --block-fill-25: rgba(129, 140, 248, 0.25);
+  --block-glow: rgba(129, 140, 248, 0.35);
+  --block-dim: rgb(79, 86, 149);
+}
+[data-block="reverb"] {
+  --block-accent: var(--block-reverb);
+  --block-fill-8: rgba(34, 211, 238, 0.08);
+  --block-fill-16: rgba(34, 211, 238, 0.16);
+  --block-fill-25: rgba(34, 211, 238, 0.25);
+  --block-glow: rgba(34, 211, 238, 0.35);
+  --block-dim: rgb(27, 126, 143);
+}

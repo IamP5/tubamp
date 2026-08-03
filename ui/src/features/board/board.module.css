@@ -1,0 +1,458 @@
+/*
+  The board: pan/zoom stage, dot grid, chain lane, connectors, zoom control.
+
+  Tokens only (tokens.css / motion.ts). Anything that animates here animates
+  transform or opacity — every shadow/glow is baked into a static layer that is
+  cross-faded, per motion-design.md §4.2.
+*/
+
+.root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  /* Rows covered by the param-dock overlay. The board paints full-bleed (the
+     dot grid runs behind and around the floating dock), but the lane, the
+     zoom-to-fit framing and the board's own chrome all live above this line —
+     see DOCK_INSET in ./layout.ts, the JS twin of this value. */
+  --dock-cover: var(--dock-inset, 0px);
+  /* Local derivations of the global tokens — one place to retune the surface.
+     Literal rgba rather than color-mix (Safari 16.2+; baseline is safari14):
+     --text-tertiary #5a6473 at 42%. */
+  --grid-dot: rgba(90, 100, 115, 0.42);
+  --wire: var(--border-active);
+}
+
+.root[data-pan="ready"] {
+  cursor: grab;
+}
+.root[data-pan="active"] {
+  cursor: grabbing;
+}
+
+/* ─────────────────────────────── pan/zoom stage ─────────────────────────── */
+
+/* Stage box = the band the dock does NOT cover, so its centre (the transform
+   origin) is the visual centre of the board. Children overflow it freely and
+   are clipped by `.root`, which is why the grid still reaches the bottom. */
+.stage {
+  position: absolute;
+  inset: 0 0 var(--dock-cover) 0;
+  transform-origin: 50% 50%;
+}
+
+/* Layer promotion only while a gesture is live (guardrail §4.3). */
+.stageActive {
+  will-change: transform;
+}
+
+.grid {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4000px;
+  height: 2400px;
+  margin: -1200px 0 0 -2000px;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    var(--grid-dot) 1px,
+    transparent 1.4px
+  );
+  background-size: 24px 24px;
+  background-position: center center;
+}
+
+/* ──────────────────────────────── the lane ─────────────────────────────── */
+
+/* Lane origin: stage centre. Zero-sized, everything inside is absolute. */
+.lane,
+.laneInner,
+.wireLayer {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+.lane {
+  left: 50%;
+  top: 50%;
+}
+
+.laneInner,
+.wireLayer {
+  left: 0;
+  top: 0;
+}
+
+.node {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.cardEnter {
+  position: absolute;
+  inset: 0;
+}
+
+/* ──────────────────────────────── connectors ───────────────────────────── */
+
+.connectors {
+  position: absolute;
+  /* The lane containers are 0×0 coordinate origins, and global.css caps every
+     svg at `max-width: 100%` — which would collapse this one to zero width. */
+  max-width: none;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.wire {
+  fill: none;
+  stroke: var(--wire);
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke 150ms ease;
+}
+
+.segment {
+  transition: opacity 150ms ease;
+}
+
+.chevron {
+  fill: none;
+  stroke: var(--text-tertiary);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.flow {
+  animation: tubamp-flow 1900ms linear infinite;
+}
+
+.flowTrail {
+  animation-delay: -950ms;
+}
+
+@keyframes tubamp-flow {
+  0% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  22% {
+    opacity: 0.9;
+  }
+  72% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(var(--flow-len, 44px));
+  }
+}
+
+/* ─────────────────────────────── block card ────────────────────────────── */
+
+.card {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+  transition: opacity 100ms ease;
+}
+
+.cardFace {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--bg-elevated);
+  box-shadow: var(--ring-inset);
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.card:hover .cardFace {
+  background: var(--bg-elevated-hi);
+  box-shadow: var(--ring-inset-hover);
+}
+
+/* Selected: static accent ring + glow, revealed by opacity only. */
+.cardRing {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 0 0 2px var(--block-accent),
+    0 0 0 4px var(--block-fill-8),
+    0 6px 22px var(--block-glow);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Drag lift: the same trick for the drop shadow. */
+.cardLiftShadow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: var(--shadow-drag);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.cardBypassed {
+  opacity: 0.55;
+}
+
+.cardDragging {
+  cursor: grabbing;
+  will-change: transform;
+}
+
+.cardContent {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  pointer-events: none;
+}
+
+.cardIcon {
+  color: var(--block-accent);
+  transition: color 100ms ease;
+}
+
+.cardBypassed .cardIcon {
+  color: var(--text-tertiary);
+}
+
+.cardName {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+  transition: color 100ms ease;
+}
+
+.cardBypassed .cardName {
+  color: var(--text-tertiary);
+}
+
+/* Power LED: 16px hit zone, 6px dot (native parity). */
+.led {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+}
+
+.ledDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-app);
+  box-shadow: inset 0 0 0 1px var(--border-hover);
+  transition:
+    background-color 100ms ease,
+    box-shadow 100ms ease;
+}
+
+.card:not(.cardBypassed) .ledDot {
+  background: var(--block-accent);
+  box-shadow: 0 0 0 3px var(--block-fill-25);
+}
+
+.led:hover .ledDot {
+  box-shadow:
+    0 0 0 3px var(--block-fill-25),
+    inset 0 0 0 1px var(--border-active);
+}
+
+.kebab {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.card:hover .kebab,
+.kebabOpen {
+  opacity: 1;
+}
+
+.kebab:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+}
+
+/* ───────────────────────────── IN / OUT terminals ──────────────────────── */
+
+.terminal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+  color: var(--text-secondary);
+}
+
+.terminalCaption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 7px);
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+}
+
+/* ─────────────────────────────── the [+] node ──────────────────────────── */
+
+.addNode {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--text-tertiary);
+  background: transparent;
+  box-shadow: none;
+  border: 1px dashed var(--border-hover);
+  transition:
+    color 120ms ease,
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.addNode:hover,
+.addNodeOpen {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border-color: var(--border-active);
+}
+
+.pickerIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.inlineAnchor {
+  display: inline-flex;
+}
+
+/* ─────────────────────────────── empty chain ───────────────────────────── */
+
+/* Sits under the lane (which stays centred) rather than over it. */
+.emptyOverlay {
+  position: absolute;
+  inset: 0 0 var(--dock-cover) 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 18px;
+  pointer-events: none;
+}
+
+.empty {
+  padding: 0;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+/* ─────────────────────────────── zoom control ──────────────────────────── */
+
+.zoomBar {
+  position: absolute;
+  right: 14px;
+  bottom: calc(var(--dock-cover) + 12px);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  /* --bg-elevated #161a21 at 88%; see --grid-dot on why this is not color-mix. */
+  background: rgba(22, 26, 33, 0.88);
+  box-shadow: var(--shadow-tooltip);
+  /* Unprefixed backdrop-filter only lands in Safari 18; every WebKit down to the
+     macOS 11 baseline needs the prefixed name. */
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.zoomButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.zoomButton:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated-hi);
+}
+
+.zoomValue {
+  min-width: 44px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 22px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.zoomValue:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated-hi);
+}
+
+.zoomFit {
+  width: auto;
+  padding: 0 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
