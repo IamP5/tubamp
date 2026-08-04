@@ -7,13 +7,16 @@
 */
 
 /*
-  Covers the board band exactly (the dock keeps its own strip below): the board
+  Covers the board band exactly. The board is full-screen now, so this only
+  yields a strip at the bottom when the panel happens to be open — `--panel-band`
+  (theme/tokens.css) is the single source for that, shared with the toaster's
+  bottom anchor, so the hole can never underlap the open panel card. The board
   stays mounted underneath so its pan/zoom survives the embed, and this surface
   is opaque so none of it shows through.
 */
 .panel {
   position: absolute;
-  inset: 0 0 var(--dock-inset) 0;
+  inset: 0 0 var(--panel-band) 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-app);

@@ -47,19 +47,45 @@ const char* const kSliderIds[] = {
     params::eqBass,        params::eqMid,         params::eqTreble,
     params::modRate,       params::modDepth,      params::modMix,
     params::delayTime,     params::delayFeedback, params::delayMix,
-    params::reverbSize,    params::reverbDamping, params::reverbMix };
+    params::reverbSize,    params::reverbDamping, params::reverbMix,
+    // Instances 2 and 3 of the duplicable kinds, plus the amp's own tone stack. Array
+    // order is free (a relay is keyed by its id in JS); it mirrors Parameters.cpp's
+    // append order so the two lists stay diffable.
+    params::comp2Threshold,  params::comp2Ratio,     params::comp2Attack,
+    params::comp2Release,    params::comp2Makeup,
+    params::comp3Threshold,  params::comp3Ratio,     params::comp3Attack,
+    params::comp3Release,    params::comp3Makeup,
+    params::drive2Gain,      params::drive2Tone,     params::drive2Level,
+    params::drive3Gain,      params::drive3Tone,     params::drive3Level,
+    params::eq2Bass,         params::eq2Mid,         params::eq2Treble,
+    params::eq3Bass,         params::eq3Mid,         params::eq3Treble,
+    params::mod2Rate,        params::mod2Depth,      params::mod2Mix,
+    params::mod3Rate,        params::mod3Depth,      params::mod3Mix,
+    params::delay2Time,      params::delay2Feedback, params::delay2Mix,
+    params::delay3Time,      params::delay3Feedback, params::delay3Mix,
+    params::reverb2Size,     params::reverb2Damping, params::reverb2Mix,
+    params::reverb3Size,     params::reverb3Damping, params::reverb3Mix,
+    params::ampEqBass,       params::ampEqMid,       params::ampEqTreble };
 
 const char* const kToggleIds[] = {
     params::gateOn,  params::compOn,  params::driveOn, params::ampOn,
     params::cabOn,   params::eqOn,    params::modOn,   params::delayOn,
     params::reverbOn, params::ampCalInput,
-    params::fx1On,   params::fx2On,   params::fx3On };
+    params::fx1On,   params::fx2On,   params::fx3On,
+    params::comp2On,   params::comp3On,
+    params::drive2On,  params::drive3On,
+    params::eq2On,     params::eq3On,
+    params::mod2On,    params::mod3On,
+    params::delay2On,  params::delay3On,
+    params::reverb2On, params::reverb3On,
+    params::ampEqOn };
 
-const char* const kComboIds[] = { params::ampOutMode, params::modType };
+const char* const kComboIds[] = { params::ampOutMode, params::modType,
+                                  params::mod2Type,   params::mod3Type };
 
-static_assert (std::size (kSliderIds) == 29, "29 float params are frozen");
-static_assert (std::size (kToggleIds) == 13, "10 frozen bool params + 3 fx-slot bypasses");
-static_assert (std::size (kComboIds) == 2, "2 choice params are frozen");
+static_assert (std::size (kSliderIds) == 72, "29 frozen float params + 43 v2 instance / amp-EQ params");
+static_assert (std::size (kToggleIds) == 26, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables");
+static_assert (std::size (kComboIds) == 4, "2 frozen choice params + the mod 2/3 types");
 
 /** Upper bound on hosted parameters surfaced to the UI. A handful of plugins publish
     thousands; serializing all of them into every slot payload would cost more than it
@@ -67,12 +93,14 @@ static_assert (std::size (kComboIds) == 2, "2 choice params are frozen");
 constexpr int kMaxHostedParams = 256;
 
 // Editor geometry. The window used to be frozen at 1120x700; it is now resizable, so
-// these are a starting point and a sane range rather than the truth.
-constexpr int kDefaultEditorWidth = 1120, kDefaultEditorHeight = 700;
-// Floor derived from the content, not picked: header + footer + the param dock + a
-// board band tall enough to show a card, and wide enough for the TONE3000 drawer to
-// open without covering the whole lane.
-constexpr int kMinEditorWidth = 900, kMinEditorHeight = 600;
+// these are a starting point and a sane range rather than the truth. The default is
+// deliberately roomy (ToneX-class): the amp dock lays out three columns side by side
+// and the board benefits from the extra height.
+constexpr int kDefaultEditorWidth = 1280, kDefaultEditorHeight = 800;
+// Floor derived from the content, not picked: the amp dock's three columns (model,
+// levels, tone) are the widest fixed content — see the --min-app-w derivation in
+// ui/src/theme/tokens.css, which must stay in sync with these numbers.
+constexpr int kMinEditorWidth = 1000, kMinEditorHeight = 600;
 // Ceiling only to stop a stray drag creating an absurd window; large enough for any
 // hosted plugin editor measured so far.
 constexpr int kMaxEditorWidth = 3200, kMaxEditorHeight = 2000;
@@ -524,7 +552,7 @@ juce::String WebEditor::setEmbedSlot (int slot)
     // a laptop screen, and we would only find out after mounting. The chrome around the
     // hole (header, dock, footer, gutters) is what the window needs on top of the
     // plugin itself. Refusing here is what makes the pop-out fallback reliable.
-    constexpr int kEmbedChromeWidth = 32, kEmbedChromeHeight = 48 + 32 + 244 + 56 + 24;
+    constexpr int kEmbedChromeWidth = 32, kEmbedChromeHeight = 48 + 32 + 260 + 56 + 24;
     const auto screen = usableScreenArea();
 
     if (created->getWidth() + kEmbedChromeWidth > screen.getWidth()
@@ -642,6 +670,16 @@ juce::var WebEditor::chainOrderVar() const
     return tokens;
 }
 
+juce::var WebEditor::chainRowsVar() const
+{
+    juce::Array<juce::var> rows;
+
+    for (auto length : proc.getChainRows())
+        rows.add (juce::var { length });
+
+    return rows;
+}
+
 juce::var WebEditor::modelsVar() const
 {
     juce::Array<juce::var> out;
@@ -729,6 +767,7 @@ juce::var WebEditor::t3kVar() const
 juce::var WebEditor::uiStateVar() const
 {
     return makeObject ({ { "chainOrder",        chainOrderVar() },
+                         { "chainRows",         chainRowsVar() },
                          { "model",             modelVar() },
                          { "ir",                irVar() },
                          { "models",            modelsVar() },
@@ -824,7 +863,8 @@ void WebEditor::emit (const juce::Identifier& eventId, const juce::var& payload)
 
 void WebEditor::emitChainChanged()
 {
-    emit ("chainChanged", makeObject ({ { "chainOrder", chainOrderVar() } }));
+    emit ("chainChanged", makeObject ({ { "chainOrder", chainOrderVar() },
+                                        { "chainRows",  chainRowsVar() } }));
 }
 
 void WebEditor::emitLibraryChanged()
@@ -1004,11 +1044,22 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                 for (const auto& token : *array)
                     tokens.add (token.toString());
 
-            // An empty array is a deliberately empty chain; chain::fromString falls
-            // back to the default order for empty input, so spell it out.
-            proc.setChainOrder (chain::fromString (tokens.isEmpty()
-                                                       ? juce::String (chain::emptyChainToken)
-                                                       : tokens.joinIntoString (",")));
+            // Row lengths are advisory and separately validated by the processor, so
+            // anything that is not an array of numbers becomes an empty vector ("auto")
+            // rather than taking the order down with it.
+            std::vector<int> rows;
+
+            if (auto* array = args[1].getArray())
+            {
+                rows.reserve ((size_t) array->size());
+
+                for (const auto& length : *array)
+                    rows.push_back ((int) length);
+            }
+
+            // parseOrder, not parseOrderOrLegacy: an empty array from the page is a
+            // deliberately empty chain and must never resurrect the classic order.
+            proc.setChainOrder (chain::parseOrder (tokens.joinIntoString (",")), rows);
             complete ({});
         })
         .withNativeFunction ("loadModel", [this] (const juce::Array<juce::var>& args, auto complete)

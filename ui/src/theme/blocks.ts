@@ -1,13 +1,23 @@
 /**
  * Per-block identity: accent colour, display strings, enable-param id.
  *
- * Mirrors `chain::BlockInfo` (src/dsp/ChainOrder.h) — the array order below is
- * the frozen enum order, which is also the add-menu order and `defaultOrder()`.
+ * Mirrors `chain::BlockInfo` (src/dsp/ChainOrder.h). Both tables are written
+ * once per BASE (the nine kinds plus the three fx slots, in frozen enum order)
+ * and mapped onto all 24 instance tokens: an instance shares its kind's colour
+ * and reads "Compressor 2" / "COMP 2" off the same entry, so the two can never
+ * drift apart.
  */
 import type { CSSProperties } from "react";
-import { BLOCK_IDS, type BlockId, type ToggleParamId } from "../bridge/types";
+import {
+  blockRecord,
+  instanceOf,
+  kindOf,
+  type BaseBlockId,
+  type BlockId,
+  type ToggleParamId,
+} from "../bridge/types";
 
-export const BLOCK_ACCENT: Record<BlockId, string> = {
+const BASE_ACCENT: Record<BaseBlockId, string> = {
   gate: "#a78bfa",
   comp: "#fbbf24",
   drive: "#f97316",
@@ -25,6 +35,10 @@ export const BLOCK_ACCENT: Record<BlockId, string> = {
   fx3: "#e879f9",
 };
 
+export const BLOCK_ACCENT: Record<BlockId, string> = blockRecord(
+  (id) => BASE_ACCENT[kindOf(id)],
+);
+
 export interface BlockInfo {
   id: BlockId;
   /** Full name — panel header, tooltips, menu section headers. */
@@ -34,86 +48,39 @@ export interface BlockInfo {
   enableParamId: ToggleParamId;
 }
 
-export const BLOCK_INFO: Record<BlockId, BlockInfo> = {
-  gate: {
-    id: "gate",
-    displayName: "Noise Gate",
-    shortName: "GATE",
-    enableParamId: "gate_on",
-  },
-  comp: {
-    id: "comp",
-    displayName: "Compressor",
-    shortName: "COMP",
-    enableParamId: "comp_on",
-  },
-  drive: {
-    id: "drive",
-    displayName: "Overdrive",
-    shortName: "DRIVE",
-    enableParamId: "drive_on",
-  },
-  amp: {
-    id: "amp",
-    displayName: "Amp",
-    shortName: "AMP",
-    enableParamId: "amp_on",
-  },
-  cab: {
-    id: "cab",
-    displayName: "Cabinet IR",
-    shortName: "CAB",
-    enableParamId: "cab_on",
-  },
-  eq: {
-    id: "eq",
-    displayName: "Tone Stack",
-    shortName: "EQ",
-    enableParamId: "eq_on",
-  },
-  mod: {
-    id: "mod",
-    displayName: "Modulation",
-    shortName: "MOD",
-    enableParamId: "mod_on",
-  },
-  delay: {
-    id: "delay",
-    displayName: "Delay",
-    shortName: "DELAY",
-    enableParamId: "delay_on",
-  },
-  reverb: {
-    id: "reverb",
-    displayName: "Reverb",
-    shortName: "REVERB",
-    enableParamId: "reverb_on",
-  },
-  /* The slot's own identity. Once a plugin is loaded the dock header shows the
+const BASE_INFO: Record<BaseBlockId, { displayName: string; shortName: string }> = {
+  gate: { displayName: "Noise Gate", shortName: "GATE" },
+  comp: { displayName: "Compressor", shortName: "COMP" },
+  drive: { displayName: "Overdrive", shortName: "DRIVE" },
+  amp: { displayName: "Amp", shortName: "AMP" },
+  cab: { displayName: "Cabinet IR", shortName: "CAB" },
+  eq: { displayName: "Tone Stack", shortName: "EQ" },
+  mod: { displayName: "Modulation", shortName: "MOD" },
+  delay: { displayName: "Delay", shortName: "DELAY" },
+  reverb: { displayName: "Reverb", shortName: "REVERB" },
+  /* The slot's own identity. Once a plugin is loaded the panel header shows the
      plugin's name instead, but the card caption stays "FX 1" — the slot is the
      thing that lives in the chain, the plugin is what is in it. */
-  fx1: {
-    id: "fx1",
-    displayName: "FX Slot 1",
-    shortName: "FX 1",
-    enableParamId: "fx1_on",
-  },
-  fx2: {
-    id: "fx2",
-    displayName: "FX Slot 2",
-    shortName: "FX 2",
-    enableParamId: "fx2_on",
-  },
-  fx3: {
-    id: "fx3",
-    displayName: "FX Slot 3",
-    shortName: "FX 3",
-    enableParamId: "fx3_on",
-  },
+  fx1: { displayName: "FX Slot 1", shortName: "FX 1" },
+  fx2: { displayName: "FX Slot 2", shortName: "FX 2" },
+  fx3: { displayName: "FX Slot 3", shortName: "FX 3" },
 };
 
-/** Frozen enum order — default chain order and add-menu order. */
-export const DEFAULT_BLOCK_ORDER: readonly BlockId[] = BLOCK_IDS;
+export const BLOCK_INFO: Record<BlockId, BlockInfo> = blockRecord((id) => {
+  const base = BASE_INFO[kindOf(id)];
+  const instance = instanceOf(id);
+  return {
+    id,
+    // Instance 1 keeps the unnumbered name: it is the only one there is until a
+    // second is added, and renaming it to "Compressor 1" would churn presets'
+    // vocabulary for nothing.
+    displayName: instance === 0 ? base.displayName : `${base.displayName} ${instance + 1}`,
+    shortName: instance === 0 ? base.shortName : `${base.shortName} ${instance + 1}`,
+    // Every block's bypass is `<token>_on` — the rule Parameters.cpp mints them
+    // with, for all 24 tokens.
+    enableParamId: `${id}_on` as ToggleParamId,
+  };
+});
 
 /** --bg-surface from theme/tokens.css. --block-dim is flattened against it here
  *  because color-mix() (which could do it live) needs Safari 16.2 and the build

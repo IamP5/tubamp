@@ -76,7 +76,7 @@ export function CabBody() {
           </Button>
 
           {/* Rides the action row rather than a row of its own: the dock is a
-              fixed 232px and the cab body already fills it. */}
+              fixed 248px and the cab body already fills it. */}
           {captureHasCab && (
             <Tooltip
               label={

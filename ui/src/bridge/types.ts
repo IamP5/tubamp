@@ -9,7 +9,13 @@
 
 /* ────────────────────────────── chain blocks ───────────────────────────── */
 
-/** Persisted chain tokens (`chain::BlockInfo::token`), in `defaultOrder()` order. */
+/**
+ * Persisted chain tokens (`chain::BlockInfo::token`). A token names a block
+ * INSTANCE, not a block type: the first twelve are the v1 ids and are frozen,
+ * and the twelve instance tokens are appended after them exactly as
+ * `chain::BlockId` appends its new enumerators. Instance 1 of every kind keeps
+ * the legacy token (`comp`), so existing state loads unchanged.
+ */
 export const BLOCK_IDS = [
   "gate",
   "comp",
@@ -23,6 +29,18 @@ export const BLOCK_IDS = [
   "fx1",
   "fx2",
   "fx3",
+  "comp2",
+  "comp3",
+  "drive2",
+  "drive3",
+  "eq2",
+  "eq3",
+  "mod2",
+  "mod3",
+  "delay2",
+  "delay3",
+  "reverb2",
+  "reverb3",
 ] as const;
 
 export type BlockId = (typeof BLOCK_IDS)[number];
@@ -46,9 +64,110 @@ export function fxSlotIndexOf(block: BlockId): FxSlotIndex | -1 {
   return index < 0 ? -1 : (index as FxSlotIndex);
 }
 
+/* ─────────────────────────────── block kinds ───────────────────────────── */
+
+/** The nine built-in kinds, in enum order — also the picker's row order. The fx
+ *  slots are singleton blocks rather than a kind: which slot it is carries the
+ *  identity, and what is in it is named in text. */
+export const BLOCK_KINDS = [
+  "gate",
+  "comp",
+  "drive",
+  "amp",
+  "cab",
+  "eq",
+  "mod",
+  "delay",
+  "reverb",
+] as const;
+
+export type BlockKind = (typeof BLOCK_KINDS)[number];
+
+/** What identity tables are written per: one entry for each kind plus one per fx
+ *  slot. Every instance token reads its kind's entry (see `blockRecord`). */
+export type BaseBlockId = BlockKind | FxBlockId;
+
+/** Kinds that exist three times over. gate, amp, cab and the fx slots stay
+ *  singletons. */
+export const DUPLICABLE_KINDS = [
+  "comp",
+  "drive",
+  "eq",
+  "mod",
+  "delay",
+  "reverb",
+] as const;
+
+export type DuplicableKind = (typeof DUPLICABLE_KINDS)[number];
+
+/** Instance numbers that mint parameter ids of their own; instance 1 is the
+ *  legacy set (`comp_threshold`, not `comp1_threshold`). */
+export const EXTRA_INSTANCES = [2, 3] as const;
+
+/** Each kind's instance tokens, instance 1 first. */
+export const KIND_INSTANCES = {
+  gate: ["gate"],
+  comp: ["comp", "comp2", "comp3"],
+  drive: ["drive", "drive2", "drive3"],
+  amp: ["amp"],
+  cab: ["cab"],
+  eq: ["eq", "eq2", "eq3"],
+  mod: ["mod", "mod2", "mod3"],
+  delay: ["delay", "delay2", "delay3"],
+  reverb: ["reverb", "reverb2", "reverb3"],
+} as const satisfies Record<BlockKind, readonly BlockId[]>;
+
+const BLOCK_KIND_OF = {} as Record<BlockId, BaseBlockId>;
+const BLOCK_INSTANCE_OF = {} as Record<BlockId, number>;
+
+for (const slot of FX_BLOCK_IDS) {
+  BLOCK_KIND_OF[slot] = slot;
+  BLOCK_INSTANCE_OF[slot] = 0;
+}
+for (const kind of BLOCK_KINDS) {
+  const tokens: readonly BlockId[] = KIND_INSTANCES[kind];
+  tokens.forEach((id, index) => {
+    BLOCK_KIND_OF[id] = kind;
+    BLOCK_INSTANCE_OF[id] = index;
+  });
+}
+
+/** The kind a token is an instance of; an fx slot is its own base. */
+export function kindOf(id: BlockId): BaseBlockId {
+  return BLOCK_KIND_OF[id];
+}
+
+/** 0-based, mirroring `chain::instanceOf`: `comp` is 0, `comp3` is 2. Anything
+ *  user-facing shows `instanceOf(id) + 1` ("COMP 3"). */
+export function instanceOf(id: BlockId): number {
+  return BLOCK_INSTANCE_OF[id];
+}
+
+/** A kind's instance tokens, instance 1 first. */
+export function instanceTokensOfKind(kind: BlockKind): readonly BlockId[] {
+  return KIND_INSTANCES[kind];
+}
+
+/** A total table over all 24 tokens from one factory. Identity tables are
+ *  written once per base and mapped through this, so an instance can never
+ *  drift from its kind's colour, glyph or knob row. */
+export function blockRecord<T>(make: (id: BlockId) => T): Record<BlockId, T> {
+  const table = {} as Record<BlockId, T>;
+  for (const id of BLOCK_IDS) table[id] = make(id);
+  return table;
+}
+
 /* ─────────────────────────── parameter identifiers ─────────────────────── */
 
-/** 29 slider params — ids are the APVTS ids verbatim and are frozen. */
+/**
+ * 72 slider params — ids are the APVTS ids verbatim and are frozen.
+ *
+ * The first 29 are v1's, in v1 order. The rest are appended in Parameters.cpp's
+ * v2 append order: each duplicable kind's instances 2 and 3 (same ranges,
+ * defaults and steps as instance 1, `<kind><n>_<key>`), then the amp's own tone
+ * stack, which is eq-shaped but belongs to the amp block and so does not follow
+ * the instance rule.
+ */
 export const SLIDER_PARAM_IDS = [
   "input_trim",
   "output_level",
@@ -79,9 +198,53 @@ export const SLIDER_PARAM_IDS = [
   "reverb_size",
   "reverb_damping",
   "reverb_mix",
+
+  "comp2_threshold",
+  "comp2_ratio",
+  "comp2_attack",
+  "comp2_release",
+  "comp2_makeup",
+  "comp3_threshold",
+  "comp3_ratio",
+  "comp3_attack",
+  "comp3_release",
+  "comp3_makeup",
+  "drive2_gain",
+  "drive2_tone",
+  "drive2_level",
+  "drive3_gain",
+  "drive3_tone",
+  "drive3_level",
+  "eq2_bass",
+  "eq2_mid",
+  "eq2_treble",
+  "eq3_bass",
+  "eq3_mid",
+  "eq3_treble",
+  "mod2_rate",
+  "mod2_depth",
+  "mod2_mix",
+  "mod3_rate",
+  "mod3_depth",
+  "mod3_mix",
+  "delay2_time",
+  "delay2_feedback",
+  "delay2_mix",
+  "delay3_time",
+  "delay3_feedback",
+  "delay3_mix",
+  "reverb2_size",
+  "reverb2_damping",
+  "reverb2_mix",
+  "reverb3_size",
+  "reverb3_damping",
+  "reverb3_mix",
+  "amp_eq_bass",
+  "amp_eq_mid",
+  "amp_eq_treble",
 ] as const;
 
-/** 13 toggle params. */
+/** 26 toggle params: v1's 13, then every instance's bypass and the amp EQ's. */
 export const TOGGLE_PARAM_IDS = [
   "gate_on",
   "comp_on",
@@ -96,10 +259,29 @@ export const TOGGLE_PARAM_IDS = [
   "fx1_on",
   "fx2_on",
   "fx3_on",
+
+  "comp2_on",
+  "comp3_on",
+  "drive2_on",
+  "drive3_on",
+  "eq2_on",
+  "eq3_on",
+  "mod2_on",
+  "mod3_on",
+  "delay2_on",
+  "delay3_on",
+  "reverb2_on",
+  "reverb3_on",
+  "amp_eq_on",
 ] as const;
 
-/** 2 combo params. */
-export const COMBO_PARAM_IDS = ["amp_out_mode", "mod_type"] as const;
+/** 4 combo params — mod is the only duplicable kind with a choice parameter. */
+export const COMBO_PARAM_IDS = [
+  "amp_out_mode",
+  "mod_type",
+  "mod2_type",
+  "mod3_type",
+] as const;
 
 export type SliderParamId = (typeof SLIDER_PARAM_IDS)[number];
 export type ToggleParamId = (typeof TOGGLE_PARAM_IDS)[number];
@@ -297,6 +479,9 @@ export interface FxEmbedState {
 export interface UiState {
   /** Chain tokens in order; `[]` = deliberately empty chain (the "-" sentinel). */
   chainOrder: string[];
+  /** Row lengths partitioning `chainOrder` across the board's rows. `[]` = auto:
+   *  C++ keeps no layout it could not validate, and the UI wraps for itself. */
+  chainRows: number[];
   model: ModelInfo | null;
   ir: FileEntry | null;
   models: FileEntry[];
@@ -394,7 +579,7 @@ export interface T3kModelsResult {
 
 export interface BridgeEventMap {
   meters: { in: number; out: number };
-  chainChanged: { chainOrder: string[] };
+  chainChanged: { chainOrder: string[]; chainRows: number[] };
   libraryChanged: { models: FileEntry[]; irs: FileEntry[] };
   presetChanged: {
     presets: PresetInfo[];
@@ -468,7 +653,9 @@ export interface Bridge {
 
   /* native functions — names verbatim from the spec */
   getUiState(): Promise<UiState>;
-  setChainOrder(tokens: string[]): Promise<void>;
+  /** Order and row lengths travel together — C++ stores them as one consistent
+   *  pair. `rows` that do not partition `tokens` are stored as `[]` (auto). */
+  setChainOrder(tokens: string[], rows: number[]): Promise<void>;
   loadModel(path: string): Promise<ErrorResult>;
   clearModel(): Promise<void>;
   loadIr(path: string): Promise<ErrorResult>;

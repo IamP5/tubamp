@@ -138,52 +138,64 @@
   --app-h: 100%;
   --header-h: 48px;
   --footer-h: 56px;
-  /* Param dock: an overlay card floating over the board's bottom edge. */
-  --dock-h: 232px;
+  /* Param panel: an overlay card floating over the board's bottom edge, shown
+     only while a block is selected ([data-panel-open] below). Tall enough for
+     the amp body's caption + knob row + two field rows (Mode/Cal, Slim). */
+  --dock-h: 248px;
   --dock-gap: 12px;
-  /* Board rows the dock covers. features/board/layout.ts measures this value
-     rather than repeating it (`measureDockInset`), so this declaration is the
-     only place the number lives. */
-  --dock-inset: calc(var(--dock-h) + var(--dock-gap));
+  /*
+    What the panel overlay actually covers right now: nothing while closed
+    (the board owns the whole stage), the panel's own footprint while open.
+    Flips on `[data-panel-open]` on the app root (App.tsx, driven by
+    `selected !== null`). Anything that must never let its content underlap the
+    open panel reads this — the embed hole (features/embed) and, through
+    `--overlay-bottom` below, any bottom-anchored overlay (toaster).
+  */
+  --panel-band: 0px;
 
   /*
     ── Smallest window the content actually fits in ──
 
     Derived from the widest / tallest fixed content, not picked:
 
-    width  — the amp dock body is the widest thing in the app.
+    width  — the amp dock body is the widest thing in the app: THREE columns
+             (model, levels, tone), all of which must coexist.
              dock gutters 2×12 + body padding 2×18            =  60
-             levels column: 3 knob cells 3×100 + 16 + mode 132 = 448
-             column divider 1 + two 20px column gaps           =  41
-             model column: ‹ › + select(120) + ✕ + Import      ≈ 298
-                                                          total ≈ 847
+             model column at its min-width                     = 260
+             levels group / tone group: 3 snug knob cells each = 276 + 276
+             two dividers + four 18px column gaps              =  74
+                                                          total ≈ 946
              The header (≈454) and the footer (≈440) are well under it.
-             Rounded up to 900 for slack around the ellipsised strings.
+             Rounded up to 1000 for slack around the ellipsised strings.
 
     height — header 48 + footer 56                             = 104
-             dock inset (232 + 12)                             = 244
+             dock inset (248 + 12)                             = 260
              board band: the lane content box is CARD_H+56 = 136 tall and
              zoom-to-fit keeps FIT_PADDING = 72 around it, so framing the lane
              at 1:1 needs 208 (at MIN_ZOOM it would need only 140).
-                                                          total = 556
+                                                          total = 572
              Rounded up to 600, which leaves the band a little air.
 
     Same numbers as kMinEditorWidth / kMinEditorHeight in src/WebEditor.cpp;
     the clamp that matters is C++'s (it owns the window), this one only keeps
     the page from laying out below what it can render.
   */
-  --min-app-w: 900px;
+  --min-app-w: 1000px;
   --min-app-h: 600px;
 
   /* The board's zoom bar, named so bottom-anchored overlays can clear it. */
   --zoom-bar-h: 28px;
   /*
     Where anything anchored to the bottom of the window must stop. A fixed
-    element at `bottom: 0` in this app lands on the footer, then on the param
-    dock, then on the zoom bar — three bands, none of which is a background.
+    element at `bottom: 0` in this app lands on the footer, then — while the
+    panel is open — the panel band, then the zoom bar — none of those bands is
+    a background. `--panel-band` is the part that flips with the panel; this
+    var must NEVER be deleted even if nothing currently reads it, because its
+    only consumer (the toaster, components/kit.module.css) would silently lose
+    its bottom anchor — a dangling `var()` computes to nothing, not a fallback.
   */
   --overlay-bottom: calc(
-    var(--footer-h) + var(--dock-inset) + var(--zoom-bar-h) + 20px
+    var(--footer-h) + var(--panel-band) + var(--zoom-bar-h) + 20px
   );
 
   /* Slim toolbar above an embedded hosted plugin editor (features/embed). */
@@ -211,6 +223,16 @@
 }
 
 /*
+  The panel is open: App.tsx stamps `data-panel-open` on the app root exactly
+  when `selected !== null` (never on pointerdown alone — see useStageTransform's
+  onBackgroundTap). Reserve the panel's real footprint so nothing under it —
+  the embed hole, the toaster via --overlay-bottom — can underlap the card.
+*/
+[data-panel-open] {
+  --panel-band: calc(var(--dock-h) + var(--dock-gap));
+}
+
+/*
   Per-block tint/glow variants. Any element carrying `data-block="<token>"`
   (tile, panel root, knob group, connector segment) picks up the whole set;
   components then reference --block-accent / --block-fill-*. `blockCssVars()` in
@@ -223,6 +245,10 @@
   fills are the accent's channels at 8/16/25/35% alpha, and --block-dim is
   55% accent over --bg-surface (#12151b) flattened to an opaque rgb(). To change
   a block's colour, recompute its six lines together — they are one unit.
+
+  Instance tokens (comp2, comp3, …) JOIN their kind's selector list rather than
+  repeating the values: an instance is the same block, and two copies of six
+  hand-flattened colours would drift the first time one of them is edited.
 */
 [data-block] {
   --block-accent: var(--accent);
@@ -241,7 +267,9 @@
   --block-glow: rgba(167, 139, 250, 0.35);
   --block-dim: rgb(100, 86, 150);
 }
-[data-block="comp"] {
+[data-block="comp"],
+[data-block="comp2"],
+[data-block="comp3"] {
   --block-accent: var(--block-comp);
   --block-fill-8: rgba(251, 191, 36, 0.08);
   --block-fill-16: rgba(251, 191, 36, 0.16);
@@ -249,7 +277,9 @@
   --block-glow: rgba(251, 191, 36, 0.35);
   --block-dim: rgb(146, 115, 32);
 }
-[data-block="drive"] {
+[data-block="drive"],
+[data-block="drive2"],
+[data-block="drive3"] {
   --block-accent: var(--block-drive);
   --block-fill-8: rgba(249, 115, 22, 0.08);
   --block-fill-16: rgba(249, 115, 22, 0.16);
@@ -273,7 +303,9 @@
   --block-glow: rgba(45, 212, 191, 0.35);
   --block-dim: rgb(33, 126, 117);
 }
-[data-block="eq"] {
+[data-block="eq"],
+[data-block="eq2"],
+[data-block="eq3"] {
   --block-accent: var(--block-eq);
   --block-fill-8: rgba(96, 165, 250, 0.08);
   --block-fill-16: rgba(96, 165, 250, 0.16);
@@ -281,7 +313,9 @@
   --block-glow: rgba(96, 165, 250, 0.35);
   --block-dim: rgb(61, 100, 150);
 }
-[data-block="mod"] {
+[data-block="mod"],
+[data-block="mod2"],
+[data-block="mod3"] {
   --block-accent: var(--block-mod);
   --block-fill-8: rgba(74, 222, 128, 0.08);
   --block-fill-16: rgba(74, 222, 128, 0.16);
@@ -289,7 +323,9 @@
   --block-glow: rgba(74, 222, 128, 0.35);
   --block-dim: rgb(49, 132, 83);
 }
-[data-block="delay"] {
+[data-block="delay"],
+[data-block="delay2"],
+[data-block="delay3"] {
   --block-accent: var(--block-delay);
   --block-fill-8: rgba(129, 140, 248, 0.08);
   --block-fill-16: rgba(129, 140, 248, 0.16);
@@ -297,7 +333,9 @@
   --block-glow: rgba(129, 140, 248, 0.35);
   --block-dim: rgb(79, 86, 149);
 }
-[data-block="reverb"] {
+[data-block="reverb"],
+[data-block="reverb2"],
+[data-block="reverb3"] {
   --block-accent: var(--block-reverb);
   --block-fill-8: rgba(34, 211, 238, 0.08);
   --block-fill-16: rgba(34, 211, 238, 0.16);

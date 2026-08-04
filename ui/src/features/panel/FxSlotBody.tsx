@@ -10,7 +10,7 @@
  *  - The picker is mouse-only, with no search field. Logic gives the WebView no
  *    keyboard, so a typed filter would be dead UI in the host that matters most.
  *  - The plugin's own parameters scroll inside this body. The dock is a fixed
- *    232px and a hosted plugin can expose a hundred parameters; the dock does not
+ *    248px and a hosted plugin can expose a hundred parameters; the dock does not
  *    grow for them.
  *
  * This body is also where the plugin's own editor is mounted into our window

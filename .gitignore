@@ -1,7 +1,9 @@
 # Build
 build/
+dist/
 cmake-build-*/
 .cache/
+*.tsbuildinfo
 
 # IDE
 .vscode/

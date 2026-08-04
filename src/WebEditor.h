@@ -40,7 +40,7 @@ struct FxEditorWindow;
     that covers the whole editor.
 
     Owns:
-      - one relay per frozen APVTS parameter (29 sliders / 10 toggles / 2 combos),
+      - one relay per APVTS parameter (72 sliders / 26 toggles / 4 combos),
         each named *verbatim* after its APVTS id, plus the matching Web*Attachment;
       - the native-function surface described in docs/REACT-UI.md (chain, model, IR,
         preset, A/B and TONE3000 operations);
@@ -76,6 +76,11 @@ private:
 
     // --- payload builders (message thread)
     juce::var chainOrderVar() const;
+
+    /** Row lengths of the board's arrangement. Empty means "auto": the chain carries no
+        user-arranged row split and the page wraps it itself. */
+    juce::var chainRowsVar() const;
+
     juce::var modelsVar() const;
     juce::var irsVar() const;
     juce::var presetListVar() const;

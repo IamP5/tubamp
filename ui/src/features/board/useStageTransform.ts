@@ -2,7 +2,7 @@
  * Pan / zoom for the board stage (motion-design.md §2.13).
  *
  * The whole transform lives in three motion values applied to ONE stage div
- * (`translate(panX, panY) scale(zoom)`, transform-origin = the viewport centre),
+ * (`translate(panX, panY) scale(zoom)`, transform-origin = the stage centre),
  * so no gesture ever re-renders React. Zoom is clamped at the source rather than
  * by fighting an out-of-range spring afterwards.
  *
@@ -13,6 +13,12 @@
  *                          two-finger swipe) → pan
  *   space-drag / middle-drag / drag on empty stage → pan (with release inertia)
  *   double-click on empty stage → animated zoom-to-fit
+ *   tap on empty stage   → `onBackgroundTap` (the board dismisses the panel)
+ *
+ * The stage box is the FULL container: the param panel is an overlay, so the
+ * board paints under it and the transform origin never moves. `insetBottom` is
+ * how much of that box the panel currently covers, and it only enters the
+ * framing decisions — fit, the pan leash, and ensure-visible.
  */
 import {
   useCallback,
@@ -26,12 +32,22 @@ import {
 } from "react";
 import { animate, useMotionValue, type MotionValue } from "motion/react";
 import { spring } from "../../theme/motion";
-import { clamp } from "./layout";
+import { clamp, type Box } from "./layout";
 
-/* 0.4, not 0.5: a full twelve-block chain is 2036 lane units, and framing that in
-   the 828px of lane the minimum window leaves needs 0.407. At 0.5 the FIT button
-   silently left both ends of a full chain cropped. */
-export const MIN_ZOOM = 0.4;
+/*
+  0.3, derived the way 0.4 was derived for the single-lane board.
+
+  The auto-wrapped worst case is 24 blocks at ROW_WRAP = 6: 1204 lane units
+  wide (last row also carries [+] and OUT) and 544 tall. The minimum window
+  (900×600) leaves the board 900×496, and zoom-to-fit keeps FIT_PADDING around
+  the content, so framing it needs only max(1204/828, 544/424) → 0.688.
+
+  Hand-built rows can be wider than the wrap, so the floor is set by what a
+  user can reasonably line up in ONE row instead: sixteen blocks are 2720 lane
+  units, which needs 828/2720 = 0.304. Beyond that FIT saturates and panning
+  takes over — at 0.3 a card is already only 34px wide.
+*/
+export const MIN_ZOOM = 0.3;
 export const MAX_ZOOM = 1.6;
 
 /** Wheel-delta → zoom-factor exponents (fine = ctrl/cmd, i.e. trackpad pinch). */
@@ -41,11 +57,43 @@ const ZOOM_RATE_FINE = 0.0007;
 /** Margin left around the content by zoom-to-fit, in CSS px. */
 const FIT_PADDING = 72;
 
+/** Screen px of travel a background press may have and still count as a tap. */
+const TAP_TRAVEL_PX = 4;
+
+/**
+ * How long a background tap waits before it is announced.
+ *
+ * The dismiss and the zoom-to-fit share one surface and one first press, and
+ * "double-click never dismisses" can only be honoured by outliving the second
+ * press. Kept as short as a double-click plausibly is, so the panel still
+ * closes as an immediate-feeling response to a click on the board.
+ */
+const TAP_DOUBLE_WINDOW_MS = 240;
+
+/** Air kept between an ensure-visible target and the edge it was pulled from. */
+const REVEAL_MARGIN = 24;
+
 const INSTANT = { duration: 0 } as const;
 
-export interface ContentSize {
-  w: number;
-  h: number;
+export interface StageTransformOptions {
+  /** Bounding box of everything on the board, in lane units. */
+  content: Box;
+  reduced: boolean;
+  /**
+   * CSS px of the container's bottom edge covered by the param panel — the
+   * panel band while a block is selected, 0 otherwise. The board paints
+   * full-bleed (the dot grid runs behind and around the panel card), but every
+   * framing decision is taken against the *visible* band above it, so a chain
+   * never settles underneath the panel.
+   */
+  insetBottom?: number;
+  /**
+   * A press-and-release on the stage background that neither panned nor turned
+   * into a double-click. The board wires this to "deselect" (R4): dismissing on
+   * pointerdown would close the panel at the start of every empty-stage pan and
+   * on the first half of every double-click-to-fit.
+   */
+  onBackgroundTap?(): void;
 }
 
 export interface StageTransform {
@@ -62,20 +110,16 @@ export interface StageTransform {
   zoomBy(factor: number): void;
   zoomTo(next: number): void;
   fit(animated?: boolean): void;
+  /** Pan the minimum needed to bring `box` (lane units) into the visible band. */
+  ensureVisible(box: Box): void;
 }
 
-/**
- * @param insetBottom  CSS px of the container's bottom edge covered by the param
- *   dock. The board paints full-bleed (the dot grid runs behind and around the
- *   dock), but every geometric decision — the transform origin, zoom-to-cursor,
- *   zoom-to-fit and the pan clamp — is taken against the *visible* band above
- *   the dock, so the chain never settles underneath it.
- */
-export function useStageTransform(
-  content: ContentSize,
-  reduced: boolean,
+export function useStageTransform({
+  content,
+  reduced,
   insetBottom = 0,
-): StageTransform {
+  onBackgroundTap,
+}: StageTransformOptions): StageTransform {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const panX = useMotionValue(0);
   const panY = useMotionValue(0);
@@ -87,8 +131,15 @@ export function useStageTransform(
     contentRef.current = content;
   }, [content]);
 
+  const tapRef = useRef(onBackgroundTap);
+  useLayoutEffect(() => {
+    tapRef.current = onBackgroundTap;
+  }, [onBackgroundTap]);
+
   const spaceRef = useRef(false);
   const panningRef = useRef(false);
+  const tapTimer = useRef<number | null>(null);
+  const lastTapAt = useRef(-Infinity);
   const [panMode, setPanMode] = useState(false);
   const [panning, setPanning] = useState(false);
 
@@ -105,19 +156,29 @@ export function useStageTransform(
    */
   const userAdjusted = useRef(false);
 
-  /** Height of the band the dock does not cover. */
+  /** Height of the band the panel does not cover. */
   const viewHeight = useCallback(
     (el: HTMLDivElement) => Math.max(el.clientHeight - insetBottom, 1),
     [insetBottom],
   );
 
+  /**
+   * Pan leash. Half the viewport plus half the (scaled) content: at the limit
+   * the content's near edge has just reached the far edge of the viewport, so
+   * every row of a tall chain is reachable and none of them can be thrown away.
+   * A fixed fraction of the container — what a single-row lane could get away
+   * with — would leave the bottom rows of a wrapped chain unreachable.
+   */
   const panLimit = useCallback(
     (axis: "x" | "y"): number => {
       const el = containerRef.current;
       if (!el) return 240;
-      return (axis === "x" ? el.clientWidth : viewHeight(el)) * 0.6;
+      const half = (axis === "x" ? el.clientWidth : viewHeight(el)) / 2;
+      const box = contentRef.current;
+      const extent = (axis === "x" ? box.w : box.h) * zoom.get();
+      return half + extent / 2;
     },
-    [viewHeight],
+    [viewHeight, zoom],
   );
 
   const setPan = useCallback(
@@ -142,10 +203,10 @@ export function useStageTransform(
       const el = containerRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
       // Must match the stage element's transform-origin, which is the centre of
-      // the visible band (the stage box stops at the dock's top edge).
-      const cy = rect.top + (rect.height - insetBottom) / 2;
+      // the whole container (the panel is an overlay, not a layout band).
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
       const z = zoom.get();
       const target = clamp(next, MIN_ZOOM, MAX_ZOOM);
       if (target === z) return;
@@ -155,7 +216,7 @@ export function useStageTransform(
       zoom.set(target);
       setPan(panX.get() + (z - target) * wx, panY.get() + (z - target) * wy);
     },
-    [insetBottom, panX, panY, setPan, zoom],
+    [panX, panY, setPan, zoom],
   );
 
   /**
@@ -187,29 +248,79 @@ export function useStageTransform(
     [zoom, zoomTo],
   );
 
+  /**
+   * Frame the content's own centre — with rows, the board's bounding box is
+   * neither centred on the lane origin nor symmetric about it, so "pan back to
+   * 0" (what a single centred lane could do) would frame the origin and crop
+   * the bottom rows. The target lands the box centre on the centre of the band
+   * the panel leaves visible.
+   */
   const fit = useCallback(
     (animated = true) => {
       const el = containerRef.current;
       if (!el) return;
-      const { w, h } = contentRef.current;
-      if (w <= 0 || h <= 0) return;
+      const box = contentRef.current;
+      if (box.w <= 0 || box.h <= 0) return;
       userAdjusted.current = false;
       const target = clamp(
         Math.min(
-          (el.clientWidth - FIT_PADDING) / w,
-          (viewHeight(el) - FIT_PADDING) / h,
+          (el.clientWidth - FIT_PADDING) / box.w,
+          (viewHeight(el) - FIT_PADDING) / box.h,
         ),
         MIN_ZOOM,
         MAX_ZOOM,
       );
-      // The lane is centred on the origin by construction, so fitting is always
-      // "pan back to 0, scale to fit".
+      const cx = box.x + box.w / 2;
+      const cy = box.y + box.h / 2;
       const options = animated && !reduced ? spring.canvas : INSTANT;
       animate(zoom, target, options);
-      animate(panX, 0, options);
-      animate(panY, 0, options);
+      animate(panX, -target * cx, options);
+      animate(panY, -target * cy - insetBottom / 2, options);
     },
-    [panX, panY, reduced, viewHeight, zoom],
+    [insetBottom, panX, panY, reduced, viewHeight, zoom],
+  );
+
+  /**
+   * Minimal pan that brings `box` inside the visible band. Used when a block is
+   * selected: the panel is an overlay, so a card in the bottom row would open
+   * its own panel on top of itself.
+   */
+  const ensureVisible = useCallback(
+    (box: Box) => {
+      const el = containerRef.current;
+      if (!el) return;
+      const z = zoom.get();
+      // Everything below is measured from the container centre, which is where
+      // the transform's origin is.
+      const halfW = el.clientWidth / 2;
+      const halfH = el.clientHeight / 2;
+      const left = -halfW + REVEAL_MARGIN;
+      const right = halfW - REVEAL_MARGIN;
+      const top = -halfH + REVEAL_MARGIN;
+      const bottom = halfH - insetBottom - REVEAL_MARGIN;
+
+      let x = panX.get();
+      let y = panY.get();
+      const boxLeft = z * box.x;
+      const boxRight = z * (box.x + box.w);
+      const boxTop = z * box.y;
+      const boxBottom = z * (box.y + box.h);
+
+      // Overflow first, underflow second: a box taller than the band is pinned
+      // to the band's top rather than to its (invisible) bottom.
+      if (x + boxRight > right) x = right - boxRight;
+      if (x + boxLeft < left) x = left - boxLeft;
+      if (y + boxBottom > bottom) y = bottom - boxBottom;
+      if (y + boxTop < top) y = top - boxTop;
+
+      if (x === panX.get() && y === panY.get()) return;
+      const limitX = panLimit("x");
+      const limitY = panLimit("y");
+      const options = reduced ? INSTANT : spring.canvas;
+      animate(panX, clamp(x, -limitX, limitX), options);
+      animate(panY, clamp(y, -limitY, limitY), options);
+    },
+    [insetBottom, panLimit, panX, panY, reduced, zoom],
   );
 
   /* Frame the content once, when the editor opens. */
@@ -226,9 +337,9 @@ export function useStageTransform(
    * different size at startup.
    *
    * Two responses, both required:
-   *  - the pan clamp is a fraction of the container, so a shrink leaves the pan
-   *    outside its own bounds until the next gesture snaps it back in one jump;
-   *    re-clamp every time.
+   *  - the pan leash is measured against the container, so a shrink leaves the
+   *    pan outside its own bounds until the next gesture snaps it back in one
+   *    jump; re-clamp every time.
    *  - re-fit, but only while the framing is still ours (see `userAdjusted`),
    *    and never animated: this fires once per frame of a grip drag, and a
    *    spring chasing a target that moves every frame reads as lag, not motion.
@@ -315,6 +426,27 @@ export function useStageTransform(
     };
   }, []);
 
+  /* ──────────────────────── background tap bookkeeping ─────────────────── */
+
+  const cancelTap = useCallback(() => {
+    if (tapTimer.current === null) return;
+    window.clearTimeout(tapTimer.current);
+    tapTimer.current = null;
+  }, []);
+
+  /**
+   * Any press anywhere supersedes a dismiss that has not fired yet — the second
+   * half of a double-click, or a card being picked up right after a background
+   * click. Capture phase, because a card's own handler stops propagation.
+   */
+  useEffect(() => {
+    window.addEventListener("pointerdown", cancelTap, true);
+    return () => {
+      window.removeEventListener("pointerdown", cancelTap, true);
+      cancelTap();
+    };
+  }, [cancelTap]);
+
   /* ──────────────────────────────── panning ────────────────────────────── */
 
   const onPointerDown = useCallback(
@@ -326,10 +458,18 @@ export function useStageTransform(
       if (event.button !== 0 && !middle) return;
       event.preventDefault();
 
+      // A press that lands inside the previous tap's window is the back half of
+      // a double-click (zoom-to-fit): the capture listener above has already
+      // dropped the pending dismiss, and this gesture must not arm another.
+      const tappable =
+        onBackground &&
+        !middle &&
+        event.detail < 2 &&
+        performance.now() - lastTapAt.current > TAP_DOUBLE_WINDOW_MS;
+
       const el = event.currentTarget;
       el.setPointerCapture(event.pointerId);
       panningRef.current = true;
-      userAdjusted.current = true;
       setPanning(true);
 
       const startX = event.clientX;
@@ -339,6 +479,7 @@ export function useStageTransform(
       let lastX = startX;
       let lastY = startY;
       let lastT = performance.now();
+      let travel = 0;
       let vx = 0;
       let vy = 0;
 
@@ -351,6 +492,14 @@ export function useStageTransform(
         lastX = move.clientX;
         lastY = move.clientY;
         lastT = now;
+        travel = Math.max(
+          travel,
+          Math.abs(move.clientX - startX),
+          Math.abs(move.clientY - startY),
+        );
+        // Only a press that actually pans gives up the automatic framing — a
+        // zero-travel dismiss tap must leave resize-refit armed.
+        if (travel > TAP_TRAVEL_PX) userAdjusted.current = true;
         setPan(originX + (move.clientX - startX), originY + (move.clientY - startY));
       };
 
@@ -360,6 +509,16 @@ export function useStageTransform(
         window.removeEventListener("pointercancel", finish);
         panningRef.current = false;
         setPanning(false);
+
+        if (tappable && travel <= TAP_TRAVEL_PX) {
+          // Deliberately deferred: see TAP_DOUBLE_WINDOW_MS.
+          lastTapAt.current = performance.now();
+          tapTimer.current = window.setTimeout(() => {
+            tapTimer.current = null;
+            tapRef.current?.();
+          }, TAP_DOUBLE_WINDOW_MS);
+        }
+
         if (reduced) return;
         // The one intentional soft-bounce in the app: momentum on a big surface.
         const inertia = {
@@ -398,9 +557,11 @@ export function useStageTransform(
     (event: ReactMouseEvent<HTMLDivElement>) => {
       const target = event.target as HTMLElement;
       if (target.dataset.stageBg === undefined) return;
+      // Belt and braces: the second pointerdown already dropped it.
+      cancelTap();
       fit(true);
     },
-    [fit],
+    [cancelTap, fit],
   );
 
   const isPanMode = useCallback(
@@ -421,5 +582,6 @@ export function useStageTransform(
     zoomBy,
     zoomTo,
     fit,
+    ensureVisible,
   };
 }

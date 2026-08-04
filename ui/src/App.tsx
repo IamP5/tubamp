@@ -40,6 +40,7 @@ export function App() {
   const hydrate = useStore((st) => st.hydrate);
   const ready = useStore((st) => st.ready);
   const embedded = useStore((st) => st.fxEmbed.slot !== -1);
+  const panelOpen = useStore((st) => st.selected !== null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -77,6 +78,7 @@ export function App() {
     <div
       ref={rootRef}
       className={cx(s.root, isMockBridge && s.rootMock)}
+      data-panel-open={panelOpen || undefined}
       onMouseMove={(e) => paramIndexUpdater.handleMouseMove(e.nativeEvent)}
     >
       <motion.header

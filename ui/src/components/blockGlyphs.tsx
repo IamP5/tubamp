@@ -14,7 +14,7 @@
  * a `PathStrokeType` on a scaled path).
  */
 import type { ReactNode } from "react";
-import type { BlockId } from "../bridge/types";
+import { blockRecord, kindOf, type BaseBlockId, type BlockId } from "../bridge/types";
 
 export interface GlyphProps {
   /** Rendered box in CSS px. */
@@ -149,7 +149,7 @@ export const FxGlyph = (p: GlyphProps) => (
   </Glyph>
 );
 
-export const BLOCK_GLYPH: Record<BlockId, (p: GlyphProps) => ReactNode> = {
+const BASE_GLYPH: Record<BaseBlockId, (p: GlyphProps) => ReactNode> = {
   gate: GateGlyph,
   comp: CompGlyph,
   drive: DriveGlyph,
@@ -163,6 +163,11 @@ export const BLOCK_GLYPH: Record<BlockId, (p: GlyphProps) => ReactNode> = {
   fx2: FxGlyph,
   fx3: FxGlyph,
 };
+
+/** Every instance draws its kind's glyph — a second delay is a delay. Which
+ *  instance it is comes from the caption ("DELAY 2"), not the icon. */
+export const BLOCK_GLYPH: Record<BlockId, (p: GlyphProps) => ReactNode> =
+  blockRecord((id) => BASE_GLYPH[kindOf(id)]);
 
 /** Dispatch, mirroring `icons::makeIcon (chain::BlockId)`. */
 export function BlockGlyph({ block, ...rest }: GlyphProps & { block: BlockId }) {

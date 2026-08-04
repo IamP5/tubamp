@@ -43,10 +43,11 @@
 }
 
 /*
-  The board fills the whole stage and paints full-bleed — the dot grid runs
-  behind and around the dock. Its *geometry* still respects `--dock-inset`
-  (board.module.css `.stage` / layout.ts DOCK_INSET), so the chain lane is
-  centred in the band above the dock and never settles underneath it.
+  Full-screen board: this box is the whole stage, header-to-footer, with no
+  permanent band carved out for the panel. The panel below floats over it as
+  an overlay instead of sharing layout, so nothing here needs to reserve space
+  for it — see theme/tokens.css `--panel-band` for what the *overlay* content
+  (embed hole, toaster) reserves while the panel happens to be open.
 */
 .board {
   position: absolute;
@@ -55,10 +56,12 @@
 }
 
 /*
-  The param dock is an overlay card floating over the board's bottom edge, not a
-  layout sibling: with nothing selected the Panel renders nothing and the board
-  shows through (no empty rounded box). The wrapper is purely a positioning box
-  — the surface (background, ring, radius) belongs to the panel itself.
+  The param panel is an overlay card floating over the board's bottom edge, not
+  a layout sibling: with nothing selected the Panel renders nothing and the
+  board shows through underneath it (no empty rounded box). The wrapper is
+  purely a positioning box — the surface (background, ring, radius) belongs to
+  the panel itself. Mounted only while `[data-panel-open]` is set on the app
+  root (App.tsx, driven by `selected !== null`).
 */
 .dock {
   position: absolute;

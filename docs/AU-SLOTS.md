@@ -290,10 +290,12 @@ changed out from under a prepared instance, which is the §(b) rebuild window.
   host's (or Logic's AUHostingService's). A hosted plugin that crashes takes the host
   process down with it. This is the price of not going out-of-process in v1; the AUv3
   exclusion in §(a) is the same trade-off seen from the other side.
-- **Three slots, fixed.** The chain order is packed into a `uint64` at 4 bits per entry
-  (`src/dsp/ChainOrder.h`), and the static asserts there cap the design at 15 block
-  types total; 12 are used. More slots are possible, more *block types* eventually are
-  not without changing the packing.
+- **Three slots, fixed.** The chain order is packed into a single 128-bit word at 5
+  bits per entry plus a 5-bit count (`src/dsp/ChainOrder.h`, widened from the original
+  `uint64` / 4-bit-per-entry encoding to fit the comp/drive/eq/mod/delay/reverb
+  instance pool), and the static asserts there cap the design at 31 block ids total; 24
+  are used (the original 12 plus instances 2/3 of the six duplicable kinds). More slots
+  are possible, more *block ids* eventually are not without widening the packing again.
 - **No plugin-level parameter automation recording, no plugin preset browsing.** The
   plugin's own editor (`fxOpenEditor`) is the way to reach both — and on Logic it is
   also the only place its text fields get keyboard focus.

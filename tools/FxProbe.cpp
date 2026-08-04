@@ -198,7 +198,7 @@ bool probe (const juce::String& identifier, bool verbose)
     proc.prepareToPlay (kSampleRate, kBlockSize);
 
     // A chain of nothing but the slot: whatever changes in the output is the plugin.
-    proc.setChainOrder ({ BlockId::fx1 });
+    proc.setChainOrder ({ BlockId::fx1 }, {});
 
     bool finite = true;
 

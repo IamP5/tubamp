@@ -170,24 +170,57 @@
 
 /* ───────────────────────────── amp body ──────────────────────────────── */
 
+/*
+  Model column (fluid, truncates) | Levels group | Tone group. The two knob
+  groups are exactly as wide as their knob rows, so everything fits from the
+  minimum window width up without any column painting over its neighbour.
+*/
 .ampBody {
   display: flex;
   align-items: stretch;
-  gap: 20px;
+  gap: 18px;
   width: 100%;
   height: 100%;
 }
 
-.column {
+.columnModel {
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 8px;
-  min-width: 0;
+  flex: 1;
+  min-width: 260px;
 }
 
-.column:first-child {
-  flex: 1;
+/* gap 6, not 8: with the Slim row visible the group is 178px tall and the dock
+   body offers 182 — a wider gap would clip the readouts. Top-aligned (not
+   centered) so the Levels and Tone knob rows land on the same baseline even
+   though the groups differ in height. */
+.columnGroup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 8px;
+  gap: 6px;
+  flex: none;
+}
+
+/* Snug variant for the amp's two knob trios — the generic 100px cell makes the
+   groups too wide to coexist with the model column at the minimum width. */
+.knobCellSnug {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 92px;
+}
+
+/* Secondary controls under a knob group (Mode + Cal in, Slim). */
+.fieldsRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
 }
 
 .divider {
@@ -355,18 +388,6 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
-
-.levels {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.fieldStack {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 /* ───────────────────────────── file rows ─────────────────────────────── */
@@ -539,7 +560,7 @@
 /* ── the plugin's own parameters ── */
 
 /* Two columns: a hosted plugin can expose a hundred parameters and the dock is
-   a fixed 232px, so the list scrolls here rather than anywhere else. */
+   a fixed 248px, so the list scrolls here rather than anywhere else. */
 .fxGrid {
   flex: 1;
   min-height: 0;

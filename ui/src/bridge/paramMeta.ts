@@ -8,12 +8,19 @@
  *   2. the mock bridge, which has no backend to ask.
  * Values transcribed from src/Parameters.cpp (docs/research/current-ui-inventory.md
  * §Parameters). Ids are frozen — never edit one without editing the C++.
+ *
+ * `LAYOUT` below is ONE ordered list in APVTS layout order, and everything else
+ * here is derived from it: the spec tables the mock builds its parameters from,
+ * and `PARAM_INDEX`, which only means anything if the order matches the C++.
  */
-import type {
-  ComboParamId,
-  SliderParamId,
-  SliderProperties,
-  ToggleParamId,
+import {
+  DUPLICABLE_KINDS,
+  EXTRA_INSTANCES,
+  type ComboParamId,
+  type DuplicableKind,
+  type SliderParamId,
+  type SliderProperties,
+  type ToggleParamId,
 } from "./types";
 
 export interface SliderSpec {
@@ -30,6 +37,25 @@ export interface SliderSpec {
   log: boolean;
 }
 
+export interface ToggleSpec {
+  id: ToggleParamId;
+  name: string;
+  def: boolean;
+}
+
+export interface ComboSpec {
+  id: ComboParamId;
+  name: string;
+  choices: string[];
+  def: number;
+}
+
+/** One APVTS parameter, tagged with the control that owns it. */
+type LayoutEntry =
+  | { control: "slider"; spec: SliderSpec }
+  | { control: "toggle"; spec: ToggleSpec }
+  | { control: "combo"; spec: ComboSpec };
+
 const s = (
   id: SliderParamId,
   name: string,
@@ -39,100 +65,190 @@ const s = (
   def: number,
   label = "",
   log = false,
-): SliderSpec => ({ id, name, min, max, interval, def, label, log });
+): LayoutEntry => ({
+  control: "slider",
+  spec: { id, name, min, max, interval, def, label, log },
+});
 
-export const SLIDER_SPECS: readonly SliderSpec[] = [
+const t = (id: ToggleParamId, name: string, def: boolean): LayoutEntry => ({
+  control: "toggle",
+  spec: { id, name, def },
+});
+
+const c = (
+  id: ComboParamId,
+  name: string,
+  choices: string[],
+  def: number,
+): LayoutEntry => ({ control: "combo", spec: { id, name, choices, def } });
+
+/* ─────────────────────────────── v1 layout ─────────────────────────────── */
+
+/** Parameters.cpp's original layout, in order. The three fx bypasses sit at the
+ *  END because that is where Parameters.cpp adds them — NOT with the other block
+ *  enables, however much they read like enables. */
+const V1_LAYOUT: readonly LayoutEntry[] = [
+  t("gate_on", "Gate On", true),
+  t("comp_on", "Comp On", true),
+  /* the only block bypassed by default */
+  t("drive_on", "Drive On", false),
+  t("amp_on", "Amp On", true),
+  t("cab_on", "Cab On", true),
+  t("eq_on", "EQ On", true),
+  t("mod_on", "Mod On", true),
+  t("delay_on", "Delay On", true),
+  t("reverb_on", "Reverb On", true),
+
   s("input_trim", "Input Trim", -24, 24, 0.1, 0, "dB"),
   s("output_level", "Output Level", -60, 12, 0.1, 0, "dB"),
+
   s("gate_threshold", "Gate Threshold", -100, 0, 0.1, -80, "dB"),
+
   s("comp_threshold", "Comp Threshold", -60, 0, 0.1, -20, "dB"),
   s("comp_ratio", "Comp Ratio", 1, 20, 0.01, 4, ":1", true),
   s("comp_attack", "Comp Attack", 0.1, 100, 0.01, 5, "ms", true),
   s("comp_release", "Comp Release", 10, 1000, 0.1, 120, "ms", true),
   s("comp_makeup", "Comp Makeup", 0, 24, 0.1, 0, "dB"),
+
   s("drive_gain", "Drive Gain", 0, 36, 0.1, 12, "dB"),
   s("drive_tone", "Drive Tone", 500, 12000, 1, 4000, "Hz", true),
   s("drive_level", "Drive Level", -24, 12, 0.1, 0, "dB"),
+
   s("amp_input", "Amp Input", -20, 20, 0.1, 0, "dB"),
   s("amp_output", "Amp Output", -40, 40, 0.1, 0, "dB"),
+  c("amp_out_mode", "Output Mode", ["Raw", "Normalized", "Calibrated"], 1),
+  t("amp_cal_input", "Calibrate Input", false),
   s("amp_cal_level", "Input Calibration Level", -60, 60, 0.1, 12, "dBu"),
   s("amp_slim", "Slim", 0, 1, 0.01, 0),
+
   s("cab_lowcut", "Cab Low Cut", 20, 500, 1, 80, "Hz", true),
   s("cab_highcut", "Cab High Cut", 2000, 20000, 1, 8000, "Hz", true),
+
   s("eq_bass", "Bass", 0, 10, 0.1, 5),
   s("eq_mid", "Middle", 0, 10, 0.1, 5),
   s("eq_treble", "Treble", 0, 10, 0.1, 5),
+
+  c("mod_type", "Mod Type", ["Chorus", "Phaser", "Tremolo"], 0),
   s("mod_rate", "Mod Rate", 0.05, 10, 0.001, 1, "Hz", true),
   s("mod_depth", "Mod Depth", 0, 1, 0.001, 0.4),
   s("mod_mix", "Mod Mix", 0, 1, 0.001, 0.35),
+
   s("delay_time", "Delay Time", 20, 2000, 0.1, 420, "ms", true),
   s("delay_feedback", "Delay Feedback", 0, 0.95, 0.001, 0.35),
   s("delay_mix", "Delay Mix", 0, 1, 0.001, 0.25),
+
   s("reverb_size", "Reverb Size", 0, 1, 0.001, 0.5),
   s("reverb_damping", "Reverb Damping", 0, 1, 0.001, 0.5),
   s("reverb_mix", "Reverb Mix", 0, 1, 0.001, 0.25),
-];
 
-export const TOGGLE_SPECS: readonly {
-  id: ToggleParamId;
-  name: string;
-  def: boolean;
-}[] = [
-  { id: "gate_on", name: "Gate On", def: true },
-  { id: "comp_on", name: "Comp On", def: true },
-  /* the only block bypassed by default */
-  { id: "drive_on", name: "Drive On", def: false },
-  { id: "amp_on", name: "Amp On", def: true },
-  { id: "cab_on", name: "Cab On", def: true },
-  { id: "eq_on", name: "EQ On", def: true },
-  { id: "mod_on", name: "Mod On", def: true },
-  { id: "delay_on", name: "Delay On", def: true },
-  { id: "reverb_on", name: "Reverb On", def: true },
   /* External AU slots ship enabled: an empty slot is a pass-through anyway, so
      "on" only starts costing anything once a plugin is actually loaded. */
-  { id: "fx1_on", name: "FX 1 On", def: true },
-  { id: "fx2_on", name: "FX 2 On", def: true },
-  { id: "fx3_on", name: "FX 3 On", def: true },
-  { id: "amp_cal_input", name: "Calibrate Input", def: false },
+  t("fx1_on", "FX 1 On", true),
+  t("fx2_on", "FX 2 On", true),
+  t("fx3_on", "FX 3 On", true),
 ];
 
-export const COMBO_SPECS: readonly {
-  id: ComboParamId;
-  name: string;
-  choices: string[];
-  def: number;
-}[] = [
-  {
-    id: "amp_out_mode",
-    name: "Output Mode",
-    choices: ["Raw", "Normalized", "Calibrated"],
-    def: 1,
-  },
-  { id: "mod_type", name: "Mod Type", choices: ["Chorus", "Phaser", "Tremolo"], def: 0 },
-];
+/* ──────────────────────── v2 instances + amp tone stack ────────────────── */
+
+/** How a kind names itself in a host parameter list. Not derivable from the v1
+ *  names: eq's own parameters carry no prefix at all ("Bass", "Middle"). */
+const KIND_PARAM_LABEL: Record<DuplicableKind, string> = {
+  comp: "Comp",
+  drive: "Drive",
+  eq: "EQ",
+  mod: "Mod",
+  delay: "Delay",
+  reverb: "Reverb",
+};
+
+/** "Comp Threshold" + 2 → "Comp 2 Threshold"; "Bass" + 2 → "EQ 2 Bass". Logic
+ *  lists parameters by name, so three identical "Comp Threshold" rows would be
+ *  unusable. */
+function instanceName(name: string, kind: DuplicableKind, instance: number): string {
+  const label = KIND_PARAM_LABEL[kind];
+  const tail = name.startsWith(`${label} `) ? name.slice(label.length + 1) : name;
+  return `${label} ${instance} ${tail}`;
+}
 
 /**
- * APVTS layout order (the 12 block enables first, then Parameters.cpp order).
- * Used for `parameterIndex` in the mock, so Logic's touch-to-select behaves like
- * the real plugin when developing against the mock. The fx-slot bypasses sit
- * with the other enables rather than at the end — that is where Parameters.cpp
- * adds them, and every later index shifts by three because of it.
+ * Instance 2 and 3 clone instance 1's entry: same range, default, step and unit,
+ * a `<kind><n>_` id and an instance-numbered host name — which is exactly how
+ * Parameters.cpp mints them. The id casts are safe by construction: the ids come
+ * from the same kind/key pairs the frozen unions in ./types are built from.
+ */
+function instanceEntry(
+  base: LayoutEntry,
+  kind: DuplicableKind,
+  instance: number,
+): LayoutEntry {
+  const id = `${kind}${instance}${base.spec.id.slice(kind.length)}`;
+  const name = instanceName(base.spec.name, kind, instance);
+  switch (base.control) {
+    case "slider":
+      return { control: "slider", spec: { ...base.spec, id: id as SliderParamId, name } };
+    case "toggle":
+      // Every instance enable ships ON, including drive's (whose instance 1 is
+      // the one block bypassed by default) — a block is not in the chain until
+      // it is added, so adding one and hearing nothing is the wrong answer.
+      return {
+        control: "toggle",
+        spec: { ...base.spec, id: id as ToggleParamId, name, def: true },
+      };
+    case "combo":
+      return { control: "combo", spec: { ...base.spec, id: id as ComboParamId, name } };
+  }
+}
+
+/** A kind's own parameters in layout order — its enable first, because the v1
+ *  enables come before everything else. */
+function entriesOfKind(kind: DuplicableKind): LayoutEntry[] {
+  return V1_LAYOUT.filter((entry) => entry.spec.id.startsWith(`${kind}_`));
+}
+
+const INSTANCE_LAYOUT: readonly LayoutEntry[] = DUPLICABLE_KINDS.flatMap((kind) =>
+  EXTRA_INSTANCES.flatMap((instance) =>
+    entriesOfKind(kind).map((base) => instanceEntry(base, kind, instance)),
+  ),
+);
+
+/** The amp's built-in tone stack (R2). Shaped like an eq but owned by the amp
+ *  block, so the instance rule above cannot mint it — hand-written on purpose.
+ *  Defaults: on, and 5.0 = flat. */
+const AMP_EQ_LAYOUT: readonly LayoutEntry[] = [
+  t("amp_eq_on", "Amp EQ On", true),
+  s("amp_eq_bass", "Amp EQ Bass", 0, 10, 0.1, 5),
+  s("amp_eq_mid", "Amp EQ Middle", 0, 10, 0.1, 5),
+  s("amp_eq_treble", "Amp EQ Treble", 0, 10, 0.1, 5),
+];
+
+/** The whole APVTS layout, in order: 44 v1 parameters, 54 instance parameters,
+ *  4 for the amp tone stack — 72 sliders, 26 toggles, 4 combos. */
+const LAYOUT: readonly LayoutEntry[] = [
+  ...V1_LAYOUT,
+  ...INSTANCE_LAYOUT,
+  ...AMP_EQ_LAYOUT,
+];
+
+/* ────────────────────────────── derived tables ─────────────────────────── */
+
+export const SLIDER_SPECS: readonly SliderSpec[] = LAYOUT.flatMap((entry) =>
+  entry.control === "slider" ? [entry.spec] : [],
+);
+
+export const TOGGLE_SPECS: readonly ToggleSpec[] = LAYOUT.flatMap((entry) =>
+  entry.control === "toggle" ? [entry.spec] : [],
+);
+
+export const COMBO_SPECS: readonly ComboSpec[] = LAYOUT.flatMap((entry) =>
+  entry.control === "combo" ? [entry.spec] : [],
+);
+
+/**
+ * APVTS layout order. Used for `parameterIndex` in the mock, so Logic's
+ * touch-to-select behaves like the real plugin when developing against it.
  */
 export const PARAM_INDEX: Readonly<Record<string, number>> = Object.fromEntries(
-  [
-    "gate_on", "comp_on", "drive_on", "amp_on", "cab_on", "eq_on", "mod_on",
-    "delay_on", "reverb_on", "fx1_on", "fx2_on", "fx3_on",
-    "input_trim", "output_level", "gate_threshold",
-    "comp_threshold", "comp_ratio", "comp_attack", "comp_release", "comp_makeup",
-    "drive_gain", "drive_tone", "drive_level",
-    "amp_input", "amp_output", "amp_out_mode", "amp_cal_input", "amp_cal_level",
-    "amp_slim",
-    "cab_lowcut", "cab_highcut",
-    "eq_bass", "eq_mid", "eq_treble",
-    "mod_type", "mod_rate", "mod_depth", "mod_mix",
-    "delay_time", "delay_feedback", "delay_mix",
-    "reverb_size", "reverb_damping", "reverb_mix",
-  ].map((id, i) => [id, i]),
+  LAYOUT.map((entry, index) => [entry.spec.id, index]),
 );
 
 export const SLIDER_SPEC_BY_ID: Readonly<Record<SliderParamId, SliderSpec>> =

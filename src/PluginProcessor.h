@@ -13,28 +13,36 @@
 #include "library/PresetManager.h"
 #include "library/Tone3000Client.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace tubamp
 {
+static_assert (params::maxInstances == chain::maxInstancesPerKind,
+               "the parameter pool and the block-instance pool must be the same size");
+
 /**
     User-buildable chain between two fixed endpoints:
 
       Input Trim -> [ ordered, user-arranged blocks ] -> DC Blocker -> Output Level
 
-    The default order follows the official NAM plugin's ordering for the amp core
+    A fresh instance runs the amp alone; every other block is added by the user.
+    chain::classicOrder() — what the plugin used to start with, and what a factory
+    preset is built on — follows the official NAM plugin's ordering for the amp core
     (docs/research/nam-plugin-params.md §4):
 
       Gate trigger -> Comp -> Drive
-        -> [ Amp In (+input calibration) -> NAM (mono) -> Gate gain -> Amp Out
-             (+output-mode compensation) ]
+        -> [ Amp In (+input calibration) -> NAM (mono) -> Gate gain -> Amp EQ
+             -> Amp Out (+output-mode compensation) ]
         -> Cab IR -> Tone Stack -> Modulation -> Delay -> Reverb
 
-    Blocks can be removed from the chain entirely or reordered by the user (see
+    Blocks can be removed from the chain entirely or reordered by the user, and six of
+    the kinds can appear up to three times, each instance with its own parameters (see
     dsp/ChainOrder.h); "*_on" stays a separate, automatable per-block bypass. The order
-    is state, not a parameter, and reaches the audio thread as one packed uint64.
+    is state, not a parameter, and reaches the audio thread as one packed 128-bit word.
 
     The gate is split the way the reference plugin splits it: the trigger only measures
     the signal at the gate's own position, and the reduction it computes is applied
@@ -91,16 +99,21 @@ public:
     juce::var captureStateVar();
     void applyStateVar (const juce::var& state);
 
-    /** Current signal-chain order. Message thread only. */
-    chain::Order getChainOrder() const { return uiChainOrder; }
+    /** Current signal-chain order. Any thread (read under chainLock). */
+    chain::Order getChainOrder() const;
+
+    /** How the order is split into rows on the board: one length per row, summing to
+        the order's size. Empty means "auto" — the editor wraps the chain itself. */
+    std::vector<int> getChainRows() const;
 
     /** Publishes a new order lock-free to the audio thread and notifies listeners.
-        Message thread only; duplicates/out-of-range ids are dropped. */
-    void setChainOrder (const chain::Order& order);
+        Message thread only; duplicates/out-of-range ids are dropped, and rows that do
+        not describe the surviving order are replaced by "auto". */
+    void setChainOrder (const chain::Order& order, const std::vector<int>& rows);
 
-    /** Fired on the message thread whenever the order changes — including after a
-        state restore (setStateInformation / applyStateVar / preset load). Set and
-        cleared by the editor, like library.onChanged. */
+    /** Fired on the message thread whenever the order or its rows change — including
+        after a state restore (setStateInformation / applyStateVar / preset load).
+        Listeners re-read both. Set and cleared by the editor, like library.onChanged. */
     std::function<void()> onChainChanged;
 
     //==============================================================================
@@ -175,10 +188,16 @@ private:
     int computeWantedLatency (const std::array<bool, chain::numBlockTypes>& present,
                               bool ampOn) const noexcept;
 
-    /** Any thread: makes the order visible to the audio thread (single atomic word). */
-    void publishChainOrder (const chain::Order& order) noexcept;
-    /** Message thread: publishes, updates the UI-facing copy, fires onChainChanged. */
-    void adoptChainOrder (const chain::Order& order);
+    /** Any thread: updates the message-thread mirror and makes the order visible to the
+        audio thread (single atomic word). Order and rows move as one pair. */
+    void publishChainOrder (const chain::Order& order, const std::vector<int>& rows);
+    /** Message thread: publishes, re-reports latency, fires onChainChanged. Never
+        holds chainLock across the callback. */
+    void adoptChainOrder (const chain::Order& order, const std::vector<int>& rows);
+
+    /** Audio thread: silences one block instance that is re-entering the chain, so it
+        cannot replay what it was holding when it left. Allocation-free. */
+    void resetBlockInstance (chain::BlockId id) noexcept;
 
     // The two amp gains fold the model-metadata compensation into the knob value before
     // it is converted to linear, exactly as the reference plugin's _SetInputGain() /
@@ -250,17 +269,14 @@ private:
 
     // Raw APVTS value pointers, resolved once in the constructor: the audio thread
     // must never do a string lookup. Private detail, not part of the contract.
+    //
+    // A duplicable kind's pointers are arrays indexed by chain::instanceOf(id); index 0
+    // is the kind's original, frozen parameter id.
     struct ParamPtrs
     {
         std::atomic<float>* gateOn = nullptr;
-        std::atomic<float>* compOn = nullptr;
-        std::atomic<float>* driveOn = nullptr;
         std::atomic<float>* ampOn = nullptr;
         std::atomic<float>* cabOn = nullptr;
-        std::atomic<float>* eqOn = nullptr;
-        std::atomic<float>* modOn = nullptr;
-        std::atomic<float>* delayOn = nullptr;
-        std::atomic<float>* reverbOn = nullptr;
         std::atomic<float>* fxOn[chain::numFxSlots] { nullptr, nullptr, nullptr };
 
         std::atomic<float>* inputTrim = nullptr;
@@ -268,41 +284,51 @@ private:
 
         std::atomic<float>* gateThreshold = nullptr;
 
-        std::atomic<float>* compThreshold = nullptr;
-        std::atomic<float>* compRatio = nullptr;
-        std::atomic<float>* compAttack = nullptr;
-        std::atomic<float>* compRelease = nullptr;
-        std::atomic<float>* compMakeup = nullptr;
+        std::atomic<float>* compOn[params::maxInstances] {};
+        std::atomic<float>* compThreshold[params::maxInstances] {};
+        std::atomic<float>* compRatio[params::maxInstances] {};
+        std::atomic<float>* compAttack[params::maxInstances] {};
+        std::atomic<float>* compRelease[params::maxInstances] {};
+        std::atomic<float>* compMakeup[params::maxInstances] {};
 
-        std::atomic<float>* driveGain = nullptr;
-        std::atomic<float>* driveTone = nullptr;
-        std::atomic<float>* driveLevel = nullptr;
+        std::atomic<float>* driveOn[params::maxInstances] {};
+        std::atomic<float>* driveGain[params::maxInstances] {};
+        std::atomic<float>* driveTone[params::maxInstances] {};
+        std::atomic<float>* driveLevel[params::maxInstances] {};
 
         std::atomic<float>* ampInput = nullptr;
         std::atomic<float>* ampOutput = nullptr;
         std::atomic<float>* ampOutMode = nullptr;
         std::atomic<float>* ampCalInput = nullptr;
         std::atomic<float>* ampCalLevel = nullptr;
+        std::atomic<float>* ampEqOn = nullptr;
+        std::atomic<float>* ampEqBass = nullptr;
+        std::atomic<float>* ampEqMid = nullptr;
+        std::atomic<float>* ampEqTreble = nullptr;
 
         std::atomic<float>* cabLowCut = nullptr;
         std::atomic<float>* cabHighCut = nullptr;
 
-        std::atomic<float>* eqBass = nullptr;
-        std::atomic<float>* eqMid = nullptr;
-        std::atomic<float>* eqTreble = nullptr;
+        std::atomic<float>* eqOn[params::maxInstances] {};
+        std::atomic<float>* eqBass[params::maxInstances] {};
+        std::atomic<float>* eqMid[params::maxInstances] {};
+        std::atomic<float>* eqTreble[params::maxInstances] {};
 
-        std::atomic<float>* modType = nullptr;
-        std::atomic<float>* modRate = nullptr;
-        std::atomic<float>* modDepth = nullptr;
-        std::atomic<float>* modMix = nullptr;
+        std::atomic<float>* modOn[params::maxInstances] {};
+        std::atomic<float>* modType[params::maxInstances] {};
+        std::atomic<float>* modRate[params::maxInstances] {};
+        std::atomic<float>* modDepth[params::maxInstances] {};
+        std::atomic<float>* modMix[params::maxInstances] {};
 
-        std::atomic<float>* delayTime = nullptr;
-        std::atomic<float>* delayFeedback = nullptr;
-        std::atomic<float>* delayMix = nullptr;
+        std::atomic<float>* delayOn[params::maxInstances] {};
+        std::atomic<float>* delayTime[params::maxInstances] {};
+        std::atomic<float>* delayFeedback[params::maxInstances] {};
+        std::atomic<float>* delayMix[params::maxInstances] {};
 
-        std::atomic<float>* reverbSize = nullptr;
-        std::atomic<float>* reverbDamping = nullptr;
-        std::atomic<float>* reverbMix = nullptr;
+        std::atomic<float>* reverbOn[params::maxInstances] {};
+        std::atomic<float>* reverbSize[params::maxInstances] {};
+        std::atomic<float>* reverbDamping[params::maxInstances] {};
+        std::atomic<float>* reverbMix[params::maxInstances] {};
     };
 
     ParamPtrs pp;
@@ -310,26 +336,47 @@ private:
     // Guards deferred (callAsync) work against destruction of this processor.
     std::shared_ptr<bool> aliveFlag { std::make_shared<bool> (true) };
 
-    // The order the audio thread runs: one packed word, swapped atomically, decoded
-    // once per processBlock. uiChainOrder is the message-thread mirror behind
-    // getChainOrder() and is never touched from the audio thread.
-    std::atomic<uint64_t> packedChain { chain::pack (chain::defaultOrder()) };
-    chain::Order uiChainOrder { chain::defaultOrder() };
+    // The order the audio thread runs: one packed word, stored whole and decoded once
+    // per processBlock, so a reader can never see a half-written chain.
+    std::atomic<chain::Packed> packedChain { chain::pack (chain::defaultOrder()) };
 
-    // chain blocks
+    // The message-thread-facing mirror of the same chain, plus the row layout the audio
+    // thread has no use for. Guarded because hosts save and restore state from their own
+    // threads, and order and rows must never be read as a mismatched pair. A LEAF lock:
+    // nothing is called while it is held (onChainChanged least of all).
+    mutable juce::CriticalSection chainLock;
+    chain::Order uiChainOrder { chain::defaultOrder() };
+    std::vector<int> uiChainRows;
+
+    // chain blocks — one object per instance, all prepared eagerly in prepareToPlay
+    // regardless of what the current order contains.
     NoiseGate gate;
-    juce::dsp::Compressor<float> compressor;
-    juce::SmoothedValue<float> compMakeupLin { 1.0f };
-    Drive drive;
+    std::array<juce::dsp::Compressor<float>, params::maxInstances> compressor;
+    std::array<juce::SmoothedValue<float>, params::maxInstances> compMakeupLin { {
+        juce::SmoothedValue<float> { 1.0f }, juce::SmoothedValue<float> { 1.0f },
+        juce::SmoothedValue<float> { 1.0f } } };
+    std::array<Drive, params::maxInstances> drive;
     CabSim cab;
-    ToneStackEQ eq;
+    std::array<ToneStackEQ, params::maxInstances> eq;
+    /** The amp block's own tone stack, between the model's gated output and amp-out. */
+    ToneStackEQ ampEq;
     DcBlocker dcBlocker;
-    Modulation modulation;
-    DelayFx delay;
-    ReverbFx reverbFx;
+    std::array<Modulation, params::maxInstances> modulation;
+    std::array<DelayFx, params::maxInstances> delay;
+    std::array<ReverbFx, params::maxInstances> reverbFx;
     juce::SmoothedValue<float> inputTrimLin { 1.0f }, outputLevelLin { 1.0f }, ampInLin { 1.0f }, ampOutLin { 1.0f };
 
     juce::AudioBuffer<float> monoScratch;
+
+    /** What the previous block ran, for spotting a block re-entering the chain.
+        Audio thread only. */
+    std::array<bool, chain::numBlockTypes> prevPresent {};
+
+    /** Re-entry resets waiting to be drained, a bounded few per callback: clearing a
+        2-second delay line is megabytes of memset at high sample rates, and a preset
+        switch can re-enter half a dozen blocks in one block. A block whose reset is
+        still pending processes as bypassed (silent, never stale). Audio thread only. */
+    std::array<bool, chain::numBlockTypes> pendingReset {};
 
     // Written on the message thread; also read by getStateInformation, which hosts
     // may call from a save/worker thread. juce::String is copy-on-write and not safe

@@ -10,9 +10,15 @@ import { create } from "zustand";
 import {
   bridge,
   isBlockId,
+  isFxBlockId,
   fxSlotIndexOf,
+  instanceTokensOfKind,
+  kindOf,
+  BLOCK_KINDS,
+  FX_BLOCK_IDS,
   type AbSlot,
   type AbState,
+  type BaseBlockId,
   type BlockId,
   type EditorSizeLimits,
   type FileEntry,
@@ -26,7 +32,6 @@ import {
   type T3kState,
   type UiState,
 } from "../bridge";
-import { BLOCK_INFO } from "../theme/blocks";
 
 export type ToastKind = "info" | "success" | "warning" | "error";
 
@@ -62,6 +67,8 @@ export interface AppState {
 
   /* mirrored plugin state */
   chainOrder: BlockId[];
+  /** Row lengths partitioning `chainOrder`; `[]` = auto (see `rowsFor`). */
+  chainRows: number[];
   model: ModelInfo | null;
   ir: FileEntry | null;
   models: FileEntry[];
@@ -112,8 +119,12 @@ export interface AppActions {
   hydrate(): Promise<void>;
 
   /* chain */
-  setChainOrder(order: BlockId[]): void;
-  addBlock(id: BlockId): void;
+  setChainOrder(order: BlockId[], rows: number[]): void;
+  /** Adds the lowest instance of `id`'s kind that is not already in the chain;
+   *  no-op once the kind is exhausted. By default it appends to the end of the
+   *  last row; `at` instead inserts at that flat index, growing that row. */
+  addBlock(id: BlockId, at?: { index: number; row: number }): void;
+  /** Removes exactly that instance token — never its siblings. */
   removeBlock(id: BlockId): void;
   selectBlock(id: BlockId | null): void;
 
@@ -162,18 +173,100 @@ export interface AppActions {
 
 export type Store = AppState & AppActions;
 
-/** amp → first block → none (`ensureValidSelection`, preserved exactly). */
-export function fallbackSelection(
+/**
+ * Nothing is ever auto-selected: the panel is a click-summoned overlay, so a
+ * hydrate or a chain change out of C++ must not open one. A selection only
+ * survives while its own token is still in the chain.
+ */
+function keepSelection(
   order: readonly BlockId[],
   current: BlockId | null,
 ): BlockId | null {
-  if (current && order.includes(current)) return current;
-  if (order.includes("amp")) return "amp";
-  return order[0] ?? null;
+  return current !== null && order.includes(current) ? current : null;
 }
 
 function toBlockIds(tokens: string[]): BlockId[] {
   return tokens.filter(isBlockId);
+}
+
+/**
+ * Row lengths are only meaningful as an exact partition of the order: every row
+ * holds at least one block and the lengths sum to the chain length. Anything
+ * else — including rows for a chain that has since changed — is stored as `[]`,
+ * which means auto. Never collapsed into a single row: a 24-block lane cannot be
+ * framed at the board's minimum zoom.
+ */
+function normaliseChainRows(
+  order: readonly BlockId[],
+  rows: readonly number[],
+): number[] {
+  if (order.length === 0 || rows.length === 0) return [];
+  let total = 0;
+  for (const length of rows) {
+    if (!Number.isInteger(length) || length < 1) return [];
+    total += length;
+  }
+  return total === order.length ? [...rows] : [];
+}
+
+/** How many blocks an auto-wrapped row holds. */
+export const ROW_WRAP = 6;
+
+/**
+ * The rows to draw: the published partition when there is one, otherwise a wrap
+ * at ROW_WRAP. Pure, and deliberately NOT published back — an auto chain stays
+ * auto until the user rearranges it, so resizing the window never rewrites state.
+ */
+export function rowsFor(
+  order: readonly BlockId[],
+  chainRows: readonly number[],
+): number[] {
+  if (chainRows.length > 0) return [...chainRows];
+  const rows: number[] = [];
+  for (let i = 0; i < order.length; i += ROW_WRAP)
+    rows.push(Math.min(ROW_WRAP, order.length - i));
+  return rows;
+}
+
+/** The lowest instance of `kind` not already in the chain; null when it has none
+ *  left (a singleton that is already there, or all three instances used). */
+function freeInstance(
+  kind: BaseBlockId,
+  order: readonly BlockId[],
+): BlockId | null {
+  const tokens = isFxBlockId(kind) ? [kind] : instanceTokensOfKind(kind);
+  return tokens.find((token) => !order.includes(token)) ?? null;
+}
+
+/** Appending grows the last row; an auto chain stays auto. */
+function rowsWithAppend(rows: readonly number[]): number[] {
+  if (rows.length === 0) return [];
+  const next = [...rows];
+  next[next.length - 1] += 1;
+  return next;
+}
+
+/** Inserting grows `row`; an auto chain stays auto (it re-wraps by itself). */
+function rowsWithInsertAt(rows: readonly number[], row: number): number[] {
+  if (rows.length === 0) return [];
+  const next = [...rows];
+  next[Math.min(Math.max(row, 0), next.length - 1)] += 1;
+  return next;
+}
+
+/** Removing shrinks the row that owned the block, and drops it when it empties. */
+function rowsWithout(rows: readonly number[], index: number): number[] {
+  if (rows.length === 0) return [];
+  const next = [...rows];
+  let start = 0;
+  for (let row = 0; row < next.length; row += 1) {
+    if (index < start + next[row]!) {
+      next[row] -= 1;
+      break;
+    }
+    start += next[row]!;
+  }
+  return next.filter((length) => length > 0);
 }
 
 function emptyFxSlot(slot: FxSlotIndex): FxSlotState {
@@ -209,6 +302,7 @@ let nextToastId = 1;
 const initialState: AppState = {
   ready: false,
   chainOrder: [],
+  chainRows: [],
   model: null,
   ir: null,
   models: [],
@@ -225,9 +319,9 @@ const initialState: AppState = {
   // one (theme/tokens.css); the maximum is deliberately huge, because guessing
   // small here would let the grip refuse a size the display can actually take.
   editorSize: {
-    width: 1120,
-    height: 700,
-    minWidth: 900,
+    width: 1280,
+    height: 800,
+    minWidth: 1000,
     minHeight: 600,
     maxWidth: 8192,
     maxHeight: 8192,
@@ -244,9 +338,10 @@ const initialState: AppState = {
 };
 
 export const useStore = create<Store>()((set, get) => {
-  /** Publish chain order to C++ — the ONLY place that writes it. */
-  const publish = (order: BlockId[]): void => {
-    void bridge.setChainOrder(order);
+  /** Publish chain order + rows to C++ — the ONLY place that writes them, and
+   *  once per gesture. */
+  const publish = (order: BlockId[], rows: number[]): void => {
+    void bridge.setChainOrder(order, rows);
   };
 
   const reportError = (message: string | undefined): boolean => {
@@ -264,6 +359,7 @@ export const useStore = create<Store>()((set, get) => {
       set({
         ready: true,
         chainOrder: order,
+        chainRows: normaliseChainRows(order, state.chainRows ?? []),
         model: state.model,
         ir: state.ir,
         models: state.models,
@@ -278,37 +374,57 @@ export const useStore = create<Store>()((set, get) => {
         // two fields must hydrate the rest of the snapshot, not crash the grip.
         editorSize: state.editorSize ?? initialState.editorSize,
         fxEmbed: state.fxEmbed ?? initialState.fxEmbed,
-        selected: fallbackSelection(order, get().selected),
+        selected: keepSelection(order, get().selected),
       });
     },
 
     /* ─────────────────────────────── chain ───────────────────────────── */
 
-    setChainOrder(order) {
+    setChainOrder(order, rows) {
+      const chainRows = normaliseChainRows(order, rows);
       set({
         chainOrder: order,
-        selected: fallbackSelection(order, get().selected),
+        chainRows,
+        selected: keepSelection(order, get().selected),
       });
-      publish(order);
+      publish(order, chainRows);
     },
 
-    addBlock(id) {
-      const { chainOrder } = get();
-      if (chainOrder.includes(id)) {
-        set({ selected: id });
-        return;
-      }
-      const order = [...chainOrder, id];
-      // Appending always selects the new block — it deliberately bypasses the
-      // amp-priority fallback rule.
-      set({ chainOrder: order, selected: id });
-      publish(order);
+    addBlock(id, at) {
+      const { chainOrder, chainRows } = get();
+      const token = freeInstance(kindOf(id), chainOrder);
+      if (token === null) return;
+      const index =
+        at === undefined
+          ? chainOrder.length
+          : Math.min(Math.max(at.index, 0), chainOrder.length);
+      const order = [
+        ...chainOrder.slice(0, index),
+        token,
+        ...chainOrder.slice(index),
+      ];
+      const rows =
+        at === undefined
+          ? rowsWithAppend(chainRows)
+          : rowsWithInsertAt(chainRows, at.row);
+      // Adding always opens the new block's panel: the user asked for it, and
+      // it is the only block on the board whose settings they have not seen.
+      set({ chainOrder: order, chainRows: rows, selected: token });
+      publish(order, rows);
     },
 
     removeBlock(id) {
-      const order = get().chainOrder.filter((b) => b !== id);
-      set({ chainOrder: order, selected: fallbackSelection(order, null) });
-      publish(order);
+      const { chainOrder, chainRows, selected } = get();
+      const index = chainOrder.indexOf(id);
+      if (index < 0) return;
+      const order = chainOrder.filter((block) => block !== id);
+      const rows = rowsWithout(chainRows, index);
+      set({
+        chainOrder: order,
+        chainRows: rows,
+        selected: selected === id ? null : selected,
+      });
+      publish(order, rows);
     },
 
     // There is deliberately no `moveBlock(id, index)`: the board's reorder drag
@@ -530,11 +646,12 @@ export function connectStore(): () => void {
   const get = useStore.getState;
 
   const unsubs = [
-    bridge.on("chainChanged", ({ chainOrder }) => {
+    bridge.on("chainChanged", ({ chainOrder, chainRows }) => {
       const order = toBlockIds(chainOrder);
       set({
         chainOrder: order,
-        selected: fallbackSelection(order, get().selected),
+        chainRows: normaliseChainRows(order, chainRows ?? []),
+        selected: keepSelection(order, get().selected),
       });
     }),
 
@@ -644,9 +761,33 @@ export function selectFxSlotFor(block: BlockId | null) {
   };
 }
 
-/** Blocks not currently in the chain, in the frozen enum order (add-menu order). */
-export function selectAbsentBlocks(s: Store): BlockId[] {
-  return (Object.keys(BLOCK_INFO) as BlockId[]).filter(
-    (id) => !s.chainOrder.includes(id),
-  );
+/** Every identity base, in frozen enum order (= the add-menu's row order). */
+export const BLOCK_BASES: readonly BaseBlockId[] = [
+  ...BLOCK_KINDS,
+  ...FX_BLOCK_IDS,
+];
+
+/**
+ * Kinds the picker can still add — those with an instance left. A duplicable
+ * kind stays offered until all three are in the chain; a singleton drops out as
+ * soon as it is there. In frozen enum order (= the add-menu order).
+ *
+ * Pure, and taken as an argument rather than off the store: a selector that
+ * builds an array would hand `useStore` a new snapshot on every render.
+ */
+export function addableKinds(order: readonly BlockId[]): BaseBlockId[] {
+  return BLOCK_BASES.filter((base) => freeInstance(base, order) !== null);
+}
+
+/** How many instances of `base` the chain currently holds (0…3). */
+export function instancesInChain(
+  base: BaseBlockId,
+  order: readonly BlockId[],
+): number {
+  const tokens = isFxBlockId(base) ? [base] : instanceTokensOfKind(base);
+  return tokens.reduce((n, token) => (order.includes(token) ? n + 1 : n), 0);
+}
+
+export function selectAddableKinds(s: Store): BaseBlockId[] {
+  return addableKinds(s.chainOrder);
 }

@@ -216,6 +216,16 @@ const combos = new Map<ComboParamId, MockCombo>(
   COMBO_SPECS.map((s) => [s.id, new MockCombo(s)]),
 );
 
+/**
+ * An id the spec tables do not know. Throwing here would blank the whole app
+ * from inside a render, and the cause is almost always a typo in one table — so
+ * say so and hand back an inert control instead. The made-up state is cached
+ * like every other one: the param hooks require exactly one object per id.
+ */
+function unknownParam(control: string, id: string): void {
+  console.warn(`mock bridge: unknown ${control} param "${id}" — inert default.`);
+}
+
 /* ─────────────────────── external AudioUnit simulation ─────────────────── */
 
 /**
@@ -537,7 +547,7 @@ function stopFxMeter(): void {
  * The browser viewport stands in for the display: a window bigger than it could
  * not be dragged back, which is exactly what `maxWidth`/`maxHeight` mean.
  */
-const MIN_EDITOR_W = 900;
+const MIN_EDITOR_W = 1000;
 const MIN_EDITOR_H = 600;
 
 function clampNum(value: number, min: number, max: number): number {
@@ -692,8 +702,40 @@ const loadedModel: ModelInfo = {
   latencySamples: 90,
 };
 
+/**
+ * The chain each preset restores, mirroring the real thing: a preset carries its
+ * own `chainOrder` + `chainRows` and loading one adopts both.
+ *
+ * "Bedroom Metal"'s rows deliberately do NOT partition its order. C++ stores
+ * that as auto, but nothing stops a hand-edited preset file from carrying it, so
+ * the UI has to fall back to auto-wrap rather than mis-render — and this is the
+ * only place in dev that path is reachable.
+ */
+/** What parseOrderOrLegacy answers for a preset with no chain of its own. */
+const CLASSIC_ORDER = [
+  "gate", "comp", "drive", "amp", "cab", "eq", "mod", "delay", "reverb",
+] as const;
+
+const PRESET_CHAINS: Record<string, { chainOrder: string[]; chainRows: number[] }> = {
+  "Crunch Rhythm": {
+    chainOrder: ["gate", "comp", "drive", "amp", "cab", "eq"],
+    chainRows: [3, 3],
+  },
+  "Ambient Lead": {
+    chainOrder: ["gate", "amp", "cab", "delay", "delay2", "reverb", "reverb2"],
+    chainRows: [4, 3],
+  },
+  "Bedroom Metal": {
+    chainOrder: ["gate", "comp", "drive", "amp", "cab"],
+    chainRows: [3, 3],
+  },
+};
+
 const state: UiState = {
-  chainOrder: ["gate", "comp", "drive", "amp", "cab", "eq", "mod", "delay", "reverb"],
+  // Fresh instances start with only the amp (chain::defaultOrder), and with no
+  // rows of their own — the board wraps for itself until the user rearranges.
+  chainOrder: ["amp"],
+  chainRows: [],
   model: loadedModel,
   ir: { path: `${IRS_DIR}/Greenback 4x12 SM57 Cap.wav`, name: "Greenback 4x12 SM57 Cap" },
   models: [
@@ -719,8 +761,6 @@ const state: UiState = {
   currentPresetName: "Crunch Rhythm",
   ab: { activeSlot: 0, aHasState: true, bHasState: false },
   t3k: { configured: true, authenticated: true, username: "mock_user" },
-  // The fx tokens are absent from chainOrder above because they are absent from
-  // chain::defaultOrder() — a slot only enters the path when the user adds it.
   fxSlots: initialFxSlots(),
   editorSize: initialEditorSize(),
   fxEmbed: { slot: -1, width: 0, height: 0, error: "" },
@@ -1018,6 +1058,14 @@ function delay<T>(value: T, ms = 140): Promise<T> {
   return new Promise((resolve) => window.setTimeout(() => resolve(value), ms));
 }
 
+/** Order and rows always travel together, as one consistent pair. */
+function emitChain(): void {
+  emit("chainChanged", {
+    chainOrder: [...state.chainOrder],
+    chainRows: [...state.chainRows],
+  });
+}
+
 function emitLibrary(): void {
   emit("libraryChanged", { models: [...state.models], irs: [...state.irs] });
 }
@@ -1039,18 +1087,39 @@ export const mockBridge: Bridge = {
   paramIndexUpdater: () => ({ handleMouseMove: () => {} }),
 
   sliderState(id: SliderParamId) {
-    const s = sliders.get(id);
-    if (!s) throw new Error(`mock bridge: unknown slider param "${id}"`);
+    let s = sliders.get(id);
+    if (!s) {
+      unknownParam("slider", id);
+      s = new MockSlider({
+        id,
+        name: id,
+        min: 0,
+        max: 1,
+        interval: 0.01,
+        def: 0,
+        label: "",
+        log: false,
+      });
+      sliders.set(id, s);
+    }
     return s;
   },
   toggleState(id: ToggleParamId) {
-    const t = toggles.get(id);
-    if (!t) throw new Error(`mock bridge: unknown toggle param "${id}"`);
+    let t = toggles.get(id);
+    if (!t) {
+      unknownParam("toggle", id);
+      t = new MockToggle({ id, name: id, def: false });
+      toggles.set(id, t);
+    }
     return t;
   },
   comboState(id: ComboParamId) {
-    const c = combos.get(id);
-    if (!c) throw new Error(`mock bridge: unknown combo param "${id}"`);
+    let c = combos.get(id);
+    if (!c) {
+      unknownParam("combo", id);
+      c = new MockCombo({ id, name: id, choices: ["—"], def: 0 });
+      combos.set(id, c);
+    }
     return c;
   },
 
@@ -1073,10 +1142,11 @@ export const mockBridge: Bridge = {
 
   getUiState: () => delay(snapshot(), 60),
 
-  setChainOrder: async (tokens) => {
+  setChainOrder: async (tokens, rows) => {
     state.chainOrder = [...tokens];
+    state.chainRows = [...rows];
     await delay(null, 0);
-    emit("chainChanged", { chainOrder: [...state.chainOrder] });
+    emitChain();
   },
 
   loadModel: async (path) => {
@@ -1155,7 +1225,13 @@ export const mockBridge: Bridge = {
     const preset = state.presets.find((p) => p.path === path);
     if (!preset) return delay<ErrorResult>({ error: "Preset not found" });
     state.currentPresetName = preset.name;
-    // A preset load restores chain order + param values in the real plugin.
+    // A preset load restores chain order + rows + param values in the real
+    // plugin. A preset with no chain of its own models an OLDER preset file,
+    // and the real applyStateVar answers those with the classic nine
+    // (parseOrderOrLegacy) — not with the chain that happened to be loaded.
+    const chain = PRESET_CHAINS[preset.name];
+    state.chainOrder = chain ? [...chain.chainOrder] : [...CLASSIC_ORDER];
+    state.chainRows = chain ? [...chain.chainRows] : [];
     for (const spec of SLIDER_SPECS) {
       const jitter = spec.log ? 1 : 0;
       const span = (spec.max - spec.min) * 0.05 * Math.random() * jitter;
@@ -1164,7 +1240,7 @@ export const mockBridge: Bridge = {
       );
     }
     emitPresets();
-    emit("chainChanged", { chainOrder: [...state.chainOrder] });
+    emitChain();
     return delay<ErrorResult>({}, 180);
   },
 

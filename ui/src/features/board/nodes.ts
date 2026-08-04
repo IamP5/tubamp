@@ -26,7 +26,8 @@ export interface NodeMotionRegistry {
    */
   freeze(id: NodeId): void;
   /**
-   * Move every node onto its slot. Nodes seen for the first time are placed
+   * Move every node onto its slot, in BOTH axes — a node's resting y is its
+   * row's centre line, never 0. Nodes seen for the first time are placed
    * instantly (they are entering with their own entrance animation); everything
    * else springs. `sticky` ids are skipped every pass for as long as they are
    * passed in — that is the card currently under the pointer.
@@ -85,14 +86,14 @@ export function useNodeMotion(): NodeMotionRegistry {
         if (!registry.placed.has(slot.id)) {
           registry.placed.add(slot.id);
           node.x.set(slot.x);
-          node.y.set(0);
+          node.y.set(slot.y);
           continue;
         }
         if (node.x.get() !== slot.x) {
           animate(node.x, slot.x, reduced ? INSTANT : spring.reflow);
         }
-        if (node.y.get() !== 0) {
-          animate(node.y, 0, reduced ? INSTANT : spring.reflow);
+        if (node.y.get() !== slot.y) {
+          animate(node.y, slot.y, reduced ? INSTANT : spring.reflow);
         }
       }
       registry.oneShot.clear();

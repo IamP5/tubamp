@@ -58,14 +58,30 @@ in a normal browser. `tubamp_smoke` keeps building exactly as today
 
 ### Parameters — JUCE relays, id == APVTS id verbatim
 
-- Sliders (29): input_trim, output_level, gate_threshold, comp_threshold,
-  comp_ratio, comp_attack, comp_release, comp_makeup, drive_gain, drive_tone,
-  drive_level, amp_input, amp_output, amp_cal_level, amp_slim, cab_lowcut,
-  cab_highcut, eq_bass, eq_mid, eq_treble, mod_rate, mod_depth, mod_mix,
-  delay_time, delay_feedback, delay_mix, reverb_size, reverb_damping, reverb_mix
-- Toggles (13): gate_on, comp_on, drive_on, amp_on, cab_on, eq_on, mod_on,
-  delay_on, reverb_on, amp_cal_input, fx1_on, fx2_on, fx3_on
-- Combos (2): amp_out_mode, mod_type
+Six of the nine built-in kinds (comp, drive, eq, mod, delay, reverb) can sit in the
+chain up to three times (`chain::maxInstancesPerKind`); instance 1 keeps the
+original id (`comp_threshold`), instances 2 and 3 get `<kind>2_<key>` /
+`<kind>3_<key>`, appended at the end of `Parameters.cpp`'s layout so every
+pre-existing id keeps its index. The amp's own tone stack (`amp_eq_*`) lives at
+the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`.
+
+- Sliders (72): the 29 v1 ids — input_trim, output_level, gate_threshold,
+  comp_threshold, comp_ratio, comp_attack, comp_release, comp_makeup, drive_gain,
+  drive_tone, drive_level, amp_input, amp_output, amp_cal_level, amp_slim,
+  cab_lowcut, cab_highcut, eq_bass, eq_mid, eq_treble, mod_rate, mod_depth,
+  mod_mix, delay_time, delay_feedback, delay_mix, reverb_size, reverb_damping,
+  reverb_mix — plus, appended: `comp2_*`/`comp3_*` (threshold, ratio, attack,
+  release, makeup), `drive2_*`/`drive3_*` (gain, tone, level), `eq2_*`/`eq3_*`
+  (bass, mid, treble), `mod2_*`/`mod3_*` (rate, depth, mix), `delay2_*`/`delay3_*`
+  (time, feedback, mix), `reverb2_*`/`reverb3_*` (size, damping, mix), and
+  `amp_eq_bass`/`amp_eq_mid`/`amp_eq_treble`.
+- Toggles (26): the 13 v1 ids — gate_on, comp_on, drive_on, amp_on, cab_on, eq_on,
+  mod_on, delay_on, reverb_on, amp_cal_input, fx1_on, fx2_on, fx3_on — plus every
+  instance's bypass (`comp2_on`, `comp3_on`, `drive2_on`, `drive3_on`, `eq2_on`,
+  `eq3_on`, `mod2_on`, `mod3_on`, `delay2_on`, `delay3_on`, `reverb2_on`,
+  `reverb3_on`) and `amp_eq_on`.
+- Combos (4): amp_out_mode, mod_type, mod2_type, mod3_type — mod is the only
+  duplicable kind with a choice parameter.
 
 JS uses `getSliderState(id)` etc. from the vendored frontend lib; wrap in hooks
 (`useSliderParam`, `useToggleParam`, `useComboParam`) that subscribe to BOTH
@@ -74,24 +90,52 @@ call `sliderDragStarted/Ended` around gestures (host automation touch).
 
 **These lists are the whole relay surface.** A hosted plugin's parameters are NOT
 relays and never enter `SLIDER_PARAM_IDS` / `paramMeta` / `useSliderParam` — see
-§External AudioUnit slots below. The 29 sliders stay 29.
+§External AudioUnit slots below. 72/26/4 is the whole surface; a hosted plugin never
+grows it.
 
 ### Chain blocks
 
-Twelve block types (`chain::BlockInfo`, `BLOCK_IDS` in `bridge/types.ts`): the nine
-built-ins `gate, comp, drive, amp, cab, eq, mod, delay, reverb`, plus the three
-external-AudioUnit slots `fx1, fx2, fx3` ("FX Slot 1..3", short name "FX 1".."FX 3").
-The fx blocks are absent from the default order — they only appear in the chain once
-the user adds them from the [+] picker — and an fx block with no plugin assigned is a
-pass-through, so it is legal to have one in the chain forever without loading anything.
-Everything else about them is ordinary block behaviour: drag to reorder, remove, and
-a `fxN_on` power LED wired to a normal automatable APVTS toggle.
+24 block tokens (`chain::BlockInfo`, `BLOCK_IDS` in `bridge/types.ts`) name block
+INSTANCES, not block types. The nine built-in kinds are `gate, comp, drive, amp, cab,
+eq, mod, delay, reverb`; six of them (comp, drive, eq, mod, delay, reverb) can sit in
+the chain up to three times, each instance its own token, tile and APVTS params —
+instance 1 keeps the kind's own token (`comp`), instances 2 and 3 are `comp2`/`comp3`.
+gate, amp, cab and the three external-AudioUnit slots `fx1, fx2, fx3` ("FX Slot 1..3",
+short name "FX 1".."FX 3") stay singletons. The fx blocks are absent from the default
+order — they only appear in the chain once the user adds them from the [+] picker —
+and an fx block with no plugin assigned is a pass-through, so it is legal to have one
+in the chain forever without loading anything. Everything else about them is ordinary
+block behaviour: drag to reorder, remove, and a `fxN_on` power LED wired to a normal
+automatable APVTS toggle.
+
+**A fresh instance's chain is `["amp"]`** (`chain::defaultOrder()`) — everything else
+is added by the user. The nine-block arrangement plugin instances used to start with
+(`chain::classicOrder()`) still exists, as the fallback for state saved before the
+chain was user-arrangeable and as the shape factory presets restore.
+
+`bridge/types.ts` derives kind/instance identity from `KIND_INSTANCES` rather than
+hand-listing 24 entries twice:
+
+- `BLOCK_KINDS` — the nine built-in kinds, in enum order (also the picker's row
+  order); `DUPLICABLE_KINDS` — the six that have more than one instance.
+- `kindOf(id)` — the kind a token is an instance of (`comp3` → `comp`); an fx slot is
+  its own kind.
+- `instanceOf(id)` — 0-based instance number, mirroring `chain::instanceOf` (`comp` is
+  0, `comp3` is 2); user-facing text shows `instanceOf(id) + 1`.
+- `instanceTokensOfKind(kind)` — a kind's instance tokens, instance 1 first.
+- `blockRecord(make)` — builds a `Record<BlockId, T>` from one factory over all 24
+  tokens; every identity table (`BLOCK_INFO`, `BLOCK_ACCENT`, `KNOB_SPECS`,
+  `BLOCK_GLYPH`) is written this way so an instance can never drift from its kind's
+  colour, glyph or knob row.
 
 ### Native functions (all return JSON; names verbatim)
 
 ```ts
 getUiState(): UiState                       // full hydration snapshot
-setChainOrder(tokens: string[]): void
+setChainOrder(tokens: string[], rows: number[]): void  // order + row lengths travel
+                                            // together, one write per gesture;
+                                            // rows that do not partition tokens
+                                            // are stored as [] (auto-wrap)
 loadModel(path: string): { error?: string }
 clearModel(): void
 loadIr(path: string): { error?: string }
@@ -138,7 +182,10 @@ fxSetEmbedMinWindow(w: number, h: number): void            // resize floor while
 
 ```ts
 interface UiState {
-  chainOrder: string[]
+  chainOrder: string[]           // [] = deliberately empty chain (the "-" sentinel)
+  chainRows: number[]            // row lengths partitioning chainOrder; [] = auto —
+                                 // C++ keeps no layout it could not validate, and
+                                 // the UI wraps for itself
   model: ModelInfo | null       // { path, name, sampleRateHz, loudnessDb?, inputLevelDbu?,
                                 //   outputLevelDbu?, gearType?, includesCab,
                                 //   isSlimmable, latencySamples }
@@ -190,7 +237,8 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
 
 ```
 "meters"         { in: number, out: number }        // 30 Hz editor timer, linear peaks
-"chainChanged"   { chainOrder: string[] }           // onChainChanged incl. state restore
+"chainChanged"   { chainOrder: string[], chainRows: number[] }  // onChainChanged incl.
+                                                    // state restore
 "libraryChanged" { models, irs }
 "presetChanged"  { presets, currentPresetName, ab }
 "modelChanged"   { model: ModelInfo | null }
@@ -273,15 +321,18 @@ spinner; `missing` → name + `error`, and say the settings are kept; `live` →
 
 ### Mock bridge (`ui/src/bridge/mock.ts`)
 
-Auto-selected when `window.__JUCE__` is absent. Full fake `UiState` (the 9 built-in
-blocks in the chain plus three fx slots, `fxSupported: true` with a fake plugin list
-and one occupied slot with parameters, a loaded model with metadata, 6 presets,
-library entries, t3k configured+authed, an emulated window size the grip really
-resizes, one plugin whose embed is refused and one that reports its editor size
-twice),
-param states with real ranges/skew from `docs/research/current-ui-inventory.md`,
-fake 30 Hz meters (musical envelope), simulated t3k select/download flows with
-progress, latency ~90 samples. Dev-only code path; tree-shaken out is NOT required
+Auto-selected when `window.__JUCE__` is absent. Full fake `UiState` — `chainOrder:
+["amp"]`, `chainRows: []` (fresh-instance default, board wraps for itself), three fx
+slots, `fxSupported: true` with a fake plugin list and one occupied slot with
+parameters, a loaded model with metadata, 6 presets, library entries, t3k
+configured+authed, an emulated window size the grip really resizes, one plugin whose
+embed is refused and one that reports its editor size twice — param states with real
+ranges/skew from `docs/research/current-ui-inventory.md` generated from each kind's
+base spec for every instance, fake 30 Hz meters (musical envelope), simulated t3k
+select/download flows with progress, latency ~90 samples. Three of the mock presets
+carry their own `{chainOrder, chainRows}` and `loadPreset` adopts both; one pair is
+deliberately mismatched (rows that do not partition the order) to exercise the
+auto-wrap fallback outside C++. Dev-only code path; tree-shaken out is NOT required
 (guarded at runtime), but keep it in a separate chunk if trivial.
 
 ### Window size and embedding
@@ -311,40 +362,80 @@ the board band, which turns "does not fit" into a measurable shortfall — the e
 asks for a window that much bigger. It only ever grows: shrinking back would fight a user
 who sized the window deliberately.
 
-Minimum size **900×600**, derived in `theme/tokens.css` §App metrics from the widest dock
+Minimum size **1000×600** (default 1280×800), derived in `theme/tokens.css` §App metrics from the widest dock
 body and the shortest usable board band; same numbers as `kMinEditorWidth/Height` in
 `src/WebEditor.cpp`. The C++ clamp is the one that matters (it owns the window).
 
 ## UX structure (the board is the app)
 
-Fluid viewport (min 900×600, see §Window size and embedding), `--bg-app` with subtle
-radial wash, dot-grid stage. The bands are fixed — header 48, footer 56, dock 232 — and
-everything spare goes to the board; block cards keep their fixed face, because the board's
-own zoom is the density control.
+Fluid viewport (min 1000×600, see §Window size and embedding), `--bg-app` with subtle
+radial wash, dot-grid stage. Header (48) and footer (56) are the only fixed bands; the
+board is full-screen underneath them. The panel is not a reserved band — it is an
+overlay that opens over the board's bottom edge on selection and gives the space back
+when nothing is selected (see the Panel bullet below); block cards keep their fixed
+face, because the board's own zoom is the density control.
 
-- **Board (centerpiece, ~60% height)**: pan/zoom stage (wheel = zoom to cursor,
-  ctrl/cmd+wheel fine zoom, space-drag / middle-drag / two-finger = pan,
-  double-click empty = zoom-to-fit; all springs per motion.ts). IN and OUT
-  terminal nodes; block cards between them in chain order joined by connectors
-  (SVG, animated flow chevrons; segment entering the selected card tinted with
-  its accent). Block card: ~112×80, icon + short name + power LED (click LED =
-  bypass toggle without select), accent treatments per vercel-design.md.
-  Interactions: click select, drag to reorder (manual drag + layout animations,
-  pick-up scale/shadow, siblings reflow, drop settle spring, ESC/out-of-bounds
-  cancel), kebab menu on card (Bypass/Enable, Remove) — NO contextmenu (Logic
-  crash risk; suppress globally), [+] node at lane end when blocks remain →
-  Vercel-style picker menu of absent blocks. Zoom-to-fit + zoom % control,
-  bottom-right. Empty chain → empty-state with "Add a block".
-- **Param dock (bottom, slides over board bottom edge)**: selected block's panel;
-  content morph via AnimatePresence popLayout; accent header (icon, name, power
-  pill, remove affordance). Bodies per current-ui-inventory.md: generic knob rows
-  (gate/comp/drive/eq/delay/reverb), mod (type combo + knobs), amp (model mgmt +
-  status + T3K + knobs + out-mode + slim when isSlimmable), cab (IR mgmt + cut
-  knobs), fx1/fx2/fx3 (plugin picker or loaded-plugin header + "Show editor here"
-  (embed, see §Window size and embedding) + "Open plugin window" + a generic knob
-  grid over `FxSlotState.params` — see §External AudioUnit slots;
-  never `useSliderParam`). Selection fallback: amp → first → none (but newly added block is
-  force-selected). Selection is UI-local state only.
+- **Board (full-screen)**: pan/zoom stage (wheel = zoom to cursor, ctrl/cmd+wheel fine
+  zoom, space-drag / middle-drag / two-finger = pan, double-click empty = zoom-to-fit;
+  all springs per motion.ts). IN and OUT terminal nodes; block cards in chain order,
+  wrapped into rows (`chainRows` — a hand-arranged partition, or `[]` = auto-wrap at
+  `ROW_WRAP` = 6), joined by connectors (SVG, animated flow chevrons; segment entering
+  the selected card tinted with its accent; a row wrap gets its own path shape — out
+  right of the row end, down, back left into the next row's start — rather than a
+  straight line across the gap). Block card: ~112×80, icon + short name + power LED
+  (click LED = bypass toggle without select), accent treatments per vercel-design.md;
+  instance cards caption "COMP 2" etc. from `BLOCK_INFO`.
+  - **Drag (`useChainDrag`)** is 2-D, with row geometry computed ONCE at gesture start
+    (from the order minus the dragged card) and held frozen for the gesture: the target
+    row comes from the pointer's y-band against that frozen layout, the insertion index
+    from x, and the preview reflow follows the target rather than chasing the pointer
+    directly — this is what keeps the preview from oscillating. Exactly one row-height
+    band below the last row is the new-row strip; below that, or outside the stage
+    bounds, cancels the drag (mouse only — a Logic WebView has no reliable keyboard, so
+    there is no ESC path). Commit happens once on pointerup: one `setChainOrder(tokens,
+    rows)` publish per gesture; a row left empty by the drop collapses out of `rows`.
+  - **Selection**: a click — pointerup without drag or pan travel — selects; pointerdown
+    alone never does (otherwise the panel would open over the card being picked up). A
+    selection that would sit under the panel band pans the stage minimally into view
+    (ensure-visible). Tapping the empty stage background (`onBackgroundTap`, owned by
+    `useStageTransform`, fired on pointerup below the pan-travel threshold with no
+    double-click pending) dismisses the selection — never on pointerdown, so panning
+    can't close the panel, and double-click-to-fit doesn't dismiss either.
+  - Kebab menu on card (Bypass/Enable, Remove) — NO contextmenu (Logic crash risk;
+    suppress globally). [+] node at the end of the last row when a kind still has a
+    free instance → picker menu of the nine kinds plus the fx slots, a "2/3" count
+    badge next to a duplicable kind that has instances left, disabled once a kind is
+    exhausted, amp/cab hidden once they're placed. Every connector gap (after IN,
+    between cards, in the wrap gutter) additionally carries a hover-revealed insert
+    [+] with the same picker that adds the block at that position (`addBlock`'s
+    optional `at`), hidden while a drag is in flight. Zoom-to-fit + zoom % control,
+    bottom-right (MIN_ZOOM derived from the wrapped rows' bounding box, not a single
+    24-wide lane). Empty chain → empty-state with "Add a block".
+- **Panel**: a selection-gated overlay card, summoned by clicking a block and closed
+  by its own close (✕) button, tapping the block again, `onBackgroundTap`, or the
+  block leaving the chain — never opened on hydrate or on an incoming `chainChanged`,
+  since nothing auto-selects (R4: the board is the surface, the panel only appears on
+  request). Content morph via AnimatePresence popLayout; accent header (icon,
+  instance-aware name — a loaded fx slot shows the plugin's name with the slot as a
+  tag — power pill bound to the block's `*_on` param, remove-from-chain, close). Body
+  dispatch is keyed by `kindOf(selected)`, so every instance of a kind shares its body:
+  generic knob rows (gate/comp/drive/eq/delay/reverb, any instance), mod (type combo +
+  knobs, any instance), amp (model mgmt + status + T3K + knobs + out-mode + slim when
+  isSlimmable + a **Tone** section — Bass/Mid/Treble knobs on `amp_eq_bass/mid/treble`
+  plus a power toggle on `amp_eq_on`, KnobRow-style; the amp has its own tone stack
+  whether or not an `eq` block is in the chain), cab (IR mgmt + cut knobs), fx1/fx2/fx3
+  (`fxSlotIndexOf`; plugin picker or loaded-plugin header + "Show editor here" (embed,
+  see §Window size and embedding) + "Open plugin window" + a generic knob grid over
+  `FxSlotState.params` — see §External AudioUnit slots; never `useSliderParam`).
+  CSS system (`theme/tokens.css`): `--panel-band` is 0px at rest and becomes
+  `--dock-h + --dock-gap` under `[data-panel-open]`, which `App.tsx` stamps on the app
+  root exactly while a block is selected. Everything that must not underlap the open
+  panel reads `--panel-band` directly (the board's zoom bar, the embed hole, the
+  board's own ensure-visible pan via `useStageTransform`'s inset) or through the
+  derived `--overlay-bottom` (the toaster) — never a hardcoded dock height, and
+  `--overlay-bottom` is never removed outright even if nothing currently reads it: a
+  dangling `var()` on the toaster kills its position silently. Selection is UI-local
+  state only, never sent to C++ and never auto-restored.
 - **Full-rig captures**: when the loaded model declares a gear type taken through
   a cabinet (`includesCab`, from the .nam's `metadata.gear_type`), the amp states
   it and the cab warns about it — an "AMP + CAB" chip in the amp panel, a "+ CAB"

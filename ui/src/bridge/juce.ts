@@ -131,16 +131,17 @@ const comboStates = new Map<string, ComboParamState>();
  * invents a display size.
  */
 const fallbackEditorSize: EditorSizeLimits = {
-  width: 1120,
-  height: 700,
-  minWidth: 900,
+  width: 1280,
+  height: 800,
+  minWidth: 1000,
   minHeight: 600,
-  maxWidth: 1120,
-  maxHeight: 700,
+  maxWidth: 1280,
+  maxHeight: 800,
 };
 
 const emptyUiState: UiState = {
   chainOrder: [],
+  chainRows: [],
   model: null,
   ir: null,
   models: [],
@@ -199,8 +200,8 @@ export const juceBridge: Bridge = {
   },
 
   getUiState: () => call<UiState>("getUiState", emptyUiState),
-  setChainOrder: async (tokens) => {
-    await native("setChainOrder")(tokens);
+  setChainOrder: async (tokens, rows) => {
+    await native("setChainOrder")(tokens, rows);
   },
   loadModel: (path) => call<ErrorResult>("loadModel", {}, path),
   clearModel: async () => {

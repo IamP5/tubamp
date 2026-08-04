@@ -1,28 +1,34 @@
 /**
  * The board — the app's centrepiece (docs/REACT-UI.md §UX structure).
  *
- * A Figma/Miro-style pan/zoom stage carrying one lane: IN — block cards — OUT,
- * joined by connectors with drifting flow chevrons. Cards select on click,
- * reorder by drag, toggle bypass from their LED, and open a kebab menu for
- * bypass/remove. A [+] node at the end of the lane offers every block that is
- * not in the chain yet.
+ * A Figma/Miro-style pan/zoom stage carrying the chain: IN — block cards — OUT,
+ * wrapped into rows and joined by connectors with drifting flow chevrons. Cards
+ * select on click, reorder by 2-D drag (including into new rows), toggle bypass
+ * from their LED, and open a kebab menu for bypass/remove. A [+] node at the end
+ * of the last row offers every kind that still has a free instance, and every
+ * connector gap hides an insert [+] (hover to reveal) that adds at that spot.
  *
  * Architecture notes worth keeping in mind before editing:
  *
- *  - Positions are analytic, not DOM flow. Every lane element is absolutely
- *    positioned by a motion value (see ./layout.ts + ./nodes.ts). Reflow, drag
- *    and settle are therefore pure transform animations, connectors can be
- *    derived from the same numbers, and no Motion `layout` projection runs
- *    inside the scaled stage (projection would double-apply the stage scale).
+ *  - Positions are analytic, not DOM flow. Every element is absolutely
+ *    positioned by a pair of motion values (see ./layout.ts + ./nodes.ts).
+ *    Reflow, drag and settle are therefore pure transform animations, connectors
+ *    can be derived from the same numbers, and no Motion `layout` projection
+ *    runs inside the scaled stage (projection would double-apply the scale).
  *  - Chain order is state, never a parameter. The only write to the plugin is
  *    the store action on drop / add / remove; `chainChanged` coming back in is
  *    applied to the store and compared by value here, so an inbound event can
  *    never bounce back out as another `setChainOrder`.
- *  - Selection is UI-local (store), and adding a block force-selects it while
- *    removal falls back amp → first → none — both live in the store actions.
+ *  - Rows are the store's `chainRows` when it has them and an auto-wrap when it
+ *    does not (`rowsFor` — the single source of the partition, so the board and
+ *    the drag can never disagree about which row a block is in).
+ *  - Selection is UI-local (store) and the panel is an overlay over the board's
+ *    bottom edge: selecting pans the board so the card is never underneath its
+ *    own panel, and a tap on the background dismisses it (R4).
  */
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -30,9 +36,7 @@ import {
 } from "react";
 import {
   AnimatePresence,
-  animate,
   motion,
-  useMotionValue,
   useMotionValueEvent,
   useReducedMotion,
   type MotionValue,
@@ -43,25 +47,33 @@ import {
   type FxSlotState,
 } from "../../bridge/types";
 import { useRigCab } from "../../hooks";
-import { useStore } from "../../store";
-import { spring, stagger, tween } from "../../theme/motion";
+import { rowsFor, useStore } from "../../store";
+import { stagger, tween } from "../../theme/motion";
 import { EmptyState, PlusIcon, cx } from "../../components";
 import { BlockCard, type CardNote } from "./BlockCard";
 import { Connectors } from "./Connectors";
 import {
   AddBlockButton,
   AddNode,
+  InsertNode,
   Terminal,
-  absentBlocks,
+  canAddBlock,
+  pickerKinds,
 } from "./LaneNodes";
-import { CARD_H, computeSlots, measureDockInset, totalWidth } from "./layout";
+import {
+  PANEL_BAND,
+  computeSlots,
+  connectorBox,
+  contentBox,
+  insertPoints,
+  slotOf,
+} from "./layout";
 import { useNodeMotion } from "./nodes";
 import { useBlockToggles, bypassedBlocks } from "./useBlockToggles";
 import { useChainDrag } from "./useChainDrag";
 import { MAX_ZOOM, MIN_ZOOM, useStageTransform } from "./useStageTransform";
 import s from "./board.module.css";
 
-const INSTANT = { duration: 0 } as const;
 const EMPTY: ReadonlySet<string> = new Set();
 
 /* Full-rig captures (see useRigCab): the amp states it, the cab warns about it. */
@@ -122,6 +134,7 @@ const LANE_VARIANTS_REDUCED = {
 
 export function Board() {
   const chainOrder = useStore((st) => st.chainOrder);
+  const chainRows = useStore((st) => st.chainRows);
   const selected = useStore((st) => st.selected);
   const selectBlock = useStore((st) => st.selectBlock);
   const addBlock = useStore((st) => st.addBlock);
@@ -146,23 +159,31 @@ export function Board() {
 
   const nodes = useNodeMotion();
   const laneRef = useRef<HTMLDivElement | null>(null);
-  const laneX = useMotionValue(0);
-  const lanePlaced = useRef(false);
 
-  const absent = useMemo(() => absentBlocks(chainOrder), [chainOrder]);
-  const showAdd = absent.length > 0;
+  const kinds = useMemo(() => pickerKinds(chainOrder), [chainOrder]);
+  const showAdd = canAddBlock(kinds);
 
-  // Lane width only depends on how MANY cards there are, so it can be measured
-  // from the store order — before the drag hook, which needs the stage.
-  const total = useMemo(
-    () => totalWidth(computeSlots(chainOrder, showAdd)),
-    [chainOrder, showAdd],
+  /* The published partition, auto-wrapped when there is none. Everything that
+     needs to know where a block sits — geometry, drag, connectors — reads THIS,
+     never chainRows directly. */
+  const rows = useMemo(
+    () => rowsFor(chainOrder, chainRows),
+    [chainOrder, chainRows],
   );
-  const content = useMemo(() => ({ w: total, h: CARD_H + 56 }), [total]);
 
-  /* Read off `--dock-inset` rather than restated here (see ./layout.ts).
-     Memoised and constant, so it is a plain value and not state. */
-  const dockInset = measureDockInset();
+  /* Framing geometry comes from the STORE order, not the drag preview: the
+     stage must not re-fit or re-leash itself while a card is in flight. It is
+     also needed before the drag hook, which needs the stage. */
+  const storeSlots = useMemo(
+    () => computeSlots(chainOrder, rows, showAdd),
+    [chainOrder, rows, showAdd],
+  );
+  const content = useMemo(() => contentBox(storeSlots), [storeSlots]);
+
+  /* The panel is an overlay: it covers the bottom band of the board exactly
+     while a block is selected, and nothing at all otherwise. */
+  const panelInset = selected === null ? 0 : PANEL_BAND;
+  const dismiss = useCallback(() => selectBlock(null), [selectBlock]);
 
   const {
     containerRef: stageRef,
@@ -177,14 +198,22 @@ export function Board() {
     zoomBy,
     zoomTo,
     fit,
-  } = useStageTransform(content, reduced, dockInset);
+    ensureVisible,
+  } = useStageTransform({
+    content,
+    reduced,
+    insetBottom: panelInset,
+    onBackgroundTap: dismiss,
+  });
   const getZoom = useCallback(() => zoom.get(), [zoom]);
 
   const drag = useChainDrag({
     chainOrder,
+    chainRows: rows,
     showAdd,
     nodes,
     laneRef,
+    stageRef,
     getZoom,
     isPanMode,
     onSelect: selectBlock,
@@ -193,28 +222,31 @@ export function Board() {
   });
 
   const slots = useMemo(
-    () => computeSlots(drag.order, showAdd),
-    [drag.order, showAdd],
+    () => computeSlots(drag.order, drag.rows, showAdd),
+    [drag.order, drag.rows, showAdd],
   );
-
-  /* Lane stays centred on the stage origin as it grows and shrinks. */
-  useLayoutEffect(() => {
-    const target = -total / 2;
-    if (!lanePlaced.current) {
-      lanePlaced.current = true;
-      laneX.set(target);
-      return;
-    }
-    if (laneX.get() !== target) {
-      animate(laneX, target, reduced ? INSTANT : spring.reflow);
-    }
-  }, [laneX, reduced, total]);
+  const wireBox = useMemo(() => connectorBox(contentBox(slots)), [slots]);
+  const inserts = useMemo(() => insertPoints(slots), [slots]);
 
   /* Every node springs onto its slot; the dragged/settling card is exempt. */
   useLayoutEffect(() => {
     nodes.layout(slots, drag.dragId ? new Set([drag.dragId]) : EMPTY, reduced);
     nodes.prune(slots);
   }, [drag.dragId, nodes, reduced, slots]);
+
+  /* Opening a panel over the card that summoned it is the one thing an overlay
+     panel must not do — pan the minimum that clears it. */
+  useEffect(() => {
+    if (selected === null) return;
+    const slot = slotOf(storeSlots, selected);
+    if (!slot) return;
+    ensureVisible({
+      x: slot.x,
+      y: slot.y - slot.h / 2,
+      w: slot.w,
+      h: slot.h,
+    });
+  }, [ensureVisible, selected, storeSlots]);
 
   /*
    * The native context menu is suppressed app-wide in App.tsx (it must hold
@@ -246,11 +278,13 @@ export function Board() {
       >
         <div className={s.grid} data-stage-bg="" />
 
+        {/* The board's origin is the stage origin: with rows there is nothing
+            to centre on it, and framing is the stage transform's job (fit /
+            ensure-visible), so the content keeps still while it is edited. */}
         <div className={s.lane}>
           <motion.div
             ref={laneRef}
             className={s.laneInner}
-            style={{ x: laneX }}
             variants={laneVariants}
             initial="hidden"
             animate="show"
@@ -258,6 +292,7 @@ export function Board() {
             <div className={s.wireLayer}>
               <Connectors
                 slots={slots}
+                box={wireBox}
                 nodes={nodes}
                 selected={selected}
                 bypassed={bypassed}
@@ -291,12 +326,27 @@ export function Board() {
                 <AddNode
                   key="add"
                   node={nodes.get("add")}
-                  absent={absent}
+                  kinds={kinds}
                   reduced={reduced}
                   onAdd={addBlock}
                 />
               )}
             </AnimatePresence>
+
+            {/* Hover-revealed inserts, one per gap. Positioned straight from
+                the slots (no motion values): they are invisible except under
+                the pointer, and they hide while a card is in flight — the two
+                states in which a static position could be seen to lag. */}
+            {showAdd &&
+              !drag.dragId &&
+              inserts.map((point) => (
+                <InsertNode
+                  key={`insert-${point.index}`}
+                  point={point}
+                  kinds={kinds}
+                  onAdd={addBlock}
+                />
+              ))}
 
             <Terminal kind="out" node={nodes.get("out")} reduced={reduced} />
           </motion.div>
@@ -309,7 +359,7 @@ export function Board() {
             className={s.empty}
             message="Empty chain"
             hint="Signal passes straight from IN to OUT."
-            action={<AddBlockButton absent={absent} onAdd={addBlock} />}
+            action={<AddBlockButton kinds={kinds} onAdd={addBlock} />}
           />
         </div>
       )}

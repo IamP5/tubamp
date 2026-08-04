@@ -2,9 +2,10 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
-// Single source of truth for every parameter in the chain. Default order:
-// Trim -> Gate trigger -> Comp -> Drive -> NAM -> Gate gain -> Cab IR -> Tone stack
-//   -> Mod -> Delay -> Reverb -> DC blocker -> Out
+// Single source of truth for every parameter in the chain. The classic arrangement
+// (chain::classicOrder(); a fresh instance starts with the amp alone):
+// Trim -> Gate trigger -> Comp -> Drive -> NAM -> Gate gain -> Amp EQ -> Cab IR
+//   -> Tone stack -> Mod -> Delay -> Reverb -> DC blocker -> Out
 //
 // The blocks between trim and the DC blocker are user-orderable and removable — that
 // arrangement is plugin state, not a parameter (see src/dsp/ChainOrder.h). Each block
@@ -84,6 +85,125 @@ inline constexpr auto delayMix      = "delay_mix";      // [0, 1]
 inline constexpr auto reverbSize    = "reverb_size";    // [0, 1]
 inline constexpr auto reverbDamping = "reverb_damping"; // [0, 1]
 inline constexpr auto reverbMix     = "reverb_mix";     // [0, 1]
+
+//==============================================================================
+// Pooled instances.
+//
+// Six of the nine built-in kinds may sit in the chain up to three times (see
+// dsp/ChainOrder.h), and every instance needs REAL parameters — a chain block whose
+// knobs a host cannot automate is not a block. Instance 1 is the frozen id above
+// ("comp_threshold" is compressor 1's threshold), so presets and automation written
+// before the pool existed keep working; instances 2 and 3 get the ids below, appended
+// at the very end of the layout for the same reason the fx enables are.
+//
+// Every range, default and step below is a copy of the instance-1 parameter it mirrors:
+// an added instance must be indistinguishable from the first one.
+inline constexpr int maxInstances = 3; // == chain::maxInstancesPerKind
+
+inline constexpr auto comp2On        = "comp2_on";
+inline constexpr auto comp2Threshold = "comp2_threshold";
+inline constexpr auto comp2Ratio     = "comp2_ratio";
+inline constexpr auto comp2Attack    = "comp2_attack";
+inline constexpr auto comp2Release   = "comp2_release";
+inline constexpr auto comp2Makeup    = "comp2_makeup";
+inline constexpr auto comp3On        = "comp3_on";
+inline constexpr auto comp3Threshold = "comp3_threshold";
+inline constexpr auto comp3Ratio     = "comp3_ratio";
+inline constexpr auto comp3Attack    = "comp3_attack";
+inline constexpr auto comp3Release   = "comp3_release";
+inline constexpr auto comp3Makeup    = "comp3_makeup";
+
+inline constexpr auto drive2On    = "drive2_on";
+inline constexpr auto drive2Gain  = "drive2_gain";
+inline constexpr auto drive2Tone  = "drive2_tone";
+inline constexpr auto drive2Level = "drive2_level";
+inline constexpr auto drive3On    = "drive3_on";
+inline constexpr auto drive3Gain  = "drive3_gain";
+inline constexpr auto drive3Tone  = "drive3_tone";
+inline constexpr auto drive3Level = "drive3_level";
+
+inline constexpr auto eq2On     = "eq2_on";
+inline constexpr auto eq2Bass   = "eq2_bass";
+inline constexpr auto eq2Mid    = "eq2_mid";
+inline constexpr auto eq2Treble = "eq2_treble";
+inline constexpr auto eq3On     = "eq3_on";
+inline constexpr auto eq3Bass   = "eq3_bass";
+inline constexpr auto eq3Mid    = "eq3_mid";
+inline constexpr auto eq3Treble = "eq3_treble";
+
+inline constexpr auto mod2On    = "mod2_on";
+inline constexpr auto mod2Type  = "mod2_type";
+inline constexpr auto mod2Rate  = "mod2_rate";
+inline constexpr auto mod2Depth = "mod2_depth";
+inline constexpr auto mod2Mix   = "mod2_mix";
+inline constexpr auto mod3On    = "mod3_on";
+inline constexpr auto mod3Type  = "mod3_type";
+inline constexpr auto mod3Rate  = "mod3_rate";
+inline constexpr auto mod3Depth = "mod3_depth";
+inline constexpr auto mod3Mix   = "mod3_mix";
+
+inline constexpr auto delay2On       = "delay2_on";
+inline constexpr auto delay2Time     = "delay2_time";
+inline constexpr auto delay2Feedback = "delay2_feedback";
+inline constexpr auto delay2Mix      = "delay2_mix";
+inline constexpr auto delay3On       = "delay3_on";
+inline constexpr auto delay3Time     = "delay3_time";
+inline constexpr auto delay3Feedback = "delay3_feedback";
+inline constexpr auto delay3Mix      = "delay3_mix";
+
+inline constexpr auto reverb2On      = "reverb2_on";
+inline constexpr auto reverb2Size    = "reverb2_size";
+inline constexpr auto reverb2Damping = "reverb2_damping";
+inline constexpr auto reverb2Mix     = "reverb2_mix";
+inline constexpr auto reverb3On      = "reverb3_on";
+inline constexpr auto reverb3Size    = "reverb3_size";
+inline constexpr auto reverb3Damping = "reverb3_damping";
+inline constexpr auto reverb3Mix     = "reverb3_mix";
+
+// Amp tone stack: the EQ that lives inside the amp block, between the model's gated
+// output and the amp-out gain. Same maths and knob units as the standalone eq block
+// (0-10, 5 = flat), its own parameters — a chain without an eq block still has an amp
+// with tone controls.
+inline constexpr auto ampEqOn     = "amp_eq_on";
+inline constexpr auto ampEqBass   = "amp_eq_bass";
+inline constexpr auto ampEqMid    = "amp_eq_mid";
+inline constexpr auto ampEqTreble = "amp_eq_treble";
+
+// Instance-indexed views of the ids above (index 0 = instance 1). The processor
+// resolves its per-instance pointer arrays through these; the ids stay literals, so
+// nothing anywhere may derive one by string manipulation.
+inline constexpr const char* compOnIds[maxInstances]        { compOn,        comp2On,        comp3On };
+inline constexpr const char* compThresholdIds[maxInstances] { compThreshold, comp2Threshold, comp3Threshold };
+inline constexpr const char* compRatioIds[maxInstances]     { compRatio,     comp2Ratio,     comp3Ratio };
+inline constexpr const char* compAttackIds[maxInstances]    { compAttack,    comp2Attack,    comp3Attack };
+inline constexpr const char* compReleaseIds[maxInstances]   { compRelease,   comp2Release,   comp3Release };
+inline constexpr const char* compMakeupIds[maxInstances]    { compMakeup,    comp2Makeup,    comp3Makeup };
+
+inline constexpr const char* driveOnIds[maxInstances]    { driveOn,    drive2On,    drive3On };
+inline constexpr const char* driveGainIds[maxInstances]  { driveGain,  drive2Gain,  drive3Gain };
+inline constexpr const char* driveToneIds[maxInstances]  { driveTone,  drive2Tone,  drive3Tone };
+inline constexpr const char* driveLevelIds[maxInstances] { driveLevel, drive2Level, drive3Level };
+
+inline constexpr const char* eqOnIds[maxInstances]     { eqOn,     eq2On,     eq3On };
+inline constexpr const char* eqBassIds[maxInstances]   { eqBass,   eq2Bass,   eq3Bass };
+inline constexpr const char* eqMidIds[maxInstances]    { eqMid,    eq2Mid,    eq3Mid };
+inline constexpr const char* eqTrebleIds[maxInstances] { eqTreble, eq2Treble, eq3Treble };
+
+inline constexpr const char* modOnIds[maxInstances]    { modOn,    mod2On,    mod3On };
+inline constexpr const char* modTypeIds[maxInstances]  { modType,  mod2Type,  mod3Type };
+inline constexpr const char* modRateIds[maxInstances]  { modRate,  mod2Rate,  mod3Rate };
+inline constexpr const char* modDepthIds[maxInstances] { modDepth, mod2Depth, mod3Depth };
+inline constexpr const char* modMixIds[maxInstances]   { modMix,   mod2Mix,   mod3Mix };
+
+inline constexpr const char* delayOnIds[maxInstances]       { delayOn,       delay2On,       delay3On };
+inline constexpr const char* delayTimeIds[maxInstances]     { delayTime,     delay2Time,     delay3Time };
+inline constexpr const char* delayFeedbackIds[maxInstances] { delayFeedback, delay2Feedback, delay3Feedback };
+inline constexpr const char* delayMixIds[maxInstances]      { delayMix,      delay2Mix,      delay3Mix };
+
+inline constexpr const char* reverbOnIds[maxInstances]      { reverbOn,      reverb2On,      reverb3On };
+inline constexpr const char* reverbSizeIds[maxInstances]    { reverbSize,    reverb2Size,    reverb3Size };
+inline constexpr const char* reverbDampingIds[maxInstances] { reverbDamping, reverb2Damping, reverb3Damping };
+inline constexpr const char* reverbMixIds[maxInstances]     { reverbMix,     reverb2Mix,     reverb3Mix };
 
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 

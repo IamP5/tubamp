@@ -21,38 +21,90 @@ Research backing every decision here lives in `docs/research/`.
   `dsp::ResamplingContainer` from AudioDSPTools (submodule of the core repo).
   Latency reported via `setLatencySamples`.
 
-## Signal chain (user-buildable order — see docs/UI-REDESIGN.md)
+## Signal chain (user-buildable order — see docs/REACT-UI.md)
 
 ```
 Input Trim → [ user-arranged blocks: Gate | Comp | Drive | NAM | Cab IR | EQ | Mod
               | Delay | Reverb | FX 1 | FX 2 | FX 3 — drag to reorder, add/remove,
-              per-block bypass ]
+              per-block bypass; Comp, Drive, EQ, Mod, Delay and Reverb may each sit
+              in the chain up to three times over ]
            → DC Blocker → Output Level
 ```
 
-The chain order is plugin *state* (string of block tokens), not a parameter: all APVTS
-ids stay frozen for AU/automation compatibility. It reaches the audio thread as one
-packed `std::atomic<uint64_t>` (`src/dsp/ChainOrder.h`: 4-bit count + 4 bits/entry,
-lock-free, allocation-free decode). A removed block is absent from the order; a
-bypassed block stays in it with its automatable `*_on` param off — both keep their
-gain smoothers in step so re-enabling never jumps. A deliberately-empty chain
-serializes as `"-"`; a missing property (legacy state/presets) restores the default
-order shown above. Latency is only reported while the NAM block is present *and*
-enabled. The gate keeps the reference plugin's split behavior generalized: it measures
-at its own position and defers its reduction to the model's mono output whenever the
-amp runs later in the chain.
+The chain order is plugin *state* (comma-separated block tokens), not a parameter: all
+APVTS ids stay frozen for AU/automation compatibility. `chain::BlockId` names a block
+**instance**, not a type: six of the nine built-in kinds (comp, drive, eq, mod, delay,
+reverb) have a pool of 3 instances each (`chain::maxInstancesPerKind`), every instance
+its own id, token, tile and real APVTS parameters — a chain block a host cannot
+automate is not a block. Instance 1 keeps the kind's original id/token/param ids
+(`comp` ≡ `comp_threshold`, …), so state written before the pool existed loads
+unchanged; gate, amp, cab and the three FX slots stay singletons. It reaches the audio
+thread as one packed `std::atomic<unsigned __int128>` (`src/dsp/ChainOrder.h`: 5-bit
+count + 5 bits/entry, lock-free, allocation-free decode — widened from the original
+`uint64_t`/4-bit encoding once the instance pool pushed the id space past 15). A
+removed block is absent from the order; a bypassed block stays in it with its
+automatable `*_on` param off — both keep their gain smoothers in step so re-enabling
+never jumps — and a block that re-enters the chain (removed then re-added, or a
+state/preset/A-B switch) gets its own `reset()` before it next processes, so it never
+replays what it was holding when it left (a removed delay must not resume minutes-old
+feedback). A deliberately-empty chain serializes as `"-"`.
 
-Default-order rationale (competitor research): gate first (largest S/N headroom at raw
-input), comp/drive pre-amp, ambience post. NAM captures are typically amp/preamp-only,
-so a separate IR cab block is the NAM-ecosystem convention (unlike ToneX's inseparable
-captures). Mono through NAM (models are mono), stereo afterward.
+A fresh instance starts with **only the amp** (`chain::defaultOrder()`, R1) — everything
+else is added by the user. `chain::classicOrder()`, the nine-block arrangement above
+(gate through reverb), is not the default any more; it survives as the fallback for
+state that predates the user-arrangeable chain (a missing or unparseable `chainOrder`
+property) and as the shape every factory preset restores (`PresetManager.cpp` stages it
+explicitly around each preset's capture — captured live it would otherwise be {amp},
+same as any other fresh instance). `chain::parseOrder` is the tolerant, no-fallback
+parse live UI input goes through (unknown tokens dropped, duplicates keep the first
+occurrence, `"-"`/`""`/garbage all mean deliberately empty); `chain::parseOrderOrLegacy`
+is `parseOrder` plus the classic-order fallback, used only for persisted bytes (state
+restore, preset load, A/B recall) — never for a live `setChainOrder` call, where "the
+user emptied the chain" must never resurrect a chain nobody asked for.
+
+State written with the instance pool stays readable by a build that predates it, and
+vice versa: an order containing at least one of the twelve original ids (or none at
+all) round-trips through the `chainOrder` property exactly as before. An order made
+entirely of instances 2/3 has no original id in it, so an old build would read it back
+as the classic nine — a loud, wrong chain — instead of failing to read it at all; that
+case writes `"-"` to `chainOrder` (which the old build reads as "the user emptied the
+chain": quiet and wrong in the harmless direction) and the real token list to a new
+`chainOrderV2` property, which readers on the current build prefer whenever it is
+present.
+
+Two mirrors of the same pair: `uiChainOrder` and `uiChainRows` (row lengths
+partitioning the order across the board's rows; `{}` = auto-wrap, the fallback
+whenever the published rows don't validate — every length ≥ 1, summing to the order's
+length) are guarded together by one `juce::CriticalSection chainLock` (a leaf lock,
+the same precedent as `pathLock`/`editorSizeLock`) and published as one consistent
+pair by `publishChainOrder()`, so a host autosave racing a restore can never observe a
+mismatched split. `packedChain` — the audio thread's copy — is still a single
+whole-value atomic store outside the lock, same model as before: concurrent writers
+stay benign and the audio thread never sees a torn order. Rule: never hold
+`chainLock` across `onChainChanged` — update the mirror, release the lock, then fire.
+
+Latency is only reported while the NAM block is present *and* enabled. The gate keeps
+the reference plugin's split behavior generalized: it measures at its own position and
+defers its reduction to the model's mono output whenever the amp runs later in the
+chain. The amp's own tone stack (`amp_eq_*`, R2) runs inside the amp block itself, on
+the mono path, between that deferred gate reduction and the amp-out gain — model →
+gate gain → tone stack → amp-out, mirroring the reference plugin's order — so a chain
+with no standalone `eq` block still has amp tone controls; whole-amp bypass (`amp_on`
+off) skips the EQ too.
+
+Default-order rationale (competitor research — still the shape `classicOrder()`
+preserves): gate first (largest S/N headroom at raw input), comp/drive pre-amp,
+ambience post. NAM captures are typically amp/preamp-only, so a separate IR cab block
+is the NAM-ecosystem convention (unlike ToneX's inseparable captures). Mono through
+NAM (models are mono), stereo afterward.
 
 **FX 1–3 (external AudioUnit slots)** are the three blocks that carry no DSP of their
-own: each hosts one third-party AU effect the user picks, anywhere in the order. They
-are the only blocks absent from `defaultOrder()` — a slot enters the chain when the
-user adds it — and an empty or not-yet-instantiated slot is a bit-exact pass-through,
-which is what lets the order reach the audio thread long before the instances behind it
-exist (state restore relies on exactly that). The plugin assignment and its state blob
+own: each hosts one third-party AU effect the user picks, anywhere in the order. Like
+every other block a slot only enters the chain when the user adds it from the picker,
+but unlike a built-in block its own DSP instance does not exist the moment it enters
+the order — an empty or not-yet-instantiated slot is a bit-exact pass-through, which is
+what lets the order reach the audio thread long before the instance behind it exists
+(state restore relies on exactly that). The plugin assignment and its state blob
 live in plugin state under `FXSLOTS`, like the model/IR paths; only `fxN_on` is a
 parameter. Hosting a real AU inside an AU forced four decisions against the obvious
 implementation — metadata-only discovery, never preparing a hosted instance from
@@ -108,12 +160,16 @@ Design:
 ## Parameters (APVTS, ids stable)
 
 See `src/Parameters.h` — the single source of truth. Blocks: input, gate, comp, drive,
-amp (NAM in/out gain + normalize), cab (+ low/high cut), eq (bass/mid/treble/presence),
-mod (type/rate/depth/mix), delay (time/feedback/mix), reverb (size/damping/mix), output,
-plus `fx1_on`/`fx2_on`/`fx3_on` — the FX slots' bypasses, appended at the end so every
-pre-existing id keeps its index. Those three are the *only* parameters the FX slots
-contribute: a hosted plugin's own parameters are not exposed to the host (they have no
-id until the plugin loads — docs/AU-SLOTS.md §Known limitations).
+amp (NAM in/out gain + normalize), cab (+ low/high cut), eq (bass/mid/treble), mod
+(type/rate/depth/mix), delay (time/feedback/mix), reverb (size/damping/mix), output,
+plus `fx1_on`/`fx2_on`/`fx3_on` — the FX slots' bypasses. Every id above, plus
+instances 2 and 3 of comp/drive/eq/mod/delay/reverb (`comp2_*`/`comp3_*`, …, same
+ranges/defaults/steps as instance 1, one array per key indexed by `chain::instanceOf`)
+for the chain-instance pool, plus the amp's own tone stack (`amp_eq_on/_bass/_mid/
+_treble`, see §Signal chain), is appended at the end of the layout in that order, so
+every pre-existing id keeps its index. A hosted FX-slot plugin's own parameters are not
+among them and are not exposed to the host: they have no id until the plugin loads —
+docs/AU-SLOTS.md §Known limitations.
 
 ## Module map
 

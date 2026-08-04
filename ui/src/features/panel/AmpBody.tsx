@@ -47,6 +47,7 @@ export function AmpBody() {
   const toast = useStore((st) => st.toast);
 
   const calInput = useToggleParam("amp_cal_input");
+  const eqOn = useToggleParam("amp_eq_on");
 
   const live = isEngineLive(model);
   const rig = rigLabel(model);
@@ -57,7 +58,7 @@ export function AmpBody() {
 
   return (
     <div className={s.ampBody}>
-      <section className={s.column}>
+      <section className={s.columnModel}>
         <div className={s.captionRow}>
           <span className={s.caption}>Model</span>
           <span className={s.attribution}>Powered by TONE3000</span>
@@ -175,32 +176,67 @@ export function AmpBody() {
 
       <div className={s.divider} />
 
-      <section className={s.column}>
+      {/* The Mode / Cal / Slim fields sit UNDER the knobs, not beside them: a
+          side stack made this group ~460px wide and the three columns overlapped
+          at the minimum window width. */}
+      <section className={s.columnGroup}>
         <span className={s.caption}>Levels</span>
-        <div className={s.levels}>
-          <div className={s.knobRow}>
-            <div className={s.knobCell}>
-              <Knob id="amp_input" label="IN" />
-            </div>
-            <div className={s.knobCell}>
-              <Knob id="amp_output" label="OUT" />
-            </div>
-            <div className={s.knobCell}>
-              <Knob id="amp_cal_level" label="CAL LEVEL" size="sm" />
-            </div>
+        <div className={s.knobRow}>
+          <div className={s.knobCellSnug}>
+            <Knob id="amp_input" label="IN" />
           </div>
+          <div className={s.knobCellSnug}>
+            <Knob id="amp_output" label="OUT" />
+          </div>
+          <div className={s.knobCellSnug}>
+            <Knob id="amp_cal_level" label="CAL LEVEL" size="sm" />
+          </div>
+        </div>
 
-          <div className={s.fieldStack}>
-            <ParamMenu id="amp_out_mode" label="Mode" width={132} />
-            <div className={s.field} data-param-index={calInput.parameterIndex}>
-              <span className={s.fieldLabel}>Cal in</span>
-              <Toggle
-                checked={calInput.value}
-                onChange={calInput.setValue}
-                aria-label="Calibrate input"
-              />
-            </div>
-            {model?.isSlimmable && <ParamSlider id="amp_slim" label="Slim" />}
+        <div className={s.fieldsRow}>
+          <ParamMenu id="amp_out_mode" label="Mode" width={112} />
+          <div className={s.field} data-param-index={calInput.parameterIndex}>
+            <span className={s.fieldLabel}>Cal in</span>
+            <Toggle
+              checked={calInput.value}
+              onChange={calInput.setValue}
+              aria-label="Calibrate input"
+            />
+          </div>
+        </div>
+
+        {model?.isSlimmable && (
+          <div className={s.fieldsRow}>
+            <ParamSlider id="amp_slim" label="Slim" />
+          </div>
+        )}
+      </section>
+
+      <div className={s.divider} />
+
+      {/* Mirrors the Levels group exactly — caption, knob trio, fields row —
+          so the two knob rows land on the same baseline. */}
+      <section className={s.columnGroup}>
+        <span className={s.caption}>Tone</span>
+        <div className={s.knobRow}>
+          <div className={s.knobCellSnug}>
+            <Knob id="amp_eq_bass" label="BASS" disabled={!eqOn.value} />
+          </div>
+          <div className={s.knobCellSnug}>
+            <Knob id="amp_eq_mid" label="MID" disabled={!eqOn.value} />
+          </div>
+          <div className={s.knobCellSnug}>
+            <Knob id="amp_eq_treble" label="TREBLE" disabled={!eqOn.value} />
+          </div>
+        </div>
+        <div className={s.fieldsRow}>
+          <div className={s.field} data-param-index={eqOn.parameterIndex}>
+            <span className={s.fieldLabel}>On</span>
+            <Toggle
+              checked={eqOn.value}
+              onChange={eqOn.setValue}
+              aria-label="Enable amp EQ"
+            />
           </div>
         </div>
       </section>

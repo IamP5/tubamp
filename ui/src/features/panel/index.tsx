@@ -17,6 +17,7 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   BlockIcon,
+  CloseIcon,
   IconButton,
   PowerPill,
   Tooltip,
@@ -26,7 +27,7 @@ import { useToggleParam } from "../../hooks";
 import { selectFxSlotFor, useStore } from "../../store";
 import { BLOCK_INFO } from "../../theme/blocks";
 import { duration, ease, spring } from "../../theme/motion";
-import { fxSlotIndexOf, type BlockId } from "../../bridge";
+import { fxSlotIndexOf, kindOf, type BlockId } from "../../bridge";
 import { AmpBody } from "./AmpBody";
 import { CabBody } from "./CabBody";
 import { FxSlotBody } from "./FxSlotBody";
@@ -93,6 +94,7 @@ function PanelHeader({ block }: { block: BlockId }) {
   const info = BLOCK_INFO[block];
   const power = useToggleParam(info.enableParamId);
   const removeBlock = useStore((st) => st.removeBlock);
+  const selectBlock = useStore((st) => st.selectBlock);
   const fxSlot = useStore(selectFxSlotFor(block));
 
   // A loaded slot is known by what is in it, not by which slot it is — the slot
@@ -134,6 +136,13 @@ function PanelHeader({ block }: { block: BlockId }) {
             <TrashIcon />
           </IconButton>
         </Tooltip>
+        {/* Explicit dismiss: outside-click closes the panel too, but it must
+            not be the only way (critique — panning/fit share that gesture). */}
+        <Tooltip label="Close">
+          <IconButton aria-label="Close panel" onClick={() => selectBlock(null)}>
+            <CloseIcon />
+          </IconButton>
+        </Tooltip>
       </div>
     </header>
   );
@@ -142,9 +151,13 @@ function PanelHeader({ block }: { block: BlockId }) {
 /* ──────────────────────────── body dispatch ────────────────────────────── */
 
 function BlockBody({ block }: { block: BlockId }) {
-  if (block === "amp") return <AmpBody />;
-  if (block === "cab") return <CabBody />;
-  if (block === "mod") return <ModBody />;
+  // Keyed by KIND, not token: mod2/mod3 need ModBody (and its per-instance Type
+  // combo) exactly like instance 1 — a token match would silently drop them to
+  // the generic knob row with no way to reach mod2_type/mod3_type.
+  const kind = kindOf(block);
+  if (kind === "amp") return <AmpBody />;
+  if (kind === "cab") return <CabBody />;
+  if (kind === "mod") return <ModBody block={block} />;
   const fxSlot = fxSlotIndexOf(block);
   if (fxSlot !== -1) return <FxSlotBody slot={fxSlot} />;
   return <KnobRow specs={KNOB_SPECS[block]} />;

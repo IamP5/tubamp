@@ -174,6 +174,13 @@ void PresetManager::createFactoryPresetsIfMissing()
     // we stage below. Parameter changes made here are reverted afterwards.
     const auto originalState = proc.apvts.copyState();
 
+    // captureStateVar() also records the live chain order, which for a fresh instance
+    // is the amp on its own. A factory preset is a whole rig, so the classic
+    // arrangement is staged around every capture and the user's own chain restored at
+    // the end - the same shape as the apvts.replaceState restore.
+    const auto originalOrder = proc.getChainOrder();
+    const auto originalRows = proc.getChainRows();
+
     auto setBool = [this] (const char* paramId, bool value)
     {
         if (auto* p = proc.apvts.getParameter (paramId))
@@ -188,6 +195,10 @@ void PresetManager::createFactoryPresetsIfMissing()
 
     auto writeFactoryPreset = [this] (const juce::String& name)
     {
+        // Rows stay auto: a factory preset should lay itself out for whatever window
+        // the user opens it in, not carry one machine's arrangement.
+        proc.setChainOrder (chain::classicOrder(), {});
+
         const auto file = presetFileForName (name);
         const auto presetVar = buildPresetVar (name, {}, false, proc.captureStateVar());
         file.replaceWithText (juce::JSON::toString (presetVar));
@@ -216,6 +227,8 @@ void PresetManager::createFactoryPresetsIfMissing()
     setBool (params::modOn, true);
     writeFactoryPreset ("Ambient Lead");
     proc.apvts.replaceState (originalState);
+
+    proc.setChainOrder (originalOrder, originalRows);
 }
 
 void PresetManager::captureToSlot (int slot)

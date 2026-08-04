@@ -20,7 +20,17 @@ namespace tubamp
 namespace
 {
 constexpr double kGainSmoothingSeconds = 0.02;
-constexpr int kStateVersion = 1;
+
+// Re-entry resets drained per audio callback (see pendingReset in the header). Two
+// covers the common single-block gesture immediately and bounds a preset switch that
+// re-enters many blocks to a few callbacks of extra silence for the stragglers.
+constexpr int kMaxResetsPerCallback = 2;
+
+// 2 = the chain carries block instances and a row layout. applyStateVar still ignores
+// this number, deliberately: every property added since v1 is optional and "absent
+// means default", so a v1 preset loads correctly without ever consulting it. It is
+// here for the first change that cannot be expressed that way.
+constexpr int kStateVersion = 2;
 
 /** Applies a smoothed gain to the whole buffer as a single ramp — one pass, no zipper. */
 void applySmoothedGain (juce::AudioBuffer<float>& buffer, int numSamples,
@@ -45,32 +55,141 @@ float valueOf (const std::atomic<float>* p, float fallback = 0.0f) noexcept
     return p != nullptr ? p->load (std::memory_order_relaxed) : fallback;
 }
 
-/** Drops duplicates and out-of-range ids, keeping the caller's ordering. Unlike
-    chain::fromString this preserves an empty order: the user is allowed to strip the
-    chain down to nothing (the editor shows its empty state for that).
+/** An order and the row layout that describes it, always consistent with each other. */
+struct SanitisedChain
+{
+    chain::Order order;
+    std::vector<int> rows;
+};
+
+/** Drops duplicates and out-of-range ids, keeping the caller's ordering, and re-fits
+    the rows around whatever survived. Unlike chain::parseOrderOrLegacy this preserves
+    an empty order: the user is allowed to strip the chain down to nothing (the editor
+    shows its empty state for that).
 
     Out-of-range ids are dropped rather than clamped: clamping would silently turn an
     id this build does not know about into whichever block happens to sit at the end
     of the enum, which was harmless when there was only one trailing block type but
-    now means "a stale token becomes FX Slot 3". Dropping is the same tolerance
-    chain::fromString already applies to unknown tokens. */
-chain::Order sanitiseOrder (const chain::Order& order)
+    now means "a stale token becomes Reverb 3". Dropping is the same tolerance
+    chain::parseOrder already applies to unknown tokens.
+
+    Rows only mean anything when they describe exactly this order — every length at
+    least 1, summing to its size. Anything else is answered with "auto" ({}), never
+    with a single row: a 24-block lane cannot be framed on the board at all. */
+SanitisedChain sanitiseOrderAndRows (const chain::Order& order, const std::vector<int>& rows)
 {
-    chain::Order result;
+    SanitisedChain result;
+
+    size_t total = 0;
+    bool rowsUsable = ! rows.empty();
+
+    for (auto length : rows)
+    {
+        if (length < 1)
+        {
+            rowsUsable = false;
+            break;
+        }
+
+        total += (size_t) length;
+    }
+
+    rowsUsable = rowsUsable && total == order.size();
+
+    // Entries are walked in order, so the row that owns each one is known as we go;
+    // a dropped entry simply never reaches its row's count.
+    std::vector<int> counts (rowsUsable ? rows.size() : 0, 0);
+    size_t rowIndex = 0;
+    int consumed = 0;
+
     std::array<bool, chain::numBlockTypes> seen {};
 
     for (auto id : order)
     {
+        if (rowsUsable)
+        {
+            while (rowIndex < rows.size() && consumed >= rows[rowIndex])
+            {
+                consumed = 0;
+                ++rowIndex;
+            }
+
+            ++consumed;
+        }
+
         const auto index = (int) id;
 
         if (index < 0 || index >= chain::numBlockTypes)
             continue;
 
-        if (! std::exchange (seen[(size_t) index], true))
-            result.push_back ((chain::BlockId) index);
+        if (std::exchange (seen[(size_t) index], true))
+            continue;
+
+        result.order.push_back ((chain::BlockId) index);
+
+        if (rowIndex < counts.size())
+            ++counts[rowIndex];
     }
 
+    for (auto count : counts)
+        if (count > 0)
+            result.rows.push_back (count);
+
+    if (result.order.empty())
+        result.rows.clear();
+
     return result;
+}
+
+/** "3,4,2"; empty for an auto layout. */
+juce::String rowsToString (const std::vector<int>& rows)
+{
+    juce::StringArray parts;
+
+    for (auto length : rows)
+        parts.add (juce::String (length));
+
+    return parts.joinIntoString (",");
+}
+
+/** Tolerant parse; whatever comes back still goes through sanitiseOrderAndRows, which
+    is what actually decides whether the rows describe the order. */
+std::vector<int> rowsFromString (const juce::String& text)
+{
+    std::vector<int> rows;
+
+    for (const auto& raw : juce::StringArray::fromTokens (text, ",", {}))
+        if (const auto trimmed = raw.trim(); trimmed.isNotEmpty())
+            rows.push_back (trimmed.getIntValue());
+
+    return rows;
+}
+
+/** The order as the two properties that keep an older build honest. That build knows
+    only ids 0..11 and parses anything it cannot read at all as the classic nine — a
+    loud, wrong chain. So an order made entirely of added instances is written as the
+    empty-chain sentinel in "chainOrder" (which it reads as "the user emptied the
+    chain", quiet and wrong in the harmless direction) and in full in "chainOrderV2",
+    which readers prefer whenever it is there. */
+struct SerializedOrder
+{
+    juce::String v1;
+    juce::String v2; // empty when v1 carries the whole order
+};
+
+SerializedOrder serializeOrder (const chain::Order& order)
+{
+    const auto text = chain::toString (order);
+    bool v1Readable = order.empty();
+
+    for (auto id : order)
+        if ((int) id < chain::numV1BlockIds)
+            v1Readable = true;
+
+    if (v1Readable)
+        return { text, {} };
+
+    return { chain::emptyChainToken, text };
 }
 } // namespace
 
@@ -85,59 +204,67 @@ TubampAudioProcessor::TubampAudioProcessor()
     const auto raw = [this] (const char* id) { return apvts.getRawParameterValue (id); };
 
     pp.gateOn        = raw (params::gateOn);
-    pp.compOn        = raw (params::compOn);
-    pp.driveOn       = raw (params::driveOn);
     pp.ampOn         = raw (params::ampOn);
     pp.cabOn         = raw (params::cabOn);
-    pp.eqOn          = raw (params::eqOn);
-    pp.modOn         = raw (params::modOn);
-    pp.delayOn       = raw (params::delayOn);
-    pp.reverbOn      = raw (params::reverbOn);
 
     pp.inputTrim     = raw (params::inputTrim);
     pp.outputLevel   = raw (params::outputLevel);
 
     pp.gateThreshold = raw (params::gateThreshold);
 
-    pp.compThreshold = raw (params::compThreshold);
-    pp.compRatio     = raw (params::compRatio);
-    pp.compAttack    = raw (params::compAttack);
-    pp.compRelease   = raw (params::compRelease);
-    pp.compMakeup    = raw (params::compMakeup);
-
-    pp.driveGain     = raw (params::driveGain);
-    pp.driveTone     = raw (params::driveTone);
-    pp.driveLevel    = raw (params::driveLevel);
-
     pp.ampInput      = raw (params::ampInput);
     pp.ampOutput     = raw (params::ampOutput);
     pp.ampOutMode    = raw (params::ampOutMode);
     pp.ampCalInput   = raw (params::ampCalInput);
     pp.ampCalLevel   = raw (params::ampCalLevel);
+    pp.ampEqOn       = raw (params::ampEqOn);
+    pp.ampEqBass     = raw (params::ampEqBass);
+    pp.ampEqMid      = raw (params::ampEqMid);
+    pp.ampEqTreble   = raw (params::ampEqTreble);
 
     pp.cabLowCut     = raw (params::cabLowCut);
     pp.cabHighCut    = raw (params::cabHighCut);
 
-    pp.eqBass        = raw (params::eqBass);
-    pp.eqMid         = raw (params::eqMid);
-    pp.eqTreble      = raw (params::eqTreble);
-
-    pp.modType       = raw (params::modType);
-    pp.modRate       = raw (params::modRate);
-    pp.modDepth      = raw (params::modDepth);
-    pp.modMix        = raw (params::modMix);
-
-    pp.delayTime     = raw (params::delayTime);
-    pp.delayFeedback = raw (params::delayFeedback);
-    pp.delayMix      = raw (params::delayMix);
-
-    pp.reverbSize    = raw (params::reverbSize);
-    pp.reverbDamping = raw (params::reverbDamping);
-    pp.reverbMix     = raw (params::reverbMix);
-
     pp.fxOn[0]       = raw (params::fx1On);
     pp.fxOn[1]       = raw (params::fx2On);
     pp.fxOn[2]       = raw (params::fx3On);
+
+    // Per-instance pointers, in the same index order chain::instanceOf() answers with.
+    for (int k = 0; k < params::maxInstances; ++k)
+    {
+        pp.compOn[k]        = raw (params::compOnIds[k]);
+        pp.compThreshold[k] = raw (params::compThresholdIds[k]);
+        pp.compRatio[k]     = raw (params::compRatioIds[k]);
+        pp.compAttack[k]    = raw (params::compAttackIds[k]);
+        pp.compRelease[k]   = raw (params::compReleaseIds[k]);
+        pp.compMakeup[k]    = raw (params::compMakeupIds[k]);
+
+        pp.driveOn[k]       = raw (params::driveOnIds[k]);
+        pp.driveGain[k]     = raw (params::driveGainIds[k]);
+        pp.driveTone[k]     = raw (params::driveToneIds[k]);
+        pp.driveLevel[k]    = raw (params::driveLevelIds[k]);
+
+        pp.eqOn[k]          = raw (params::eqOnIds[k]);
+        pp.eqBass[k]        = raw (params::eqBassIds[k]);
+        pp.eqMid[k]         = raw (params::eqMidIds[k]);
+        pp.eqTreble[k]      = raw (params::eqTrebleIds[k]);
+
+        pp.modOn[k]         = raw (params::modOnIds[k]);
+        pp.modType[k]       = raw (params::modTypeIds[k]);
+        pp.modRate[k]       = raw (params::modRateIds[k]);
+        pp.modDepth[k]      = raw (params::modDepthIds[k]);
+        pp.modMix[k]        = raw (params::modMixIds[k]);
+
+        pp.delayOn[k]       = raw (params::delayOnIds[k]);
+        pp.delayTime[k]     = raw (params::delayTimeIds[k]);
+        pp.delayFeedback[k] = raw (params::delayFeedbackIds[k]);
+        pp.delayMix[k]      = raw (params::delayMixIds[k]);
+
+        pp.reverbOn[k]      = raw (params::reverbOnIds[k]);
+        pp.reverbSize[k]    = raw (params::reverbSizeIds[k]);
+        pp.reverbDamping[k] = raw (params::reverbDampingIds[k]);
+        pp.reverbMix[k]     = raw (params::reverbMixIds[k]);
+    }
 
     pendingSlim.store (valueOf (raw (params::ampSlim)), std::memory_order_relaxed);
     apvts.addParameterListener (params::ampSlim, this);
@@ -592,16 +719,24 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     gate.prepare (sampleRate, juce::jmax (1, samplesPerBlock));
     gate.reset();
 
-    compressor.prepare (spec);
-    compressor.reset();
+    // Every instance is prepared whether or not it is in the current order: a block the
+    // user drops onto the board has to run in the same block, and preparing one there
+    // would allocate on the audio thread.
+    for (int k = 0; k < params::maxInstances; ++k)
+    {
+        compressor[(size_t) k].prepare (spec);
+        compressor[(size_t) k].reset();
 
-    drive.prepare (spec);
+        drive[(size_t) k].prepare (spec);
+        eq[(size_t) k].prepare (spec);
+        modulation[(size_t) k].prepare (spec);
+        delay[(size_t) k].prepare (spec);
+        reverbFx[(size_t) k].prepare (spec);
+    }
+
     cab.prepare (spec);
-    eq.prepare (spec);
+    ampEq.prepare (spec);
     dcBlocker.prepare (spec);
-    modulation.prepare (spec);
-    delay.prepare (spec);
-    reverbFx.prepare (spec);
 
     namEngine.prepare (sampleRate, juce::jmax (1, samplesPerBlock));
 
@@ -621,14 +756,34 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     monoScratch.setSize (1, juce::jmax (1, samplesPerBlock), false, false, true);
     monoScratch.clear();
 
-    for (auto* smoothed : { &inputTrimLin, &outputLevelLin, &ampInLin, &ampOutLin, &compMakeupLin })
+    for (auto* smoothed : { &inputTrimLin, &outputLevelLin, &ampInLin, &ampOutLin })
         smoothed->reset (sampleRate, kGainSmoothingSeconds);
 
     inputTrimLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.inputTrim)));
     outputLevelLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.outputLevel)));
     ampInLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampInputDb()));
     ampOutLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampOutputDb()));
-    compMakeupLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.compMakeup)));
+
+    for (int k = 0; k < params::maxInstances; ++k)
+    {
+        compMakeupLin[(size_t) k].reset (sampleRate, kGainSmoothingSeconds);
+        compMakeupLin[(size_t) k].setCurrentAndTargetValue (
+            juce::Decibels::decibelsToGain (valueOf (pp.compMakeup[k])));
+    }
+
+    // Everything above was just reset, so nothing now in the chain needs the re-entry
+    // reset: seed the edge detector from the published order rather than paying a mass
+    // drain (and its callbacks of bypass silence) on the first block after a restore.
+    {
+        std::array<chain::BlockId, chain::maxChainLength> restored {};
+        const int count = chain::unpackTo (packedChain.load (std::memory_order_relaxed), restored);
+
+        prevPresent.fill (false);
+        pendingReset.fill (false);
+
+        for (int i = 0; i < count; ++i)
+            prevPresent[(size_t) restored[(size_t) i]] = true;
+    }
 
     updateLatency();
 }
@@ -636,14 +791,20 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 void TubampAudioProcessor::releaseResources()
 {
     gate.reset();
-    compressor.reset();
-    drive.reset();
+
+    for (int k = 0; k < params::maxInstances; ++k)
+    {
+        compressor[(size_t) k].reset();
+        drive[(size_t) k].reset();
+        eq[(size_t) k].reset();
+        modulation[(size_t) k].reset();
+        delay[(size_t) k].reset();
+        reverbFx[(size_t) k].reset();
+    }
+
     cab.reset();
-    eq.reset();
+    ampEq.reset();
     dcBlocker.reset();
-    modulation.reset();
-    delay.reset();
-    reverbFx.reset();
     monoScratch.setSize (1, 1, false, false, true);
 }
 
@@ -684,7 +845,7 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     }
 
     // --- decode the published order once (stack only, no allocation)
-    std::array<chain::BlockId, chain::numBlockTypes> order {};
+    std::array<chain::BlockId, chain::maxChainLength> order {};
     const int numBlocks = chain::unpackTo (packedChain.load (std::memory_order_relaxed), order);
 
     std::array<bool, chain::numBlockTypes> present {};
@@ -695,9 +856,10 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const auto id = order[(size_t) i];
         present[(size_t) id] = true;
 
-        if (id == chain::BlockId::gate && gateIndex < 0)
+        // No id can occur twice, so these are the gate's and the amp's positions.
+        if (id == chain::BlockId::gate)
             gateIndex = i;
-        else if (id == chain::BlockId::amp && ampIndex < 0)
+        else if (id == chain::BlockId::amp)
             ampIndex = i;
     }
 
@@ -720,12 +882,43 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // it is applied right where the gate sits.
     const bool deferGateToAmp = gateOn && ampOn && gateIndex >= 0 && ampIndex > gateIndex;
 
+    // A block that left the chain and comes back must not replay what it was holding
+    // when it left — a delay line keeps minutes of audio. The reset is deferred through
+    // pendingReset and drained a bounded few per callback: clearing three 2-second
+    // delay lines in one block is megabytes of memset at high sample rates, and a
+    // preset switch can re-enter that many at once. While pending, the block processes
+    // as bypassed below — silent, never stale, audible again within a couple of blocks.
+    for (int index = 0; index < chain::numBlockTypes; ++index)
+    {
+        if (present[(size_t) index] && ! prevPresent[(size_t) index])
+            pendingReset[(size_t) index] = true;
+    }
+
+    prevPresent = present;
+
+    for (int index = 0, drained = 0; index < chain::numBlockTypes; ++index)
+    {
+        if (! pendingReset[(size_t) index])
+            continue;
+
+        if (drained == kMaxResetsPerCallback)
+            break;
+
+        resetBlockInstance ((chain::BlockId) index);
+        pendingReset[(size_t) index] = false;
+        ++drained;
+    }
+
     // Blocks that are not in the chain at all keep their gain smoothers in step
     // exactly like a bypassed block, so putting them back never jumps.
-    if (! present[(size_t) chain::BlockId::comp])
+    for (int k = 0; k < params::maxInstances; ++k)
     {
-        compMakeupLin.setTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.compMakeup)));
-        compMakeupLin.skip (numSamples);
+        if (! present[(size_t) chain::instanceId (chain::BlockId::comp, k)])
+        {
+            compMakeupLin[(size_t) k].setTargetValue (
+                juce::Decibels::decibelsToGain (valueOf (pp.compMakeup[k])));
+            compMakeupLin[(size_t) k].skip (numSamples);
+        }
     }
 
     if (! present[(size_t) chain::BlockId::amp])
@@ -736,9 +929,16 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         ampOutLin.skip (numSamples);
     }
 
+    // One case per KIND: an instance id falls through to its kind's case and `k` picks
+    // the instance's own DSP object and parameter pointers. Every id is listed rather
+    // than switching on chain::kindOf(): -Wswitch-enum wants the whole enum either way,
+    // and this way adding an instance is a compile error until it is wired up.
     for (int i = 0; i < numBlocks; ++i)
     {
-        switch (order[(size_t) i])
+        const auto id = order[(size_t) i];
+        const auto k = (size_t) chain::instanceOf (id);
+
+        switch (id)
         {
             // --- gate trigger (analysis only when the reduction lands after the model)
             case chain::BlockId::gate:
@@ -756,22 +956,24 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             // --- compressor (+ makeup)
             case chain::BlockId::comp:
+            case chain::BlockId::comp2:
+            case chain::BlockId::comp3:
             {
-                if (isOn (pp.compOn))
+                if (isOn (pp.compOn[k]) && ! pendingReset[(size_t) id])
                 {
-                    compressor.setThreshold (valueOf (pp.compThreshold, -20.0f));
-                    compressor.setRatio (juce::jmax (1.0f, valueOf (pp.compRatio, 4.0f)));
-                    compressor.setAttack (juce::jmax (0.0f, valueOf (pp.compAttack, 5.0f)));
-                    compressor.setRelease (juce::jmax (0.0f, valueOf (pp.compRelease, 120.0f)));
-                    compressor.process (context);
+                    compressor[k].setThreshold (valueOf (pp.compThreshold[k], -20.0f));
+                    compressor[k].setRatio (juce::jmax (1.0f, valueOf (pp.compRatio[k], 4.0f)));
+                    compressor[k].setAttack (juce::jmax (0.0f, valueOf (pp.compAttack[k], 5.0f)));
+                    compressor[k].setRelease (juce::jmax (0.0f, valueOf (pp.compRelease[k], 120.0f)));
+                    compressor[k].process (context);
 
-                    compMakeupLin.setTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.compMakeup)));
-                    applySmoothedGain (buffer, numSamples, compMakeupLin);
+                    compMakeupLin[k].setTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.compMakeup[k])));
+                    applySmoothedGain (buffer, numSamples, compMakeupLin[k]);
                 }
                 else
                 {
-                    compMakeupLin.setTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.compMakeup)));
-                    compMakeupLin.skip (numSamples);
+                    compMakeupLin[k].setTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.compMakeup[k])));
+                    compMakeupLin[k].skip (numSamples);
                 }
 
                 break;
@@ -779,13 +981,15 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             // --- drive
             case chain::BlockId::drive:
+            case chain::BlockId::drive2:
+            case chain::BlockId::drive3:
             {
-                if (isOn (pp.driveOn))
+                if (isOn (pp.driveOn[k]) && ! pendingReset[(size_t) id])
                 {
-                    drive.setParameters (valueOf (pp.driveGain, 12.0f),
-                                         valueOf (pp.driveTone, 4000.0f),
-                                         valueOf (pp.driveLevel));
-                    drive.process (block);
+                    drive[k].setParameters (valueOf (pp.driveGain[k], 12.0f),
+                                            valueOf (pp.driveTone[k], 4000.0f),
+                                            valueOf (pp.driveLevel[k]));
+                    drive[k].process (block);
                 }
 
                 break;
@@ -832,6 +1036,18 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     if (deferGateToAmp)
                         gate.apply (mono, numSamples);
 
+                    // The amp's own tone stack, on the mono path: model -> gate gain ->
+                    // tone stack is the reference plugin's order
+                    // (docs/research/nam-plugin-params.md §4), and running it before the
+                    // stereo expansion is what makes it part of the amp rather than a
+                    // second EQ block after it. Deliberate — do not move it later.
+                    if (isOn (pp.ampEqOn))
+                    {
+                        ampEq.setParameters (valueOf (pp.ampEqBass, 5.0f), valueOf (pp.ampEqMid, 5.0f),
+                                             valueOf (pp.ampEqTreble, 5.0f));
+                        ampEq.process (juce::dsp::AudioBlock<float> (&mono, 1, (size_t) numSamples));
+                    }
+
                     for (int n = 0; n < numSamples; ++n)
                         mono[n] *= ampOutLin.getNextValue();
 
@@ -865,12 +1081,14 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             // --- tone stack
             case chain::BlockId::eq:
+            case chain::BlockId::eq2:
+            case chain::BlockId::eq3:
             {
-                if (isOn (pp.eqOn))
+                if (isOn (pp.eqOn[k]) && ! pendingReset[(size_t) id])
                 {
-                    eq.setParameters (valueOf (pp.eqBass, 5.0f), valueOf (pp.eqMid, 5.0f),
-                                      valueOf (pp.eqTreble, 5.0f));
-                    eq.process (block);
+                    eq[k].setParameters (valueOf (pp.eqBass[k], 5.0f), valueOf (pp.eqMid[k], 5.0f),
+                                         valueOf (pp.eqTreble[k], 5.0f));
+                    eq[k].process (block);
                 }
 
                 break;
@@ -878,13 +1096,15 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             // --- modulation
             case chain::BlockId::mod:
+            case chain::BlockId::mod2:
+            case chain::BlockId::mod3:
             {
-                if (isOn (pp.modOn))
+                if (isOn (pp.modOn[k]) && ! pendingReset[(size_t) id])
                 {
-                    const auto type = (Modulation::Type) juce::jlimit (0, 2, (int) valueOf (pp.modType));
-                    modulation.setParameters (type, valueOf (pp.modRate, 1.0f),
-                                              valueOf (pp.modDepth, 0.4f), valueOf (pp.modMix, 0.35f));
-                    modulation.process (block);
+                    const auto type = (Modulation::Type) juce::jlimit (0, 2, (int) valueOf (pp.modType[k]));
+                    modulation[k].setParameters (type, valueOf (pp.modRate[k], 1.0f),
+                                                 valueOf (pp.modDepth[k], 0.4f), valueOf (pp.modMix[k], 0.35f));
+                    modulation[k].process (block);
                 }
 
                 break;
@@ -892,13 +1112,15 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             // --- delay
             case chain::BlockId::delay:
+            case chain::BlockId::delay2:
+            case chain::BlockId::delay3:
             {
-                if (isOn (pp.delayOn))
+                if (isOn (pp.delayOn[k]) && ! pendingReset[(size_t) id])
                 {
-                    delay.setParameters (valueOf (pp.delayTime, 420.0f),
-                                         valueOf (pp.delayFeedback, 0.35f),
-                                         valueOf (pp.delayMix, 0.25f));
-                    delay.process (block);
+                    delay[k].setParameters (valueOf (pp.delayTime[k], 420.0f),
+                                            valueOf (pp.delayFeedback[k], 0.35f),
+                                            valueOf (pp.delayMix[k], 0.25f));
+                    delay[k].process (block);
                 }
 
                 break;
@@ -906,13 +1128,15 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             // --- reverb
             case chain::BlockId::reverb:
+            case chain::BlockId::reverb2:
+            case chain::BlockId::reverb3:
             {
-                if (isOn (pp.reverbOn))
+                if (isOn (pp.reverbOn[k]) && ! pendingReset[(size_t) id])
                 {
-                    reverbFx.setParameters (valueOf (pp.reverbSize, 0.5f),
-                                            valueOf (pp.reverbDamping, 0.5f),
-                                            valueOf (pp.reverbMix, 0.25f));
-                    reverbFx.process (block);
+                    reverbFx[k].setParameters (valueOf (pp.reverbSize[k], 0.5f),
+                                               valueOf (pp.reverbDamping[k], 0.5f),
+                                               valueOf (pp.reverbMix[k], 0.25f));
+                    reverbFx[k].process (block);
                 }
 
                 break;
@@ -923,7 +1147,7 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             case chain::BlockId::fx2:
             case chain::BlockId::fx3:
             {
-                const int slot = chain::fxSlotIndex (order[(size_t) i]);
+                const int slot = chain::fxSlotIndex (id);
                 fxHost.process (slot, buffer, numSamples, isOn (pp.fxOn[slot]), playHead);
                 break;
             }
@@ -976,36 +1200,102 @@ int TubampAudioProcessor::computeWantedLatency (const std::array<bool, chain::nu
 
 void TubampAudioProcessor::updateLatency()
 {
-    std::array<chain::BlockId, chain::numBlockTypes> order {};
-    const int numBlocks = chain::unpackTo (packedChain.load (std::memory_order_relaxed), order);
-
+    // The mirror, not the packed word: this runs on the message thread (and on the
+    // host's restore threads), where the pair behind chainLock is the source of truth.
+    // The audio thread reports its own latency inline in processBlock.
     std::array<bool, chain::numBlockTypes> present {};
 
-    for (int i = 0; i < numBlocks; ++i)
-        present[(size_t) order[(size_t) i]] = true;
+    {
+        const juce::ScopedLock sl (chainLock);
+
+        for (auto id : uiChainOrder)
+            present[(size_t) id] = true;
+    }
 
     setLatencySamples (computeWantedLatency (present, isOn (pp.ampOn)));
 }
 
-//==============================================================================
-void TubampAudioProcessor::publishChainOrder (const chain::Order& order) noexcept
+void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
 {
+    const auto k = (size_t) chain::instanceOf (id);
+
+    switch (id)
+    {
+        case chain::BlockId::comp:
+        case chain::BlockId::comp2:
+        case chain::BlockId::comp3:   compressor[k].reset(); break;
+
+        case chain::BlockId::drive:
+        case chain::BlockId::drive2:
+        case chain::BlockId::drive3:  drive[k].reset();      break;
+
+        case chain::BlockId::eq:
+        case chain::BlockId::eq2:
+        case chain::BlockId::eq3:     eq[k].reset();         break;
+
+        case chain::BlockId::mod:
+        case chain::BlockId::mod2:
+        case chain::BlockId::mod3:    modulation[k].reset(); break;
+
+        case chain::BlockId::delay:
+        case chain::BlockId::delay2:
+        case chain::BlockId::delay3:  delay[k].reset();      break;
+
+        case chain::BlockId::reverb:
+        case chain::BlockId::reverb2:
+        case chain::BlockId::reverb3: reverbFx[k].reset();   break;
+
+        // Lifecycles owned elsewhere: the model and the hosted plugins are swapped in
+        // and out by their own staging, the cab's tail belongs to the IR that is
+        // loaded, and the gate holds nothing to replay.
+        case chain::BlockId::gate:
+        case chain::BlockId::amp:
+        case chain::BlockId::cab:
+        case chain::BlockId::fx1:
+        case chain::BlockId::fx2:
+        case chain::BlockId::fx3:     break;
+    }
+}
+
+//==============================================================================
+void TubampAudioProcessor::publishChainOrder (const chain::Order& order, const std::vector<int>& rows)
+{
+    {
+        const juce::ScopedLock sl (chainLock);
+        uiChainOrder = order;
+        uiChainRows = rows;
+    }
+
     packedChain.store (chain::pack (order), std::memory_order_relaxed);
 }
 
-void TubampAudioProcessor::adoptChainOrder (const chain::Order& order)
+void TubampAudioProcessor::adoptChainOrder (const chain::Order& order, const std::vector<int>& rows)
 {
-    uiChainOrder = order;
-    publishChainOrder (uiChainOrder);
+    publishChainOrder (order, rows);
     updateLatency();
 
+    // Outside every lock: a listener re-reads the order (and the editor does a lot more
+    // than that) and must never do so from inside chainLock.
     if (onChainChanged != nullptr)
         onChainChanged();
 }
 
-void TubampAudioProcessor::setChainOrder (const chain::Order& order)
+void TubampAudioProcessor::setChainOrder (const chain::Order& order, const std::vector<int>& rows)
 {
-    adoptChainOrder (sanitiseOrder (order));
+    const auto sanitised = sanitiseOrderAndRows (order, rows);
+    adoptChainOrder (sanitised.order, sanitised.rows);
+}
+
+chain::Order TubampAudioProcessor::getChainOrder() const
+{
+    const juce::ScopedLock sl (chainLock);
+    return uiChainOrder;
+}
+
+std::vector<int> TubampAudioProcessor::getChainRows() const
+{
+    const juce::ScopedLock sl (chainLock);
+    return uiChainRows;
 }
 
 //==============================================================================
@@ -1088,16 +1378,30 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         irPathCopy = loadedIrPath;
     }
 
+    // Order and rows in one acquisition: a host autosave that lands in the middle of a
+    // state restore must not write the new order against the old row layout. The packed
+    // word is not read here — it does not carry the rows, and the mirror is safe to
+    // touch from a save thread precisely because of this lock.
+    chain::Order orderCopy;
+    std::vector<int> rowsCopy;
+
+    {
+        const juce::ScopedLock sl (chainLock);
+        orderCopy = uiChainOrder;
+        rowsCopy = uiChainRows;
+    }
+
     juce::ValueTree root ("TUBAMP");
     root.setProperty ("modelPath", modelPathCopy, nullptr);
     root.setProperty ("irPath", irPathCopy, nullptr);
 
-    // Read back from the published word rather than uiChainOrder: hosts are allowed
-    // to save state from a non-message thread, and the atomic is the only copy that
-    // is safe to touch from there.
-    root.setProperty ("chainOrder",
-                      chain::toString (chain::unpack (packedChain.load (std::memory_order_relaxed))),
-                      nullptr);
+    const auto serialized = serializeOrder (orderCopy);
+    root.setProperty ("chainOrder", serialized.v1, nullptr);
+
+    if (serialized.v2.isNotEmpty())
+        root.setProperty ("chainOrderV2", serialized.v2, nullptr);
+
+    root.setProperty ("chainRows", rowsToString (rowsCopy), nullptr);
 
     if (const auto size = getEditorSize(); size.x > 0 && size.y > 0)
     {
@@ -1133,13 +1437,22 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
     const juce::String modelPath = root.getProperty ("modelPath", juce::String()).toString();
     const juce::String irPath = root.getProperty ("irPath", juce::String()).toString();
 
-    // Tolerant parse: missing or unreadable -> default order, so state written before
-    // the chain became user-arrangeable still loads.
-    const auto order = chain::fromString (root.getProperty ("chainOrder", juce::String()).toString());
+    // Tolerant parse: missing or unreadable -> the classic order, so state written
+    // before the chain became user-arrangeable still loads as the chain it had.
+    // chainOrderV2 wins when it is there (see serializeOrder).
+    const juce::String orderV2 = root.getProperty ("chainOrderV2", juce::String()).toString();
+    const auto chainState = sanitiseOrderAndRows (
+        chain::parseOrderOrLegacy (orderV2.isNotEmpty()
+                                       ? orderV2
+                                       : root.getProperty ("chainOrder", juce::String()).toString()),
+        rowsFromString (root.getProperty ("chainRows", juce::String()).toString()));
+
+    const auto order = chainState.order;
+    const auto rows = chainState.rows;
 
     // The audio thread can have the new order immediately (single atomic word); the
-    // UI-facing copy and the notification are message-thread only.
-    publishChainOrder (order);
+    // notification is message-thread only.
+    publishChainOrder (order, rows);
 
     // A missing FXSLOTS child parses to three empty records, which clears every slot —
     // the same contract as a missing modelPath clearing the model.
@@ -1147,7 +1460,7 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
 
     // Model/IR loading does file IO and prewarm; it must never happen here if the
     // host restores state from a non-message thread.
-    auto restore = [this, modelPath, irPath, order, fxIncoming]
+    auto restore = [this, modelPath, irPath, order, rows, fxIncoming]
     {
         if (modelPath.isNotEmpty() && juce::File (modelPath).existsAsFile())
             loadModel (juce::File (modelPath));
@@ -1160,7 +1473,7 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
             clearIr();
 
         applyFxRecords (fxIncoming);
-        adoptChainOrder (order);
+        adoptChainOrder (order, rows);
     };
 
     if (juce::MessageManager::getInstance()->isThisTheMessageThread())
@@ -1192,12 +1505,28 @@ juce::var TubampAudioProcessor::captureStateVar()
     // current state directly rather than served from the cache.
     refreshAllFxState();
 
+    chain::Order orderCopy;
+    std::vector<int> rowsCopy;
+
+    {
+        const juce::ScopedLock sl (chainLock);
+        orderCopy = uiChainOrder;
+        rowsCopy = uiChainRows;
+    }
+
+    const auto serialized = serializeOrder (orderCopy);
+
     auto* state = new juce::DynamicObject();
     state->setProperty ("version", kStateVersion);
     state->setProperty ("params", juce::var (paramValues));
     state->setProperty ("modelPath", loadedModelPath);
     state->setProperty ("irPath", loadedIrPath);
-    state->setProperty ("chainOrder", chain::toString (uiChainOrder));
+    state->setProperty ("chainOrder", serialized.v1);
+
+    if (serialized.v2.isNotEmpty())
+        state->setProperty ("chainOrderV2", serialized.v2);
+
+    state->setProperty ("chainRows", rowsToString (rowsCopy));
     state->setProperty ("fxSlots", fxSlotsTree().toXmlString());
 
     return juce::var (state);
@@ -1214,6 +1543,18 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
 
     if (auto* paramValues = paramsVar.getDynamicObject())
     {
+        // Absent means default: a preset written by a build without a parameter
+        // (every v2 instance-pool and amp_eq_* id, from a v1 preset) must not leave
+        // whatever the user last dialled in ringing through the recalled sound.
+        // Captures from this build carry every parameter, so this only fires for
+        // old files.
+        for (auto* parameter : getParameters())
+        {
+            if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (parameter))
+                if (! paramValues->hasProperty (ranged->paramID))
+                    ranged->setValueNotifyingHost (ranged->getDefaultValue());
+        }
+
         for (const auto& entry : paramValues->getProperties())
         {
             if (auto* parameter = apvts.getParameter (entry.name.toString()))
@@ -1225,12 +1566,17 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
     }
 
     // Presets and A/B slots written before the chain became user-arrangeable have no
-    // "chainOrder": the void var stringifies to "" and fromString falls back to the
-    // default order. Publish before the (slow, synchronous) model/IR loading below so
-    // the audio thread never runs the restored parameters against the old topology;
-    // adoptChainOrder at the end updates the UI copy and notifies the editor.
-    const auto order = chain::fromString (obj->getProperty ("chainOrder").toString());
-    publishChainOrder (order);
+    // "chainOrder": the void var stringifies to "" and parseOrderOrLegacy answers with
+    // the classic order. Publish before the (slow, synchronous) model/IR loading below
+    // so the audio thread never runs the restored parameters against the old topology;
+    // adoptChainOrder at the end re-reports latency and notifies the editor.
+    const juce::String orderV2 = obj->getProperty ("chainOrderV2").toString();
+    const auto chainState = sanitiseOrderAndRows (
+        chain::parseOrderOrLegacy (orderV2.isNotEmpty() ? orderV2
+                                                        : obj->getProperty ("chainOrder").toString()),
+        rowsFromString (obj->getProperty ("chainRows").toString()));
+
+    publishChainOrder (chainState.order, chainState.rows);
 
     const juce::String modelPath = obj->getProperty ("modelPath").toString();
 
@@ -1259,7 +1605,7 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
 
     // Message thread only (PresetManager, A/B), so adopting directly is safe; the
     // audio thread already got the order via publishChainOrder above.
-    adoptChainOrder (order);
+    adoptChainOrder (chainState.order, chainState.rows);
 }
 } // namespace tubamp
 

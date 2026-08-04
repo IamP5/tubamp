@@ -6,6 +6,13 @@ namespace
 {
 constexpr int kVersionHint = 1;
 
+/** Hint carried by every parameter added after the original layout. JUCE sorts an AU's
+    parameter list by version hint before anything else, so hint-2 ids land after every
+    hint-1 id whatever their hash — the list a host already knows keeps its order and
+    the additions append to it. The AU parameter ID is a hash of the string id and does
+    not depend on the hint, so saved automation is unaffected either way. */
+constexpr int kVersionHint2 = 2;
+
 /** Range whose normalised 0.5 point sits at the geometric mean — the natural
     feel for frequency / time / ratio controls. */
 juce::NormalisableRange<float> logRange (float minValue, float maxValue, float interval)
@@ -19,17 +26,18 @@ using Layout = juce::AudioProcessorValueTreeState::ParameterLayout;
 
 void addFloat (Layout& layout, const char* id, const juce::String& name,
                juce::NormalisableRange<float> range, float defaultValue,
-               const juce::String& label = {})
+               const juce::String& label = {}, int versionHint = kVersionHint)
 {
     layout.add (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { id, kVersionHint }, name, range, defaultValue,
+        juce::ParameterID { id, versionHint }, name, range, defaultValue,
         juce::AudioParameterFloatAttributes().withLabel (label)));
 }
 
-void addBool (Layout& layout, const char* id, const juce::String& name, bool defaultValue)
+void addBool (Layout& layout, const char* id, const juce::String& name, bool defaultValue,
+              int versionHint = kVersionHint)
 {
     layout.add (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { id, kVersionHint }, name, defaultValue));
+        juce::ParameterID { id, versionHint }, name, defaultValue));
 }
 } // namespace
 
@@ -119,6 +127,93 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     addBool (layout, fx1On, "FX 1 On", true);
     addBool (layout, fx2On, "FX 2 On", true);
     addBool (layout, fx3On, "FX 3 On", true);
+
+    // --- pooled instances 2 and 3, then the amp's own tone stack
+    //
+    // Appended for the same reason as the fx enables above, and carrying version hint 2
+    // so that a host which already knows the list appends them to it rather than
+    // interleaving them by hash. Host-visible names are instance-numbered because Logic
+    // lists parameters by name: three rows reading "Comp Threshold" would be unusable.
+    //
+    // Ranges, defaults and steps are copied verbatim from the instance-1 parameter each
+    // one mirrors — if one of them ever changes, all three change together.
+    //
+    // The enables all default ON, including drive's (whose instance 1 defaults off):
+    // adding a block to the chain by hand and hearing nothing until a second click is
+    // the wrong first impression, and the block is not in the chain until it is added.
+    addBool  (layout, comp2On,        "Comp 2 On",        true, kVersionHint2);
+    addFloat (layout, comp2Threshold, "Comp 2 Threshold", { -60.0f, 0.0f, 0.1f },           -20.0f, "dB", kVersionHint2);
+    addFloat (layout, comp2Ratio,     "Comp 2 Ratio",     logRange (1.0f, 20.0f, 0.01f),     4.0f,  ":1", kVersionHint2);
+    addFloat (layout, comp2Attack,    "Comp 2 Attack",    logRange (0.1f, 100.0f, 0.01f),    5.0f,  "ms", kVersionHint2);
+    addFloat (layout, comp2Release,   "Comp 2 Release",   logRange (10.0f, 1000.0f, 0.1f),   120.0f, "ms", kVersionHint2);
+    addFloat (layout, comp2Makeup,    "Comp 2 Makeup",    { 0.0f, 24.0f, 0.1f },             0.0f,  "dB", kVersionHint2);
+
+    addBool  (layout, comp3On,        "Comp 3 On",        true, kVersionHint2);
+    addFloat (layout, comp3Threshold, "Comp 3 Threshold", { -60.0f, 0.0f, 0.1f },           -20.0f, "dB", kVersionHint2);
+    addFloat (layout, comp3Ratio,     "Comp 3 Ratio",     logRange (1.0f, 20.0f, 0.01f),     4.0f,  ":1", kVersionHint2);
+    addFloat (layout, comp3Attack,    "Comp 3 Attack",    logRange (0.1f, 100.0f, 0.01f),    5.0f,  "ms", kVersionHint2);
+    addFloat (layout, comp3Release,   "Comp 3 Release",   logRange (10.0f, 1000.0f, 0.1f),   120.0f, "ms", kVersionHint2);
+    addFloat (layout, comp3Makeup,    "Comp 3 Makeup",    { 0.0f, 24.0f, 0.1f },             0.0f,  "dB", kVersionHint2);
+
+    addBool  (layout, drive2On,    "Drive 2 On",    true, kVersionHint2);
+    addFloat (layout, drive2Gain,  "Drive 2 Gain",  { 0.0f, 36.0f, 0.1f },              12.0f, "dB", kVersionHint2);
+    addFloat (layout, drive2Tone,  "Drive 2 Tone",  logRange (500.0f, 12000.0f, 1.0f), 4000.0f, "Hz", kVersionHint2);
+    addFloat (layout, drive2Level, "Drive 2 Level", { -24.0f, 12.0f, 0.1f },             0.0f, "dB", kVersionHint2);
+
+    addBool  (layout, drive3On,    "Drive 3 On",    true, kVersionHint2);
+    addFloat (layout, drive3Gain,  "Drive 3 Gain",  { 0.0f, 36.0f, 0.1f },              12.0f, "dB", kVersionHint2);
+    addFloat (layout, drive3Tone,  "Drive 3 Tone",  logRange (500.0f, 12000.0f, 1.0f), 4000.0f, "Hz", kVersionHint2);
+    addFloat (layout, drive3Level, "Drive 3 Level", { -24.0f, 12.0f, 0.1f },             0.0f, "dB", kVersionHint2);
+
+    addBool  (layout, eq2On,     "EQ 2 On",     true, kVersionHint2);
+    addFloat (layout, eq2Bass,   "EQ 2 Bass",   { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
+    addFloat (layout, eq2Mid,    "EQ 2 Middle", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
+    addFloat (layout, eq2Treble, "EQ 2 Treble", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
+
+    addBool  (layout, eq3On,     "EQ 3 On",     true, kVersionHint2);
+    addFloat (layout, eq3Bass,   "EQ 3 Bass",   { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
+    addFloat (layout, eq3Mid,    "EQ 3 Middle", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
+    addFloat (layout, eq3Treble, "EQ 3 Treble", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
+
+    addBool (layout, mod2On, "Mod 2 On", true, kVersionHint2);
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { mod2Type, kVersionHint2 }, "Mod 2 Type", modTypeChoices, 0));
+    addFloat (layout, mod2Rate,  "Mod 2 Rate",  logRange (0.05f, 10.0f, 0.001f), 1.0f, "Hz", kVersionHint2);
+    addFloat (layout, mod2Depth, "Mod 2 Depth", { 0.0f, 1.0f, 0.001f },          0.4f, {},   kVersionHint2);
+    addFloat (layout, mod2Mix,   "Mod 2 Mix",   { 0.0f, 1.0f, 0.001f },          0.35f, {},  kVersionHint2);
+
+    addBool (layout, mod3On, "Mod 3 On", true, kVersionHint2);
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { mod3Type, kVersionHint2 }, "Mod 3 Type", modTypeChoices, 0));
+    addFloat (layout, mod3Rate,  "Mod 3 Rate",  logRange (0.05f, 10.0f, 0.001f), 1.0f, "Hz", kVersionHint2);
+    addFloat (layout, mod3Depth, "Mod 3 Depth", { 0.0f, 1.0f, 0.001f },          0.4f, {},   kVersionHint2);
+    addFloat (layout, mod3Mix,   "Mod 3 Mix",   { 0.0f, 1.0f, 0.001f },          0.35f, {},  kVersionHint2);
+
+    addBool  (layout, delay2On,       "Delay 2 On",       true, kVersionHint2);
+    addFloat (layout, delay2Time,     "Delay 2 Time",     logRange (20.0f, 2000.0f, 0.1f), 420.0f, "ms", kVersionHint2);
+    addFloat (layout, delay2Feedback, "Delay 2 Feedback", { 0.0f, 0.95f, 0.001f },          0.35f, {},   kVersionHint2);
+    addFloat (layout, delay2Mix,      "Delay 2 Mix",      { 0.0f, 1.0f, 0.001f },           0.25f, {},   kVersionHint2);
+
+    addBool  (layout, delay3On,       "Delay 3 On",       true, kVersionHint2);
+    addFloat (layout, delay3Time,     "Delay 3 Time",     logRange (20.0f, 2000.0f, 0.1f), 420.0f, "ms", kVersionHint2);
+    addFloat (layout, delay3Feedback, "Delay 3 Feedback", { 0.0f, 0.95f, 0.001f },          0.35f, {},   kVersionHint2);
+    addFloat (layout, delay3Mix,      "Delay 3 Mix",      { 0.0f, 1.0f, 0.001f },           0.25f, {},   kVersionHint2);
+
+    addBool  (layout, reverb2On,      "Reverb 2 On",      true, kVersionHint2);
+    addFloat (layout, reverb2Size,    "Reverb 2 Size",    { 0.0f, 1.0f, 0.001f }, 0.5f,  {}, kVersionHint2);
+    addFloat (layout, reverb2Damping, "Reverb 2 Damping", { 0.0f, 1.0f, 0.001f }, 0.5f,  {}, kVersionHint2);
+    addFloat (layout, reverb2Mix,     "Reverb 2 Mix",     { 0.0f, 1.0f, 0.001f }, 0.25f, {}, kVersionHint2);
+
+    addBool  (layout, reverb3On,      "Reverb 3 On",      true, kVersionHint2);
+    addFloat (layout, reverb3Size,    "Reverb 3 Size",    { 0.0f, 1.0f, 0.001f }, 0.5f,  {}, kVersionHint2);
+    addFloat (layout, reverb3Damping, "Reverb 3 Damping", { 0.0f, 1.0f, 0.001f }, 0.5f,  {}, kVersionHint2);
+    addFloat (layout, reverb3Mix,     "Reverb 3 Mix",     { 0.0f, 1.0f, 0.001f }, 0.25f, {}, kVersionHint2);
+
+    // --- amp tone stack (inside the amp block, after the model)
+    addBool  (layout, ampEqOn,     "Amp EQ On",     true, kVersionHint2);
+    addFloat (layout, ampEqBass,   "Amp EQ Bass",   { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
+    addFloat (layout, ampEqMid,    "Amp EQ Middle", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
+    addFloat (layout, ampEqTreble, "Amp EQ Treble", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
 
     return layout;
 }

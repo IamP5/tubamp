@@ -1,6 +1,7 @@
 // End-to-end smoke test: drives the real TubampAudioProcessor (no editor) and
 // verifies that loading a NAM model actually changes the processed audio, and that
-// a user-arranged chain order processes cleanly and survives state round-trips.
+// a user-arranged chain order (including duplicated block instances and rows)
+// processes cleanly and survives state round-trips.
 //   tubamp_smoke <model.nam> [sampleRate]
 #include <juce_events/juce_events.h>
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -70,28 +71,100 @@ void setBoolParam (tubamp::TubampAudioProcessor& proc, const char* paramId, bool
         p->setValueNotifyingHost (value ? 1.0f : 0.0f);
 }
 
+void setFloatParam (tubamp::TubampAudioProcessor& proc, const char* paramId, float rawValue)
+{
+    if (auto* p = proc.apvts.getParameter (paramId))
+        p->setValueNotifyingHost (p->convertTo0to1 (rawValue));
+}
+
+/** Pure chain::-level assertions: no processor involved. */
+bool runParseTests()
+{
+    std::printf ("chain parsing:\n");
+    namespace chain = tubamp::chain;
+    bool ok = true;
+
+    ok &= expect (chain::defaultOrder() == chain::Order { BlockId::amp },
+                  "defaultOrder() is the amp alone (R1)");
+    ok &= expect (chain::classicOrder() == chain::Order { BlockId::gate, BlockId::comp, BlockId::drive,
+                                                          BlockId::amp, BlockId::cab, BlockId::eq,
+                                                          BlockId::mod, BlockId::delay, BlockId::reverb },
+                  "classicOrder() is the nine built-in blocks");
+
+    ok &= expect (chain::parseOrder ("garbage").empty(), "parseOrder(\"garbage\") is empty, no fallback");
+    ok &= expect (chain::parseOrder (chain::emptyChainToken).empty(), "parseOrder(\"-\") is empty");
+    ok &= expect (chain::parseOrderOrLegacy ("") == chain::classicOrder(),
+                  "parseOrderOrLegacy(\"\") falls back to classicOrder() -- persisted bytes with no token list");
+    ok &= expect (chain::parseOrderOrLegacy (chain::emptyChainToken).empty(),
+                  "parseOrderOrLegacy(\"-\") stays empty -- a deliberately-emptied chain is not legacy state");
+
+    // 24-entry order (every block instance) round-trips through the widened 128-bit word.
+    chain::Order full;
+    for (const auto& info : chain::blockInfos)
+        full.push_back (info.id);
+
+    ok &= expect ((int) full.size() == chain::numBlockTypes,
+                  "the full order covers every one of the 24 block instances");
+
+    const auto packedFull = chain::pack (full);
+    std::array<BlockId, chain::maxChainLength> decodedFull {};
+    const int decodedFullCount = chain::unpackTo (packedFull, decodedFull);
+
+    ok &= expect (decodedFullCount == chain::numBlockTypes
+                      && std::equal (full.begin(), full.end(), decodedFull.begin()),
+                  "24-entry order round-trips pack -> unpackTo (widened to __int128)");
+    ok &= expect (chain::unpack (packedFull) == full, "... and pack -> unpack");
+
+    return ok;
+}
+
+/** A never-persisted processor pins R1: it must run (and save) with only the amp. */
+bool runFreshInstanceTest (double sampleRate, int blockSize)
+{
+    std::printf ("fresh instance:\n");
+    bool ok = true;
+
+    tubamp::TubampAudioProcessor freshProc;
+    freshProc.prepareToPlay (sampleRate, blockSize);
+
+    ok &= expect (tubamp::chain::toString (freshProc.getChainOrder()) == "amp",
+                  "a fresh instance's in-memory order is exactly \"amp\"");
+
+    juce::MemoryBlock blob;
+    freshProc.getStateInformation (blob);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
+
+    ok &= expect (xml != nullptr && xml->getStringAttribute ("chainOrder") == "amp",
+                  "a fresh instance's saved state carries chainOrder \"amp\"");
+
+    return ok;
+}
+
 /** Chain order: publish -> process -> save/restore, including legacy state that
-    predates the chainOrder property. */
+    predates the chainOrder property and the per-order row layout. */
 bool runChainOrderTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
 {
     std::printf ("chain order:\n");
 
-    const auto defaultOrder = tubamp::chain::toString (tubamp::chain::defaultOrder());
+    namespace chain = tubamp::chain;
+    const auto classicText = chain::toString (chain::classicOrder());
     bool ok = true;
 
     // Drive ahead of the compressor, reverb ahead of the delay, gate removed entirely.
-    const tubamp::chain::Order custom { BlockId::drive, BlockId::comp, BlockId::amp,
-                                        BlockId::cab,   BlockId::eq,   BlockId::mod,
-                                        BlockId::reverb, BlockId::delay };
-    const auto customText = tubamp::chain::toString (custom);
+    const chain::Order custom { BlockId::drive, BlockId::comp, BlockId::amp,
+                               BlockId::cab,    BlockId::eq,   BlockId::mod,
+                               BlockId::reverb, BlockId::delay };
+    const auto customText = chain::toString (custom);
+    const std::vector<int> customRows { 4, 4 };
 
     int changeNotifications = 0;
     proc.onChainChanged = [&changeNotifications] { ++changeNotifications; };
 
-    proc.setChainOrder (custom);
+    proc.setChainOrder (custom, customRows);
     ok &= expect (changeNotifications == 1, "setChainOrder fires onChainChanged");
-    ok &= expect (tubamp::chain::toString (proc.getChainOrder()) == customText,
+    ok &= expect (chain::toString (proc.getChainOrder()) == customText,
                   "getChainOrder reflects the published order");
+    ok &= expect (proc.getChainRows() == customRows, "getChainRows reflects a valid, matching row layout");
 
     setBoolParam (proc, params::driveOn, true); // off by default; exercise the moved block
 
@@ -104,16 +177,19 @@ bool runChainOrderTests (tubamp::TubampAudioProcessor& proc, double sampleRate, 
     juce::MemoryBlock blob;
     proc.getStateInformation (blob);
 
-    proc.setChainOrder (tubamp::chain::defaultOrder());
+    proc.setChainOrder (chain::defaultOrder(), {});
     changeNotifications = 0;
     proc.setStateInformation (blob.getData(), (int) blob.getSize());
     juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
 
-    ok &= expect (tubamp::chain::toString (proc.getChainOrder()) == customText,
+    ok &= expect (chain::toString (proc.getChainOrder()) == customText,
                   "order survives getStateInformation -> setStateInformation");
+    ok &= expect (proc.getChainRows() == customRows, "rows survive getStateInformation -> setStateInformation");
     ok &= expect (changeNotifications >= 1, "state restore fires onChainChanged");
 
-    // --- legacy state: same blob with the property stripped out
+    // --- legacy state: same blob with the chainOrder property stripped out. The rows
+    // property ("4,4") survives untouched, so this also proves a stale row layout that
+    // no longer matches the recovered order falls back to auto rather than being kept.
     if (auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize()))
     {
         xml->removeAttribute ("chainOrder");
@@ -121,12 +197,14 @@ bool runChainOrderTests (tubamp::TubampAudioProcessor& proc, double sampleRate, 
         juce::MemoryBlock legacyBlob;
         juce::AudioProcessor::copyXmlToBinary (*xml, legacyBlob);
 
-        proc.setChainOrder (custom);
+        proc.setChainOrder (custom, customRows);
         proc.setStateInformation (legacyBlob.getData(), (int) legacyBlob.getSize());
         juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
 
-        ok &= expect (tubamp::chain::toString (proc.getChainOrder()) == defaultOrder,
-                      "legacy state without chainOrder restores the default order");
+        ok &= expect (chain::toString (proc.getChainOrder()) == classicText,
+                      "legacy state without chainOrder restores classicOrder(), not just the amp");
+        ok &= expect (proc.getChainRows().empty(),
+                      "...and a stale row layout that no longer matches falls back to auto");
     }
     else
     {
@@ -134,37 +212,149 @@ bool runChainOrderTests (tubamp::TubampAudioProcessor& proc, double sampleRate, 
     }
 
     // --- preset / A-B slot round-trip (PresetManager goes through these two)
-    proc.setChainOrder (custom);
+    proc.setChainOrder (custom, customRows);
     const auto slotState = proc.captureStateVar();
 
-    proc.setChainOrder (tubamp::chain::defaultOrder());
+    proc.setChainOrder (chain::defaultOrder(), {});
     proc.applyStateVar (slotState);
-    ok &= expect (tubamp::chain::toString (proc.getChainOrder()) == customText,
+    ok &= expect (chain::toString (proc.getChainOrder()) == customText,
                   "order survives captureStateVar -> applyStateVar");
+    ok &= expect (proc.getChainRows() == customRows, "rows survive captureStateVar -> applyStateVar");
 
     if (auto* obj = slotState.getDynamicObject())
     {
         obj->removeProperty ("chainOrder"); // a preset saved before the chain was arrangeable
-        proc.setChainOrder (custom);
+        proc.setChainOrder (custom, customRows);
         proc.applyStateVar (slotState);
 
-        ok &= expect (tubamp::chain::toString (proc.getChainOrder()) == defaultOrder,
-                      "legacy preset without chainOrder restores the default order");
+        ok &= expect (chain::toString (proc.getChainOrder()) == classicText,
+                      "legacy preset without chainOrder restores classicOrder(), not just the amp");
+        ok &= expect (proc.getChainRows().empty(), "...with the stale rows falling back to auto too");
     }
 
     // --- a deliberately-empty chain must round-trip, not revert to the default
-    proc.setChainOrder ({});
+    proc.setChainOrder ({}, {});
     const auto emptyState = proc.captureStateVar();
 
-    proc.setChainOrder (custom);
+    proc.setChainOrder (custom, customRows);
     proc.applyStateVar (emptyState);
     ok &= expect (proc.getChainOrder().empty(),
                   "empty chain survives captureStateVar -> applyStateVar");
+    ok &= expect (proc.getChainRows().empty(), "...with empty rows alongside it");
 
     proc.onChainChanged = nullptr;
-    proc.setChainOrder (tubamp::chain::defaultOrder());
+    proc.setChainOrder (chain::defaultOrder(), {});
     setBoolParam (proc, params::driveOn, false);
 
+    return ok;
+}
+
+/** Block-instance model: duplicated kinds, per-order row validation and the
+    chainOrderV2 forward-compat split. */
+bool runInstanceModelTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    std::printf ("block instances:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+
+    // --- three compressor instances in one chain
+    const chain::Order instanced { BlockId::gate, BlockId::comp, BlockId::comp2,
+                                   BlockId::comp3, BlockId::amp,  BlockId::cab };
+    const auto instancedText = chain::toString (instanced);
+    const std::vector<int> instancedRows { 3, 3 };
+
+    proc.setChainOrder (instanced, instancedRows);
+    ok &= expect (chain::toString (proc.getChainOrder()) == instancedText,
+                  "a chain with comp, comp2 and comp3 is accepted as-is");
+    ok &= expect (proc.getChainRows() == instancedRows, "its valid rows are kept verbatim");
+
+    bool finite = true;
+    const double rms = processSineRms (proc, sampleRate, blockSize, &finite);
+    ok &= expect (finite, "three compressor instances produce only finite samples");
+    ok &= expect (std::isfinite (rms) && rms > 1.0e-5, "...and non-silent output");
+
+    // --- state round-trip carries the instance tokens and rows
+    juce::MemoryBlock blob;
+    proc.getStateInformation (blob);
+
+    proc.setChainOrder (chain::defaultOrder(), {});
+    proc.setStateInformation (blob.getData(), (int) blob.getSize());
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+    ok &= expect (chain::toString (proc.getChainOrder()) == instancedText
+                      && proc.getChainRows() == instancedRows,
+                  "instance tokens and rows survive getStateInformation -> setStateInformation");
+
+    // --- preset (captureStateVar/applyStateVar) round-trip
+    proc.setChainOrder (instanced, instancedRows);
+    const auto presetState = proc.captureStateVar();
+
+    proc.setChainOrder (chain::defaultOrder(), {});
+    proc.applyStateVar (presetState);
+
+    ok &= expect (chain::toString (proc.getChainOrder()) == instancedText
+                      && proc.getChainRows() == instancedRows,
+                  "instance tokens and rows survive captureStateVar -> applyStateVar");
+
+    // --- A/B slot round-trip (PresetManager wraps the same two calls)
+    proc.setChainOrder (instanced, instancedRows);
+    proc.presets.captureToSlot (0);
+
+    proc.setChainOrder (chain::defaultOrder(), {});
+    proc.presets.recallSlot (0);
+
+    ok &= expect (chain::toString (proc.getChainOrder()) == instancedText
+                      && proc.getChainRows() == instancedRows,
+                  "instance tokens and rows survive an A/B slot round-trip");
+
+    // --- invalid rows fall back to auto, never to a mangled layout
+    proc.setChainOrder (instanced, { 0, 9 });
+    ok &= expect (proc.getChainRows().empty(), "a zero-length row falls back to auto");
+
+    proc.setChainOrder (instanced, { -1, 10 });
+    ok &= expect (proc.getChainRows().empty(), "a negative-length row falls back to auto");
+
+    proc.setChainOrder (instanced, { 2, 2 }); // instanced.size() == 6, this sums to 4
+    ok &= expect (proc.getChainRows().empty(), "rows that do not sum to the order size fall back to auto");
+
+    // --- chainOrderV2: an order with no v1-known id writes "-" to chainOrder and the
+    // real order to chainOrderV2; the reader prefers chainOrderV2 whenever it is there.
+    const chain::Order allNewInstances { BlockId::comp2, BlockId::eq3, BlockId::reverb2 };
+    proc.setChainOrder (allNewInstances, {});
+
+    juce::MemoryBlock v2Blob;
+    proc.getStateInformation (v2Blob);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (v2Blob.getData(), (int) v2Blob.getSize());
+
+    const bool v2XmlParsed = expect (xml != nullptr,
+                                     "an all-instance-2/3 order still produces a parseable state blob");
+    ok &= v2XmlParsed;
+
+    if (v2XmlParsed)
+    {
+        ok &= expect (xml->getStringAttribute ("chainOrder") == chain::emptyChainToken,
+                      "...chainOrder is the empty-chain sentinel (no v1-known id survives)");
+
+        const auto v2Text = xml->getStringAttribute ("chainOrderV2");
+        ok &= expect (chain::parseOrder (v2Text) == allNewInstances,
+                      "...and chainOrderV2 carries the real order");
+
+        // A stale-looking v1 token alongside the real v2 payload: the reader must
+        // prefer chainOrderV2, never fall back to (or be fooled by) chainOrder.
+        xml->setAttribute ("chainOrder", "amp");
+        juce::MemoryBlock craftedBlob;
+        juce::AudioProcessor::copyXmlToBinary (*xml, craftedBlob);
+
+        proc.setChainOrder (chain::defaultOrder(), {});
+        proc.setStateInformation (craftedBlob.getData(), (int) craftedBlob.getSize());
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+        ok &= expect (chain::toString (proc.getChainOrder()) == chain::toString (allNewInstances),
+                      "setStateInformation prefers chainOrderV2 over a stale chainOrder");
+    }
+
+    proc.setChainOrder (chain::defaultOrder(), {});
     return ok;
 }
 
@@ -206,7 +396,7 @@ std::vector<float> renderChain (tubamp::TubampAudioProcessor& proc,
                                 const tubamp::chain::Order& order,
                                 double sampleRate, int blockSize, int numBlocks = 40)
 {
-    proc.setChainOrder (order);
+    proc.setChainOrder (order, {});
     proc.prepareToPlay (sampleRate, blockSize);
 
     std::vector<float> captured;
@@ -245,6 +435,106 @@ bool expectIdentical (const std::vector<float>& a, const std::vector<float>& b, 
     return expect (index < 0, what);
 }
 
+/** Amp EQ (R2): the tone stack that lives inside the amp block, on the mono path
+    between the model and amp-out. Exercised with no model loaded -- NamEngine::process
+    is then a pass-through, so the sine reaching the EQ is unfiltered and any change is
+    the EQ's alone. */
+bool runAmpEqTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    std::printf ("amp eq:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+    const chain::Order ampOnly { BlockId::amp };
+
+    setBoolParam (proc, params::ampEqOn, true);
+    setFloatParam (proc, params::ampEqBass, 5.0f);
+    setFloatParam (proc, params::ampEqMid, 5.0f);
+    setFloatParam (proc, params::ampEqTreble, 5.0f);
+    const auto flat = renderChain (proc, ampOnly, sampleRate, blockSize);
+
+    setFloatParam (proc, params::ampEqBass, 10.0f);
+    const auto boosted = renderChain (proc, ampOnly, sampleRate, blockSize);
+
+    ok &= expect (firstDifference (flat, boosted) >= 0,
+                  "boosting amp EQ bass changes the amp block's output");
+
+    setBoolParam (proc, params::ampEqOn, false);
+    const auto bypassed = renderChain (proc, ampOnly, sampleRate, blockSize); // bass still 10, but off
+
+    setFloatParam (proc, params::ampEqBass, 5.0f);
+    setBoolParam (proc, params::ampEqOn, true);
+    const auto flatAgain = renderChain (proc, ampOnly, sampleRate, blockSize);
+
+    // Off and on-at-flat are close but NOT bit-exact: the biquad's coefficients at
+    // "flat" settings do not collapse to an exact identity filter (review note).
+    double maxAbsDiff = 0.0;
+    for (size_t i = 0; i < std::min (bypassed.size(), flatAgain.size()); ++i)
+        maxAbsDiff = std::max (maxAbsDiff, (double) std::abs (bypassed[i] - flatAgain[i]));
+
+    std::printf ("  amp eq off vs on-at-flat: max abs diff = %.6g\n", maxAbsDiff);
+    ok &= expect (maxAbsDiff < 0.02, "amp EQ off and on-at-flat are within tolerance of each other");
+
+    setFloatParam (proc, params::ampEqMid, 5.0f);
+    setFloatParam (proc, params::ampEqTreble, 5.0f);
+    proc.setChainOrder (chain::defaultOrder(), {});
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    return ok;
+}
+
+/** Factory presets (PresetManager::createFactoryPresetsIfMissing) stage classicOrder()
+    around every capture, so none of them should freeze in as just the amp. Runs against
+    its own processor -- a fresh instance with no model/IR loaded, matching what a real
+    first-run capture looks like -- rather than the shared `proc`, which may already
+    have a model path that has no business inside a factory preset. */
+bool runFactoryPresetTests (double sampleRate, int blockSize)
+{
+    std::printf ("factory presets:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+
+    tubamp::TubampAudioProcessor freshProc;
+    freshProc.prepareToPlay (sampleRate, blockSize);
+    freshProc.presets.createFactoryPresetsIfMissing();
+
+    const auto classicText = chain::toString (chain::classicOrder());
+    const juce::StringArray factoryNames { "Init", "Clean + Room", "Crunch Drive", "Ambient Lead" };
+
+    for (const auto& name : factoryNames)
+    {
+        juce::File found;
+
+        for (const auto& info : freshProc.presets.getPresets())
+            if (info.name == name)
+                found = info.file;
+
+        char what[128];
+        std::snprintf (what, sizeof (what), "\"%s\" factory preset exists on disk", name.toRawUTF8());
+
+        if (! expect (found.existsAsFile(), what))
+        {
+            ok = false;
+            continue;
+        }
+
+        const auto result = freshProc.presets.loadPreset (found);
+        std::snprintf (what, sizeof (what), "\"%s\" loads cleanly", name.toRawUTF8());
+        ok &= expect (result.wasOk(), what);
+
+        const auto orderText = chain::toString (freshProc.getChainOrder());
+
+        std::snprintf (what, sizeof (what), "\"%s\" chainOrder is the classic nine", name.toRawUTF8());
+        ok &= expect (orderText == classicText, what);
+
+        std::snprintf (what, sizeof (what), "\"%s\" chainOrder is not just \"amp\"", name.toRawUTF8());
+        ok &= expect (orderText != "amp", what);
+    }
+
+    return ok;
+}
+
 /** Hammers getStateInformation from a non-message thread, the way a host autosave
     does, and checks every blob it gets back is parseable. */
 class StateSaverThread final : public juce::Thread
@@ -262,8 +552,9 @@ public:
 
             auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
 
-            if (xml == nullptr || ! xml->hasTagName ("TUBAMP") || ! xml->hasAttribute ("chainOrder")
-                || tubamp::chain::fromString (xml->getStringAttribute ("chainOrder")).empty())
+            // hasAttribute is the whole predicate: "-" is the legal, deliberate
+            // empty-chain sentinel, not a save gone wrong (review catch).
+            if (xml == nullptr || ! xml->hasTagName ("TUBAMP") || ! xml->hasAttribute ("chainOrder"))
             {
                 bad = true;
                 return;
@@ -277,6 +568,73 @@ public:
     std::atomic<int> saves { 0 };
     std::atomic<bool> bad { false };
 };
+
+/** Publishes a rotating full-width order into a plain atomic word on its own thread --
+    the same "one whole-value store" contract packedChain has in the processor, but
+    decoupled from TubampAudioProcessor so the encoding itself can be hammered directly
+    without reaching into a private member. */
+class ChainWriterThread final : public juce::Thread
+{
+public:
+    explicit ChainWriterThread (std::atomic<tubamp::chain::Packed>& target)
+        : juce::Thread ("smoke-chain-writer"), packed (target) {}
+
+    void run() override
+    {
+        namespace chain = tubamp::chain;
+        int spin = 0;
+
+        while (! threadShouldExit())
+        {
+            chain::Order order;
+
+            for (int i = 0; i < chain::maxChainLength; ++i)
+                order.push_back ((BlockId) ((i + spin) % chain::numBlockTypes));
+
+            packed.store (chain::pack (order), std::memory_order_relaxed);
+            ++spin;
+        }
+    }
+
+    std::atomic<tubamp::chain::Packed>& packed;
+};
+
+/** Two-thread publish + reader hammer on the widened 128-bit packed word: every decode
+    the reader observes must stay within bounds, whatever half-formed spin of the writer
+    it happens to catch (it can never catch a torn value -- the atomic makes that
+    impossible -- but the decode's own clamps are what this proves). */
+bool runConcurrentPackingTest()
+{
+    std::printf ("concurrent packing:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+
+    std::atomic<chain::Packed> packed { chain::pack (chain::defaultOrder()) };
+    ChainWriterThread writer (packed);
+    writer.startThread();
+
+    bool boundsHeld = true;
+    std::array<BlockId, chain::maxChainLength> decoded {};
+
+    for (int i = 0; i < 200000 && boundsHeld; ++i)
+    {
+        const int count = chain::unpackTo (packed.load (std::memory_order_relaxed), decoded);
+
+        if (count < 0 || count > chain::numBlockTypes)
+            boundsHeld = false;
+
+        for (int n = 0; n < count && boundsHeld; ++n)
+            if ((int) decoded[(size_t) n] < 0 || (int) decoded[(size_t) n] >= chain::numBlockTypes)
+                boundsHeld = false;
+    }
+
+    const bool stopped = writer.stopThread (2000);
+    ok &= expect (stopped, "the writer thread stops cleanly");
+    ok &= expect (boundsHeld, "every concurrent decode stays within count <= 24 and ids < 24");
+
+    return ok;
+}
 
 /** External AudioUnit slots. This target is built without JUCE_PLUGINHOST_AU, so no
     real plugin can ever be instantiated here — everything below deliberately covers
@@ -312,11 +670,11 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
                                 BlockId::amp,  BlockId::fx2,  BlockId::cab,   BlockId::eq,
                                 BlockId::mod,  BlockId::delay, BlockId::reverb, BlockId::fx3 };
 
-    ok &= expect ((int) withFx.size() == chain::numBlockTypes,
-                  "the fx test order uses every one of the 12 block types");
+    ok &= expect ((int) withFx.size() == chain::numV1BlockIds,
+                  "the fx test order uses every one of the twelve v1 block ids");
 
     const auto packed = chain::pack (withFx);
-    std::array<BlockId, chain::numBlockTypes> decoded {};
+    std::array<BlockId, chain::maxChainLength> decoded {};
     const int decodedCount = chain::unpackTo (packed, decoded);
 
     ok &= expect (decodedCount == (int) withFx.size()
@@ -328,25 +686,32 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
     ok &= expect (withFxText.contains ("fx1") && withFxText.contains ("fx2")
                       && withFxText.contains ("fx3"),
                   "toString emits the fx1/fx2/fx3 tokens");
-    ok &= expect (chain::fromString (withFxText) == withFx,
-                  "12-entry order with fx slots survives toString -> fromString");
+    ok &= expect (chain::parseOrder (withFxText) == withFx,
+                  "12-entry order with fx slots survives toString -> parseOrder");
 
-    // --- 2. the legacy-state contract: no fx tokens anywhere near the default
+    // --- 2. the legacy-state contract: no fx tokens anywhere near classicOrder(), and
+    // a fresh instance's default carries none either.
     bool defaultHasFx = false;
 
     for (auto id : chain::defaultOrder())
         defaultHasFx |= chain::isFxSlot (id);
 
     ok &= expect (! defaultHasFx, "defaultOrder() contains no fx slots");
-    ok &= expect (chain::defaultOrder() == withoutFx,
-                  "defaultOrder() is exactly the nine built-in blocks");
-    ok &= expect (chain::fromString ("") == withoutFx,
-                  "fromString(\"\") still falls back to the nine built-in blocks");
+
+    bool classicHasFx = false;
+
+    for (auto id : chain::classicOrder())
+        classicHasFx |= chain::isFxSlot (id);
+
+    ok &= expect (! classicHasFx, "classicOrder() contains no fx slots");
+    ok &= expect (chain::classicOrder() == withoutFx, "classicOrder() is exactly the nine built-in blocks");
+    ok &= expect (chain::parseOrderOrLegacy ("") == withoutFx,
+                  "parseOrderOrLegacy(\"\") still falls back to the nine built-in blocks");
 
     // --- 3. an id this build does not know must be DROPPED, never clamped onto fx3
     {
         chain::Order bogus { BlockId::gate, (BlockId) 99, BlockId::amp };
-        proc.setChainOrder (bogus);
+        proc.setChainOrder (bogus, {});
 
         const auto sanitised = proc.getChainOrder();
         bool anyFx = false;
@@ -360,9 +725,9 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
     }
 
     // --- 5. latency (checked before the renders, which call prepareToPlay)
-    proc.setChainOrder (withoutFx);
+    proc.setChainOrder (withoutFx, {});
     const int latencyWithoutFx = proc.getLatencySamples();
-    proc.setChainOrder (withFx);
+    proc.setChainOrder (withFx, {});
     const int latencyWithFx = proc.getLatencySamples();
 
     std::printf ("  latency: withoutFx=%d withFx=%d\n", latencyWithoutFx, latencyWithFx);
@@ -375,9 +740,9 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
         const double otherRate = sampleRate == 44100.0 ? 48000.0 : 44100.0;
         proc.prepareToPlay (otherRate, blockSize);
 
-        proc.setChainOrder (withoutFx);
+        proc.setChainOrder (withoutFx, {});
         const int resampledWithoutFx = proc.getLatencySamples();
-        proc.setChainOrder (withFx);
+        proc.setChainOrder (withFx, {});
         const int resampledWithFx = proc.getLatencySamples();
 
         std::printf ("  latency @%.0f: withoutFx=%d withFx=%d\n",
@@ -433,7 +798,7 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
     // The full 12-block chain (fx slots *and* the NAM amp) still has to run cleanly;
     // it just cannot be compared sample-for-sample, for the reason above.
     {
-        proc.setChainOrder (withFx);
+        proc.setChainOrder (withFx, {});
         proc.prepareToPlay (sampleRate, blockSize);
 
         bool finite = true;
@@ -445,22 +810,22 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
 
     // --- 6. state round-trips carrying fx tokens in the order
     const auto withFxText2 = chain::toString (withFx);
-    proc.setChainOrder (withFx);
+    proc.setChainOrder (withFx, {});
 
     juce::MemoryBlock blob;
     proc.getStateInformation (blob);
 
-    proc.setChainOrder (chain::defaultOrder());
+    proc.setChainOrder (chain::defaultOrder(), {});
     proc.setStateInformation (blob.getData(), (int) blob.getSize());
     juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
 
     ok &= expect (chain::toString (proc.getChainOrder()) == withFxText2,
                   "fx tokens survive getStateInformation -> setStateInformation");
 
-    proc.setChainOrder (withFx);
+    proc.setChainOrder (withFx, {});
     const auto slotState = proc.captureStateVar();
 
-    proc.setChainOrder (chain::defaultOrder());
+    proc.setChainOrder (chain::defaultOrder(), {});
     proc.applyStateVar (slotState);
 
     ok &= expect (chain::toString (proc.getChainOrder()) == withFxText2,
@@ -478,7 +843,7 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
         juce::MemoryBlock legacyBlob;
         juce::AudioProcessor::copyXmlToBinary (*xml, legacyBlob);
 
-        proc.setChainOrder (chain::defaultOrder());
+        proc.setChainOrder (chain::defaultOrder(), {});
         proc.setStateInformation (legacyBlob.getData(), (int) legacyBlob.getSize());
         juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
 
@@ -499,7 +864,7 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
     {
         obj->removeProperty ("fxSlots"); // a preset saved before the fx slots existed
 
-        proc.setChainOrder (chain::defaultOrder());
+        proc.setChainOrder (chain::defaultOrder(), {});
         proc.applyStateVar (slotState);
 
         bool slotsClean = true;
@@ -518,7 +883,7 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
     // --- 9. host autosave: getStateInformation off the message thread while the
     // audio thread is rendering.
     {
-        proc.setChainOrder (withFx);
+        proc.setChainOrder (withFx, {});
         proc.prepareToPlay (sampleRate, blockSize);
 
         StateSaverThread saver (proc);
@@ -534,7 +899,7 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
                       "off-thread getStateInformation produces valid, parseable state");
     }
 
-    proc.setChainOrder (chain::defaultOrder());
+    proc.setChainOrder (chain::defaultOrder(), {});
     proc.prepareToPlay (sampleRate, blockSize);
 
     return ok;
@@ -589,13 +954,40 @@ int main (int argc, char** argv)
     std::printf (modelPass ? "PASS: model audibly changes the signal\n"
                            : "FAIL: output did not change after model load\n");
 
+    const bool parsePass = runParseTests();
+    std::printf (parsePass ? "PASS: chain parsing is correct\n"
+                           : "FAIL: chain parsing is wrong\n");
+
+    const bool freshPass = runFreshInstanceTest (sampleRate, blockSize);
+    std::printf (freshPass ? "PASS: a fresh instance starts with only the amp\n"
+                           : "FAIL: a fresh instance does not start with only the amp\n");
+
     const bool chainPass = runChainOrderTests (proc, sampleRate, blockSize);
     std::printf (chainPass ? "PASS: chain order processes and round-trips\n"
                            : "FAIL: chain order behaviour is wrong\n");
+
+    const bool instancePass = runInstanceModelTests (proc, sampleRate, blockSize);
+    std::printf (instancePass ? "PASS: block instances process and round-trip\n"
+                              : "FAIL: block instance behaviour is wrong\n");
+
+    const bool ampEqPass = runAmpEqTests (proc, sampleRate, blockSize);
+    std::printf (ampEqPass ? "PASS: amp EQ behaves correctly\n"
+                           : "FAIL: amp EQ behaviour is wrong\n");
+
+    const bool factoryPass = runFactoryPresetTests (sampleRate, blockSize);
+    std::printf (factoryPass ? "PASS: factory presets carry a real chain order\n"
+                             : "FAIL: factory preset behaviour is wrong\n");
+
+    const bool concurrentPass = runConcurrentPackingTest();
+    std::printf (concurrentPass ? "PASS: concurrent chain packing stays in bounds\n"
+                                : "FAIL: concurrent chain packing went out of bounds\n");
 
     const bool fxPass = runFxSlotTests (proc, sampleRate, blockSize);
     std::printf (fxPass ? "PASS: empty fx slots are inert and round-trip\n"
                         : "FAIL: fx slot behaviour is wrong\n");
 
-    return modelPass && chainPass && fxPass ? 0 : 1;
+    return modelPass && parsePass && freshPass && chainPass && instancePass && ampEqPass
+                   && factoryPass && concurrentPass && fxPass
+               ? 0
+               : 1;
 }
