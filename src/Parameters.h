@@ -80,11 +80,15 @@ inline constexpr auto modMix   = "mod_mix";    // [0, 1]
 inline constexpr auto delayTime     = "delay_time";     // ms [20, 2000]
 inline constexpr auto delayFeedback = "delay_feedback"; // [0, 0.95]
 inline constexpr auto delayMix      = "delay_mix";      // [0, 1]
+inline constexpr auto delayMode     = "delay_mode";     // choice: Stereo | Ping-Pong | Dual
+inline constexpr auto delayRatio    = "delay_ratio";    // % [25, 200] R time = L time x ratio/100, Dual mode only
+inline constexpr auto delayWidth    = "delay_width";    // [0, 1] wet-signal M/S width, all modes
 
 // Reverb
 inline constexpr auto reverbSize    = "reverb_size";    // [0, 1]
 inline constexpr auto reverbDamping = "reverb_damping"; // [0, 1]
 inline constexpr auto reverbMix     = "reverb_mix";     // [0, 1]
+inline constexpr auto reverbWidth   = "reverb_width";   // [0, 1] juce::Reverb stereo width
 
 //==============================================================================
 // Pooled instances.
@@ -146,19 +150,27 @@ inline constexpr auto delay2On       = "delay2_on";
 inline constexpr auto delay2Time     = "delay2_time";
 inline constexpr auto delay2Feedback = "delay2_feedback";
 inline constexpr auto delay2Mix      = "delay2_mix";
+inline constexpr auto delay2Mode     = "delay2_mode";
+inline constexpr auto delay2Ratio    = "delay2_ratio";
+inline constexpr auto delay2Width    = "delay2_width";
 inline constexpr auto delay3On       = "delay3_on";
 inline constexpr auto delay3Time     = "delay3_time";
 inline constexpr auto delay3Feedback = "delay3_feedback";
 inline constexpr auto delay3Mix      = "delay3_mix";
+inline constexpr auto delay3Mode     = "delay3_mode";
+inline constexpr auto delay3Ratio    = "delay3_ratio";
+inline constexpr auto delay3Width    = "delay3_width";
 
 inline constexpr auto reverb2On      = "reverb2_on";
 inline constexpr auto reverb2Size    = "reverb2_size";
 inline constexpr auto reverb2Damping = "reverb2_damping";
 inline constexpr auto reverb2Mix     = "reverb2_mix";
+inline constexpr auto reverb2Width   = "reverb2_width";
 inline constexpr auto reverb3On      = "reverb3_on";
 inline constexpr auto reverb3Size    = "reverb3_size";
 inline constexpr auto reverb3Damping = "reverb3_damping";
 inline constexpr auto reverb3Mix     = "reverb3_mix";
+inline constexpr auto reverb3Width   = "reverb3_width";
 
 // Amp tone stack: the EQ that lives inside the amp block, between the model's gated
 // output and the amp-out gain. Same maths and knob units as the standalone eq block
@@ -168,6 +180,25 @@ inline constexpr auto ampEqOn     = "amp_eq_on";
 inline constexpr auto ampEqBass   = "amp_eq_bass";
 inline constexpr auto ampEqMid    = "amp_eq_mid";
 inline constexpr auto ampEqTreble = "amp_eq_treble";
+
+// Split path (docs/SPLIT.md): one chain region may fork into two lanes — amp2 is
+// engine B as a freely-placeable block, split/mix are the fork and rejoin. All
+// singletons: unlike the six duplicable kinds above, there is exactly one of each.
+inline constexpr auto amp2On     = "amp2_on";
+inline constexpr auto amp2Input  = "amp2_input";  // dB [-20, 20] into engine B, mirrors ampInput
+inline constexpr auto amp2Output = "amp2_output"; // dB [-40, 40] out of engine B, mirrors ampOutput
+
+inline constexpr auto splitOn    = "split_on";
+inline constexpr auto splitMode  = "split_mode";  // choice: Copy | L/R | X-Over (FROZEN)
+inline constexpr auto splitXover = "split_xover"; // Hz [100, 4000] log, X-Over crossover freq
+
+inline constexpr auto mixOn     = "mix_on";
+inline constexpr auto mixALevel = "mix_alevel"; // dB [-60, 12] lane A level into the sum
+inline constexpr auto mixBLevel = "mix_blevel"; // dB [-60, 12] lane B level into the sum
+inline constexpr auto mixAPan   = "mix_apan";   // [-1, 1] lane A equal-power pan
+inline constexpr auto mixBPan   = "mix_bpan";   // [-1, 1] lane B equal-power pan
+inline constexpr auto mixBPhase = "mix_bphase"; // bool: invert lane B before summing
+inline constexpr auto mixLevel  = "mix_level";  // dB [-60, 12] master level after the sum
 
 // Instance-indexed views of the ids above (index 0 = instance 1). The processor
 // resolves its per-instance pointer arrays through these; the ids stay literals, so
@@ -199,15 +230,27 @@ inline constexpr const char* delayOnIds[maxInstances]       { delayOn,       del
 inline constexpr const char* delayTimeIds[maxInstances]     { delayTime,     delay2Time,     delay3Time };
 inline constexpr const char* delayFeedbackIds[maxInstances] { delayFeedback, delay2Feedback, delay3Feedback };
 inline constexpr const char* delayMixIds[maxInstances]      { delayMix,      delay2Mix,      delay3Mix };
+inline constexpr const char* delayModeIds[maxInstances]     { delayMode,     delay2Mode,     delay3Mode };
+inline constexpr const char* delayRatioIds[maxInstances]    { delayRatio,    delay2Ratio,    delay3Ratio };
+inline constexpr const char* delayWidthIds[maxInstances]    { delayWidth,    delay2Width,    delay3Width };
 
 inline constexpr const char* reverbOnIds[maxInstances]      { reverbOn,      reverb2On,      reverb3On };
 inline constexpr const char* reverbSizeIds[maxInstances]    { reverbSize,    reverb2Size,    reverb3Size };
 inline constexpr const char* reverbDampingIds[maxInstances] { reverbDamping, reverb2Damping, reverb3Damping };
 inline constexpr const char* reverbMixIds[maxInstances]     { reverbMix,     reverb2Mix,     reverb3Mix };
+inline constexpr const char* reverbWidthIds[maxInstances]   { reverbWidth,   reverb2Width,   reverb3Width };
 
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
 inline const juce::StringArray modTypeChoices { "Chorus", "Phaser", "Tremolo" };
+
+// Frozen once shipped — do not reorder/append without a migration plan, hosts store
+// the choice as an index.
+inline const juce::StringArray delayModeChoices { "Stereo", "Ping-Pong", "Dual" };
+
+// Frozen once shipped (docs/SPLIT.md) — do not reorder/append without a migration
+// plan, hosts store the choice as an index.
+inline const juce::StringArray splitModeChoices { "Copy", "L/R", "X-Over" };
 
 /** Output-gain compensation modes, in the official plugin's index order. */
 enum class OutputMode { raw = 0, normalized = 1, calibrated = 2 };

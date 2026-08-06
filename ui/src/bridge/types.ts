@@ -12,9 +12,12 @@
 /**
  * Persisted chain tokens (`chain::BlockInfo::token`). A token names a block
  * INSTANCE, not a block type: the first twelve are the v1 ids and are frozen,
- * and the twelve instance tokens are appended after them exactly as
- * `chain::BlockId` appends its new enumerators. Instance 1 of every kind keeps
- * the legacy token (`comp`), so existing state loads unchanged.
+ * the twelve instance tokens are appended after them exactly as
+ * `chain::BlockId` appends its new enumerators, and split/lane2/mix/amp2
+ * (docs/SPLIT.md §1) close out the list — the exact tail order `ChainOrder.h`
+ * appends its own enumerators in, `split == 24` pinned there too. Instance 1
+ * of every kind keeps the legacy token (`comp`), so existing state loads
+ * unchanged.
  */
 export const BLOCK_IDS = [
   "gate",
@@ -41,6 +44,10 @@ export const BLOCK_IDS = [
   "delay3",
   "reverb2",
   "reverb3",
+  "split",
+  "lane2",
+  "mix",
+  "amp2",
 ] as const;
 
 export type BlockId = (typeof BLOCK_IDS)[number];
@@ -66,9 +73,11 @@ export function fxSlotIndexOf(block: BlockId): FxSlotIndex | -1 {
 
 /* ─────────────────────────────── block kinds ───────────────────────────── */
 
-/** The nine built-in kinds, in enum order — also the picker's row order. The fx
- *  slots are singleton blocks rather than a kind: which slot it is carries the
- *  identity, and what is in it is named in text. */
+/** The ten built-in kinds, in enum order — also the picker's row order. `amp2`
+ *  joined this list in docs/SPLIT.md §1: an ordinary, freely-placeable
+ *  singleton block (engine B), addable through the same generic mechanism as
+ *  gate/amp/cab. The fx slots are singleton blocks rather than a kind: which
+ *  slot it is carries the identity, and what is in it is named in text. */
 export const BLOCK_KINDS = [
   "gate",
   "comp",
@@ -79,13 +88,32 @@ export const BLOCK_KINDS = [
   "mod",
   "delay",
   "reverb",
+  "amp2",
 ] as const;
 
 export type BlockKind = (typeof BLOCK_KINDS)[number];
 
-/** What identity tables are written per: one entry for each kind plus one per fx
- *  slot. Every instance token reads its kind's entry (see `blockRecord`). */
-export type BaseBlockId = BlockKind | FxBlockId;
+/**
+ * The split-path structure's own furniture (docs/SPLIT.md §1): `split`/`mix`
+ * are singleton tiles with panels, `lane2` is the hidden lane-B boundary token
+ * — it round-trips through parse/pack but is never a tile, never a picker row,
+ * never addable through `freeInstance`. Kept OUT of `BLOCK_KINDS` (and so out
+ * of the generic picker's `BLOCK_BASES`) on purpose: split/mix only ever enter
+ * the chain as the `split, lane2, mix` triple, through the board's dedicated
+ * "Add split" affordance, never one at a time.
+ */
+export const STRUCTURE_BLOCK_IDS = ["split", "lane2", "mix"] as const;
+
+export type StructureBlockId = (typeof STRUCTURE_BLOCK_IDS)[number];
+
+export function isStructureBlockId(value: string): value is StructureBlockId {
+  return (STRUCTURE_BLOCK_IDS as readonly string[]).includes(value);
+}
+
+/** What identity tables are written per: one entry for each kind, one per fx
+ *  slot, one per structural token. Every instance token reads its kind's entry
+ *  (see `blockRecord`). */
+export type BaseBlockId = BlockKind | FxBlockId | StructureBlockId;
 
 /** Kinds that exist three times over. gate, amp, cab and the fx slots stay
  *  singletons. */
@@ -115,6 +143,7 @@ export const KIND_INSTANCES = {
   mod: ["mod", "mod2", "mod3"],
   delay: ["delay", "delay2", "delay3"],
   reverb: ["reverb", "reverb2", "reverb3"],
+  amp2: ["amp2"],
 } as const satisfies Record<BlockKind, readonly BlockId[]>;
 
 const BLOCK_KIND_OF = {} as Record<BlockId, BaseBlockId>;
@@ -123,6 +152,15 @@ const BLOCK_INSTANCE_OF = {} as Record<BlockId, number>;
 for (const slot of FX_BLOCK_IDS) {
   BLOCK_KIND_OF[slot] = slot;
   BLOCK_INSTANCE_OF[slot] = 0;
+}
+// Structural furniture is its own singleton kind each, mirroring ChainOrder.h's
+// `kindOf` (split/lane2/mix/amp2 share one switch case there, each returning
+// itself) — matched here for split/lane2/mix; amp2 goes through the BLOCK_KINDS
+// loop below instead, since (unlike these three) it belongs in the generic
+// picker.
+for (const id of STRUCTURE_BLOCK_IDS) {
+  BLOCK_KIND_OF[id] = id;
+  BLOCK_INSTANCE_OF[id] = 0;
 }
 for (const kind of BLOCK_KINDS) {
   const tokens: readonly BlockId[] = KIND_INSTANCES[kind];
@@ -160,13 +198,17 @@ export function blockRecord<T>(make: (id: BlockId) => T): Record<BlockId, T> {
 /* ─────────────────────────── parameter identifiers ─────────────────────── */
 
 /**
- * 72 slider params — ids are the APVTS ids verbatim and are frozen.
+ * 89 slider params — ids are the APVTS ids verbatim and are frozen.
  *
  * The first 29 are v1's, in v1 order. The rest are appended in Parameters.cpp's
  * v2 append order: each duplicable kind's instances 2 and 3 (same ranges,
  * defaults and steps as instance 1, `<kind><n>_<key>`), then the amp's own tone
  * stack, which is eq-shaped but belongs to the amp block and so does not follow
- * the instance rule.
+ * the instance rule, then the stereo-chain additions (docs/STEREO.md §4):
+ * delay ratio x3, delay width x3, reverb width x3, then the split-path
+ * additions (docs/SPLIT.md §2): amp2's own input/output, split's crossover,
+ * and mix's five level/pan controls — in `WebEditor.cpp`'s `kSliderIds` order,
+ * which is not the APVTS layout order (see paramMeta.ts for that one).
  */
 export const SLIDER_PARAM_IDS = [
   "input_trim",
@@ -242,9 +284,33 @@ export const SLIDER_PARAM_IDS = [
   "amp_eq_bass",
   "amp_eq_mid",
   "amp_eq_treble",
+
+  "delay_ratio",
+  "delay2_ratio",
+  "delay3_ratio",
+  "delay_width",
+  "delay2_width",
+  "delay3_width",
+  "reverb_width",
+  "reverb2_width",
+  "reverb3_width",
+
+  "amp2_input",
+  "amp2_output",
+  "split_xover",
+  "mix_alevel",
+  "mix_blevel",
+  "mix_apan",
+  "mix_bpan",
+  "mix_level",
 ] as const;
 
-/** 26 toggle params: v1's 13, then every instance's bypass and the amp EQ's. */
+/**
+ * 30 toggle params: v1's 13, then every instance's bypass and the amp EQ's,
+ * then the split-path enables (docs/SPLIT.md §2). `amp_stereo` is gone —
+ * SUPERSEDED by `amp2` as a chain block (docs/SPLIT.md, top): there is no
+ * toggle for it any more, only the block's own `amp2_on`.
+ */
 export const TOGGLE_PARAM_IDS = [
   "gate_on",
   "comp_on",
@@ -273,14 +339,27 @@ export const TOGGLE_PARAM_IDS = [
   "reverb2_on",
   "reverb3_on",
   "amp_eq_on",
+
+  "amp2_on",
+  "split_on",
+  "mix_on",
+  "mix_bphase",
 ] as const;
 
-/** 4 combo params — mod is the only duplicable kind with a choice parameter. */
+/** 8 combo params — mod and delay (docs/STEREO.md §4) are the duplicable kinds
+ *  with a choice parameter; `split_mode` (docs/SPLIT.md §2) is the split
+ *  region's, FROZEN once shipped like `delay_mode`. */
 export const COMBO_PARAM_IDS = [
   "amp_out_mode",
   "mod_type",
   "mod2_type",
   "mod3_type",
+
+  "delay_mode",
+  "delay2_mode",
+  "delay3_mode",
+
+  "split_mode",
 ] as const;
 
 export type SliderParamId = (typeof SLIDER_PARAM_IDS)[number];
@@ -483,6 +562,11 @@ export interface UiState {
    *  C++ keeps no layout it could not validate, and the UI wraps for itself. */
   chainRows: number[];
   model: ModelInfo | null;
+  /** Engine B's loaded capture (docs/STEREO.md §1 plumbing, now driven by the
+   *  `amp2` chain block — docs/SPLIT.md §1); null when empty, same shape as
+   *  `model`. Only meaningful while `amp2` is in the chain, but tracked
+   *  regardless — clearing model A must not clear B. */
+  modelB: ModelInfo | null;
   ir: FileEntry | null;
   models: FileEntry[];
   irs: FileEntry[];
@@ -587,6 +671,9 @@ export interface BridgeEventMap {
     ab: AbState;
   };
   modelChanged: { model: ModelInfo | null };
+  /** Mirrors `modelChanged` for engine B — `WebEditor::pollModelAndIr` polls
+   *  `loadedModelPathB` alongside the A/IR paths it already watches. */
+  modelBChanged: { modelB: ModelInfo | null };
   irChanged: { ir: FileEntry | null };
   t3kStatus: T3kState;
   t3kToneSelected: { toneId: number; models: T3kModel[] };
@@ -658,6 +745,12 @@ export interface Bridge {
   setChainOrder(tokens: string[], rows: number[]): Promise<void>;
   loadModel(path: string): Promise<ErrorResult>;
   clearModel(): Promise<void>;
+  /** Mirrors `loadModel`/`clearModel` for engine B (docs/STEREO.md §1 plumbing;
+   *  the model-B UI now lives on the `amp2` block, docs/SPLIT.md §5). Loading
+   *  A's own path here is exactly how "Use model A" works — there is no
+   *  separate native fn for it. */
+  loadModelB(path: string): Promise<ErrorResult>;
+  clearModelB(): Promise<void>;
   loadIr(path: string): Promise<ErrorResult>;
   clearIr(): Promise<void>;
   /** Native async FileChooser (.nam). Installs into the library *and* loads the

@@ -27,11 +27,20 @@ import { useToggleParam } from "../../hooks";
 import { selectFxSlotFor, useStore } from "../../store";
 import { BLOCK_INFO } from "../../theme/blocks";
 import { duration, ease, spring } from "../../theme/motion";
-import { fxSlotIndexOf, kindOf, type BlockId } from "../../bridge";
+import {
+  fxSlotIndexOf,
+  isStructureBlockId,
+  kindOf,
+  type BlockId,
+} from "../../bridge";
+import { Amp2Body } from "./Amp2Body";
 import { AmpBody } from "./AmpBody";
 import { CabBody } from "./CabBody";
+import { DelayBody } from "./DelayBody";
 import { FxSlotBody } from "./FxSlotBody";
+import { MixBody } from "./MixBody";
 import { ModBody } from "./ModBody";
+import { SplitBody } from "./SplitBody";
 import { KnobRow } from "./KnobRow";
 import { KNOB_SPECS } from "./knobSpecs";
 import { ToneModal } from "./ToneModal";
@@ -101,6 +110,10 @@ function PanelHeader({ block }: { block: BlockId }) {
   // number moves to a tag beside the name so both stay visible.
   const loadedName = fxSlot?.occupied ? fxSlot.name : "";
 
+  const removeLabel = isStructureBlockId(block)
+    ? "Remove split (lanes rejoin)"
+    : "Remove this block from the chain";
+
   return (
     <header className={s.header}>
       <span className={s.headerIcon}>
@@ -127,9 +140,13 @@ function PanelHeader({ block }: { block: BlockId }) {
         <Tooltip label="Enable or bypass this block">
           <PowerPill on={power.value} onChange={power.setValue} />
         </Tooltip>
-        <Tooltip label="Remove this block from the chain">
+        {/* SPLIT and MIX have panels, so the trash can reach them — and removing
+            either removes the whole region (the store routes structural ids through
+            the flatten, docs/SPLIT.md §5). The label says so, exactly as the board's
+            structural card does. */}
+        <Tooltip label={removeLabel}>
           <IconButton
-            aria-label="Remove this block from the chain"
+            aria-label={removeLabel}
             destructive
             onClick={() => removeBlock(block)}
           >
@@ -156,8 +173,17 @@ function BlockBody({ block }: { block: BlockId }) {
   // the generic knob row with no way to reach mod2_type/mod3_type.
   const kind = kindOf(block);
   if (kind === "amp") return <AmpBody />;
+  if (kind === "amp2") return <Amp2Body />;
   if (kind === "cab") return <CabBody />;
   if (kind === "mod") return <ModBody block={block} />;
+  if (kind === "delay") return <DelayBody block={block} />;
+  if (kind === "split") return <SplitBody />;
+  if (kind === "mix") return <MixBody />;
+  // Guard: lane2 is furniture (docs/SPLIT.md §1) — the board never renders it
+  // as a card, so selection should never reach it, but a null body is the
+  // backstop if it somehow does rather than falling through to the generic
+  // knob row (whose spec table is deliberately empty for it too).
+  if (kind === "lane2") return null;
   const fxSlot = fxSlotIndexOf(block);
   if (fxSlot !== -1) return <FxSlotBody slot={fxSlot} />;
   return <KnobRow specs={KNOB_SPECS[block]} />;

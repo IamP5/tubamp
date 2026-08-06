@@ -221,12 +221,88 @@ const AMP_EQ_LAYOUT: readonly LayoutEntry[] = [
   s("amp_eq_treble", "Amp EQ Treble", 0, 10, 0.1, 5),
 ];
 
+/* ─────────────────────── v2 stereo/dual-mode append ─────────────────────── */
+
+/**
+ * docs/STEREO.md §4 append: instance 1's own entries for three params that had
+ * no v1 counterpart, so `entriesOfKind()` above cannot find them in V1_LAYOUT —
+ * declared by hand instead, then cloned to instances 2/3 the same way. (The
+ * dual-NAM stereo amp part of that spec is superseded by `amp2` as a chain
+ * block — docs/SPLIT.md — so there is no `amp_stereo` entry here.)
+ */
+const DELAY_MODE_1 = c(
+  "delay_mode",
+  "Delay Mode",
+  ["Stereo", "Ping-Pong", "Dual"],
+  0,
+);
+const DELAY_RATIO_1 = s("delay_ratio", "Delay Ratio", 25, 200, 0.1, 100, "%");
+const DELAY_WIDTH_1 = s("delay_width", "Delay Width", 0, 1, 0.001, 1);
+const REVERB_WIDTH_1 = s("reverb_width", "Reverb Width", 0, 1, 0.001, 1);
+
+/** `instanceEntry()` for both extra instances at once. */
+function stereoInstances(base: LayoutEntry, kind: DuplicableKind): LayoutEntry[] {
+  return EXTRA_INSTANCES.map((instance) => instanceEntry(base, kind, instance));
+}
+
+/** Appended, mirroring createParameterLayout()'s append order exactly — this is
+ *  APVTS index order, not the order §4 happens to list the controls in: mode/
+ *  ratio/width per delay instance, then the three reverb widths (no
+ *  `amp_stereo` — superseded, see above). The derived tables below are keyed
+ *  by id, so only PARAM_INDEX depends on this. */
+const [DELAY_MODE_2, DELAY_MODE_3] = stereoInstances(DELAY_MODE_1, "delay");
+const [DELAY_RATIO_2, DELAY_RATIO_3] = stereoInstances(DELAY_RATIO_1, "delay");
+const [DELAY_WIDTH_2, DELAY_WIDTH_3] = stereoInstances(DELAY_WIDTH_1, "delay");
+
+const STEREO_LAYOUT: readonly LayoutEntry[] = [
+  DELAY_MODE_1,
+  DELAY_RATIO_1,
+  DELAY_WIDTH_1,
+  DELAY_MODE_2,
+  DELAY_RATIO_2,
+  DELAY_WIDTH_2,
+  DELAY_MODE_3,
+  DELAY_RATIO_3,
+  DELAY_WIDTH_3,
+  REVERB_WIDTH_1,
+  ...stereoInstances(REVERB_WIDTH_1, "reverb"),
+];
+
+/* ──────────────────────── v2 split-path append (docs/SPLIT.md) ──────────── */
+
+/**
+ * Appended after the stereo-chain block, in `createParameterLayout()`'s exact
+ * order: amp2's own input/output (range + default copied verbatim from
+ * `amp_input`/`amp_output`), then split's enable/mode/crossover, then mix's
+ * enable, five level/pan controls and master level.
+ */
+const SPLIT_LAYOUT: readonly LayoutEntry[] = [
+  t("amp2_on", "Amp 2 On", true),
+  s("amp2_input", "Amp 2 Input", -20, 20, 0.1, 0, "dB"),
+  s("amp2_output", "Amp 2 Output", -40, 40, 0.1, 0, "dB"),
+
+  t("split_on", "Split On", true),
+  c("split_mode", "Split Mode", ["Copy", "L/R", "X-Over"], 0),
+  s("split_xover", "Split X-Over", 100, 4000, 1, 800, "Hz", true),
+
+  t("mix_on", "Mix On", true),
+  s("mix_alevel", "Mix A Level", -60, 12, 0.1, 0, "dB"),
+  s("mix_blevel", "Mix B Level", -60, 12, 0.1, 0, "dB"),
+  s("mix_apan", "Mix A Pan", -1, 1, 0.001, 0),
+  s("mix_bpan", "Mix B Pan", -1, 1, 0.001, 0),
+  t("mix_bphase", "Mix B Phase", false),
+  s("mix_level", "Mix Level", -60, 12, 0.1, 0, "dB"),
+];
+
 /** The whole APVTS layout, in order: 44 v1 parameters, 54 instance parameters,
- *  4 for the amp tone stack — 72 sliders, 26 toggles, 4 combos. */
+ *  4 for the amp tone stack, 12 for the stereo-chain append, 13 for the
+ *  split-path append — 89 sliders, 30 toggles, 8 combos. */
 const LAYOUT: readonly LayoutEntry[] = [
   ...V1_LAYOUT,
   ...INSTANCE_LAYOUT,
   ...AMP_EQ_LAYOUT,
+  ...STEREO_LAYOUT,
+  ...SPLIT_LAYOUT,
 ];
 
 /* ────────────────────────────── derived tables ─────────────────────────── */

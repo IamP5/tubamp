@@ -15,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 
@@ -197,8 +198,7 @@ public:
         : nam::DSP (encapsulated->NumInputChannels(),
                     encapsulated->NumOutputChannels(),
                     expectedSampleRate),
-          mEncapsulated (std::move (encapsulated)),
-          mResampler (getNamSampleRate (mEncapsulated))
+          mEncapsulated (std::move (encapsulated))
     {
         mBlockProcessFunc = [this] (NAM_SAMPLE** in, NAM_SAMPLE** out, int n)
         {
@@ -228,13 +228,13 @@ public:
             if (! needToResample())
                 mEncapsulated->process (in, out, n);
             else
-                mResampler.ProcessBlock (in, out, n, mBlockProcessFunc);
+                mResampler->ProcessBlock (in, out, n, mBlockProcessFunc);
 
             offset += n;
         }
     }
 
-    int getLatency() const { return needToResample() ? mResampler.GetLatency() : 0; }
+    int getLatency() const { return needToResample() ? mResampler->GetLatency() : 0; }
 
     /** Never call from the audio thread: resets the encapsulated model, which prewarms
         (allocates and runs the network). */
@@ -242,7 +242,14 @@ public:
     {
         mExpectedSampleRate = sampleRate;
         mMaxExternalBlockSize = maxBlockSize;
-        mResampler.Reset (sampleRate, maxBlockSize);
+
+        // Rebuilt from scratch, never Reset() in place: the container's Reset takes an
+        // early-out when rate and block size are unchanged that clears its Lanczos
+        // buffers but skips the silence pre-warm, so a same-spec re-prepare would start
+        // the next render from a different resampler state than the first (audible as a
+        // first-block glitch at 44.1k; bit-exact renders only at the model's own rate).
+        mResampler.emplace (getEncapsulatedSampleRate());
+        mResampler->Reset (sampleRate, maxBlockSize);
 
         const double upRatio = sampleRate / getEncapsulatedSampleRate();
         const int maxEncapsulatedBlockSize = (int) std::ceil ((double) maxBlockSize / upRatio);
@@ -258,7 +265,7 @@ private:
     }
 
     std::unique_ptr<nam::DSP> mEncapsulated;
-    dsp::ResamplingContainer<NAM_SAMPLE, 1, 12> mResampler;
+    std::optional<dsp::ResamplingContainer<NAM_SAMPLE, 1, 12>> mResampler;
     int mMaxExternalBlockSize = kResamplerMaxBlockSize;
     std::function<void (NAM_SAMPLE**, NAM_SAMPLE**, int)> mBlockProcessFunc;
 };
@@ -286,7 +293,15 @@ struct NamEngine::Impl
     std::array<std::unique_ptr<ResamplingNAM>, numGarbageSlots> garbage;
 
     std::atomic<int> latencySamples { 0 };
+
+    // Two different questions, deliberately two flags:
+    //   modelPresent     — "the message thread has a model loaded or staged" (UI).
+    //   liveModelPresent — "the audio thread has adopted one" (DSP gating).
+    // The stereo amp path keys off the second: between loadModel() staging a model and
+    // the next applyStaging(), the first is already true while impl->live is still
+    // null, and a block that turned the stereo path on there would pass R through dry.
     std::atomic<bool> modelPresent { false };
+    std::atomic<bool> liveModelPresent { false };
 
     // Metadata of the model that is *live on the audio thread*, refreshed by
     // applyStaging(). Written on the audio thread, read there and by the UI.
@@ -455,6 +470,10 @@ void NamEngine::clearModel()
     impl->shouldRemove.store (true, std::memory_order_release);
     impl->modelPresent.store (false, std::memory_order_release);
 
+    // Dropped here rather than at the next applyStaging(): false is the fail-safe
+    // direction for the stereo gate, and it costs at most one block of stereo.
+    impl->liveModelPresent.store (false, std::memory_order_release);
+
     const juce::SpinLock::ScopedLockType lock (impl->infoLock);
     impl->info = {};
 }
@@ -483,6 +502,12 @@ bool NamEngine::applyStaging()
     {
         impl->latencySamples.store (impl->live != nullptr ? impl->live->getLatency() : 0,
                                     std::memory_order_release);
+
+        // Published like the latency, and for the same reason: the audio thread gates
+        // the dual-NAM stereo path on hasLiveModel(), so it has to describe the model
+        // that is live here, not the one the message thread staged a moment ago.
+        impl->liveModelPresent.store (impl->live != nullptr, std::memory_order_release);
+        impl->modelPresent.store (impl->live != nullptr, std::memory_order_release);
 
         auto* live = impl->live.get();
 
@@ -546,6 +571,11 @@ void NamEngine::collectGarbage()
 bool NamEngine::hasModel() const noexcept
 {
     return impl->modelPresent.load (std::memory_order_acquire);
+}
+
+bool NamEngine::hasLiveModel() const noexcept
+{
+    return impl->liveModelPresent.load (std::memory_order_acquire);
 }
 
 int NamEngine::getLatencySamples() const noexcept

@@ -10,6 +10,10 @@
  *   download survives switching to another block (the native code kept AmpBody
  *   alive forever for exactly this reason).
  * - Errors surface as toasts instead of the dual-purpose hint label.
+ *
+ * No STEREO section: dual-NAM stereo (docs/STEREO.md §1) is superseded by
+ * `amp2` as its own chain block (docs/SPLIT.md, top) — engine B's model
+ * management now lives in Amp2Body.
  */
 import {
   Button,

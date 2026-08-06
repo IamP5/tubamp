@@ -50,6 +50,8 @@ import {
   skewFor,
   type SliderSpec,
 } from "./paramMeta";
+import { isBlockId } from "./types";
+import { sanitizeStructure } from "../chain/structure";
 
 /* ───────────────────────────── event dispatcher ────────────────────────── */
 
@@ -710,6 +712,15 @@ const loadedModel: ModelInfo = {
  * that as auto, but nothing stops a hand-edited preset file from carrying it, so
  * the UI has to fall back to auto-wrap rather than mis-render — and this is the
  * only place in dev that path is reachable.
+ *
+ * "Dangling Split" is a hand-edited-preset stand-in for the split-path grammar
+ * (docs/SPLIT.md §1): `split` with no `lane2`/`mix` to close it. Real C++
+ * would never persist this — every restore boundary runs `sanitizeStructure`
+ * first — but a hand-edited `.tubamp` file can still say it, which is exactly
+ * what this fixture is for: `loadPreset` runs the order through the TS mirror of
+ * that same tolerant flatten before it emits `chainChanged` (mirroring
+ * applyStateVar), so loading this preset in dev exercises the flatten and shows
+ * that `amp2` (not structural) survives the removal of `split`.
  */
 /** What parseOrderOrLegacy answers for a preset with no chain of its own. */
 const CLASSIC_ORDER = [
@@ -729,6 +740,13 @@ const PRESET_CHAINS: Record<string, { chainOrder: string[]; chainRows: number[] 
     chainOrder: ["gate", "comp", "drive", "amp", "cab"],
     chainRows: [3, 3],
   },
+  "Dangling Split": {
+    // No lane2/mix to close the split — malformed per docs/SPLIT.md §1's
+    // grammar. amp2 sits right next to it on purpose: it is NOT structural, so
+    // it must survive the flatten that strips split.
+    chainOrder: ["gate", "split", "amp2", "cab", "delay"],
+    chainRows: [],
+  },
 };
 
 const state: UiState = {
@@ -737,6 +755,10 @@ const state: UiState = {
   chainOrder: ["amp"],
   chainRows: [],
   model: loadedModel,
+  // Empty until the user adds an amp2 block and loads or clones a second
+  // capture into it (docs/SPLIT.md §1) — tracked regardless of whether amp2 is
+  // in the chain right now.
+  modelB: null,
   ir: { path: `${IRS_DIR}/Greenback 4x12 SM57 Cap.wav`, name: "Greenback 4x12 SM57 Cap" },
   models: [
     { path: `${MODELS_DIR}/Marshall JCM800 Crunch.nam`, name: "Marshall JCM800 Crunch" },
@@ -757,6 +779,8 @@ const state: UiState = {
     { name: "Clean Chorus", path: `${PRESETS_DIR}/Clean Chorus.tubamp`, favorite: false, tags: ["clean"] },
     { name: "Bedroom Metal", path: `${PRESETS_DIR}/Bedroom Metal.tubamp`, favorite: false, tags: ["metal"] },
     { name: "Slapback Country", path: `${PRESETS_DIR}/Slapback Country.tubamp`, favorite: false, tags: ["clean", "delay"] },
+    // Malformed-structure fixture (docs/SPLIT.md §1) — see PRESET_CHAINS below.
+    { name: "Dangling Split", path: `${PRESETS_DIR}/Dangling Split.tubamp`, favorite: false, tags: ["dev"] },
   ],
   currentPresetName: "Crunch Rhythm",
   ab: { activeSlot: 0, aHasState: true, bHasState: false },
@@ -1170,6 +1194,30 @@ export const mockBridge: Bridge = {
     emit("modelChanged", { model: null });
   },
 
+  // Engine B mirrors engine A's own load/clear, including "loading A's own path"
+  // for the "Use model A" shortcut — there is nothing B-specific about that path,
+  // the model just happens to already be in the library.
+  loadModelB: async (path) => {
+    const entry = state.models.find((m) => m.path === path);
+    if (!entry) return delay<ErrorResult>({ error: "Model file not found" });
+    state.modelB = {
+      ...loadedModel,
+      path: entry.path,
+      name: entry.name,
+      ...mockGear(entry.name),
+      isSlimmable: !entry.name.toLowerCase().includes("lite"),
+      latencySamples: 90,
+    };
+    emit("modelBChanged", { modelB: structuredClone(state.modelB) });
+    return delay<ErrorResult>({}, 220);
+  },
+
+  clearModelB: async () => {
+    state.modelB = null;
+    await delay(null, 0);
+    emit("modelBChanged", { modelB: null });
+  },
+
   loadIr: async (path) => {
     const entry = state.irs.find((i) => i.path === path);
     if (!entry) return delay<ErrorResult>({ error: "IR file not found" });
@@ -1230,7 +1278,15 @@ export const mockBridge: Bridge = {
     // and the real applyStateVar answers those with the classic nine
     // (parseOrderOrLegacy) — not with the chain that happened to be loaded.
     const chain = PRESET_CHAINS[preset.name];
-    state.chainOrder = chain ? [...chain.chainOrder] : [...CLASSIC_ORDER];
+    // Sanitized on the way OUT, exactly like applyStateVar: C++ runs
+    // `sanitizeStructure` at every restore boundary, so `chainChanged` can never
+    // carry a malformed structure and the store is right to trust what it receives.
+    // This is what makes the "Dangling Split" fixture do its job — the flatten
+    // actually runs here, in the TS mirror, and dev only ever renders chains the
+    // real plugin could produce.
+    state.chainOrder = sanitizeStructure(
+      (chain ? chain.chainOrder : [...CLASSIC_ORDER]).filter(isBlockId),
+    );
     state.chainRows = chain ? [...chain.chainRows] : [];
     for (const spec of SLIDER_SPECS) {
       const jitter = spec.log ? 1 : 0;

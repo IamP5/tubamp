@@ -49,8 +49,17 @@ static_assert (params::maxInstances == chain::maxInstancesPerKind,
     downstream of the model when the amp comes later in the chain (otherwise it lands
     right where the gate sits).
 
-    Mono-collapse before NAM (models are mono), stereo expansion afterwards.
-    Latency = NamEngine resampler latency, reported via setLatencySamples.
+    Mono-collapse before NAM (models are mono), stereo expansion afterwards — for both
+    amp blocks: `amp` runs engine A with the amp tone stack, `amp2` runs engine B with
+    its own in/out gains and no tone stack.
+
+    The order may also contain ONE parallel region, `split, <lane A>, lane2, <lane B>,
+    mix` (docs/SPLIT.md): lane A runs on the host buffer, lane B on laneScratch, and the
+    mixer sums them back with per-lane level/pan and lane latency compensation. An order
+    without that structure runs exactly the single serial pass it always did.
+
+    Latency = the serial section's latency plus the slower lane's, reported via
+    setLatencySamples.
 */
 class TubampAudioProcessor : public juce::AudioProcessor,
                              private juce::AudioProcessorValueTreeState::Listener,
@@ -90,6 +99,14 @@ public:
     juce::String loadModel (const juce::File& namFile);
     void clearModel();
     juce::String getLoadedModelPath() const { return loadedModelPath; }
+
+    /** Engine B — the model the `amp2` block runs. Same contract as loadModel(); A and B
+        are independent, clearing one never touches the other, and an empty B simply
+        makes the amp2 block a pass-through. */
+    juce::String loadModelB (const juce::File& namFile);
+    void clearModelB();
+    juce::String getLoadedModelPathB() const { return loadedModelPathB; }
+    NamEngine::ModelInfo getModelInfoB() const { return namEngineB.getModelInfo(); }
 
     juce::String loadIr (const juce::File& wavFile);
     void clearIr();
@@ -172,6 +189,9 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
     NamEngine namEngine;
+    /** The amp2 block's engine. Idle (and costing nothing) until a model is loaded
+        into it. */
+    NamEngine namEngineB;
     FxHost fxHost;
     ModelLibrary library;
     PresetManager presets;
@@ -183,10 +203,48 @@ public:
 private:
     void updateLatency();
 
-    /** Total latency for a given topology: the NAM resampler plus every loaded FX
-        slot in the path. Audio-thread safe (atomics only). */
-    int computeWantedLatency (const std::array<bool, chain::numBlockTypes>& present,
-                              bool ampOn) const noexcept;
+    /** Ring capacity for the lanes' latency compensation, and therefore the largest
+        lane-to-lane difference that can actually be aligned. Only the DIFFERENCE is
+        stored, but that difference is not always small: a hosted linear-phase EQ or a
+        lookahead limiter in one lane reports tens of thousands of samples, so the ring
+        is sized to swallow those rather than to the tens of samples a resampler costs.
+        512 kB per lane, allocated once in prepareToPlay. */
+    static constexpr int kLaneLatencyRingSamples = 65536;
+
+    /** How much latency each section of an order carries. Lanes run side by side, so
+        the two of them cost whatever the slower one costs — but only after everything
+        serial has been paid for. */
+    struct ChainLatency
+    {
+        int serial = 0, laneA = 0, laneB = 0;
+
+        /** What the host is told. The lanes cost the slower one — but only as far as
+            the compensation ring can actually hold the faster one back; beyond that the
+            lanes cannot be aligned at all, and the honest figure is the one that is true
+            for the lane that WAS compensated, not a promise the mixer did not keep. */
+        int reported() const noexcept
+        {
+            const int shorter = juce::jmin (laneA, laneB);
+            const int longer  = juce::jmax (laneA, laneB);
+
+            return serial + shorter
+                 + juce::jmin (longer - shorter, kLaneLatencyRingSamples - 1);
+        }
+    };
+
+    /** The one lane-aware latency rule, shared by the audio thread (decoded order) and
+        the message thread (the mirror under chainLock) so the two can never disagree.
+        `lanesRunning` is the audio thread's own verdict on whether the split region can
+        run this block (it also needs lane scratch big enough); false folds both lanes
+        into the serial sum, which is what a flat pass actually costs. Audio-thread safe
+        (atomics only). */
+    ChainLatency computeChainLatency (const chain::BlockId* order, int numBlocks,
+                                      bool ampOn, bool amp2On,
+                                      bool lanesRunning = true) const noexcept;
+
+    /** What the host is told: the serial sections plus the slower lane. */
+    int computeWantedLatency (const chain::BlockId* order, int numBlocks,
+                              bool ampOn, bool amp2On) const noexcept;
 
     /** Any thread: updates the message-thread mirror and makes the order visible to the
         audio thread (single atomic word). Order and rows move as one pair. */
@@ -199,11 +257,50 @@ private:
         cannot replay what it was holding when it left. Allocation-free. */
     void resetBlockInstance (chain::BlockId id) noexcept;
 
+    /** Audio thread: runs ONE chain entry over the buffer it is handed. `buf` and
+        `block` are two views of the same audio — the host buffer for a serial entry or
+        a lane B entry's laneScratch view — which is what lets a block run in a lane
+        without knowing it is in one. `monoScratchData` is the amp blocks' collapse
+        scratch (null falls back to the target buffer's first channel). */
+    void processChainBlock (chain::BlockId id, juce::AudioBuffer<float>& buf,
+                            juce::dsp::AudioBlock<float> block, int numSamples,
+                            float* monoScratchData, bool gateOn, bool deferGateToAmp,
+                            bool ampOn, bool amp2On, juce::AudioPlayHead* playHead) noexcept;
+
+    /** Audio thread: collapse to mono -> engine -> deferred gate -> tone stack -> out
+        gain -> expand, on whichever buffer `block` views. Both amp blocks run through
+        here; only the amp block passes a tone stack or a deferred gate. */
+    void processAmpMono (NamEngine& engine, juce::dsp::AudioBlock<float> block, int numSamples,
+                         float* monoScratchData, juce::SmoothedValue<float>& inGain,
+                         juce::SmoothedValue<float>& outGain, bool applyDeferredGate,
+                         bool useToneStack) noexcept;
+
+    /** Audio thread: fills `lane` from `main` per split_mode, leaving lane A in `main`.
+        Allocation-free; the X-Over filters are prepared in prepareToPlay. */
+    void splitLanes (juce::AudioBuffer<float>& main, juce::AudioBuffer<float>& lane,
+                     int numChannels, int numSamples) noexcept;
+
+    /** Audio thread: sums `lane` back into `main` through the mixer's smoothed
+        level/pan gains. Ramps are materialized into monoScratch (idle here) because a
+        SmoothedValue must advance exactly numSamples per block, never once per
+        channel. */
+    void mixLanes (juce::AudioBuffer<float>& main, juce::AudioBuffer<float>& lane,
+                   int numChannels, int numSamples) noexcept;
+
+    /** Audio thread: delays each lane by its share of the two lanes' latency
+        difference, so the lanes are phase-aligned where they meet and the single
+        latency the host is told about is true for both. Allocation-free — the rings
+        are sized in prepareToPlay. */
+    void compensateLaneLatency (juce::AudioBuffer<float>& laneA, juce::AudioBuffer<float>& laneB,
+                                int numChannels, int numSamples, int delayA, int delayB) noexcept;
+
     // The two amp gains fold the model-metadata compensation into the knob value before
     // it is converted to linear, exactly as the reference plugin's _SetInputGain() /
     // _SetOutputGain() do. Audio-thread safe (atomics all the way down).
     float ampInputDb() const noexcept;
     float ampOutputDb() const noexcept;
+    float amp2InputDb() const noexcept;
+    float amp2OutputDb() const noexcept;
 
     // amp_slim: parameterChanged can arrive on the audio thread, and
     // SlimmableModel::SetSlimmableSize is explicitly not real-time safe, so the value
@@ -324,11 +421,31 @@ private:
         std::atomic<float>* delayTime[params::maxInstances] {};
         std::atomic<float>* delayFeedback[params::maxInstances] {};
         std::atomic<float>* delayMix[params::maxInstances] {};
+        std::atomic<float>* delayMode[params::maxInstances] {};
+        std::atomic<float>* delayRatio[params::maxInstances] {};
+        std::atomic<float>* delayWidth[params::maxInstances] {};
 
         std::atomic<float>* reverbOn[params::maxInstances] {};
         std::atomic<float>* reverbSize[params::maxInstances] {};
         std::atomic<float>* reverbDamping[params::maxInstances] {};
         std::atomic<float>* reverbMix[params::maxInstances] {};
+        std::atomic<float>* reverbWidth[params::maxInstances] {};
+
+        std::atomic<float>* amp2On = nullptr;
+        std::atomic<float>* amp2Input = nullptr;
+        std::atomic<float>* amp2Output = nullptr;
+
+        std::atomic<float>* splitOn = nullptr;
+        std::atomic<float>* splitMode = nullptr;
+        std::atomic<float>* splitXover = nullptr;
+
+        std::atomic<float>* mixOn = nullptr;
+        std::atomic<float>* mixALevel = nullptr;
+        std::atomic<float>* mixBLevel = nullptr;
+        std::atomic<float>* mixAPan = nullptr;
+        std::atomic<float>* mixBPan = nullptr;
+        std::atomic<float>* mixBPhase = nullptr;
+        std::atomic<float>* mixLevel = nullptr;
     };
 
     ParamPtrs pp;
@@ -365,15 +482,47 @@ private:
     std::array<DelayFx, params::maxInstances> delay;
     std::array<ReverbFx, params::maxInstances> reverbFx;
     juce::SmoothedValue<float> inputTrimLin { 1.0f }, outputLevelLin { 1.0f }, ampInLin { 1.0f }, ampOutLin { 1.0f };
+    /** The amp2 block's own gains — never the amp block's: two SmoothedValues cannot
+        share one, each has to advance exactly numSamples per block. */
+    juce::SmoothedValue<float> amp2InLin { 1.0f }, amp2OutLin { 1.0f };
+
+    // The mixer's gains: one per lane per channel (level x equal-power pan, sign-flipped
+    // for lane B's phase invert), plus the master. Their own smoothers for the same
+    // reason as amp2's.
+    std::array<juce::SmoothedValue<float>, 2> mixAGain { { juce::SmoothedValue<float> { 1.0f },
+                                                           juce::SmoothedValue<float> { 1.0f } } };
+    std::array<juce::SmoothedValue<float>, 2> mixBGain { { juce::SmoothedValue<float> { 1.0f },
+                                                           juce::SmoothedValue<float> { 1.0f } } };
+    juce::SmoothedValue<float> mixLevelLin { 1.0f };
 
     juce::AudioBuffer<float> monoScratch;
+
+    /** Lane B's audio. Sized in prepareToPlay like monoScratch; processBlock takes a
+        non-owning view of it with the host's channel count, so a lane block (FxHost
+        above all) sees exactly the geometry it sees on the main buffer. */
+    juce::AudioBuffer<float> laneScratch;
+
+    // X-Over split: LR4 pair, lane A takes the lows and lane B the highs.
+    juce::dsp::LinkwitzRileyFilter<float> splitLow, splitHigh;
+    /** Nyquist guard for split_xover, from the last prepareToPlay. */
+    float maxSplitCutoffHz = 20000.0f;
+
+    // Latency-compensation rings for the two lanes: one 2-channel ring each, written and
+    // read by compensateLaneLatency. Sized once in prepareToPlay, big enough that a delay
+    // is never clamped in practice (a lane's excess latency is a resampler's or a hosted
+    // plugin's, not thousands of samples). `primed` is false whenever the lanes did not
+    // run last block, so re-entering them cannot replay what the rings were holding.
+    std::array<juce::AudioBuffer<float>, 2> laneRing;
+    int laneRingWrite = 0;
+    std::array<int, 2> laneRingDelays { 0, 0 };
+    bool laneRingPrimed = false;
 
     /** What the previous block ran, for spotting a block re-entering the chain.
         Audio thread only. */
     std::array<bool, chain::numBlockTypes> prevPresent {};
 
     /** Re-entry resets waiting to be drained, a bounded few per callback: clearing a
-        2-second delay line is megabytes of memset at high sample rates, and a preset
+        4-second delay line is megabytes of memset at high sample rates, and a preset
         switch can re-enter half a dozen blocks in one block. A block whose reset is
         still pending processes as bypassed (silent, never stale). Audio thread only. */
     std::array<bool, chain::numBlockTypes> pendingReset {};
@@ -383,7 +532,7 @@ private:
     // to read while another thread reassigns it, hence the lock (never touched by
     // the audio thread).
     mutable juce::CriticalSection pathLock;
-    juce::String loadedModelPath, loadedIrPath;
+    juce::String loadedModelPath, loadedModelPathB, loadedIrPath;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TubampAudioProcessor)
 };

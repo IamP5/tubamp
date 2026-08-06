@@ -58,10 +58,21 @@ enum class BlockId : int
     delay2,
     delay3,
     reverb2,
-    reverb3
+    reverb3,
+
+    // Split-path structure (docs/SPLIT.md): a chain may contain at most one region
+    // shaped `split, <lane A ids...>, lane2, <lane B ids...>, mix`. split/lane2/mix are
+    // structural furniture, each its own singleton kind; lane2 is never rendered as a
+    // tile but still needs a token so parse/pack round-trip it. amp2 is an ordinary
+    // singleton block (engine B) that happens to be useful inside a lane but is not
+    // itself structural — it survives sanitizeStructure's flatten like any block.
+    split,
+    lane2,
+    mix,
+    amp2
 };
 
-inline constexpr int numBlockTypes = 24;
+inline constexpr int numBlockTypes = 28;
 
 /** Ids below this are the twelve that a build without the instance pool knows how to
     read; the chainOrderV2 scheme in PluginProcessor.cpp keys off the same number. */
@@ -70,8 +81,11 @@ inline constexpr int numV1BlockIds = 12;
 /** Instances of a duplicable kind. Singletons (gate, amp, cab, fx1-3) have one. */
 inline constexpr int maxInstancesPerKind = 3;
 
-/** No id may appear twice, so the chain can never be longer than the id space. */
-inline constexpr int maxChainLength = numBlockTypes;
+/** Chosen cap on chain length — a UI board this deep is already unwieldy to page
+    through, so this stopped being an id-space consequence the moment the id space grew
+    past it. Not derived from numBlockTypes: growing the enum does not grow this. Keep
+    in sync with the packed-word assert below (5 + 5*24 = 125 <= 128). */
+inline constexpr int maxChainLength = 24;
 
 /** The three external-AU slots are contiguous at the end of the enum; FxHost indexes
     its slot array with (id - fx1). */
@@ -79,8 +93,12 @@ inline constexpr int numFxSlots = 3;
 
 static_assert ((int) BlockId::fx3 == 11,
                "isFxSlot's range test needs the fx slots to stay the last v1 ids");
-static_assert ((int) BlockId::reverb3 == numBlockTypes - 1,
-               "the instance pairs must fill the enum up to numBlockTypes");
+static_assert ((int) BlockId::amp2 == numBlockTypes - 1,
+               "the instance pairs and the split/lane2/mix/amp2 ids must fill the enum "
+               "up to numBlockTypes");
+static_assert ((int) BlockId::split == 24,
+               "split's token is persisted (state, presets); this pins its id so a "
+               "reorder above can't silently change what old saves decode to");
 
 inline constexpr bool isFxSlot (BlockId id) noexcept
 {
@@ -123,18 +141,28 @@ constexpr BlockId kindOf (BlockId id) noexcept
         case BlockId::reverb:
         case BlockId::fx1:
         case BlockId::fx2:
-        case BlockId::fx3:     break;
+        case BlockId::fx3:
+        case BlockId::split:
+        case BlockId::lane2:
+        case BlockId::mix:
+        case BlockId::amp2:    break;
     }
 
     return id;
 }
 
 /** 0-based instance number: 0 for every singleton and for instance 1 of a duplicable
-    kind (which keeps the kind's own id), 1 for comp2, 2 for comp3. */
+    kind (which keeps the kind's own id), 1 for comp2, 2 for comp3. split/lane2/mix/amp2
+    sit above reverb3, outside the instance-pair block, and are singletons like gate or
+    amp — the pair arithmetic below must not run on them. */
 constexpr int instanceOf (BlockId id) noexcept
 {
     const int index = (int) id;
-    return index < numV1BlockIds ? 0 : (index - numV1BlockIds) % 2 + 1;
+
+    if (index < numV1BlockIds || index > (int) BlockId::reverb3)
+        return 0;
+
+    return (index - numV1BlockIds) % 2 + 1;
 }
 
 constexpr int numInstancesOf (BlockId kind) noexcept
@@ -165,7 +193,11 @@ constexpr int numInstancesOf (BlockId kind) noexcept
         case BlockId::delay2:
         case BlockId::delay3:
         case BlockId::reverb2:
-        case BlockId::reverb3: break;
+        case BlockId::reverb3:
+        case BlockId::split:
+        case BlockId::lane2:
+        case BlockId::mix:
+        case BlockId::amp2:    break;
     }
 
     return 1;
@@ -204,7 +236,11 @@ constexpr BlockId instanceId (BlockId kind, int instance) noexcept
         case BlockId::delay2:
         case BlockId::delay3:
         case BlockId::reverb2:
-        case BlockId::reverb3: break;
+        case BlockId::reverb3:
+        case BlockId::split:
+        case BlockId::lane2:
+        case BlockId::mix:
+        case BlockId::amp2:    break;
     }
 
     return kind;
@@ -244,6 +280,10 @@ inline constexpr std::array<BlockInfo, numBlockTypes> blockInfos { {
     { BlockId::delay3,  "delay3",  "Delay 3",       "DELAY 3",  "delay3_on" },
     { BlockId::reverb2, "reverb2", "Reverb 2",      "REVERB 2", "reverb2_on" },
     { BlockId::reverb3, "reverb3", "Reverb 3",      "REVERB 3", "reverb3_on" },
+    { BlockId::split,   "split",   "Splitter",      "SPLIT",    "split_on" },
+    { BlockId::lane2,   "lane2",   "Lane B",        "LANE B",   "split_on" },
+    { BlockId::mix,     "mix",     "Mixer",         "MIX",      "mix_on" },
+    { BlockId::amp2,    "amp2",    "NAM Amp 2",     "AMP 2",    "amp2_on" },
 } };
 
 inline const BlockInfo& infoFor (BlockId id) noexcept
@@ -332,6 +372,105 @@ inline Order parseOrderOrLegacy (const juce::String& text)
         return classicOrder();
 
     return order;
+}
+
+// --- split-path structure (docs/SPLIT.md) -------------------------------------
+// Exactly one split region per chain: split, <lane A...>, lane2, <lane B...>, mix.
+// The flat Order is the only source of truth for this shape — findStructure locates it,
+// sanitizeStructure enforces it (or flattens to plain serial), and every entry point
+// that can put an Order in front of the audio thread runs the sanitizer first.
+
+/** Positions of the three structural ids within an Order, or -1 where absent. */
+struct Structure
+{
+    int splitAt = -1, lane2At = -1, mixAt = -1;
+
+    /** Either no structure at all, or a well-formed one: split before lane2 before
+        mix. Anything else (a lone split, mix ahead of split, a missing lane2) is not
+        a structure sanitizeStructure would ever leave standing. */
+    bool valid() const noexcept
+    {
+        if (splitAt < 0 && lane2At < 0 && mixAt < 0)
+            return true;
+
+        return splitAt >= 0 && lane2At >= 0 && mixAt >= 0
+            && splitAt < lane2At && lane2At < mixAt;
+    }
+};
+
+/** First occurrence of split/lane2/mix in order, whatever shape the order is in —
+    callers judge validity via Structure::valid() or by re-deriving through
+    sanitizeStructure first. */
+inline Structure findStructure (const Order& order) noexcept
+{
+    Structure structure;
+
+    for (int i = 0; i < (int) order.size(); ++i)
+    {
+        const auto id = order[(size_t) i];
+
+        if (id == BlockId::split && structure.splitAt < 0)
+            structure.splitAt = i;
+        else if (id == BlockId::lane2 && structure.lane2At < 0)
+            structure.lane2At = i;
+        else if (id == BlockId::mix && structure.mixAt < 0)
+            structure.mixAt = i;
+    }
+
+    return structure;
+}
+
+/** Enforces the split-region grammar, tolerantly, in priority order:
+      1. A repeated structural id keeps only its first occurrence (belt: parseOrder's
+         own dedup already guarantees this for anything that went through it, but
+         hand-built/persisted orders may not have).
+      2. If split < lane2 < mix all occur, the structure is kept as-is.
+      3. Otherwise every structural id is stripped and the order flattens to plain
+         serial. amp2 is not structural — it is an ordinary block and survives the
+         flatten untouched, wherever it sat.
+    Never errors: a garbled structure degrades to no structure, not a rejected load. */
+inline Order sanitizeStructure (Order order)
+{
+    Order deduped;
+    deduped.reserve (order.size());
+
+    bool sawSplit = false, sawLane2 = false, sawMix = false;
+
+    for (auto id : order)
+    {
+        if (id == BlockId::split)
+        {
+            if (sawSplit)
+                continue;
+            sawSplit = true;
+        }
+        else if (id == BlockId::lane2)
+        {
+            if (sawLane2)
+                continue;
+            sawLane2 = true;
+        }
+        else if (id == BlockId::mix)
+        {
+            if (sawMix)
+                continue;
+            sawMix = true;
+        }
+
+        deduped.push_back (id);
+    }
+
+    if (findStructure (deduped).valid())
+        return deduped;
+
+    Order flattened;
+    flattened.reserve (deduped.size());
+
+    for (auto id : deduped)
+        if (id != BlockId::split && id != BlockId::lane2 && id != BlockId::mix)
+            flattened.push_back (id);
+
+    return flattened;
 }
 
 // --- lock-free packing -------------------------------------------------------

@@ -456,29 +456,48 @@ void DelayFx::prepare (const juce::dsp::ProcessSpec& spec)
 {
     sampleRate = spec.sampleRate;
 
-    // Longest delay_time is 2000 ms; +2 samples of headroom for the interpolator.
-    const int maxDelay = (int) std::ceil (spec.sampleRate * 2.0) + 2;
+    // Worst case, not the knob's face value: delay_time tops out at 2000 ms and Dual
+    // mode's delay_ratio at 200%, so line R can be asked for 4000 ms. Sizing for 2 s
+    // would silently clamp the R time (setParameters jlimits to the line length) and
+    // collapse Dual onto Stereo over the top half of the ratio range. +2 samples of
+    // headroom for the interpolator.
+    const int maxDelay = (int) std::ceil (spec.sampleRate * 4.0) + 2;
     delayLine.setMaximumDelayInSamples (maxDelay);
     delayLine.prepare (spec);
 
-    delaySamples.reset (sampleRate, (double) kDelaySmoothingSeconds);
-    delaySamples.setCurrentAndTargetValue (juce::jlimit (1.0f, (float) maxDelay,
-                                                         (float) (0.42 * sampleRate)));
+    const float initialDelay = juce::jlimit (1.0f, (float) maxDelay, (float) (0.42 * sampleRate));
+
+    delaySamplesL.reset (sampleRate, (double) kDelaySmoothingSeconds);
+    delaySamplesR.reset (sampleRate, (double) kDelaySmoothingSeconds);
+    delaySamplesL.setCurrentAndTargetValue (initialDelay);
+    delaySamplesR.setCurrentAndTargetValue (initialDelay);
+
     reset();
 }
 
 void DelayFx::reset()
 {
+    // Both delay lines are channels of one DelayLine, so this clears L and R.
     delayLine.reset();
 }
 
-void DelayFx::setParameters (float timeMs, float feedback01, float mix01)
+void DelayFx::setParameters (float timeMs, float feedback01, float mix01,
+                             int modeIndex, float ratioPct, float width01)
 {
     const auto maxDelay = (float) delayLine.getMaximumDelayInSamples();
-    delaySamples.setTargetValue (juce::jlimit (1.0f, maxDelay,
-                                               timeMs * 0.001f * (float) sampleRate));
+    const float timeL = timeMs * 0.001f * (float) sampleRate;
+
+    mode = (Mode) juce::jlimit (0, 2, modeIndex);
+
+    // Only Dual splits the two lengths; the other modes read R at the L time.
+    const float timeR = mode == Mode::dual ? timeL * ratioPct * 0.01f : timeL;
+
+    delaySamplesL.setTargetValue (juce::jlimit (1.0f, maxDelay, timeL));
+    delaySamplesR.setTargetValue (juce::jlimit (1.0f, maxDelay, timeR));
+
     feedback = juce::jlimit (0.0f, 0.95f, feedback01);
     mix = juce::jlimit (0.0f, 1.0f, mix01);
+    width = juce::jlimit (0.0f, 1.0f, width01);
 }
 
 void DelayFx::process (juce::dsp::AudioBlock<float> block)
@@ -488,20 +507,65 @@ void DelayFx::process (juce::dsp::AudioBlock<float> block)
     const float dryGain = 1.0f - mix;
     const float wetGain = mix;
 
+    // Mono hosts collapse every mode onto the single-line path, and Stereo mode *is*
+    // that path. Width at 1 is algebraically inert, so skipping the M/S round trip
+    // there keeps old sessions bit-identical rather than merely equal to the ear.
+    if (channels != 2 || (mode == Mode::stereo && juce::approximatelyEqual (width, 1.0f)))
+    {
+        delaySamplesR.skip ((int) numSamples); // keep R in step for a later mode switch
+
+        for (size_t i = 0; i < numSamples; ++i)
+        {
+            // One smoothed delay value per frame, shared by all channels.
+            const float delayInSamples = delaySamplesL.getNextValue();
+
+            for (size_t ch = 0; ch < channels; ++ch)
+            {
+                auto* data = block.getChannelPointer (ch);
+                const float dry = data[i];
+                const float delayed = delayLine.popSample ((int) ch, delayInSamples, true);
+
+                delayLine.pushSample ((int) ch, dry + delayed * feedback);
+                data[i] = dry * dryGain + delayed * wetGain;
+            }
+        }
+
+        return;
+    }
+
+    auto* left = block.getChannelPointer (0);
+    auto* right = block.getChannelPointer (1);
+
     for (size_t i = 0; i < numSamples; ++i)
     {
-        // One smoothed delay value per frame, shared by all channels.
-        const float delayInSamples = delaySamples.getNextValue();
+        const float timeL = delaySamplesL.getNextValue();
+        const float timeR = delaySamplesR.getNextValue();
+        const float dryL = left[i], dryR = right[i];
 
-        for (size_t ch = 0; ch < channels; ++ch)
+        const float wetL = delayLine.popSample (0, timeL, true);
+        const float wetR = delayLine.popSample (1, mode == Mode::dual ? timeR : timeL, true);
+
+        if (mode == Mode::pingPong)
         {
-            auto* data = block.getChannelPointer (ch);
-            const float dry = data[i];
-            const float delayed = delayLine.popSample ((int) ch, delayInSamples, true);
-
-            delayLine.pushSample ((int) ch, dry + delayed * feedback);
-            data[i] = dry * dryGain + delayed * wetGain;
+            // Only line L is seeded, and each line feeds the other, so the first repeat
+            // lands left at t and right at 2t. Mono sum matches the gate's convention.
+            const float inMono = 0.5f * (dryL + dryR);
+            delayLine.pushSample (0, inMono + wetR * feedback);
+            delayLine.pushSample (1, wetL * feedback);
         }
+        else
+        {
+            delayLine.pushSample (0, dryL + wetL * feedback);
+            delayLine.pushSample (1, dryR + wetR * feedback);
+        }
+
+        // Width narrows the wet signal only; the dry stays true stereo. Feedback is fed
+        // the raw taps, so width never changes how the repeats decay.
+        const float mid = 0.5f * (wetL + wetR);
+        const float side = 0.5f * (wetL - wetR) * width;
+
+        left[i]  = dryL * dryGain + (mid + side) * wetGain;
+        right[i] = dryR * dryGain + (mid - side) * wetGain;
     }
 }
 
@@ -519,14 +583,14 @@ void ReverbFx::reset()
     reverb.reset();
 }
 
-void ReverbFx::setParameters (float size01, float damping01, float mix01)
+void ReverbFx::setParameters (float size01, float damping01, float mix01, float width01)
 {
     juce::dsp::Reverb::Parameters p;
     p.roomSize = juce::jlimit (0.0f, 1.0f, size01);
     p.damping = juce::jlimit (0.0f, 1.0f, damping01);
     p.wetLevel = juce::jlimit (0.0f, 1.0f, mix01);
     p.dryLevel = 1.0f - p.wetLevel;
-    p.width = 1.0f;
+    p.width = juce::jlimit (0.0f, 1.0f, width01);
     p.freezeMode = 0.0f;
     reverb.setParameters (p);
 }

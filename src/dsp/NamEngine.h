@@ -28,6 +28,8 @@ namespace tubamp
 
     The engine processes MONO in place: callers collapse the input to channel 0
     before process() and duplicate afterwards (all shipped .nam models are mono).
+    Stereo is two engines, one per channel — nam_core shares nothing between
+    instances, so each owns its own weights (docs/STEREO.md §1).
 */
 class NamEngine
 {
@@ -77,7 +79,16 @@ public:
     /** Message-thread: destroy any model parked by applyStaging(). */
     void collectGarbage();
 
+    /** Any thread: true once loadModel() has staged a model, false after clearModel().
+        This is the *UI's* question — "is a model loaded?" — and it answers yes before
+        the audio thread has adopted the staged model. Do not gate DSP on it. */
     bool hasModel() const noexcept;
+
+    /** Audio-thread query: true while a model is live on the audio thread. Published
+        only by applyStaging() (and dropped by clearModel(), the fail-safe direction),
+        so it never claims a model the audio thread has not adopted — which is what the
+        dual-NAM stereo gate needs (docs/STEREO.md §1). */
+    bool hasLiveModel() const noexcept;
     /** Resampler latency in samples at the host rate (0 when rates match). */
     int getLatencySamples() const noexcept;
     /** Info for the currently *live or staged* model (UI display). */

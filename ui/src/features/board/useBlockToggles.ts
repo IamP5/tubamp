@@ -1,11 +1,15 @@
 /**
  * Every block's `*_on` parameter, bound once at board level.
  *
- * Twenty-four fixed `useToggleParam` calls (BLOCK_IDS is frozen, so the hook
+ * Twenty-seven fixed `useToggleParam` calls (BLOCK_IDS is frozen, so the hook
  * count is constant) — the card LEDs, the kebab menu labels and the connector
  * dimming all read from the same snapshot, and none of them has to subscribe
  * individually. Replaces the native view's 100ms `refreshFromParams` poll with a
  * real subscription, so host automation / A-B recall shows up immediately.
+ *
+ * Twenty-seven, not twenty-eight: `lane2` shares SPLIT's `split_on` (its
+ * `chain::BlockInfo` names that very parameter) and is never rendered, so it
+ * reuses the same binding rather than opening a second subscription to one relay.
  */
 import { BLOCK_IDS, type BlockId } from "../../bridge/types";
 import { useToggleParam, type ToggleParam } from "../../hooks";
@@ -37,6 +41,9 @@ export function useBlockToggles(): BlockToggles {
   const delay3 = useToggleParam("delay3_on");
   const reverb2 = useToggleParam("reverb2_on");
   const reverb3 = useToggleParam("reverb3_on");
+  const split = useToggleParam("split_on");
+  const mix = useToggleParam("mix_on");
+  const amp2 = useToggleParam("amp2_on");
   return {
     gate,
     comp,
@@ -62,6 +69,10 @@ export function useBlockToggles(): BlockToggles {
     delay3,
     reverb2,
     reverb3,
+    split,
+    lane2: split,
+    mix,
+    amp2,
   };
 }
 

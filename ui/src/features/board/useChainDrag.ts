@@ -28,6 +28,18 @@
  * that row's slot centres, which moves the nearest centre back out of it — and
  * with a flushSync per move each flip would be a rendered frame.
  *
+ * SPLIT PATHS (docs/SPLIT.md §5). The same frozen-geometry rule extends to the
+ * lanes: the split container's row band is entirely lane — upper half A, lower
+ * half B — so an ordinary block (amp2 included) drops into either track exactly
+ * the way it drops into a serial row, and `dropTargetAt` hands back a flat index
+ * that is always inside one legal segment. The structural tiles themselves are
+ * NOT draggable in v1 (the spec's stated simplification): SPLIT and MIX would
+ * have to travel as a pair-preserving unit, and a half-moved pair is a chain
+ * shape the sanitizer would flatten under the user's hands. They are removed
+ * instead, which flattens the structure deliberately (see the board's `flatten`).
+ * Every commit goes through `sanitizeStructure`, so even a preview built from a
+ * chain that changed underneath cannot publish a malformed structure.
+ *
  * Reentrancy: the preview is local, and the only write to the plugin is the
  * single `commit()` on drop, guarded by a value comparison against the store.
  * Applying an inbound `chainChanged` can therefore never bounce back out as
@@ -45,22 +57,25 @@ import {
 import { flushSync } from "react-dom";
 import { animate } from "motion/react";
 import type { BlockId } from "../../bridge/types";
+import { isStructureBlockId } from "../../bridge/types";
+import { sanitizeStructure, type LaneSide } from "../../chain/structure";
 import { rowsFor, useStore } from "../../store";
 import { spring } from "../../theme/motion";
 import {
   DRAG_LIFT,
   DRAG_THRESHOLD_PX,
-  columnForX,
   computeSlots,
+  dropTargetAt,
   insertItem,
   isBelowRows,
-  rowForY,
-  rowStart,
+  laneRows,
+  rowGeometry,
   rowsWithInsert,
   rowsWithRemove,
   sameOrder,
   sameRows,
   slotOf,
+  type RowGeom,
   type Slot,
 } from "./layout";
 import type { NodeMotionRegistry } from "./nodes";
@@ -76,6 +91,7 @@ interface DragSession {
   /* ── frozen geometry: the board with the dragged card taken out ── */
   baseOrder: BlockId[];
   baseRows: number[];
+  baseGeom: RowGeom[];
   /* ── the published chain the gesture started from; a mismatch at drop means
      something external (preset recall, host restore) replaced the chain mid-drag
      and the preview was built from a world that no longer exists ── */
@@ -84,6 +100,8 @@ interface DragSession {
   /* ── live target; -1 until the first move resolves one ── */
   row: number;
   column: number;
+  /** Lane track of the target, when it is inside a split container. */
+  lane: LaneSide | null;
   order: BlockId[];
   rows: number[];
   moved: boolean;
@@ -167,9 +185,15 @@ export function useChainDrag({
         return;
       }
 
-      // The store is the authority on what is currently published.
+      // The store is the authority on what is currently published. Through
+      // `laneRows`, so the comparison below is against the partition the board
+      // is actually showing — the published one may put the split region across
+      // two rows, and the drag never worked in those terms.
       const state = useStore.getState();
-      const publishedRows = rowsFor(state.chainOrder, state.chainRows);
+      const publishedRows = laneRows(
+        state.chainOrder,
+        rowsFor(state.chainOrder, state.chainRows),
+      );
 
       // The chain changed underneath the gesture (preset recall, A/B, host
       // restore): committing the preview would overwrite that change with a
@@ -182,19 +206,27 @@ export function useChainDrag({
         const slots = computeSlots(state.chainOrder, publishedRows, showAdd);
         settle(active.id, slotOf(slots, active.id));
       } else {
-        const slots = computeSlots(active.order, active.rows, showAdd);
+        // Belt: the preview is built by inserting into one legal segment, so
+        // this is the identity — but no order leaves this hook unsanitized.
+        // A sanitize that actually removed something invalidates the partition,
+        // and rows are layout-only: drop them to auto rather than publish a
+        // partition that no longer counts the chain.
+        const order = sanitizeStructure(active.order);
+        const rows = order.length === active.order.length ? active.rows : [];
+        const slots = computeSlots(order, rows, showAdd);
         settle(active.id, slotOf(slots, active.id));
         const changed =
-          !sameOrder(active.order, state.chainOrder) ||
-          !sameRows(active.rows, publishedRows);
+          !sameOrder(order, state.chainOrder) || !sameRows(rows, publishedRows);
         if (changed) {
           // A chain that was on auto-wrap and still matches it stays on auto:
           // publishing the wrap as an explicit partition would freeze a shape
-          // the user never arranged.
+          // the user never arranged. A split container never matches the plain
+          // wrap, so a structured board always publishes its rows — which is
+          // right: the container has to own a row of its own.
           const auto =
             state.chainRows.length === 0 &&
-            sameRows(active.rows, rowsFor(active.order, []));
-          commit(active.order, auto ? [] : active.rows);
+            sameRows(rows, rowsFor(order, []));
+          commit(order, auto ? [] : rows);
         }
       }
 
@@ -254,20 +286,31 @@ export function useChainDrag({
 
       // Mouse cancel #2: below the new-row strip — a flick towards the footer
       // is "put it back", not "make a row down there".
-      if (isBelowRows(laneY, active.baseRows.length)) {
+      if (isBelowRows(active.baseGeom, laneY)) {
         endSession("cancel");
         return;
       }
 
-      const row = rowForY(laneY, active.baseRows.length);
-      const column = columnForX(x, active.baseRows[row] ?? 0);
-      if (row === active.row && column === active.column) return;
+      // Serial row or lane track — one rule, resolved against frozen geometry.
+      const target = dropTargetAt(active.baseOrder, active.baseGeom, x, laneY);
+      if (
+        target.row === active.row &&
+        target.column === active.column &&
+        target.lane === active.lane
+      )
+        return;
 
-      active.row = row;
-      active.column = column;
-      const index = rowStart(active.baseRows, row) + column;
-      active.order = insertItem(active.baseOrder, index, active.id);
-      active.rows = rowsWithInsert(active.baseRows, row);
+      active.row = target.row;
+      active.column = target.column;
+      active.lane = target.lane;
+      active.order = insertItem(active.baseOrder, target.index, active.id);
+      // `laneRows` again: inserting inside the container keeps the region
+      // contiguous, so this is the identity — but the partition the preview
+      // renders with is never allowed to be one the board cannot draw.
+      active.rows = laneRows(
+        active.order,
+        rowsWithInsert(active.baseRows, target.row),
+      );
       // flushSync so the sibling reflow starts in the very frame the pointer
       // crossed the boundary — a batched update would show a torn frame.
       const next: Preview = { order: active.order, rows: active.rows };
@@ -305,6 +348,8 @@ export function useChainDrag({
     (event: ReactPointerEvent<HTMLElement>, id: BlockId) => {
       // Middle button and space-pan belong to the stage: let them bubble.
       if (event.button !== 0 || isPanMode() || session.current) return;
+      // SPLIT / MIX / lane2 are structure, not blocks — see the header note.
+      if (isStructureBlockId(id)) return;
       const order = useStore.getState().chainOrder;
       const index = order.indexOf(id);
       if (index < 0) return;
@@ -316,7 +361,8 @@ export function useChainDrag({
       // Frozen geometry: the board as it will look with this card taken out.
       // Resolved once here and never again — see the header note.
       const baseOrder = order.filter((block) => block !== id);
-      const baseRows = rowsWithRemove(chainRows, index);
+      const baseRows = laneRows(baseOrder, rowsWithRemove(chainRows, index));
+      const baseGeom = rowGeometry(baseOrder, baseRows);
 
       event.stopPropagation();
       try {
@@ -335,6 +381,7 @@ export function useChainDrag({
         startY: from.y,
         baseOrder,
         baseRows,
+        baseGeom,
         startOrder: order.slice(),
         startRows: chainRows.slice(),
         // No target yet: the first move resolves one and publishes the preview
@@ -343,6 +390,7 @@ export function useChainDrag({
         // collapses right then rather than one boundary crossing later.
         row: -1,
         column: -1,
+        lane: null,
         order: order.slice(),
         rows: chainRows.slice(),
         moved: false,
