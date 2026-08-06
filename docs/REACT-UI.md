@@ -65,7 +65,7 @@ original id (`comp_threshold`), instances 2 and 3 get `<kind>2_<key>` /
 pre-existing id keeps its index. The amp's own tone stack (`amp_eq_*`) lives at
 the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`.
 
-- Sliders (72): the 29 v1 ids — input_trim, output_level, gate_threshold,
+- Sliders (89): the 29 v1 ids — input_trim, output_level, gate_threshold,
   comp_threshold, comp_ratio, comp_attack, comp_release, comp_makeup, drive_gain,
   drive_tone, drive_level, amp_input, amp_output, amp_cal_level, amp_slim,
   cab_lowcut, cab_highcut, eq_bass, eq_mid, eq_treble, mod_rate, mod_depth,
@@ -73,15 +73,24 @@ the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`
   reverb_mix — plus, appended: `comp2_*`/`comp3_*` (threshold, ratio, attack,
   release, makeup), `drive2_*`/`drive3_*` (gain, tone, level), `eq2_*`/`eq3_*`
   (bass, mid, treble), `mod2_*`/`mod3_*` (rate, depth, mix), `delay2_*`/`delay3_*`
-  (time, feedback, mix), `reverb2_*`/`reverb3_*` (size, damping, mix), and
-  `amp_eq_bass`/`amp_eq_mid`/`amp_eq_treble`.
-- Toggles (26): the 13 v1 ids — gate_on, comp_on, drive_on, amp_on, cab_on, eq_on,
+  (time, feedback, mix), `reverb2_*`/`reverb3_*` (size, damping, mix),
+  `amp_eq_bass`/`amp_eq_mid`/`amp_eq_treble`, appended for the stereo chain
+  (docs/STEREO.md §4): `delay_ratio`/`delay2_ratio`/`delay3_ratio`,
+  `delay_width`/`delay2_width`/`delay3_width`,
+  `reverb_width`/`reverb2_width`/`reverb3_width`, and, appended for split/mix
+  (docs/SPLIT.md §2): `amp2_input`, `amp2_output`, `split_xover`, `mix_alevel`,
+  `mix_blevel`, `mix_apan`, `mix_bpan`, `mix_level`.
+- Toggles (30): the 13 v1 ids — gate_on, comp_on, drive_on, amp_on, cab_on, eq_on,
   mod_on, delay_on, reverb_on, amp_cal_input, fx1_on, fx2_on, fx3_on — plus every
   instance's bypass (`comp2_on`, `comp3_on`, `drive2_on`, `drive3_on`, `eq2_on`,
   `eq3_on`, `mod2_on`, `mod3_on`, `delay2_on`, `delay3_on`, `reverb2_on`,
-  `reverb3_on`) and `amp_eq_on`.
-- Combos (4): amp_out_mode, mod_type, mod2_type, mod3_type — mod is the only
-  duplicable kind with a choice parameter.
+  `reverb3_on`), `amp_eq_on`, and, appended for split/mix (docs/SPLIT.md §2):
+  `amp2_on`, `split_on`, `mix_on`, `mix_bphase`. `amp_stereo` (docs/STEREO.md §1)
+  is REMOVED — never shipped, superseded by `amp2` as an ordinary chain block.
+- Combos (8): amp_out_mode, mod_type, mod2_type, mod3_type — mod is the only v1
+  duplicable kind with a choice parameter — plus `delay_mode`/`delay2_mode`/
+  `delay3_mode` (stereo chain, docs/STEREO.md §4) and `split_mode`
+  (docs/SPLIT.md §2, choices FROZEN: Copy | L/R | X-Over).
 
 JS uses `getSliderState(id)` etc. from the vendored frontend lib; wrap in hooks
 (`useSliderParam`, `useToggleParam`, `useComboParam`) that subscribe to BOTH
@@ -90,12 +99,12 @@ call `sliderDragStarted/Ended` around gestures (host automation touch).
 
 **These lists are the whole relay surface.** A hosted plugin's parameters are NOT
 relays and never enter `SLIDER_PARAM_IDS` / `paramMeta` / `useSliderParam` — see
-§External AudioUnit slots below. 72/26/4 is the whole surface; a hosted plugin never
+§External AudioUnit slots below. 89/30/8 is the whole surface; a hosted plugin never
 grows it.
 
 ### Chain blocks
 
-24 block tokens (`chain::BlockInfo`, `BLOCK_IDS` in `bridge/types.ts`) name block
+28 block tokens (`chain::BlockInfo`, `BLOCK_IDS` in `bridge/types.ts`) name block
 INSTANCES, not block types. The nine built-in kinds are `gate, comp, drive, amp, cab,
 eq, mod, delay, reverb`; six of them (comp, drive, eq, mod, delay, reverb) can sit in
 the chain up to three times, each instance its own token, tile and APVTS params —
@@ -107,6 +116,24 @@ and an fx block with no plugin assigned is a pass-through, so it is legal to hav
 in the chain forever without loading anything. Everything else about them is ordinary
 block behaviour: drag to reorder, remove, and a `fxN_on` power LED wired to a normal
 automatable APVTS toggle.
+
+**Split/mix (docs/SPLIT.md)** adds four more singleton tokens: `split` and `mix` are
+ordinary tiles with panels (SplitBody/MixBody, below); `amp2` is a second,
+freely-placeable NAM engine block — inside a lane or anywhere serially, like any
+other block; `lane2` is a hidden STRUCTURAL token marking the lane-A/lane-B boundary
+— it is never rendered as a card, never selectable, never has a panel, and its
+`BlockInfo` exists purely so `getUiState`/`setChainOrder` round-trip it losslessly.
+A flat order fully encodes the fork: `..., split, <lane A ids...>, lane2, <lane B
+ids...>, mix, ...` (empty lanes legal). When `chainOrder` contains the full triple in
+that relative order, the board renders a lane container in place of the run between
+`split` and `mix` — SPLIT tile, an upper half-track for lane A's cards, a lower
+half-track for lane B's, MIX tile, connectors fanning out from split and converging
+into mix. Any other arrangement (a lone `split`, `mix` before `split`, a missing
+`lane2`) is NOT a valid structure and must never be committed as one — the store
+carries TS mirrors of the C++ `findStructure`/`sanitizeStructure` helpers beside
+`normaliseChainRows` and flattens to serial before any `setChainOrder` call; the C++
+`sanitizeStructure` is the backstop, not the primary guard. `amp2` is not structural
+and survives flattening like any ordinary block.
 
 **A fresh instance's chain is `["amp"]`** (`chain::defaultOrder()`) — everything else
 is added by the user. The nine-block arrangement plugin instances used to start with
@@ -138,6 +165,13 @@ setChainOrder(tokens: string[], rows: number[]): void  // order + row lengths tr
                                             // are stored as [] (auto-wrap)
 loadModel(path: string): { error?: string }
 clearModel(): void
+loadModelB(path: string): { error?: string }        // engine B (docs/STEREO.md §1);
+                                                     // owned by Amp2Body now, not an
+                                                     // AmpBody STEREO toggle (removed,
+                                                     // docs/SPLIT.md) — same
+                                                     // validation/error surface as
+                                                     // loadModel, targets engine B only
+clearModelB(): void
 loadIr(path: string): { error?: string }
 clearIr(): void
 importModel(): { path?: string; name?: string; error?: string }  // FileChooser (.nam); installs AND loads
@@ -189,6 +223,12 @@ interface UiState {
   model: ModelInfo | null       // { path, name, sampleRateHz, loudnessDb?, inputLevelDbu?,
                                 //   outputLevelDbu?, gearType?, includesCab,
                                 //   isSlimmable, latencySamples }
+  modelB: ModelInfo | null      // engine B, managed from Amp2Body (docs/SPLIT.md §5),
+                                //   not an AmpBody STEREO section (removed). Same shape
+                                //   as `model`, null when no B model is loaded.
+                                //   `latencySamples` is the same combined scalar as
+                                //   `model`'s — reported host latency is serial-section
+                                //   latency + max(laneA, laneB) (docs/SPLIT.md §3)
   ir: FileEntry | null          // { path, name }
   models: FileEntry[]
   irs: FileEntry[]
@@ -242,6 +282,10 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
 "libraryChanged" { models, irs }
 "presetChanged"  { presets, currentPresetName, ab }
 "modelChanged"   { model: ModelInfo | null }
+"modelBChanged"  { modelB: ModelInfo | null }        // engine B, Amp2Body's model
+                                                     // (docs/SPLIT.md §5); same "poll
+                                                     // and emit on change" reasoning as
+                                                     // modelChanged
 "irChanged"      { ir: FileEntry | null }
 "t3kStatus"      { configured, authenticated }
 "t3kToneSelected"{ toneId: number, models: T3kModel[] }
@@ -423,10 +467,20 @@ face, because the board's own zoom is the density control.
   knobs, any instance), amp (model mgmt + status + T3K + knobs + out-mode + slim when
   isSlimmable + a **Tone** section — Bass/Mid/Treble knobs on `amp_eq_bass/mid/treble`
   plus a power toggle on `amp_eq_on`, KnobRow-style; the amp has its own tone stack
-  whether or not an `eq` block is in the chain), cab (IR mgmt + cut knobs), fx1/fx2/fx3
-  (`fxSlotIndexOf`; plugin picker or loaded-plugin header + "Show editor here" (embed,
-  see §Window size and embedding) + "Open plugin window" + a generic knob grid over
-  `FxSlotState.params` — see §External AudioUnit slots; never `useSliderParam`).
+  whether or not an `eq` block is in the chain — AmpBody owns ENGINE A ONLY: model B
+  management lives in Amp2Body, not here, see below), amp2 (`Amp2Body`: model B
+  management moved wholesale from AmpBody's former STEREO section, docs/STEREO.md §1,
+  SUPERSEDED — model picker over the library list, "Use model A" shortcut that calls
+  `loadModelB` with A's loaded path, clear, status — plus `amp2_input`/`amp2_output`
+  knobs; NO tone stack of its own, the panel notes that users add an `eq` instance if
+  they want one, docs/SPLIT.md §3), split (`SplitBody`: `split_mode` ParamMenu
+  {Copy, L/R, X-Over} + `split_xover` knob, shown only in X-Over mode), mix
+  (`MixBody`: A/B level + pan knobs, phase-B toggle, master `mix_level`), cab (IR mgmt
+  + cut knobs), fx1/fx2/fx3 (`fxSlotIndexOf`; plugin picker or loaded-plugin header +
+  "Show editor here" (embed, see §Window size and embedding) + "Open plugin window" +
+  a generic knob grid over `FxSlotState.params` — see §External AudioUnit slots; never
+  `useSliderParam`). `lane2` never opens a panel — it is filtered out of selection
+  entirely, same as it is filtered out of every card-rendering path (§Chain blocks).
   CSS system (`theme/tokens.css`): `--panel-band` is 0px at rest and becomes
   `--dock-h + --dock-gap` under `[data-panel-open]`, which `App.tsx` stamps on the app
   root exactly while a block is selected. Everything that must not underlap the open
@@ -505,7 +559,9 @@ one rAF driver; `prefers-reduced-motion` respected for entrance/zoom/A-B.
   Tuba` passes, `npm run build && npm run typecheck` green, browser screenshot
   review of the mock-bridge UI.
 
-## Out of scope (unchanged)
+## Out of scope
 
-Parallel paths/splitter, multiple NAM slots, preset browser overlay with
-search/tags.
+Preset browser overlay with search/tags. Split/mix (docs/SPLIT.md) covers exactly
+ONE split region, no nesting, no more than two lanes, no dynamic split, no split/mix
+instance pools, no amp2 tone stack, no per-lane FxHost pools beyond the existing 3
+shared slots — see docs/SPLIT.md §6 for the full v1 scope line.
