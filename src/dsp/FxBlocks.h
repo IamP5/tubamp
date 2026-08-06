@@ -129,29 +129,38 @@ private:
     double sampleRate = 44100.0;
 };
 
-/** Stereo delay with feedback + mix. */
+/** Stereo delay with feedback + mix, in three routing modes.
+
+    Mode order matches the delay_mode choice list and is FROZEN: reordering it
+    silently repoints every saved session. */
 class DelayFx
 {
 public:
+    enum class Mode { stereo = 0, pingPong = 1, dual = 2 };
+
     void prepare (const juce::dsp::ProcessSpec& spec);
     void reset();
-    void setParameters (float timeMs, float feedback01, float mix01);
+    /** `mode` indexes Mode; `ratioPct` is the R time as a percentage of L (Dual only);
+        `width01` is the M/S width of the wet signal (1 = untouched, 0 = mono wet). */
+    void setParameters (float timeMs, float feedback01, float mix01,
+                        int mode, float ratioPct, float width01);
     void process (juce::dsp::AudioBlock<float> block);
 
 private:
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> delayLine { 96000 * 2 };
-    juce::SmoothedValue<float> delaySamples { 24000.0f };
-    float feedback = 0.3f, mix = 0.25f;
+    juce::SmoothedValue<float> delaySamplesL { 24000.0f }, delaySamplesR { 24000.0f };
+    float feedback = 0.3f, mix = 0.25f, width = 1.0f;
+    Mode mode = Mode::stereo;
     double sampleRate = 44100.0;
 };
 
-/** Plate-style reverb (juce::dsp::Reverb) with size/damping/mix. */
+/** Plate-style reverb (juce::dsp::Reverb) with size/damping/mix/width. */
 class ReverbFx
 {
 public:
     void prepare (const juce::dsp::ProcessSpec& spec);
     void reset();
-    void setParameters (float size01, float damping01, float mix01);
+    void setParameters (float size01, float damping01, float mix01, float width01);
     void process (juce::dsp::AudioBlock<float> block);
 
 private:

@@ -65,7 +65,16 @@ const char* const kSliderIds[] = {
     params::delay3Time,      params::delay3Feedback, params::delay3Mix,
     params::reverb2Size,     params::reverb2Damping, params::reverb2Mix,
     params::reverb3Size,     params::reverb3Damping, params::reverb3Mix,
-    params::ampEqBass,       params::ampEqMid,       params::ampEqTreble };
+    params::ampEqBass,       params::ampEqMid,       params::ampEqTreble,
+    // Stereo chain (docs/STEREO.md §4), appended in spec order: delay ratio/width
+    // per instance, then reverb width per instance.
+    params::delayRatio,      params::delay2Ratio,    params::delay3Ratio,
+    params::delayWidth,      params::delay2Width,    params::delay3Width,
+    params::reverbWidth,     params::reverb2Width,   params::reverb3Width,
+    // Split/mix chain (docs/SPLIT.md §2), appended in spec order.
+    params::amp2Input,       params::amp2Output,     params::splitXover,
+    params::mixALevel,       params::mixBLevel,      params::mixAPan,
+    params::mixBPan,         params::mixLevel };
 
 const char* const kToggleIds[] = {
     params::gateOn,  params::compOn,  params::driveOn, params::ampOn,
@@ -78,14 +87,21 @@ const char* const kToggleIds[] = {
     params::mod2On,    params::mod3On,
     params::delay2On,  params::delay3On,
     params::reverb2On, params::reverb3On,
-    params::ampEqOn };
+    params::ampEqOn,
+    // Split/mix chain (docs/SPLIT.md §2), appended in spec order. amp_stereo is
+    // gone — SUPERSEDED by amp2 as a chain block (docs/SPLIT.md, top).
+    params::amp2On,  params::splitOn,  params::mixOn,  params::mixBPhase };
 
 const char* const kComboIds[] = { params::ampOutMode, params::modType,
-                                  params::mod2Type,   params::mod3Type };
+                                  params::mod2Type,   params::mod3Type,
+                                  // stereo chain (docs/STEREO.md §4)
+                                  params::delayMode,  params::delay2Mode, params::delay3Mode,
+                                  // split/mix chain (docs/SPLIT.md §2)
+                                  params::splitMode };
 
-static_assert (std::size (kSliderIds) == 72, "29 frozen float params + 43 v2 instance / amp-EQ params");
-static_assert (std::size (kToggleIds) == 26, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables");
-static_assert (std::size (kComboIds) == 4, "2 frozen choice params + the mod 2/3 types");
+static_assert (std::size (kSliderIds) == 89, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params");
+static_assert (std::size (kToggleIds) == 30, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables + 4 split/mix enables (amp_stereo removed)");
+static_assert (std::size (kComboIds) == 8, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode");
 
 /** Upper bound on hosted parameters surfaced to the UI. A handful of plugins publish
     thousands; serializing all of them into every slot payload would cost more than it
@@ -368,6 +384,7 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
     };
 
     lastModelPath = proc.getLoadedModelPath();
+    lastModelPathB = proc.getLoadedModelPathB();
     lastIrPath = proc.getLoadedIrPath();
     lastLatencySamples = proc.getLatencySamples();
 
@@ -746,6 +763,28 @@ juce::var WebEditor::modelVar() const
                          { "latencySamples", proc.getLatencySamples() } });
 }
 
+juce::var WebEditor::modelVarB() const
+{
+    if (! proc.namEngineB.hasModel())
+        return {};
+
+    const auto info = proc.namEngineB.getModelInfo();
+
+    return makeObject ({ { "path",           info.filePath },
+                         { "name",           info.name },
+                         { "sampleRateHz",   info.sampleRate },
+                         { "loudnessDb",     optionalVar (info.loudnessDb) },
+                         { "inputLevelDbu",  optionalVar (info.inputLevelDbu) },
+                         { "outputLevelDbu", optionalVar (info.outputLevelDbu) },
+                         { "gearType",       nullableStringVar (info.gearType) },
+                         { "includesCab",    info.includesCab },
+                         { "isSlimmable",    proc.namEngineB.isSlimmable() },
+                         // No separate B-side latency accessor: the L/R compensation
+                         // ring makes proc.getLatencySamples() the truthful scalar for
+                         // both channels (docs/STEREO.md §Latency reporting).
+                         { "latencySamples", proc.getLatencySamples() } });
+}
+
 juce::var WebEditor::irVar() const
 {
     const auto path = proc.getLoadedIrPath();
@@ -769,6 +808,7 @@ juce::var WebEditor::uiStateVar() const
     return makeObject ({ { "chainOrder",        chainOrderVar() },
                          { "chainRows",         chainRowsVar() },
                          { "model",             modelVar() },
+                         { "modelB",            modelVarB() },
                          { "ir",                irVar() },
                          { "models",            modelsVar() },
                          { "irs",               irsVar() },
@@ -886,6 +926,13 @@ void WebEditor::emitModelChanged()
     emit ("modelChanged", makeObject ({ { "model", modelVar() } }));
 }
 
+void WebEditor::emitModelBChanged()
+{
+    lastModelPathB = proc.getLoadedModelPathB();
+    lastLatencySamples = proc.getLatencySamples();
+    emit ("modelBChanged", makeObject ({ { "modelB", modelVarB() } }));
+}
+
 void WebEditor::emitIrChanged()
 {
     lastIrPath = proc.getLoadedIrPath();
@@ -931,11 +978,20 @@ void WebEditor::closeFxWindow (int slot)
 void WebEditor::pollModelAndIr (bool forceEmit)
 {
     const auto modelPath = proc.getLoadedModelPath();
+    const auto modelPathB = proc.getLoadedModelPathB();
     const auto irPath = proc.getLoadedIrPath();
     const auto latency = proc.getLatencySamples();
 
-    if (forceEmit || modelPath != lastModelPath || latency != lastLatencySamples)
+    // Sampled once, before either emitter: both of them refresh lastLatencySamples, so
+    // re-reading it below would make the B side's latency clause dead and leave
+    // modelB.latencySamples stale on a latency-only change (slim size, A model swap).
+    const bool latencyChanged = latency != lastLatencySamples;
+
+    if (forceEmit || modelPath != lastModelPath || latencyChanged)
         emitModelChanged();
+
+    if (forceEmit || modelPathB != lastModelPathB || latencyChanged)
+        emitModelBChanged();
 
     if (forceEmit || irPath != lastIrPath)
         emitIrChanged();
@@ -1072,6 +1128,18 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
         {
             proc.clearModel();
             emitModelChanged();
+            complete ({});
+        })
+        .withNativeFunction ("loadModelB", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            const auto error = proc.loadModelB (juce::File (args[0].toString()));
+            emitModelBChanged();
+            complete (resultVar (error));
+        })
+        .withNativeFunction ("clearModelB", [this] (auto&, auto complete)
+        {
+            proc.clearModelB();
+            emitModelBChanged();
             complete ({});
         })
         .withNativeFunction ("loadIr", [this] (const juce::Array<juce::var>& args, auto complete)

@@ -40,7 +40,7 @@ struct FxEditorWindow;
     that covers the whole editor.
 
     Owns:
-      - one relay per APVTS parameter (72 sliders / 26 toggles / 4 combos),
+      - one relay per APVTS parameter (89 sliders / 30 toggles / 8 combos),
         each named *verbatim* after its APVTS id, plus the matching Web*Attachment;
       - the native-function surface described in docs/REACT-UI.md (chain, model, IR,
         preset, A/B and TONE3000 operations);
@@ -86,6 +86,9 @@ private:
     juce::var presetListVar() const;
     juce::var abVar() const;
     juce::var modelVar() const;
+    /** modelVar()'s twin for engine B — same ModelInfo shape, empty var when B has no
+        model loaded. */
+    juce::var modelVarB() const;
     juce::var irVar() const;
     juce::var t3kVar() const;
     juce::var fxSlotVar (int slot) const;
@@ -102,6 +105,9 @@ private:
     void emitLibraryChanged();
     void emitPresetChanged();
     void emitModelChanged();
+    /** emitModelChanged()'s twin for engine B, mirroring the same "poll and emit on
+        change" reasoning — the processor has no B-side change notification either. */
+    void emitModelBChanged();
     void emitIrChanged();
     void emitT3kStatus();
     void emitT3kError (const juce::String& message);
@@ -181,7 +187,7 @@ private:
         every browse page we serialize feeds this, unknown ids mean nam. */
     std::unordered_map<juce::int64, bool> toneIsIr;
 
-    juce::String lastModelPath, lastIrPath;
+    juce::String lastModelPath, lastModelPathB, lastIrPath;
     int lastLatencySamples = -1;
     int pollDivider = 0;
 

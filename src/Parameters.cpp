@@ -215,6 +215,57 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     addFloat (layout, ampEqMid,    "Amp EQ Middle", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
     addFloat (layout, ampEqTreble, "Amp EQ Treble", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint2);
 
+    // --- stereo chain (docs/STEREO.md): stereo delay modes, reverb width. Appended for
+    // the same reason as everything else above — these are new params on blocks whose
+    // instance-1 ids are already frozen at hint 1. (The dual-NAM amp part of that spec
+    // is superseded by amp2 as a chain block — see docs/SPLIT.md — so there is no
+    // amp_stereo param here.)
+
+    // Delay mode/ratio/width, all three instances. Choice list is frozen once shipped
+    // (see delayModeChoices); ratio and width apply the same way to every instance.
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { delayMode, kVersionHint2 }, "Delay Mode", delayModeChoices, 0));
+    addFloat (layout, delayRatio, "Delay Ratio", { 25.0f, 200.0f, 0.1f }, 100.0f, "%", kVersionHint2);
+    addFloat (layout, delayWidth, "Delay Width", { 0.0f, 1.0f, 0.001f },   1.0f, {},   kVersionHint2);
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { delay2Mode, kVersionHint2 }, "Delay 2 Mode", delayModeChoices, 0));
+    addFloat (layout, delay2Ratio, "Delay 2 Ratio", { 25.0f, 200.0f, 0.1f }, 100.0f, "%", kVersionHint2);
+    addFloat (layout, delay2Width, "Delay 2 Width", { 0.0f, 1.0f, 0.001f },   1.0f, {},   kVersionHint2);
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { delay3Mode, kVersionHint2 }, "Delay 3 Mode", delayModeChoices, 0));
+    addFloat (layout, delay3Ratio, "Delay 3 Ratio", { 25.0f, 200.0f, 0.1f }, 100.0f, "%", kVersionHint2);
+    addFloat (layout, delay3Width, "Delay 3 Width", { 0.0f, 1.0f, 0.001f },   1.0f, {},   kVersionHint2);
+
+    // Reverb width, all three instances. Default 1 matches ReverbFx's current hardcoded
+    // width so old sessions render bit-identical.
+    addFloat (layout, reverbWidth,  "Reverb Width",   { 0.0f, 1.0f, 0.001f }, 1.0f, {}, kVersionHint2);
+    addFloat (layout, reverb2Width, "Reverb 2 Width", { 0.0f, 1.0f, 0.001f }, 1.0f, {}, kVersionHint2);
+    addFloat (layout, reverb3Width, "Reverb 3 Width", { 0.0f, 1.0f, 0.001f }, 1.0f, {}, kVersionHint2);
+
+    // --- split path (docs/SPLIT.md): amp2 (engine B) plus the split/mix fork-and-join
+    // pair. Appended for the same reason as everything above — new params, hint 2.
+    //
+    // amp2_input/amp2_output copy amp_input/amp_output's range and default verbatim: a
+    // second engine's gain staging must feel identical to the first's.
+    addBool  (layout, amp2On,     "Amp 2 On",     true, kVersionHint2);
+    addFloat (layout, amp2Input,  "Amp 2 Input",  { -20.0f, 20.0f, 0.1f }, 0.0f, "dB", kVersionHint2);
+    addFloat (layout, amp2Output, "Amp 2 Output", { -40.0f, 40.0f, 0.1f }, 0.0f, "dB", kVersionHint2);
+
+    addBool (layout, splitOn, "Split On", true, kVersionHint2);
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { splitMode, kVersionHint2 }, "Split Mode", splitModeChoices, 0));
+    addFloat (layout, splitXover, "Split X-Over", logRange (100.0f, 4000.0f, 1.0f), 800.0f, "Hz", kVersionHint2);
+
+    addBool  (layout, mixOn,     "Mix On",      true,  kVersionHint2);
+    addFloat (layout, mixALevel, "Mix A Level", { -60.0f, 12.0f, 0.1f }, 0.0f, "dB", kVersionHint2);
+    addFloat (layout, mixBLevel, "Mix B Level", { -60.0f, 12.0f, 0.1f }, 0.0f, "dB", kVersionHint2);
+    addFloat (layout, mixAPan,   "Mix A Pan",   { -1.0f, 1.0f, 0.001f }, 0.0f, {},   kVersionHint2);
+    addFloat (layout, mixBPan,   "Mix B Pan",   { -1.0f, 1.0f, 0.001f }, 0.0f, {},   kVersionHint2);
+    addBool  (layout, mixBPhase, "Mix B Phase", false, kVersionHint2);
+    addFloat (layout, mixLevel,  "Mix Level",   { -60.0f, 12.0f, 0.1f }, 0.0f, "dB", kVersionHint2);
+
     return layout;
 }
 } // namespace params
