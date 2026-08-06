@@ -149,6 +149,24 @@ export const FxGlyph = (p: GlyphProps) => (
   </Glyph>
 );
 
+/**
+ * Splitter: one line forking into two. `Split, lane2, mix` (docs/SPLIT.md §1)
+ * are new to `BaseBlockId` — split/mix get their own glyph below, lane2 reuses
+ * split's (it is never drawn, so this is only ever a type-completeness filler).
+ */
+export const SplitGlyph = (p: GlyphProps) => (
+  <Glyph {...p}>
+    <path d="M0.1 0.5H0.34M0.34 0.5L0.62 0.22H0.9M0.34 0.5L0.62 0.78H0.9" />
+  </Glyph>
+);
+
+/** Mixer: two lines converging into one. */
+export const MixGlyph = (p: GlyphProps) => (
+  <Glyph {...p}>
+    <path d="M0.1 0.22H0.38L0.66 0.5H0.9M0.1 0.78H0.38L0.66 0.5" />
+  </Glyph>
+);
+
 const BASE_GLYPH: Record<BaseBlockId, (p: GlyphProps) => ReactNode> = {
   gate: GateGlyph,
   comp: CompGlyph,
@@ -162,6 +180,14 @@ const BASE_GLYPH: Record<BaseBlockId, (p: GlyphProps) => ReactNode> = {
   fx1: FxGlyph,
   fx2: FxGlyph,
   fx3: FxGlyph,
+  // amp2 is engine B as an ordinary block (docs/SPLIT.md §1) — same glyph as
+  // amp, exactly like a comp2/comp3 instance drawing comp's glyph.
+  amp2: AmpGlyph,
+  split: SplitGlyph,
+  mix: MixGlyph,
+  // Furniture — never drawn (see BlockBody's guard in features/panel), but the
+  // Record must be total; split's glyph is as good as any unseen filler.
+  lane2: SplitGlyph,
 };
 
 /** Every instance draws its kind's glyph — a second delay is a delay. Which

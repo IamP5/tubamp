@@ -68,6 +68,9 @@ export interface BlockCardProps {
   onPointerDown(event: ReactPointerEvent<HTMLElement>, id: BlockId): void;
   onToggle(): void;
   onRemove(): void;
+  /** Kebab wording for the destructive entry. SPLIT/MIX say what removing them
+   *  really does — it takes the whole region with it, not one tile. */
+  removeLabel?: string;
 }
 
 /** Keeps a control's press from selecting the card or starting a reorder. */
@@ -87,6 +90,7 @@ export function BlockCard({
   onPointerDown,
   onToggle,
   onRemove,
+  removeLabel = "Remove from chain",
 }: BlockCardProps) {
   const info = BLOCK_INFO[id];
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
@@ -103,13 +107,13 @@ export function BlockCard({
       { kind: "separator", id: "sep" },
       {
         id: "remove",
-        label: "Remove from chain",
+        label: removeLabel,
         icon: <TrashIcon size={14} />,
         destructive: true,
         onSelect: onRemove,
       },
     ],
-    [enabled, info.displayName, onRemove, onToggle],
+    [enabled, info.displayName, onRemove, onToggle, removeLabel],
   );
 
   return (

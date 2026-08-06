@@ -21,7 +21,17 @@
  *    never bounce back out as another `setChainOrder`.
  *  - Rows are the store's `chainRows` when it has them and an auto-wrap when it
  *    does not (`rowsFor` — the single source of the partition, so the board and
- *    the drag can never disagree about which row a block is in).
+ *    the drag can never disagree about which row a block is in), then through
+ *    `laneRows`, which regroups a split region into the single row-equivalent
+ *    the container is.
+ *  - A split region (docs/SPLIT.md §5) renders as a lane container: SPLIT, two
+ *    half-height lane tracks on the shared column grid, MIX. `lane2` is
+ *    furniture — it marks where lane B begins and never gets a card, so lane
+ *    membership is nothing but position in the flat order and needs no
+ *    recomputing at commit. SPLIT and MIX are not draggable in v1; removing
+ *    either flattens the region (lane A then lane B, inline where the split
+ *    was), and "Add split" in the [+] picker creates one. A board with no
+ *    structure lays out exactly as it did before any of this existed.
  *  - Selection is UI-local (store) and the panel is an overlay over the board's
  *    bottom edge: selecting pans the board so the card is never underneath its
  *    own panel, and a tap on the background dismisses it (R4).
@@ -43,9 +53,18 @@ import {
 } from "motion/react";
 import {
   fxSlotIndexOf,
+  isStructureBlockId,
   type BlockId,
   type FxSlotState,
 } from "../../bridge/types";
+import {
+  SPLIT_TRIPLE,
+  canAddSplit,
+  findStructure,
+  flattenStructure,
+  insertSplit,
+  sanitizeStructure,
+} from "../../chain/structure";
 import { useRigCab } from "../../hooks";
 import { rowsFor, useStore } from "../../store";
 import { stagger, tween } from "../../theme/motion";
@@ -62,10 +81,15 @@ import {
 } from "./LaneNodes";
 import {
   PANEL_BAND,
-  computeSlots,
+  boardGeometry,
+  clamp,
   connectorBox,
   contentBox,
   insertPoints,
+  laneRows,
+  rowContaining,
+  rowsWithRun,
+  rowsWithoutRun,
   slotOf,
 } from "./layout";
 import { useNodeMotion } from "./nodes";
@@ -161,13 +185,21 @@ export function Board() {
   const laneRef = useRef<HTMLDivElement | null>(null);
 
   const kinds = useMemo(() => pickerKinds(chainOrder), [chainOrder]);
-  const showAdd = canAddBlock(kinds);
+  /* Exactly one split region per chain: once the order carries any structural
+     token the "Add split" row is gone, not greyed. `canAddSplit` also holds the
+     length cap — the fork costs three tokens. */
+  const hasStructure = useMemo(() => {
+    const { splitAt, lane2At, mixAt } = findStructure(chainOrder);
+    return splitAt >= 0 || lane2At >= 0 || mixAt >= 0;
+  }, [chainOrder]);
+  const splitRoom = useMemo(() => canAddSplit(chainOrder), [chainOrder]);
+  const showAdd = canAddBlock(kinds) || (!hasStructure && splitRoom);
 
-  /* The published partition, auto-wrapped when there is none. Everything that
-     needs to know where a block sits — geometry, drag, connectors — reads THIS,
-     never chainRows directly. */
+  /* The published partition, auto-wrapped when there is none and regrouped so a
+     split region owns one row. Everything that needs to know where a block sits
+     — geometry, drag, connectors — reads THIS, never chainRows directly. */
   const rows = useMemo(
-    () => rowsFor(chainOrder, chainRows),
+    () => laneRows(chainOrder, rowsFor(chainOrder, chainRows)),
     [chainOrder, chainRows],
   );
 
@@ -175,7 +207,7 @@ export function Board() {
      stage must not re-fit or re-leash itself while a card is in flight. It is
      also needed before the drag hook, which needs the stage. */
   const storeSlots = useMemo(
-    () => computeSlots(chainOrder, rows, showAdd),
+    () => boardGeometry(chainOrder, rows, showAdd).slots,
     [chainOrder, rows, showAdd],
   );
   const content = useMemo(() => contentBox(storeSlots), [storeSlots]);
@@ -221,12 +253,13 @@ export function Board() {
     reduced,
   });
 
-  const slots = useMemo(
-    () => computeSlots(drag.order, drag.rows, showAdd),
+  const board = useMemo(
+    () => boardGeometry(drag.order, drag.rows, showAdd),
     [drag.order, drag.rows, showAdd],
   );
+  const slots = board.slots;
   const wireBox = useMemo(() => connectorBox(contentBox(slots)), [slots]);
-  const inserts = useMemo(() => insertPoints(slots), [slots]);
+  const inserts = useMemo(() => insertPoints(board.links), [board.links]);
 
   /* Every node springs onto its slot; the dragged/settling card is exempt. */
   useLayoutEffect(() => {
@@ -260,6 +293,85 @@ export function Board() {
     [drag],
   );
 
+  /* SPLIT / MIX are not draggable in v1 (docs/SPLIT.md §5 offers this as the
+     simpler of the two options): moving the pair around would have to keep it a
+     pair, and a half-moved pair is a chain the sanitizer flattens under the
+     user's hands. With no pick-up to keep the panel clear of, the press IS the
+     selection; stopPropagation keeps it off the stage's pan / background tap. */
+  const onStructurePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLElement>, id: BlockId) => {
+      event.stopPropagation();
+      selectBlock(id);
+    },
+    [selectBlock],
+  );
+
+  /**
+   * Insert an empty fork — `split, lane2, mix` — at a gap, or at the end from
+   * the tail [+]. One write, like every other chain edit: the three tokens are
+   * one shape, and publishing them in stages would put a lone `split` in front
+   * of the audio thread, which the C++ sanitizer would flatten straight back.
+   */
+  const addSplit = useCallback(
+    (at?: { index: number; row: number }) => {
+      const state = useStore.getState();
+      const order = state.chainOrder;
+      if (!canAddSplit(order)) return;
+
+      const index = at ? clamp(at.index, 0, order.length) : order.length;
+      const next = sanitizeStructure(insertSplit(order, index));
+      const displayed = laneRows(order, rowsFor(order, state.chainRows));
+      const row = at ? at.row : Math.max(displayed.length - 1, 0);
+      // An auto chain stays auto: `laneRows` regroups the wrap around the new
+      // container on every render, so nothing needs freezing here.
+      const rows =
+        state.chainRows.length === 0
+          ? []
+          : laneRows(next, rowsWithRun(displayed, row, SPLIT_TRIPLE.length));
+
+      setChainOrder(next, rows);
+      // Same rule as addBlock: what the user just made is what they want to see.
+      selectBlock("split");
+    },
+    [selectBlock, setChainOrder],
+  );
+
+  /**
+   * Deleting SPLIT or MIX deletes the region: lane A's blocks then lane B's,
+   * inline where the split stood — which is exactly the flat order with the
+   * three structural tokens dropped out of it.
+   */
+  const flatten = useCallback(() => {
+    const state = useStore.getState();
+    const order = state.chainOrder;
+    const structure = findStructure(order);
+    if (structure.splitAt < 0 && structure.lane2At < 0 && structure.mixAt < 0)
+      return;
+
+    const next = flattenStructure(order);
+    const displayed = laneRows(order, rowsFor(order, state.chainRows));
+    const rows =
+      state.chainRows.length === 0 || !structure.valid
+        ? []
+        : rowsWithoutRun(
+            displayed,
+            rowContaining(displayed, structure.splitAt),
+            order.length - next.length,
+          );
+
+    setChainOrder(next, rows);
+  }, [setChainOrder]);
+
+  /* The picker's structural row, bound once: absent while a region exists,
+     disabled when the chain has no room for one. */
+  const splitOption = useMemo(
+    () =>
+      hasStructure
+        ? undefined
+        : { enabled: splitRoom, onSelect: () => addSplit() },
+    [addSplit, hasStructure, splitRoom],
+  );
+
   const laneVariants = reduced ? LANE_VARIANTS_REDUCED : LANE_VARIANTS;
 
   return (
@@ -291,7 +403,8 @@ export function Board() {
           >
             <div className={s.wireLayer}>
               <Connectors
-                slots={slots}
+                links={board.links}
+                region={board.region}
                 box={wireBox}
                 nodes={nodes}
                 selected={selected}
@@ -303,22 +416,33 @@ export function Board() {
             <Terminal kind="in" node={nodes.get("in")} reduced={reduced} />
 
             <AnimatePresence>
-              {drag.order.map((id) => (
-                <BlockCard
-                  key={id}
-                  id={id}
-                  node={nodes.get(id)}
-                  selected={selected === id}
-                  enabled={toggles[id].value}
-                  dragging={drag.dragId === id}
-                  reduced={reduced}
-                  note={noteFor(id)}
-                  paramIndex={toggles[id].parameterIndex}
-                  onPointerDown={onCardPointerDown}
-                  onToggle={toggles[id].toggle}
-                  onRemove={() => removeBlock(id)}
-                />
-              ))}
+              {drag.order.map((id) => {
+                // `lane2` marks where lane B starts; it is never a card, never a
+                // drop target and never has a panel.
+                if (id === "lane2") return null;
+                const structural = isStructureBlockId(id);
+                return (
+                  <BlockCard
+                    key={id}
+                    id={id}
+                    node={nodes.get(id)}
+                    selected={selected === id}
+                    enabled={toggles[id].value}
+                    dragging={drag.dragId === id}
+                    reduced={reduced}
+                    note={noteFor(id)}
+                    paramIndex={toggles[id].parameterIndex}
+                    onPointerDown={
+                      structural ? onStructurePointerDown : onCardPointerDown
+                    }
+                    onToggle={toggles[id].toggle}
+                    onRemove={structural ? flatten : () => removeBlock(id)}
+                    removeLabel={
+                      structural ? "Remove split (lanes rejoin)" : undefined
+                    }
+                  />
+                );
+              })}
             </AnimatePresence>
 
             <AnimatePresence>
@@ -329,6 +453,7 @@ export function Board() {
                   kinds={kinds}
                   reduced={reduced}
                   onAdd={addBlock}
+                  onAddSplit={splitOption}
                 />
               )}
             </AnimatePresence>
@@ -345,6 +470,8 @@ export function Board() {
                   point={point}
                   kinds={kinds}
                   onAdd={addBlock}
+                  onAddSplit={hasStructure ? undefined : addSplit}
+                  canAddSplit={splitRoom}
                 />
               ))}
 
@@ -359,7 +486,13 @@ export function Board() {
             className={s.empty}
             message="Empty chain"
             hint="Signal passes straight from IN to OUT."
-            action={<AddBlockButton kinds={kinds} onAdd={addBlock} />}
+            action={
+              <AddBlockButton
+                kinds={kinds}
+                onAdd={addBlock}
+                onAddSplit={splitOption}
+              />
+            }
           />
         </div>
       )}

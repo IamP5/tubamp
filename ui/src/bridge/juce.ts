@@ -143,6 +143,7 @@ const emptyUiState: UiState = {
   chainOrder: [],
   chainRows: [],
   model: null,
+  modelB: null,
   ir: null,
   models: [],
   irs: [],
@@ -206,6 +207,10 @@ export const juceBridge: Bridge = {
   loadModel: (path) => call<ErrorResult>("loadModel", {}, path),
   clearModel: async () => {
     await native("clearModel")();
+  },
+  loadModelB: (path) => call<ErrorResult>("loadModelB", {}, path),
+  clearModelB: async () => {
+    await native("clearModelB")();
   },
   loadIr: (path) => call<ErrorResult>("loadIr", {}, path),
   clearIr: async () => {

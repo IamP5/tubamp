@@ -9,6 +9,7 @@ import { motion } from "motion/react";
 import {
   instanceTokensOfKind,
   isFxBlockId,
+  isStructureBlockId,
   type BaseBlockId,
   type BlockId,
 } from "../../bridge/types";
@@ -86,6 +87,11 @@ export function pickerKinds(order: readonly BlockId[]): PickerKind[] {
   const free = new Set<BaseBlockId>(addableKinds(order));
   const kinds: PickerKind[] = [];
   for (const base of BLOCK_BASES) {
+    // Structural tokens are never picker rows: `split` costs three tokens and
+    // comes in through its own entry, `lane2`/`mix` are not blocks at all.
+    // `BLOCK_BASES` already leaves them out — this is the belt that also proves
+    // to the compiler that what is left is an addable kind.
+    if (isStructureBlockId(base)) continue;
     const total = isFxBlockId(base) ? 1 : instanceTokensOfKind(base).length;
     const addable = free.has(base);
     // Singletons carry no count, so an exhausted one has nothing to render.
@@ -95,15 +101,30 @@ export function pickerKinds(order: readonly BlockId[]): PickerKind[] {
   return kinds;
 }
 
-/** True when at least one kind can still be added — also the [+] node's gate. */
+/** True when at least one kind can still be added — half of the [+] node's gate
+ *  (the other half is "a split can still be created", see the board). */
 export function canAddBlock(kinds: readonly PickerKind[]): boolean {
   return kinds.some((kind) => kind.addable);
 }
 
-/** Vercel-style picker rows: one per kind, tinted with its own accent. */
+/**
+ * The "Add split" row, when the board offers one. Bound by the caller so each
+ * [+] can insert the fork at its own position. The row is absent entirely once a
+ * structure exists (exactly one region per chain) and merely disabled when the
+ * chain has no room for the three tokens it costs.
+ */
+export interface SplitOption {
+  enabled: boolean;
+  onSelect(): void;
+}
+
+/** Vercel-style picker rows: one per kind, tinted with its own accent, plus the
+ *  structural "Add split" row under a separator — it makes a shape, not a block,
+ *  and reading as one more block kind would be a lie. */
 export function pickerEntries(
   kinds: readonly PickerKind[],
   onPick: (id: BlockId) => void,
+  split?: SplitOption,
 ): MenuEntry[] {
   const entries: MenuEntry[] = [
     { kind: "section", id: "title", label: "Add to chain" },
@@ -122,6 +143,21 @@ export function pickerEntries(
       onSelect: () => onPick(base),
     });
   }
+  if (split) {
+    entries.push({ kind: "separator", id: "split-sep" });
+    entries.push({
+      id: "split",
+      label: "Split path",
+      icon: (
+        <span className={s.pickerIcon} style={{ color: BLOCK_ACCENT.split }}>
+          <BlockGlyph block="split" size={16} strokeWidth={1.6} />
+        </span>
+      ),
+      hint: "LANES",
+      disabled: !split.enabled,
+      onSelect: split.onSelect,
+    });
+  }
   return entries;
 }
 
@@ -132,11 +168,22 @@ export interface AddNodeProps {
   kinds: readonly PickerKind[];
   reduced: boolean;
   onAdd(id: BlockId): void;
+  /** Appends the fork at the end of the chain; absent once one exists. */
+  onAddSplit?: SplitOption;
 }
 
-export function AddNode({ node, kinds, reduced, onAdd }: AddNodeProps) {
+export function AddNode({
+  node,
+  kinds,
+  reduced,
+  onAdd,
+  onAddSplit,
+}: AddNodeProps) {
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
-  const entries = useMemo(() => pickerEntries(kinds, onAdd), [kinds, onAdd]);
+  const entries = useMemo(
+    () => pickerEntries(kinds, onAdd, onAddSplit),
+    [kinds, onAdd, onAddSplit],
+  );
 
   return (
     <motion.div
@@ -192,6 +239,10 @@ export interface InsertNodeProps {
   point: InsertPoint;
   kinds: readonly PickerKind[];
   onAdd(id: BlockId, at: { index: number; row: number }): void;
+  /** Inserts the fork at THIS gap; absent once a structure exists. */
+  onAddSplit?(at: { index: number; row: number }): void;
+  /** False when the chain has no room for the fork's three tokens. */
+  canAddSplit?: boolean;
 }
 
 /**
@@ -200,14 +251,28 @@ export interface InsertNodeProps {
  * hit-box deliberately has no pointer handlers of its own: a press in a gap
  * that misses the dot must still bubble to the stage (pan / background tap).
  */
-export function InsertNode({ point, kinds, onAdd }: InsertNodeProps) {
+export function InsertNode({
+  point,
+  kinds,
+  onAdd,
+  onAddSplit,
+  canAddSplit = false,
+}: InsertNodeProps) {
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
   const entries = useMemo(
     () =>
-      pickerEntries(kinds, (id) =>
-        onAdd(id, { index: point.index, row: point.row }),
+      pickerEntries(
+        kinds,
+        (id) => onAdd(id, { index: point.index, row: point.row }),
+        onAddSplit
+          ? {
+              enabled: canAddSplit,
+              onSelect: () =>
+                onAddSplit({ index: point.index, row: point.row }),
+            }
+          : undefined,
       ),
-    [kinds, onAdd, point.index, point.row],
+    [canAddSplit, kinds, onAdd, onAddSplit, point.index, point.row],
   );
 
   return (
@@ -251,11 +316,19 @@ export function InsertNode({ point, kinds, onAdd }: InsertNodeProps) {
 export interface AddBlockButtonProps {
   kinds: readonly PickerKind[];
   onAdd(id: BlockId): void;
+  onAddSplit?: SplitOption;
 }
 
-export function AddBlockButton({ kinds, onAdd }: AddBlockButtonProps) {
+export function AddBlockButton({
+  kinds,
+  onAdd,
+  onAddSplit,
+}: AddBlockButtonProps) {
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLSpanElement>();
-  const entries = useMemo(() => pickerEntries(kinds, onAdd), [kinds, onAdd]);
+  const entries = useMemo(
+    () => pickerEntries(kinds, onAdd, onAddSplit),
+    [kinds, onAdd, onAddSplit],
+  );
   return (
     <>
       <span ref={anchorRef} className={s.inlineAnchor}>

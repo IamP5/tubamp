@@ -11,6 +11,7 @@ import {
   bridge,
   isBlockId,
   isFxBlockId,
+  isStructureBlockId,
   fxSlotIndexOf,
   instanceTokensOfKind,
   kindOf,
@@ -32,6 +33,11 @@ import {
   type T3kState,
   type UiState,
 } from "../bridge";
+import {
+  MAX_CHAIN_LENGTH,
+  flattenStructure,
+  sanitizeStructure,
+} from "../chain/structure";
 
 export type ToastKind = "info" | "success" | "warning" | "error";
 
@@ -70,6 +76,10 @@ export interface AppState {
   /** Row lengths partitioning `chainOrder`; `[]` = auto (see `rowsFor`). */
   chainRows: number[];
   model: ModelInfo | null;
+  /** Engine B's loaded capture (docs/STEREO.md §1 plumbing, now driven by the
+   *  `amp2` chain block — docs/SPLIT.md §1) — tracked regardless of whether
+   *  `amp2` is in the chain, since clearing model A must not clear B. */
+  modelB: ModelInfo | null;
   ir: FileEntry | null;
   models: FileEntry[];
   irs: FileEntry[];
@@ -131,6 +141,11 @@ export interface AppActions {
   /* library / presets — thin wrappers that surface errors as toasts */
   loadModel(path: string): Promise<void>;
   clearModel(): Promise<void>;
+  /** Engine B (docs/STEREO.md §1 plumbing; model-B UI now lives on the `amp2`
+   *  block, docs/SPLIT.md §5). "Use model A" is just `loadModelB(model.path)`
+   *  from the caller — there is no separate action for it. */
+  loadModelB(path: string): Promise<void>;
+  clearModelB(): Promise<void>;
   importModel(): Promise<void>;
   loadIr(path: string): Promise<void>;
   clearIr(): Promise<void>;
@@ -229,12 +244,20 @@ export function rowsFor(
 }
 
 /** The lowest instance of `kind` not already in the chain; null when it has none
- *  left (a singleton that is already there, or all three instances used). */
+ *  left (a singleton that is already there, or all three instances used).
+ *  split/lane2/mix are single-token singletons exactly like an fx slot — none
+ *  of the three ever reaches this through `BLOCK_BASES` (they are deliberately
+ *  excluded from the generic picker, docs/SPLIT.md §1), but `kindOf()` can
+ *  still hand one back here from `addBlock`/`removeBlock`, so the type must
+ *  be handled regardless. */
 function freeInstance(
   kind: BaseBlockId,
   order: readonly BlockId[],
 ): BlockId | null {
-  const tokens = isFxBlockId(kind) ? [kind] : instanceTokensOfKind(kind);
+  const tokens: readonly BlockId[] =
+    isFxBlockId(kind) || isStructureBlockId(kind)
+      ? [kind]
+      : instanceTokensOfKind(kind);
   return tokens.find((token) => !order.includes(token)) ?? null;
 }
 
@@ -304,6 +327,7 @@ const initialState: AppState = {
   chainOrder: [],
   chainRows: [],
   model: null,
+  modelB: null,
   ir: null,
   models: [],
   irs: [],
@@ -361,6 +385,8 @@ export const useStore = create<Store>()((set, get) => {
         chainOrder: order,
         chainRows: normaliseChainRows(order, state.chainRows ?? []),
         model: state.model,
+        // `?? null`: a C++ build that predates docs/STEREO.md must still hydrate.
+        modelB: state.modelB ?? null,
         ir: state.ir,
         models: state.models,
         irs: state.irs,
@@ -381,17 +407,30 @@ export const useStore = create<Store>()((set, get) => {
     /* ─────────────────────────────── chain ───────────────────────────── */
 
     setChainOrder(order, rows) {
-      const chainRows = normaliseChainRows(order, rows);
+      // The UI must never COMMIT a malformed split-path structure (docs/SPLIT.md
+      // §5) — C++'s own `sanitizeStructure` is the backstop, not the norm, so
+      // this mirrors it before publishing: a dangling split/lane-before-mix
+      // flattens to serial here too, client-side, rather than round-tripping
+      // through C++ to find out.
+      const sanitized = sanitizeStructure(order);
+      const chainRows = normaliseChainRows(sanitized, rows);
       set({
-        chainOrder: order,
+        chainOrder: sanitized,
         chainRows,
-        selected: keepSelection(order, get().selected),
+        selected: keepSelection(sanitized, get().selected),
       });
-      publish(order, chainRows);
+      publish(sanitized, chainRows);
     },
 
     addBlock(id, at) {
       const { chainOrder, chainRows } = get();
+      // The cap is C++'s (chain::maxChainLength), and it is enforced HERE for the
+      // same reason `canAddSplit` already enforces it: past it `sanitiseOrderAndRows`
+      // drops the entries that did not fit, so a 25th block would come straight back
+      // out of the `chainChanged` round-trip and the user would watch the block they
+      // just placed disappear. There are more block ids (28) than the chain can
+      // hold (24), so this is reachable, not theoretical.
+      if (chainOrder.length >= MAX_CHAIN_LENGTH) return;
       const token = freeInstance(kindOf(id), chainOrder);
       if (token === null) return;
       const index =
@@ -417,12 +456,24 @@ export const useStore = create<Store>()((set, get) => {
       const { chainOrder, chainRows, selected } = get();
       const index = chainOrder.indexOf(id);
       if (index < 0) return;
-      const order = chainOrder.filter((block) => block !== id);
-      const rows = rowsWithout(chainRows, index);
+      // SPLIT and MIX are one shape, not one block (docs/SPLIT.md §5): removing
+      // either removes the REGION — lane A's blocks then lane B's, inline where the
+      // split stood, which is exactly the flat order minus the three structural
+      // tokens. Filtering out the single id instead would commit `..., split, ...,
+      // lane2, ...`, a malformed structure the UI must never ASK C++ for even
+      // though C++ would flatten it right back. This is the panel's path; the
+      // board's own structural remove keeps its explicit row layout (rowsWithoutRun),
+      // while here the layout degrades to auto because rows cannot describe an order
+      // that just lost three entries.
+      const structural = isStructureBlockId(id);
+      const order = structural
+        ? flattenStructure(chainOrder)
+        : chainOrder.filter((block) => block !== id);
+      const rows = structural ? [] : rowsWithout(chainRows, index);
       set({
         chainOrder: order,
         chainRows: rows,
-        selected: selected === id ? null : selected,
+        selected: keepSelection(order, selected),
       });
       publish(order, rows);
     },
@@ -449,6 +500,18 @@ export const useStore = create<Store>()((set, get) => {
 
     async clearModel() {
       await bridge.clearModel();
+    },
+
+    async loadModelB(path) {
+      const res = await bridge.loadModelB(path);
+      if (!reportError(res.error)) {
+        const name = get().models.find((m) => m.path === path)?.name ?? "";
+        if (name) get().toast(`Loaded ${name} as Model B`, "success", 2500);
+      }
+    },
+
+    async clearModelB() {
+      await bridge.clearModelB();
     },
 
     // `importModel`/`importIr` install *and* load the file on the C++ side, so
@@ -663,6 +726,8 @@ export function connectStore(): () => void {
 
     bridge.on("modelChanged", ({ model }) => set({ model })),
 
+    bridge.on("modelBChanged", ({ modelB }) => set({ modelB })),
+
     bridge.on("irChanged", ({ ir }) => set({ ir })),
 
     bridge.on("t3kStatus", (t3k) => set({ t3k })),
@@ -776,6 +841,10 @@ export const BLOCK_BASES: readonly BaseBlockId[] = [
  * builds an array would hand `useStore` a new snapshot on every render.
  */
 export function addableKinds(order: readonly BlockId[]): BaseBlockId[] {
+  // A full chain can add nothing at all, whatever instances are still free: C++
+  // drops entries past `chain::maxChainLength`, so offering one would be offering a
+  // block that vanishes on the way back. Same cap `canAddSplit` applies to the fork.
+  if (order.length >= MAX_CHAIN_LENGTH) return [];
   return BLOCK_BASES.filter((base) => freeInstance(base, order) !== null);
 }
 
@@ -784,7 +853,10 @@ export function instancesInChain(
   base: BaseBlockId,
   order: readonly BlockId[],
 ): number {
-  const tokens = isFxBlockId(base) ? [base] : instanceTokensOfKind(base);
+  const tokens: readonly BlockId[] =
+    isFxBlockId(base) || isStructureBlockId(base)
+      ? [base]
+      : instanceTokensOfKind(base);
   return tokens.reduce((n, token) => (order.includes(token) ? n + 1 : n), 0);
 }
 

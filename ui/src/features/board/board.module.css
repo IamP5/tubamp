@@ -149,6 +149,21 @@
   }
 }
 
+/* ──────────────────────────── split container ──────────────────────────── */
+
+/* The frame around a split region (docs/SPLIT.md §5). It lives in the wire
+   layer, behind every wire, because its left and right edges are SPLIT's and
+   MIX's motion values — drawn on the connector layer's frame callback, it
+   follows their springs instead of snapping around them once per render. The
+   two lane tracks run inside it; the fan-out and the converge cross it. */
+.laneRegion {
+  fill: var(--bg-surface);
+  fill-opacity: 0.5;
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 6 5;
+}
+
 /* ─────────────────────────────── block card ────────────────────────────── */
 
 .card {
