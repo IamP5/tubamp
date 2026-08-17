@@ -40,6 +40,7 @@ import { DelayBody } from "./DelayBody";
 import { FxSlotBody } from "./FxSlotBody";
 import { MixBody } from "./MixBody";
 import { ModBody } from "./ModBody";
+import { ReverbBody } from "./ReverbBody";
 import { SplitBody } from "./SplitBody";
 import { KnobRow } from "./KnobRow";
 import { KNOB_SPECS } from "./knobSpecs";
@@ -177,6 +178,10 @@ function BlockBody({ block }: { block: BlockId }) {
   if (kind === "cab") return <CabBody />;
   if (kind === "mod") return <ModBody block={block} />;
   if (kind === "delay") return <DelayBody block={block} />;
+  // Same reason as mod/delay, plus one more: the reverb's rows depend on
+  // `reverb_algo` (docs/REVERB.md §5.2), so the generic table is empty for it
+  // and only ReverbBody can render it at all.
+  if (kind === "reverb") return <ReverbBody block={block} />;
   if (kind === "split") return <SplitBody />;
   if (kind === "mix") return <MixBody />;
   // Guard: lane2 is furniture (docs/SPLIT.md §1) — the board never renders it

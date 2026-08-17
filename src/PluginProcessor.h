@@ -254,8 +254,20 @@ private:
     void adoptChainOrder (const chain::Order& order, const std::vector<int>& rows);
 
     /** Audio thread: silences one block instance that is re-entering the chain, so it
-        cannot replay what it was holding when it left. Allocation-free. */
-    void resetBlockInstance (chain::BlockId id) noexcept;
+        cannot replay what it was holding when it left. Allocation-free.
+
+        Returns false when the instance is only PARTLY cleared and wants another call —
+        the reverb clears one delay line per step (docs/REVERB.md §6.3) rather than
+        memsetting megabytes inline. The drain loop re-arms pendingReset while that is
+        the case, so a chunked clear costs one slot of kMaxResetsPerCallback per
+        callback and never more. Every other block clears in one call and returns true. */
+    bool resetBlockInstance (chain::BlockId id) noexcept;
+
+    /** Any thread: arms docs/REVERB.md §6.4's snap flag on every reverb instance, so the
+        next block each one runs adopts its parameters outright instead of sliding Size
+        and crossfading the pre-delay pointer into them. For the state paths and
+        prepareToPlay — resetBlockInstance arms only the instance it cleared. */
+    void armReverbSnap() noexcept;
 
     /** Audio thread: runs ONE chain entry over the buffer it is handed. `buf` and
         `block` are two views of the same audio — the host buffer for a serial entry or
@@ -430,6 +442,20 @@ private:
         std::atomic<float>* reverbDamping[params::maxInstances] {};
         std::atomic<float>* reverbMix[params::maxInstances] {};
         std::atomic<float>* reverbWidth[params::maxInstances] {};
+        std::atomic<float>* reverbAlgo[params::maxInstances] {};
+        std::atomic<float>* reverbDecay[params::maxInstances] {};
+        std::atomic<float>* reverbPredelay[params::maxInstances] {};
+        std::atomic<float>* reverbDiffusion[params::maxInstances] {};
+        std::atomic<float>* reverbLowCut[params::maxInstances] {};
+        std::atomic<float>* reverbHighCut[params::maxInstances] {};
+        std::atomic<float>* reverbMod[params::maxInstances] {};
+        std::atomic<float>* reverbBassMult[params::maxInstances] {};
+        std::atomic<float>* reverbErLevel[params::maxInstances] {};
+        std::atomic<float>* reverbColor[params::maxInstances] {};
+        std::atomic<float>* reverbTilt[params::maxInstances] {};
+        std::atomic<float>* reverbDuck[params::maxInstances] {};
+        std::atomic<float>* reverbShimmer[params::maxInstances] {};
+        std::atomic<float>* reverbShimmerInterval[params::maxInstances] {};
 
         std::atomic<float>* amp2On = nullptr;
         std::atomic<float>* amp2Input = nullptr;
@@ -526,6 +552,16 @@ private:
         switch can re-enter half a dozen blocks in one block. A block whose reset is
         still pending processes as bypassed (silent, never stale). Audio thread only. */
     std::array<bool, chain::numBlockTypes> pendingReset {};
+
+    /** docs/REVERB.md §6.4: "glide nothing on the next block" for one reverb instance.
+        Size is slew-limited and the pre-delay pointer crossfades, which is right for a
+        knob and wrong for a state change — a preset recall would rubber-band into its
+        stored size. Set for one block after resetBlockInstance for that instance, at the
+        end of applyStateVar and setStateInformation, and for the first block after
+        prepareToPlay; consumed (and cleared) where the instance's parameters are read.
+        Atomic because the two state paths run on the message thread and the host's own
+        restore threads, while the consumer is the audio thread. */
+    std::array<std::atomic<bool>, params::maxInstances> reverbSnap {};
 
     // Written on the message thread; also read by getStateInformation, which hosts
     // may call from a save/worker thread. juce::String is copy-on-write and not safe

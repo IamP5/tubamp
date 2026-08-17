@@ -269,6 +269,28 @@ target_link_libraries(tubamp_smoke PRIVATE
     juce::juce_recommended_config_flags)
 
 # ---------------------------------------------------------------------------
+# Reverb measurement rig (docs/REVERB.md §7 Stage 0, §8): renders wet-only IRs out of
+# ReverbEngine and gates them on the §8 metric table plus §3.12's Reverse gates. Only
+# the engine is linked -- it is self-contained (juce_dsp only, TUBAMP_HEADLESS-clean),
+# so the probe needs neither the processor nor nam_core.
+# ---------------------------------------------------------------------------
+juce_add_console_app(tubamp_verbprobe PRODUCT_NAME "tubamp_verbprobe")
+target_sources(tubamp_verbprobe PRIVATE
+    tools/VerbProbe.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/ReverbEngine.cpp")
+target_include_directories(tubamp_verbprobe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(tubamp_verbprobe PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_STANDALONE_APPLICATION=1
+    TUBAMP_HEADLESS=1)
+target_link_libraries(tubamp_verbprobe PRIVATE
+    juce::juce_audio_utils
+    juce::juce_dsp
+    juce::juce_recommended_config_flags)
+
+# ---------------------------------------------------------------------------
 # Headless probe for the external-AU slots: the only automated coverage of the
 # code paths that need a real AudioUnit. Unlike tubamp_smoke this one IS built with
 # hosting enabled, so it can enumerate the machine's plugins, load one into a slot

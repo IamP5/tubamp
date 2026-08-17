@@ -1708,6 +1708,609 @@ bool runDelayModeTests (tubamp::TubampAudioProcessor& proc, double sampleRate, i
 
     return ok;
 }
+
+//==============================================================================
+// Reverb engine (docs/REVERB.md §7 Stage 1)
+//==============================================================================
+
+/** Sets a parameter from its NORMALISED value, so 0 and 1 are exactly the ends of
+    whatever range the layout declares -- the min-vs-max sweeps below never have to
+    restate a range that Parameters.cpp owns. */
+void setNormParam (tubamp::TubampAudioProcessor& proc, const char* paramId, float norm)
+{
+    if (auto* p = proc.apvts.getParameter (paramId))
+        p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, norm));
+}
+
+void resetParamToDefault (tubamp::TubampAudioProcessor& proc, const char* paramId)
+{
+    if (auto* p = proc.apvts.getParameter (paramId))
+        p->setValueNotifyingHost (p->getDefaultValue());
+}
+
+float plainParam (tubamp::TubampAudioProcessor& proc, const char* paramId)
+{
+    if (auto* p = proc.apvts.getParameter (paramId))
+        return p->convertFrom0to1 (p->getValue());
+
+    return 0.0f;
+}
+
+/** renderChain, run twice, keeping the second.
+    A reverb_algo change is DEFERRED (docs/REVERB.md §6.2): ReverbFx::prepare configures
+    the engine from the value it was last given on the audio thread, so the first render
+    after a mode change spends its opening 60 ms fading out, reconfiguring and draining
+    pendingReset. The second render prepares with the mode already latched and is the
+    settled, comparable one. */
+std::vector<float> renderSettled (tubamp::TubampAudioProcessor& proc,
+                                  const tubamp::chain::Order& order,
+                                  double sampleRate, int blockSize, int numBlocks = 40)
+{
+    renderChain (proc, order, sampleRate, blockSize, numBlocks);
+    return renderChain (proc, order, sampleRate, blockSize, numBlocks);
+}
+
+/** Broadband T60 of a wet-only IR taken straight off ReverbEngine: Schroeder backward
+    integration with a least-squares T20 fit extrapolated to 60 dB. The processor is not
+    involved -- this is the rate-independence check of §7 Stage 1 verification 6, and
+    tubamp_verbprobe measures the same quantity the same way. */
+double measureEngineT60 (int algo, double sampleRate, float decayS, float damping01)
+{
+    tubamp::ReverbEngine engine;
+    engine.configure (algo, tubamp::ReverbEngine::windowSecondsFor (decayS));
+    engine.prepare ({ sampleRate, 512u, 2 });
+
+    tubamp::ReverbEngine::Params p;
+    p.algo = algo;
+    p.decayS = decayS;
+    p.damping01 = damping01;
+    p.mix01 = 1.0f;               // wet only: dryLevel = 1 - wetLevel (§3.1)
+    p.snap = true;
+
+    const int total = (int) std::lround (sampleRate * (4.0 * (double) decayS + 1.0));
+    std::vector<double> ir;
+    ir.reserve ((size_t) total);
+
+    juce::AudioBuffer<float> buffer (2, 512);
+
+    for (int pos = 0; pos < total; pos += 512)
+    {
+        const int n = std::min (512, total - pos);
+        buffer.clear();
+
+        if (pos == 0)
+        {
+            buffer.setSample (0, 0, 1.0f);
+            buffer.setSample (1, 0, 1.0f);
+        }
+
+        engine.setParameters (p);
+        p.snap = false;
+        engine.process (juce::dsp::AudioBlock<float> (buffer).getSubBlock (0, (size_t) n));
+
+        for (int i = 0; i < n; ++i)
+            ir.push_back ((double) buffer.getSample (0, i));
+    }
+
+    std::vector<double> edc (ir.size());
+    double acc = 0.0;
+
+    for (size_t i = ir.size(); i-- > 0;)
+    {
+        acc += ir[i] * ir[i];
+        edc[i] = acc;
+    }
+
+    if (edc.empty() || edc[0] <= 0.0)
+        return 0.0;
+
+    size_t i0 = 0, i1 = 0;
+    bool haveStart = false, haveEnd = false;
+
+    for (size_t i = 0; i < edc.size(); ++i)
+    {
+        const double db = 10.0 * std::log10 (std::max (1.0e-300, edc[i] / edc[0]));
+
+        if (! haveStart && db <= -5.0)  { i0 = i; haveStart = true; }
+        if (haveStart && db <= -25.0)   { i1 = i; haveEnd = true; break; }
+    }
+
+    if (! haveStart || ! haveEnd || i1 <= i0 + 8)
+        return 0.0;
+
+    double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+    const double count = (double) (i1 - i0);
+
+    for (size_t i = i0; i < i1; ++i)
+    {
+        const double t = (double) i / sampleRate;
+        const double db = 10.0 * std::log10 (std::max (1.0e-300, edc[i] / edc[0]));
+        sx += t; sy += db; sxx += t * t; sxy += t * db;
+    }
+
+    const double denom = count * sxx - sx * sx;
+
+    if (std::abs (denom) < 1.0e-18)
+        return 0.0;
+
+    const double slope = (count * sxy - sx * sy) / denom;
+    return slope < -1.0e-9 ? -60.0 / slope : 0.0;
+}
+
+/** Removes one parameter from a saved binary state, producing the shape of a session
+    written before that parameter existed (docs/REVERB.md §5.3). */
+juce::MemoryBlock stripParamFromBlob (const juce::MemoryBlock& blob, const juce::String& paramId)
+{
+    juce::MemoryBlock out;
+    auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
+
+    if (xml == nullptr)
+        return out;
+
+    if (auto* paramState = xml->getChildByName ("PARAMS"))
+        if (auto* child = paramState->getChildByAttribute ("id", paramId))
+            paramState->removeChildElement (child, true);
+
+    juce::AudioProcessor::copyXmlToBinary (*xml, out);
+    return out;
+}
+
+/** The reverb engine (docs/REVERB.md). §7 Stage 1's verification list, adapted: there is
+    no Legacy engine to regression-test against (the Freeverb erasure is a dated user
+    directive, 2026-08-06), so verification 1 becomes §5.3's absent-means-default
+    resolution on BOTH restore paths. Every render uses a reverb-only order -- the amp is
+    the one block this file documents as not resetting bit-exactly. */
+bool runReverbTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    std::printf ("reverb:\n");
+
+    namespace chain = tubamp::chain;
+    using Mode = tubamp::ReverbEngine;
+    bool ok = true;
+
+    const chain::Order reverbOnly { BlockId::reverb };
+
+    struct ModeEntry { int algo; const char* name; };
+    // Every entry of the FROZEN reverb_algo list is shipped from Stage 3 on (docs/REVERB.md
+    // §4): Spring at Stage 2, Shimmer at Stage 3, no DSP fallback left.
+    static constexpr ModeEntry kShipped[] = { { Mode::modeRoom,    "Room"  },
+                                              { Mode::modePlate,   "Plate" },
+                                              { Mode::modeHall,    "Hall"  },
+                                              { Mode::modeSpring,  "Spring" },
+                                              { Mode::modeShimmer, "Shimmer" },
+                                              { Mode::modeReverse, "Reverse" } };
+
+    /** §5.2's mode-dependent meanings, as an assertion rather than a comment. Reverse greys
+        damping / bassmult / erlevel (§3.12: no recirculating tail to shape). Spring idles
+        the Early Energy section (§4.1's erToTank 0) and does not modulate at all (modDepth
+        0 — a spring is a mechanical line and does not detune), so those two are inert there
+        as well; reverb_diffusion and reverb_size are not inert in Spring, they MEAN
+        something else (DWELL and TANK), which is why they stay in the sweep. Every name
+        listed here is asserted bit-inert below, never merely skipped. */
+    const auto inertIn = [] (int algo, const char* id)
+    {
+        if (algo == Mode::modeReverse)
+            return id == params::reverbDamping || id == params::reverbBassMult
+                || id == params::reverbErLevel;
+
+        if (algo == Mode::modeSpring)
+            return id == params::reverbErLevel || id == params::reverbMod;
+
+        return false;
+    };
+
+    /** Every live reverb parameter. Section 3 sweeps it per mode and 3b asserts the names
+        that section 3 skips, so the two halves cannot drift apart. */
+    static constexpr const char* kSweep[] = {
+        params::reverbSize,   params::reverbDamping,  params::reverbMix,      params::reverbWidth,
+        params::reverbDecay,  params::reverbPredelay, params::reverbDiffusion,
+        params::reverbLowCut, params::reverbHighCut,  params::reverbMod,
+        params::reverbBassMult, params::reverbErLevel, params::reverbColor,
+        params::reverbTilt,   params::reverbDuck,     params::reverbShimmer,
+        params::reverbShimmerInterval };
+
+    const auto setAlgo = [&proc] (int algo) { setFloatParam (proc, params::reverbAlgo, (float) algo); };
+
+    setBoolParam (proc, params::reverbOn, true);
+    setAlgo (Mode::modeRoom);
+
+    // --- 3. knobs audible: every live parameter, min vs max, PER SHIPPED MODE (§7
+    // verification 3). Room alone would let a parameter be dead in Plate, Hall, Spring,
+    // Shimmer or Reverse and still pass. The documented-inert names are skipped per mode
+    // by `inertIn`, and 3b asserts the opposite of this about every one of them.
+    {
+        for (const auto& entry : kShipped)
+        {
+            setAlgo (entry.algo);
+
+            renderChain (proc, reverbOnly, sampleRate, blockSize);   // latch the mode
+
+            for (const char* id : kSweep)
+            {
+                if (inertIn (entry.algo, id))
+                    continue;
+
+                // §3.11's shimmer level is inert everywhere but Shimmer (asserted in 3b),
+                // and every other name in Shimmer is swept with a shifted voice actually in
+                // the loop -- the interval especially, which is inert until there is one.
+                if (id == params::reverbShimmer || id == params::reverbShimmerInterval)
+                    if (entry.algo != Mode::modeShimmer)
+                        continue;
+
+                if (entry.algo == Mode::modeShimmer && id != params::reverbShimmer)
+                    setNormParam (proc, params::reverbShimmer, 1.0f);
+
+                setNormParam (proc, id, 0.0f);
+                const auto atMin = renderChain (proc, reverbOnly, sampleRate, blockSize);
+
+                setNormParam (proc, id, 1.0f);
+                const auto atMax = renderChain (proc, reverbOnly, sampleRate, blockSize);
+
+                resetParamToDefault (proc, id);
+
+                char what[128];
+                std::snprintf (what, sizeof (what), "%s at min vs max changes %s's output",
+                               id, entry.name);
+                ok &= expect (firstDifference (atMin, atMax) >= 0, what);
+            }
+
+            resetParamToDefault (proc, params::reverbShimmer);
+        }
+
+        setAlgo (Mode::modeRoom);
+    }
+
+    // --- 3b. asserted inertness: the §5.2 / §3.12 greyed names, and §3.11's shimmer level
+    // outside Shimmer. Inertness is asserted, never assumed.
+    {
+        for (const auto& entry : kShipped)
+        {
+            setAlgo (entry.algo);
+
+            for (const char* id : kSweep)
+            {
+                const bool shimmerElsewhere = (id == params::reverbShimmer
+                                               || id == params::reverbShimmerInterval)
+                                              && entry.algo != Mode::modeShimmer;
+
+                if (! inertIn (entry.algo, id) && ! shimmerElsewhere)
+                    continue;
+
+                // The interval only moves a signal the level lets through, so the level is
+                // held UP while the interval is proven inert: at reverb_shimmer = 0 it would
+                // be inert in Shimmer too, and the assertion would be about nothing.
+                if (id == params::reverbShimmerInterval)
+                    setNormParam (proc, params::reverbShimmer, 1.0f);
+
+                setNormParam (proc, id, 0.0f);
+                const auto atMin = renderSettled (proc, reverbOnly, sampleRate, blockSize);
+
+                setNormParam (proc, id, 1.0f);
+                const auto atMax = renderSettled (proc, reverbOnly, sampleRate, blockSize);
+
+                resetParamToDefault (proc, id);
+                resetParamToDefault (proc, params::reverbShimmer);
+
+                char what[160];
+                std::snprintf (what, sizeof (what), "%s is bit-inert in %s (min vs max)",
+                               id, entry.name);
+                ok &= expectIdentical (atMin, atMax, what);
+            }
+        }
+
+        setAlgo (Mode::modeRoom);
+    }
+
+    // --- 2. all six modes audible, pairwise -----------------------------------------
+    {
+        struct Rendered { int algo; const char* name; std::vector<float> audio; };
+
+        std::vector<Rendered> shipped;
+
+        // Shimmer is rendered with a shifted voice in it. At reverb_shimmer = 0 the mode is
+        // Hall to the bit BY DESIGN -- §3.11 is explicit that Shimmer is "a routing switch,
+        // not a topology", so it shares Hall's spec row and therefore Hall's per-mode LCG
+        // seed -- and that identity is asserted directly below rather than papered over
+        // here. What "modes audible" has to prove about Shimmer is that its own control
+        // reaches the tank, which is what a non-zero level renders.
+        for (const auto& entry : kShipped)
+        {
+            setAlgo (entry.algo);
+
+            if (entry.algo == Mode::modeShimmer)
+                setNormParam (proc, params::reverbShimmer, 1.0f);
+
+            shipped.push_back ({ entry.algo, entry.name,
+                                 renderSettled (proc, reverbOnly, sampleRate, blockSize) });
+            resetParamToDefault (proc, params::reverbShimmer);
+        }
+
+        for (size_t a = 0; a < shipped.size(); ++a)
+            for (size_t b = a + 1; b < shipped.size(); ++b)
+            {
+                char what[128];
+                std::snprintf (what, sizeof (what), "%s and %s render differently",
+                               shipped[a].name, shipped[b].name);
+                ok &= expect (firstDifference (shipped[a].audio, shipped[b].audio) >= 0, what);
+            }
+
+        // §3.11's bit-inertness, the invariant that lets Shimmer share Hall's tables at all:
+        // reverb_shimmer = 0 is not "almost Hall", it is Hall, sample for sample. (§7 Stage
+        // 3's task list asks for the opposite assertion -- "not bit-exact, different mode
+        // tables" -- but there is no Shimmer column in §4.1 to differ by, specIndexFor()
+        // resolves Shimmer to Hall's row, and the ternary in processTank's write-back exists
+        // precisely so that the inactive shifter cannot even turn -0.0f into +0.0f. The
+        // stronger, shipped invariant is asserted here; reported 2026-08-07.)
+        setAlgo (Mode::modeShimmer);
+        const auto shimmerOff = renderSettled (proc, reverbOnly, sampleRate, blockSize);
+        ok &= expectIdentical (shimmerOff, shipped[2].audio,
+                               "Shimmer at reverb_shimmer = 0 renders bit-identically to Hall "
+                               "(§3.11: a routing switch, not a topology)");
+
+        setNormParam (proc, params::reverbShimmer, 1.0f);
+        const auto shimmerOn = renderSettled (proc, reverbOnly, sampleRate, blockSize);
+        ok &= expect (firstDifference (shimmerOff, shimmerOn) >= 0,
+                      "reverb_shimmer at min vs max changes Shimmer's output");
+        ok &= expect (firstDifference (shimmerOn, shipped[2].audio) >= 0,
+                      "Shimmer with a shifted voice in it differs from Hall");
+        resetParamToDefault (proc, params::reverbShimmer);
+
+        // Spring is its own machine (§3.9: three dispersive springs, not an FDN), not Plate
+        // with a filter on it -- and Plate is the row it borrows its inert tank columns from,
+        // so this is the pair most likely to collapse if the mode ever stopped dispatching.
+        setAlgo (Mode::modeSpring);
+        ok &= expect (firstDifference (renderSettled (proc, reverbOnly, sampleRate, blockSize),
+                                       shipped[1].audio) >= 0,
+                      "Spring renders differently from Plate");
+
+        setAlgo (Mode::modeRoom);
+    }
+
+    // --- 4. finite and non-silent on both host layouts; bypass is a bit-exact
+    //        pass-through; re-entry never replays the old tail --------------------
+    {
+        for (const auto& entry : kShipped)
+        {
+            setAlgo (entry.algo);
+            proc.setChainOrder (reverbOnly, {});
+            proc.prepareToPlay (sampleRate, blockSize);
+
+            bool finite = true;
+            const double rms = processSineRms (proc, sampleRate, blockSize, &finite);
+
+            char what[128];
+            std::snprintf (what, sizeof (what), "%s is finite and non-silent (stereo host)", entry.name);
+            ok &= expect (finite && std::isfinite (rms) && rms > 1.0e-6, what);
+
+            proc.setChainOrder (reverbOnly, {});
+
+            bool monoFinite = false, monoNonSilent = false;
+            const bool monoRan = withMonoHost (proc, sampleRate, blockSize, [&]
+            {
+                monoFinite = processMonoSineFinite (proc, sampleRate, blockSize);
+                monoNonSilent = processMonoSineRms (proc, sampleRate, blockSize) > 1.0e-6;
+            });
+
+            std::snprintf (what, sizeof (what), "%s is finite and non-silent (mono host)", entry.name);
+            ok &= expect (! monoRan || (monoFinite && monoNonSilent), what);
+        }
+
+        setAlgo (Mode::modeRoom);
+
+        // reverb_on off must not touch the buffer at all: a bypassed block and no block
+        // are the same chain.
+        setBoolParam (proc, params::reverbOn, false);
+        const auto bypassed = renderSettled (proc, reverbOnly, sampleRate, blockSize);
+        const auto absent = renderSettled (proc, chain::Order {}, sampleRate, blockSize);
+        ok &= expectIdentical (bypassed, absent,
+                               "reverb_on off is a bit-exact pass-through (identical to no reverb "
+                               "in the chain at all)");
+        setBoolParam (proc, params::reverbOn, true);
+
+        // Re-entry: a block that left the chain and comes back must not replay the tail
+        // it was holding (PluginProcessor's present/prevPresent pendingReset rule).
+        //
+        // Measured as a DIFFERENCE, not against zero. The processor's always-on output
+        // DC blocker is a very narrow highpass whose state is still relaxing from the
+        // sine long after the tone stops (the same effect tools/FxProbe.cpp warms out
+        // before taking its reference), so a bare "is the output silent" check would be
+        // measuring that decay rather than the reverb. Both runs below share an
+        // identical history from prepareToPlay onwards and differ only in whether the
+        // reverb is in the chain for the silent capture: if it comes back cleared it
+        // contributes nothing to silence, and the two captures coincide.
+        setFloatParam (proc, params::reverbMix, 1.0f);
+
+        const auto captureAfterReentry = [&] (bool putReverbBack)
+        {
+            // Two sine passes with a prepareToPlay between them, for renderSettled's
+            // reason: the first latches the mode into ReverbFx (§6.2 configures the
+            // engine at prepare from the value the audio thread last handed it), the
+            // second builds the tail that must not come back.
+            proc.setChainOrder (reverbOnly, {});
+            proc.prepareToPlay (sampleRate, blockSize);
+            runSine (proc, sampleRate, blockSize, 20, nullptr);
+            proc.prepareToPlay (sampleRate, blockSize);
+            runSine (proc, sampleRate, blockSize, 20, nullptr);      // build a tail
+
+            juce::AudioBuffer<float> silence (2, blockSize);
+            juce::MidiBuffer midi;
+
+            proc.setChainOrder (chain::Order {}, {});                // the reverb leaves
+
+            for (int block = 0; block < 4; ++block)
+            {
+                silence.clear();
+                proc.processBlock (silence, midi);
+            }
+
+            proc.setChainOrder (putReverbBack ? reverbOnly : chain::Order {}, {});
+
+            std::vector<float> captured;
+
+            for (int block = 0; block < 60; ++block)
+            {
+                silence.clear();
+                proc.processBlock (silence, midi);
+
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const auto* data = silence.getReadPointer (ch);
+                    captured.insert (captured.end(), data, data + blockSize);
+                }
+            }
+
+            return captured;
+        };
+
+        const auto reentered = captureAfterReentry (true);
+        const auto neverBack = captureAfterReentry (false);
+
+        double worst = 0.0;
+
+        for (size_t i = 0; i < std::min (reentered.size(), neverBack.size()); ++i)
+            worst = std::max (worst, (double) std::abs (reentered[i] - neverBack[i]));
+
+        std::printf ("  re-entry residue vs never-returned control: %.3g\n", worst);
+
+        // Not bit-exact: zita's +1e-20 staynormal (§6.6) is deliberately injected into
+        // every tank line every sample, so a cleared reverb fed silence outputs ~1e-18,
+        // not 0. Anything at that scale is 200 dB below a replayed tail.
+        ok &= expect (worst < 1.0e-9,
+                      "a reverb put back into the chain does not replay the tail it left with");
+        resetParamToDefault (proc, params::reverbMix);
+    }
+
+    // --- 5. Size never goes dead: sizeScale is strictly monotonic in size01 (§6.5's
+    //        law is affine, so what has to be proven is that no step is INAUDIBLE) at
+    //        every (mode x decay) corner ------------------------------------------
+    {
+        for (const auto& entry : kShipped)
+        {
+            setAlgo (entry.algo);
+
+            const float ceiling = Mode::decayCeilingFor (Mode::resolveMode (entry.algo));
+
+            for (float decay : { 0.2f, ceiling })
+            {
+                setFloatParam (proc, params::reverbDecay, decay);
+
+                std::vector<float> previous;
+                bool allDistinct = true;
+
+                for (int step = 0; step <= 4; ++step)
+                {
+                    setNormParam (proc, params::reverbSize, (float) step * 0.25f);
+                    auto render = renderSettled (proc, reverbOnly, sampleRate, blockSize);
+
+                    if (! previous.empty())
+                        allDistinct = allDistinct && firstDifference (previous, render) >= 0;
+
+                    previous = std::move (render);
+                }
+
+                char what[160];
+                std::snprintf (what, sizeof (what),
+                               "%s at decay %.2f s: every Size step changes the output "
+                               "(no flat region)", entry.name, (double) decay);
+                ok &= expect (allDistinct, what);
+            }
+        }
+
+        resetParamToDefault (proc, params::reverbDecay);
+        resetParamToDefault (proc, params::reverbSize);
+        setAlgo (Mode::modeRoom);
+    }
+
+    // --- 6. measured T60 agrees across host rates ---------------------------------
+    {
+        // Room at decay = 1.0 s with damping = 0.25 asks the Jot solve for the same T60
+        // in every band (§3.4), which is the configuration in which a single broadband
+        // number means anything. Freeverb fails this because its integer-truncated
+        // setSize() changes the comb ratios with the host rate (§1.4).
+        const double rates[3] = { 44100.0, 48000.0, 96000.0 };
+        double lo = 1.0e300, hi = 0.0;
+
+        for (double rate : rates)
+        {
+            const double t60 = measureEngineT60 (Mode::modeRoom, rate, 1.0f, 0.25f);
+            std::printf ("  T60 at %.0f Hz: %.3f s\n", rate, t60);
+            lo = std::min (lo, t60);
+            hi = std::max (hi, t60);
+        }
+
+        const double spread = lo > 0.0 ? hi / lo - 1.0 : 1.0;
+        std::printf ("  T60 spread across host rates: %+.1f %%\n", 100.0 * spread);
+        ok &= expect (lo > 0.0 && spread <= 0.10,
+                      "measured T60 agrees within 10% at 44100 / 48000 / 96000 Hz");
+    }
+
+    // --- 1. absent reverb_algo resolves to Room on BOTH restore paths (§5.3) -------
+    {
+        // Session path: the sweep mirrored into setStateInformation. The value is left at
+        // a non-default BEFORE the restore, which is what makes this test bite -- JUCE's
+        // replaceState would otherwise flush the LIVE value into the fresh child.
+        setAlgo (Mode::modeHall);
+        juce::MemoryBlock blob;
+        proc.getStateInformation (blob);
+
+        const auto legacy = stripParamFromBlob (blob, params::reverbAlgo);
+        ok &= expect (legacy.getSize() > 0, "a state blob with no reverb_algo could be built");
+
+        setAlgo (Mode::modeHall);
+        proc.setStateInformation (legacy.getData(), (int) legacy.getSize());
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+        ok &= expect ((int) plainParam (proc, params::reverbAlgo) == Mode::modeRoom,
+                      "a session with no reverb_algo restores to Room over a live Hall "
+                      "(setStateInformation)");
+
+        // Preset path: applyStateVar's own absent-means-default sweep.
+        setAlgo (Mode::modeHall);
+        const auto presetState = proc.captureStateVar();
+
+        if (auto* obj = presetState.getDynamicObject())
+        {
+            if (auto* values = obj->getProperty ("params").getDynamicObject())
+                values->removeProperty (juce::Identifier (params::reverbAlgo));
+
+            setAlgo (Mode::modeHall);
+            proc.applyStateVar (presetState);
+
+            ok &= expect ((int) plainParam (proc, params::reverbAlgo) == Mode::modeRoom,
+                          "a preset with no reverb_algo restores to Room over a live Hall "
+                          "(applyStateVar)");
+        }
+        else
+        {
+            ok &= expect (false, "captureStateVar did not produce an object");
+        }
+
+        setAlgo (Mode::modeRoom);
+    }
+
+    // --- 8. renderChain's bit-identical contract still holds with a reverb in it ----
+    {
+        renderChain (proc, reverbOnly, sampleRate, blockSize);
+        const auto first = renderChain (proc, reverbOnly, sampleRate, blockSize);
+        const auto second = renderChain (proc, reverbOnly, sampleRate, blockSize);
+        ok &= expectIdentical (first, second,
+                               "two renders of a chain containing a reverb are bit-identical");
+    }
+
+    for (const char* id : { params::reverbSize, params::reverbDamping, params::reverbMix,
+                            params::reverbWidth, params::reverbDecay, params::reverbPredelay,
+                            params::reverbDiffusion, params::reverbLowCut, params::reverbHighCut,
+                            params::reverbMod, params::reverbBassMult, params::reverbErLevel,
+                            params::reverbColor, params::reverbTilt, params::reverbDuck,
+                            params::reverbShimmer, params::reverbShimmerInterval,
+                            params::reverbAlgo })
+        resetParamToDefault (proc, id);
+
+    proc.setChainOrder (chain::defaultOrder(), {});
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    return ok;
+}
 } // namespace
 
 int main (int argc, char** argv)
@@ -1818,10 +2421,15 @@ int main (int argc, char** argv)
     std::printf (splitStatePass ? "PASS: split-path structure round-trips through state\n"
                                 : "FAIL: split-path state behaviour is wrong\n");
 
+    const bool reverbPass = runReverbTests (proc, sampleRate, blockSize);
+    std::printf (reverbPass ? "PASS: reverb modes, knobs, fallbacks and legacy resolution are correct\n"
+                            : "FAIL: reverb engine behaviour is wrong\n");
+
     return modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
                    && ampEqPass && factoryPass && concurrentPass && fxPass
                    && modelPathBPass && delayModePass
                    && splitPathPass && dualAmpLanePass && splitLatencyPass && splitStatePass
+                   && reverbPass
                ? 0
                : 1;
 }

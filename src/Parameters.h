@@ -84,11 +84,33 @@ inline constexpr auto delayMode     = "delay_mode";     // choice: Stereo | Ping
 inline constexpr auto delayRatio    = "delay_ratio";    // % [25, 200] R time = L time x ratio/100, Dual mode only
 inline constexpr auto delayWidth    = "delay_width";    // [0, 1] wet-signal M/S width, all modes
 
-// Reverb
+// Reverb (docs/REVERB.md). size/damping/mix/width keep their ids, ranges and defaults
+// and now drive the FDN engine: size -> sizeScale within the mode's min..max, damping ->
+// the §3.4 HF decay law, mix/width laws verbatim.
 inline constexpr auto reverbSize    = "reverb_size";    // [0, 1]
 inline constexpr auto reverbDamping = "reverb_damping"; // [0, 1]
 inline constexpr auto reverbMix     = "reverb_mix";     // [0, 1]
-inline constexpr auto reverbWidth   = "reverb_width";   // [0, 1] juce::Reverb stereo width
+inline constexpr auto reverbWidth   = "reverb_width";   // [0, 1] wet-only M/S width
+
+// Reverb engine batch 1 (docs/REVERB.md §5), in the spec's own order. reverb_algo is
+// the compatibility keystone: absent -> default -> Room (§5.3).
+inline constexpr auto reverbAlgo      = "reverb_algo";      // choice: reverbAlgoChoices (FROZEN)
+inline constexpr auto reverbDecay     = "reverb_decay";     // s  [0.2, 30] log, mid-band T60
+inline constexpr auto reverbPredelay  = "reverb_predelay";  // ms [0, 250] — musical, NOT latency
+inline constexpr auto reverbDiffusion = "reverb_diffusion"; // [0, 1] input-diffuser g law
+inline constexpr auto reverbLowCut    = "reverb_lowcut";    // Hz [20, 800] log send HP
+inline constexpr auto reverbHighCut   = "reverb_highcut";   // Hz [1200, 20000] log send LP
+inline constexpr auto reverbMod       = "reverb_mod";       // [0, 1] two-stage depth/rate law
+inline constexpr auto reverbBassMult  = "reverb_bassmult";  // x [0.25, 4] low-band DECAY multiplier
+inline constexpr auto reverbErLevel   = "reverb_erlevel";   // [0, 1] Early Energy level
+inline constexpr auto reverbColor     = "reverb_color";     // [0, 1] character axis (§5.1)
+inline constexpr auto reverbTilt      = "reverb_tilt";      // [-1, 1] wet shelving pair, 800 Hz pivot
+inline constexpr auto reverbDuck      = "reverb_duck";      // [0, 1] wet ducking from the dry send
+
+// Reverb engine batch 2 (docs/REVERB.md §5, Stage 3): Shimmer. Inert outside the Shimmer
+// algo, and inert at 0 inside it — the shifter is not touched there.
+inline constexpr auto reverbShimmer         = "reverb_shimmer";          // [0, 1] shifted-voice level
+inline constexpr auto reverbShimmerInterval = "reverb_shimmer_interval"; // choice: FROZEN 4
 
 //==============================================================================
 // Pooled instances.
@@ -161,16 +183,44 @@ inline constexpr auto delay3Mode     = "delay3_mode";
 inline constexpr auto delay3Ratio    = "delay3_ratio";
 inline constexpr auto delay3Width    = "delay3_width";
 
-inline constexpr auto reverb2On      = "reverb2_on";
-inline constexpr auto reverb2Size    = "reverb2_size";
-inline constexpr auto reverb2Damping = "reverb2_damping";
-inline constexpr auto reverb2Mix     = "reverb2_mix";
-inline constexpr auto reverb2Width   = "reverb2_width";
-inline constexpr auto reverb3On      = "reverb3_on";
-inline constexpr auto reverb3Size    = "reverb3_size";
-inline constexpr auto reverb3Damping = "reverb3_damping";
-inline constexpr auto reverb3Mix     = "reverb3_mix";
-inline constexpr auto reverb3Width   = "reverb3_width";
+inline constexpr auto reverb2On        = "reverb2_on";
+inline constexpr auto reverb2Size      = "reverb2_size";
+inline constexpr auto reverb2Damping   = "reverb2_damping";
+inline constexpr auto reverb2Mix       = "reverb2_mix";
+inline constexpr auto reverb2Width     = "reverb2_width";
+inline constexpr auto reverb2Algo      = "reverb2_algo";
+inline constexpr auto reverb2Decay     = "reverb2_decay";
+inline constexpr auto reverb2Predelay  = "reverb2_predelay";
+inline constexpr auto reverb2Diffusion = "reverb2_diffusion";
+inline constexpr auto reverb2LowCut    = "reverb2_lowcut";
+inline constexpr auto reverb2HighCut   = "reverb2_highcut";
+inline constexpr auto reverb2Mod       = "reverb2_mod";
+inline constexpr auto reverb2BassMult  = "reverb2_bassmult";
+inline constexpr auto reverb2ErLevel   = "reverb2_erlevel";
+inline constexpr auto reverb2Color     = "reverb2_color";
+inline constexpr auto reverb2Tilt      = "reverb2_tilt";
+inline constexpr auto reverb2Duck      = "reverb2_duck";
+inline constexpr auto reverb2Shimmer         = "reverb2_shimmer";
+inline constexpr auto reverb2ShimmerInterval = "reverb2_shimmer_interval";
+inline constexpr auto reverb3On        = "reverb3_on";
+inline constexpr auto reverb3Size      = "reverb3_size";
+inline constexpr auto reverb3Damping   = "reverb3_damping";
+inline constexpr auto reverb3Mix       = "reverb3_mix";
+inline constexpr auto reverb3Width     = "reverb3_width";
+inline constexpr auto reverb3Algo      = "reverb3_algo";
+inline constexpr auto reverb3Decay     = "reverb3_decay";
+inline constexpr auto reverb3Predelay  = "reverb3_predelay";
+inline constexpr auto reverb3Diffusion = "reverb3_diffusion";
+inline constexpr auto reverb3LowCut    = "reverb3_lowcut";
+inline constexpr auto reverb3HighCut   = "reverb3_highcut";
+inline constexpr auto reverb3Mod       = "reverb3_mod";
+inline constexpr auto reverb3BassMult  = "reverb3_bassmult";
+inline constexpr auto reverb3ErLevel   = "reverb3_erlevel";
+inline constexpr auto reverb3Color     = "reverb3_color";
+inline constexpr auto reverb3Tilt      = "reverb3_tilt";
+inline constexpr auto reverb3Duck      = "reverb3_duck";
+inline constexpr auto reverb3Shimmer         = "reverb3_shimmer";
+inline constexpr auto reverb3ShimmerInterval = "reverb3_shimmer_interval";
 
 // Amp tone stack: the EQ that lives inside the amp block, between the model's gated
 // output and the amp-out gain. Same maths and knob units as the standalone eq block
@@ -240,6 +290,24 @@ inline constexpr const char* reverbDampingIds[maxInstances] { reverbDamping, rev
 inline constexpr const char* reverbMixIds[maxInstances]     { reverbMix,     reverb2Mix,     reverb3Mix };
 inline constexpr const char* reverbWidthIds[maxInstances]   { reverbWidth,   reverb2Width,   reverb3Width };
 
+inline constexpr const char* reverbAlgoIds[maxInstances]      { reverbAlgo,      reverb2Algo,      reverb3Algo };
+inline constexpr const char* reverbDecayIds[maxInstances]     { reverbDecay,     reverb2Decay,     reverb3Decay };
+inline constexpr const char* reverbPredelayIds[maxInstances]  { reverbPredelay,  reverb2Predelay,  reverb3Predelay };
+inline constexpr const char* reverbDiffusionIds[maxInstances] { reverbDiffusion, reverb2Diffusion, reverb3Diffusion };
+inline constexpr const char* reverbLowCutIds[maxInstances]    { reverbLowCut,    reverb2LowCut,    reverb3LowCut };
+inline constexpr const char* reverbHighCutIds[maxInstances]   { reverbHighCut,   reverb2HighCut,   reverb3HighCut };
+inline constexpr const char* reverbModIds[maxInstances]       { reverbMod,       reverb2Mod,       reverb3Mod };
+inline constexpr const char* reverbBassMultIds[maxInstances]  { reverbBassMult,  reverb2BassMult,  reverb3BassMult };
+inline constexpr const char* reverbErLevelIds[maxInstances]   { reverbErLevel,   reverb2ErLevel,   reverb3ErLevel };
+inline constexpr const char* reverbColorIds[maxInstances]     { reverbColor,     reverb2Color,     reverb3Color };
+inline constexpr const char* reverbTiltIds[maxInstances]      { reverbTilt,      reverb2Tilt,      reverb3Tilt };
+inline constexpr const char* reverbDuckIds[maxInstances]      { reverbDuck,      reverb2Duck,      reverb3Duck };
+
+inline constexpr const char* reverbShimmerIds[maxInstances] { reverbShimmer, reverb2Shimmer, reverb3Shimmer };
+inline constexpr const char* reverbShimmerIntervalIds[maxInstances] { reverbShimmerInterval,
+                                                                     reverb2ShimmerInterval,
+                                                                     reverb3ShimmerInterval };
+
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
 inline const juce::StringArray modTypeChoices { "Chorus", "Phaser", "Tremolo" };
@@ -251,6 +319,20 @@ inline const juce::StringArray delayModeChoices { "Stereo", "Ping-Pong", "Dual" 
 // Frozen once shipped (docs/SPLIT.md) — do not reorder/append without a migration
 // plan, hosts store the choice as an index.
 inline const juce::StringArray splitModeChoices { "Copy", "L/R", "X-Over" };
+
+// FROZEN in full at stage 1 (docs/REVERB.md §4), including the two modes that did not
+// ship then: AudioParameterChoice normalises by index/(numChoices-1), so appending an
+// entry later would repoint every recorded automation lane. Declaring the list whole is
+// what let Spring ship at Stage 2 and Shimmer at Stage 3 without touching it — every
+// entry is now a live machine and no DSP fallback or greyed entry remains. Index 0 = Room
+// is the default and the resolution target for every legacy state.
+inline const juce::StringArray reverbAlgoChoices { "Room", "Plate", "Hall",
+                                                   "Spring", "Shimmer", "Reverse" };
+
+// FROZEN 4 (docs/REVERB.md §3.11), default index 2 = +1 oct. Same normalisation argument
+// as the algo list: hosts store the index, so the set cannot grow or be reordered.
+inline const juce::StringArray reverbShimmerIntervalChoices { "-1 Oct", "+5th", "+1 Oct",
+                                                              "+1 Oct & +5th" };
 
 /** Output-gain compensation modes, in the official plugin's index order. */
 enum class OutputMode { raw = 0, normalized = 1, calibrated = 2 };

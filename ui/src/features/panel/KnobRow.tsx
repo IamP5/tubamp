@@ -22,7 +22,13 @@ export function KnobRow({ specs, size = "md", className }: KnobRowProps) {
     <div className={className ? `${s.knobRow} ${className}` : s.knobRow}>
       {specs.map((spec) => (
         <div key={spec.id} className={s.knobCell}>
-          <Knob id={spec.id} label={spec.label} size={size} />
+          <Knob
+            id={spec.id}
+            label={spec.label}
+            size={size}
+            displayMax={spec.displayMax}
+            disabled={spec.disabled}
+          />
         </div>
       ))}
     </div>

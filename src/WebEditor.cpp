@@ -74,7 +74,23 @@ const char* const kSliderIds[] = {
     // Split/mix chain (docs/SPLIT.md §2), appended in spec order.
     params::amp2Input,       params::amp2Output,     params::splitXover,
     params::mixALevel,       params::mixBLevel,      params::mixAPan,
-    params::mixBPan,         params::mixLevel };
+    params::mixBPan,         params::mixLevel,
+    // Reverb engine batch 1 (docs/REVERB.md §5), appended in spec order, each id x3
+    // instances. reverb_algo is a combo and lives in kComboIds below.
+    params::reverbDecay,     params::reverb2Decay,     params::reverb3Decay,
+    params::reverbPredelay,  params::reverb2Predelay,  params::reverb3Predelay,
+    params::reverbDiffusion, params::reverb2Diffusion, params::reverb3Diffusion,
+    params::reverbLowCut,    params::reverb2LowCut,    params::reverb3LowCut,
+    params::reverbHighCut,   params::reverb2HighCut,   params::reverb3HighCut,
+    params::reverbMod,       params::reverb2Mod,       params::reverb3Mod,
+    params::reverbBassMult,  params::reverb2BassMult,  params::reverb3BassMult,
+    params::reverbErLevel,   params::reverb2ErLevel,   params::reverb3ErLevel,
+    params::reverbColor,     params::reverb2Color,     params::reverb3Color,
+    params::reverbTilt,      params::reverb2Tilt,      params::reverb3Tilt,
+    params::reverbDuck,      params::reverb2Duck,      params::reverb3Duck,
+    // Reverb engine batch 2 (docs/REVERB.md §5, Stage 3): Shimmer. reverb_shimmer_interval
+    // is a combo and lives in kComboIds below.
+    params::reverbShimmer,   params::reverb2Shimmer,   params::reverb3Shimmer };
 
 const char* const kToggleIds[] = {
     params::gateOn,  params::compOn,  params::driveOn, params::ampOn,
@@ -97,11 +113,18 @@ const char* const kComboIds[] = { params::ampOutMode, params::modType,
                                   // stereo chain (docs/STEREO.md §4)
                                   params::delayMode,  params::delay2Mode, params::delay3Mode,
                                   // split/mix chain (docs/SPLIT.md §2)
-                                  params::splitMode };
+                                  params::splitMode,
+                                  // reverb engine batch 1 (docs/REVERB.md §5); choices
+                                  // FROZEN at six, all six live from Stage 3 on
+                                  params::reverbAlgo, params::reverb2Algo, params::reverb3Algo,
+                                  // reverb engine batch 2 (Stage 3): Shimmer's interval,
+                                  // FROZEN at four
+                                  params::reverbShimmerInterval, params::reverb2ShimmerInterval,
+                                  params::reverb3ShimmerInterval };
 
-static_assert (std::size (kSliderIds) == 89, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params");
+static_assert (std::size (kSliderIds) == 125, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params + 33 reverb-engine params + 3 reverb shimmer params");
 static_assert (std::size (kToggleIds) == 30, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables + 4 split/mix enables (amp_stereo removed)");
-static_assert (std::size (kComboIds) == 8, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode");
+static_assert (std::size (kComboIds) == 14, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode + reverb_algo x3 + reverb_shimmer_interval x3");
 
 /** Upper bound on hosted parameters surfaced to the UI. A handful of plugins publish
     thousands; serializing all of them into every slot payload would cost more than it

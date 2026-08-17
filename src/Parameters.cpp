@@ -13,6 +13,18 @@ constexpr int kVersionHint = 1;
     not depend on the hint, so saved automation is unaffected either way. */
 constexpr int kVersionHint2 = 2;
 
+/** One new hint per shipped batch, never reusing a released one (docs/REVERB.md §5.3):
+    hint 3 carries the reverb engine's twelve new parameters x3 instances. Adding them
+    at hint 2 would interleave them among the shipped v2 block by hash and shuffle
+    Logic's automation menu. */
+constexpr int kVersionHint3 = 3;
+
+/** Hint 4 carries Stage 3's Shimmer pair x3 instances (docs/REVERB.md §5.3). Nothing has
+    shipped at hint 3 yet either, but the rule is one hint per BATCH, not per release:
+    reusing 3 would interleave the shimmer ids among the twelve batch-1 ids by hash the
+    day both are in a host's automation menu. */
+constexpr int kVersionHint4 = 4;
+
 /** Range whose normalised 0.5 point sits at the geometric mean — the natural
     feel for frequency / time / ratio controls. */
 juce::NormalisableRange<float> logRange (float minValue, float maxValue, float interval)
@@ -265,6 +277,87 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     addFloat (layout, mixBPan,   "Mix B Pan",   { -1.0f, 1.0f, 0.001f }, 0.0f, {},   kVersionHint2);
     addBool  (layout, mixBPhase, "Mix B Phase", false, kVersionHint2);
     addFloat (layout, mixLevel,  "Mix Level",   { -60.0f, 12.0f, 0.1f }, 0.0f, "dB", kVersionHint2);
+
+    // --- reverb engine, batch 1 (docs/REVERB.md §5): twelve new parameters x3
+    // instances at hint 3. reverb_size/damping/mix/width keep their ids, ranges and
+    // defaults above and now drive the same engine.
+    //
+    // Grouped instance-major, in the spec's own parameter order within each instance —
+    // the same shape as the delay stereo block above. reverb_algo is the compatibility
+    // keystone (§5.3): default 0 = Room, so a state that never mentions it resolves to
+    // Room on both restore paths. Its choice list is FROZEN at six entries, the two
+    // unshipped modes included, so AudioParameterChoice's index/(numChoices-1)
+    // normalisation never moves — see reverbAlgoChoices.
+
+    // Decay is the mid-band T60, clamped at DSP level to the mode ceiling (§3.3); in
+    // Reverse it is the window length and the UI relabels it WINDOW (§3.12). Pre-delay
+    // is a musical delay and never reaches computeChainLatency. Both send filters
+    // default to fully open, and Color defaults to neutral, so nothing an existing
+    // preset stored changes tone through them. Bass Mult is a decay MULTIPLIER (Jot's
+    // parameterisation), log so that x1.0 -- the geometric mean of x0.25 and x4.0, i.e.
+    // no low-band shift -- sits at the centre of the travel.
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { reverbAlgo, kVersionHint3 }, "Reverb Algorithm", reverbAlgoChoices, 0));
+    addFloat (layout, reverbDecay,      "Reverb Decay",        logRange (0.2f, 30.0f, 0.01f), 2.0f, "s", kVersionHint3);
+    addFloat (layout, reverbPredelay,   "Reverb Pre-Delay",    { 0.0f, 250.0f, 0.1f }, 0.0f, "ms", kVersionHint3);
+    addFloat (layout, reverbDiffusion,  "Reverb Diffusion",    { 0.0f, 1.0f, 0.001f }, 0.7f, {}, kVersionHint3);
+    addFloat (layout, reverbLowCut,     "Reverb Low Cut",      logRange (20.0f, 800.0f, 1.0f), 20.0f, "Hz", kVersionHint3);
+    addFloat (layout, reverbHighCut,    "Reverb High Cut",     logRange (1200.0f, 20000.0f, 1.0f), 20000.0f, "Hz", kVersionHint3);
+    addFloat (layout, reverbMod,        "Reverb Mod",          { 0.0f, 1.0f, 0.001f }, 0.35f, {}, kVersionHint3);
+    addFloat (layout, reverbBassMult,   "Reverb Bass Mult",    logRange (0.25f, 4.0f, 0.01f), 1.0f, "x", kVersionHint3);
+    addFloat (layout, reverbErLevel,    "Reverb ER Level",     { 0.0f, 1.0f, 0.001f }, 0.5f, {}, kVersionHint3);
+    addFloat (layout, reverbColor,      "Reverb Color",        { 0.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint3);
+    addFloat (layout, reverbTilt,       "Reverb Tilt",         { -1.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint3);
+    addFloat (layout, reverbDuck,       "Reverb Duck",         { 0.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint3);
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { reverb2Algo, kVersionHint3 }, "Reverb 2 Algorithm", reverbAlgoChoices, 0));
+    addFloat (layout, reverb2Decay,     "Reverb 2 Decay",      logRange (0.2f, 30.0f, 0.01f), 2.0f, "s", kVersionHint3);
+    addFloat (layout, reverb2Predelay,  "Reverb 2 Pre-Delay",  { 0.0f, 250.0f, 0.1f }, 0.0f, "ms", kVersionHint3);
+    addFloat (layout, reverb2Diffusion, "Reverb 2 Diffusion",  { 0.0f, 1.0f, 0.001f }, 0.7f, {}, kVersionHint3);
+    addFloat (layout, reverb2LowCut,    "Reverb 2 Low Cut",    logRange (20.0f, 800.0f, 1.0f), 20.0f, "Hz", kVersionHint3);
+    addFloat (layout, reverb2HighCut,   "Reverb 2 High Cut",   logRange (1200.0f, 20000.0f, 1.0f), 20000.0f, "Hz", kVersionHint3);
+    addFloat (layout, reverb2Mod,       "Reverb 2 Mod",        { 0.0f, 1.0f, 0.001f }, 0.35f, {}, kVersionHint3);
+    addFloat (layout, reverb2BassMult,  "Reverb 2 Bass Mult",  logRange (0.25f, 4.0f, 0.01f), 1.0f, "x", kVersionHint3);
+    addFloat (layout, reverb2ErLevel,   "Reverb 2 ER Level",   { 0.0f, 1.0f, 0.001f }, 0.5f, {}, kVersionHint3);
+    addFloat (layout, reverb2Color,     "Reverb 2 Color",      { 0.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint3);
+    addFloat (layout, reverb2Tilt,      "Reverb 2 Tilt",       { -1.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint3);
+    addFloat (layout, reverb2Duck,      "Reverb 2 Duck",       { 0.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint3);
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { reverb3Algo, kVersionHint3 }, "Reverb 3 Algorithm", reverbAlgoChoices, 0));
+    addFloat (layout, reverb3Decay,     "Reverb 3 Decay",      logRange (0.2f, 30.0f, 0.01f), 2.0f, "s", kVersionHint3);
+    addFloat (layout, reverb3Predelay,  "Reverb 3 Pre-Delay",  { 0.0f, 250.0f, 0.1f }, 0.0f, "ms", kVersionHint3);
+    addFloat (layout, reverb3Diffusion, "Reverb 3 Diffusion",  { 0.0f, 1.0f, 0.001f }, 0.7f, {}, kVersionHint3);
+    addFloat (layout, reverb3LowCut,    "Reverb 3 Low Cut",    logRange (20.0f, 800.0f, 1.0f), 20.0f, "Hz", kVersionHint3);
+    addFloat (layout, reverb3HighCut,   "Reverb 3 High Cut",   logRange (1200.0f, 20000.0f, 1.0f), 20000.0f, "Hz", kVersionHint3);
+    addFloat (layout, reverb3Mod,       "Reverb 3 Mod",        { 0.0f, 1.0f, 0.001f }, 0.35f, {}, kVersionHint3);
+    addFloat (layout, reverb3BassMult,  "Reverb 3 Bass Mult",  logRange (0.25f, 4.0f, 0.01f), 1.0f, "x", kVersionHint3);
+    addFloat (layout, reverb3ErLevel,   "Reverb 3 ER Level",   { 0.0f, 1.0f, 0.001f }, 0.5f, {}, kVersionHint3);
+    addFloat (layout, reverb3Color,     "Reverb 3 Color",      { 0.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint3);
+    addFloat (layout, reverb3Tilt,      "Reverb 3 Tilt",       { -1.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint3);
+    addFloat (layout, reverb3Duck,      "Reverb 3 Duck",       { 0.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint3);
+
+    // --- reverb engine, batch 2 (docs/REVERB.md §5, Stage 3): Shimmer, two parameters
+    // x3 instances at hint 4, grouped per instance like the batch-1 block above so a
+    // host's list keeps each reverb's level and interval adjacent. reverb_shimmer's 0
+    // default is load-bearing twice over: it is the absent-means-default answer for every
+    // state written before this batch (§5.3), and it is the value at which the shifter is
+    // not touched at all, so Shimmer at 0 renders exactly as Hall does (§3.11).
+    addFloat (layout, reverbShimmer, "Reverb Shimmer", { 0.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint4);
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { reverbShimmerInterval, kVersionHint4 }, "Reverb Shimmer Interval",
+        reverbShimmerIntervalChoices, 2));
+
+    addFloat (layout, reverb2Shimmer, "Reverb 2 Shimmer", { 0.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint4);
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { reverb2ShimmerInterval, kVersionHint4 }, "Reverb 2 Shimmer Interval",
+        reverbShimmerIntervalChoices, 2));
+
+    addFloat (layout, reverb3Shimmer, "Reverb 3 Shimmer", { 0.0f, 1.0f, 0.001f }, 0.0f, {}, kVersionHint4);
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { reverb3ShimmerInterval, kVersionHint4 }, "Reverb 3 Shimmer Interval",
+        reverbShimmerIntervalChoices, 2));
 
     return layout;
 }

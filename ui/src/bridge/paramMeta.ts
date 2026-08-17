@@ -294,15 +294,119 @@ const SPLIT_LAYOUT: readonly LayoutEntry[] = [
   s("mix_level", "Mix Level", -60, 12, 0.1, 0, "dB"),
 ];
 
+/* ─────────────────── reverb engine append (docs/REVERB.md §5) ───────────── */
+
+/**
+ * `reverb_algo`'s choice list — FROZEN at six entries and declared in full from
+ * day one (docs/REVERB.md §4), so `AudioParameterChoice`'s normalisation
+ * divisor `index / (numChoices − 1)` never changes and no recorded automation
+ * lane is ever repointed. All six are live in the combo (ReverbBody) now that
+ * Spring (Stage 2) and Shimmer (Stage 3) have shipped.
+ */
+export const REVERB_ALGO_CHOICES = [
+  "Room",
+  "Plate",
+  "Hall",
+  "Spring",
+  "Shimmer",
+  "Reverse",
+] as const;
+
+/**
+ * `reverb_shimmer_interval`'s choice list — FROZEN at four entries (§3.11),
+ * same normalisation argument as `REVERB_ALGO_CHOICES` above. Default index 2
+ * = "+1 Oct". Inert outside Shimmer (§5.2).
+ */
+export const REVERB_SHIMMER_INTERVAL_CHOICES = [
+  "-1 Oct",
+  "+5th",
+  "+1 Oct",
+  "+1 Oct & +5th",
+] as const;
+
+/**
+ * The twelve-parameter reverb batch (`kVersionHint3`) for instance 1, in the
+ * spec's order. Like the stereo block above, none of these have a v1
+ * counterpart, so `entriesOfKind()` cannot find them — hand-declared, then
+ * cloned to instances 2/3 by the same `instanceEntry()` rule.
+ *
+ * `reverb_size`/`_damping`/`_mix`/`_width` are NOT here: their ids, ranges and
+ * defaults are unchanged (§5) and they now drive the new engine.
+ *
+ * Defaults are the authority this table exists for (double-click-to-reset), and
+ * they are transcribed from §5's table verbatim: absent `reverb_algo` resolving
+ * to 0 = Room is the whole backward-compatibility keystone (§5.3).
+ */
+const REVERB_BATCH_1: readonly LayoutEntry[] = [
+  c("reverb_algo", "Reverb Algorithm", [...REVERB_ALGO_CHOICES], 0),
+  s("reverb_decay", "Reverb Decay", 0.2, 30, 0.01, 2, "s", true),
+  s("reverb_predelay", "Reverb Pre-Delay", 0, 250, 0.1, 0, "ms"),
+  s("reverb_diffusion", "Reverb Diffusion", 0, 1, 0.001, 0.7),
+  s("reverb_lowcut", "Reverb Low Cut", 20, 800, 1, 20, "Hz", true),
+  s("reverb_highcut", "Reverb High Cut", 1200, 20000, 1, 20000, "Hz", true),
+  s("reverb_mod", "Reverb Mod", 0, 1, 0.001, 0.35),
+  /* A decay MULTIPLIER, not an EQ, and logRange() in Parameters.cpp: the skew is
+     centred on the geometric mean of 0.25 and 4.0, which is exactly the x1.0
+     default — so the mock has to declare it too or the default sits at 20 % of
+     travel here and at 50 % in the plugin. */
+  s("reverb_bassmult", "Reverb Bass Mult", 0.25, 4, 0.01, 1, "x", true),
+  s("reverb_erlevel", "Reverb ER Level", 0, 1, 0.001, 0.5),
+  s("reverb_color", "Reverb Color", 0, 1, 0.001, 0),
+  s("reverb_tilt", "Reverb Tilt", -1, 1, 0.001, 0),
+  s("reverb_duck", "Reverb Duck", 0, 1, 0.001, 0),
+];
+
+/** Expanded exactly the way `createParameterLayout()` appends the batch
+ *  (src/Parameters.cpp): instance 1's combo and its eleven sliders, then the
+ *  same twelve for instance 2, then for instance 3 — instance-major, not
+ *  id-major. Only PARAM_INDEX depends on this order — the derived tables below
+ *  are keyed by id — and PARAM_INDEX is what the mock reports as
+ *  `parameterIndex`, so getting it wrong makes Logic's touch-to-select behave
+ *  differently in dev than in the plugin. */
+const REVERB_BATCH_1_LAYOUT: readonly LayoutEntry[] = [
+  ...REVERB_BATCH_1,
+  ...EXTRA_INSTANCES.flatMap((instance) =>
+    REVERB_BATCH_1.map((base) => instanceEntry(base, "reverb", instance)),
+  ),
+];
+
+/**
+ * The Shimmer batch (`kVersionHint4`, Stage 3, §5): level then interval, for
+ * instance 1. Appended as its own block — same shape as REVERB_BATCH_1, one
+ * kVersionHint per shipped batch, never interleaved into an earlier one
+ * (§5.3).
+ */
+const REVERB_BATCH_2: readonly LayoutEntry[] = [
+  s("reverb_shimmer", "Reverb Shimmer", 0, 1, 0.001, 0),
+  c("reverb_shimmer_interval", "Reverb Shimmer Interval", [...REVERB_SHIMMER_INTERVAL_CHOICES], 2),
+];
+
+/** Expanded instance-major like REVERB_BATCH_1_LAYOUT above, but appended
+ *  AFTER all three instances of batch 1 (`createParameterLayout()`'s batch-2
+ *  block runs after the whole batch-1 loop, not interleaved per instance). */
+const REVERB_BATCH_2_LAYOUT: readonly LayoutEntry[] = [
+  ...REVERB_BATCH_2,
+  ...EXTRA_INSTANCES.flatMap((instance) =>
+    REVERB_BATCH_2.map((base) => instanceEntry(base, "reverb", instance)),
+  ),
+];
+
+const REVERB_LAYOUT: readonly LayoutEntry[] = [
+  ...REVERB_BATCH_1_LAYOUT,
+  ...REVERB_BATCH_2_LAYOUT,
+];
+
 /** The whole APVTS layout, in order: 44 v1 parameters, 54 instance parameters,
  *  4 for the amp tone stack, 12 for the stereo-chain append, 13 for the
- *  split-path append — 89 sliders, 30 toggles, 8 combos. */
+ *  split-path append, 36 for the reverb-engine batch-1 append, 6 for the
+ *  Shimmer batch-2 append — 125 sliders, 30 toggles, 14 combos. */
 const LAYOUT: readonly LayoutEntry[] = [
   ...V1_LAYOUT,
   ...INSTANCE_LAYOUT,
   ...AMP_EQ_LAYOUT,
   ...STEREO_LAYOUT,
   ...SPLIT_LAYOUT,
+  ...REVERB_LAYOUT,
 ];
 
 /* ────────────────────────────── derived tables ─────────────────────────── */

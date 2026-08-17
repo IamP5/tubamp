@@ -65,7 +65,7 @@ original id (`comp_threshold`), instances 2 and 3 get `<kind>2_<key>` /
 pre-existing id keeps its index. The amp's own tone stack (`amp_eq_*`) lives at
 the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`.
 
-- Sliders (89): the 29 v1 ids — input_trim, output_level, gate_threshold,
+- Sliders (125): the 29 v1 ids — input_trim, output_level, gate_threshold,
   comp_threshold, comp_ratio, comp_attack, comp_release, comp_makeup, drive_gain,
   drive_tone, drive_level, amp_input, amp_output, amp_cal_level, amp_slim,
   cab_lowcut, cab_highcut, eq_bass, eq_mid, eq_treble, mod_rate, mod_depth,
@@ -79,7 +79,17 @@ the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`
   `delay_width`/`delay2_width`/`delay3_width`,
   `reverb_width`/`reverb2_width`/`reverb3_width`, and, appended for split/mix
   (docs/SPLIT.md §2): `amp2_input`, `amp2_output`, `split_xover`, `mix_alevel`,
-  `mix_blevel`, `mix_apan`, `mix_bpan`, `mix_level`.
+  `mix_blevel`, `mix_apan`, `mix_bpan`, `mix_level`, and, appended for the reverb
+  engine (docs/REVERB.md §5, `kVersionHint3`, instance-major — instance 1's twelve
+  first, then 2's, then 3's): `reverb_decay`, `reverb_predelay`, `reverb_diffusion`,
+  `reverb_lowcut`, `reverb_highcut`, `reverb_mod`, `reverb_bassmult`,
+  `reverb_erlevel`, `reverb_color`, `reverb_tilt`, `reverb_duck` and their
+  `reverb2_*`/`reverb3_*` mirrors, and, appended for the Shimmer batch
+  (docs/REVERB.md §5, `kVersionHint4`, appended AFTER all three instances of
+  batch 1, not interleaved): `reverb_shimmer` and its
+  `reverb2_shimmer`/`reverb3_shimmer` mirrors.
+  `reverb_size`/`_damping`/`_mix`/`_width` keep
+  their ids, ranges and defaults and now drive the new engine.
 - Toggles (30): the 13 v1 ids — gate_on, comp_on, drive_on, amp_on, cab_on, eq_on,
   mod_on, delay_on, reverb_on, amp_cal_input, fx1_on, fx2_on, fx3_on — plus every
   instance's bypass (`comp2_on`, `comp3_on`, `drive2_on`, `drive3_on`, `eq2_on`,
@@ -87,10 +97,15 @@ the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`
   `reverb3_on`), `amp_eq_on`, and, appended for split/mix (docs/SPLIT.md §2):
   `amp2_on`, `split_on`, `mix_on`, `mix_bphase`. `amp_stereo` (docs/STEREO.md §1)
   is REMOVED — never shipped, superseded by `amp2` as an ordinary chain block.
-- Combos (8): amp_out_mode, mod_type, mod2_type, mod3_type — mod is the only v1
+- Combos (14): amp_out_mode, mod_type, mod2_type, mod3_type — mod is the only v1
   duplicable kind with a choice parameter — plus `delay_mode`/`delay2_mode`/
-  `delay3_mode` (stereo chain, docs/STEREO.md §4) and `split_mode`
-  (docs/SPLIT.md §2, choices FROZEN: Copy | L/R | X-Over).
+  `delay3_mode` (stereo chain, docs/STEREO.md §4), `split_mode`
+  (docs/SPLIT.md §2, choices FROZEN: Copy | L/R | X-Over),
+  `reverb_algo`/`reverb2_algo`/`reverb3_algo` (docs/REVERB.md §4, choices FROZEN at
+  six: Room | Plate | Hall | Spring | Shimmer | Reverse — all six live) and,
+  appended for the Shimmer batch (docs/REVERB.md §5, `kVersionHint4`),
+  `reverb_shimmer_interval`/`reverb2_shimmer_interval`/`reverb3_shimmer_interval`
+  (choices FROZEN at four: -1 Oct | +5th | +1 Oct | +1 Oct & +5th).
 
 JS uses `getSliderState(id)` etc. from the vendored frontend lib; wrap in hooks
 (`useSliderParam`, `useToggleParam`, `useComboParam`) that subscribe to BOTH
@@ -99,7 +114,7 @@ call `sliderDragStarted/Ended` around gestures (host automation touch).
 
 **These lists are the whole relay surface.** A hosted plugin's parameters are NOT
 relays and never enter `SLIDER_PARAM_IDS` / `paramMeta` / `useSliderParam` — see
-§External AudioUnit slots below. 89/30/8 is the whole surface; a hosted plugin never
+§External AudioUnit slots below. 125/30/14 is the whole surface; a hosted plugin never
 grows it.
 
 ### Chain blocks
@@ -463,8 +478,13 @@ face, because the board's own zoom is the density control.
   instance-aware name — a loaded fx slot shows the plugin's name with the slot as a
   tag — power pill bound to the block's `*_on` param, remove-from-chain, close). Body
   dispatch is keyed by `kindOf(selected)`, so every instance of a kind shares its body:
-  generic knob rows (gate/comp/drive/eq/delay/reverb, any instance), mod (type combo +
-  knobs, any instance), amp (model mgmt + status + T3K + knobs + out-mode + slim when
+  generic knob rows (gate/comp/drive/eq/delay, any instance), reverb (`ReverbBody`,
+  any instance — the one body keyed on `(kind, algo)` as well as on the kind,
+  docs/REVERB.md §5.2, and the only kind whose `BASE_KNOB_SPECS` row is empty
+  because its rows depend on the mode; see §Reverb panel below for the
+  2026-08-08 UX overhaul: mode bar, four always-mounted primary dials, three
+  captioned groups, hover info strip, per-mode body tint),
+  mod (type combo + knobs, any instance), amp (model mgmt + status + T3K + knobs + out-mode + slim when
   isSlimmable + a **Tone** section — Bass/Mid/Treble knobs on `amp_eq_bass/mid/treble`
   plus a power toggle on `amp_eq_on`, KnobRow-style; the amp has its own tone stack
   whether or not an `eq` block is in the chain — AmpBody owns ENGINE A ONLY: model B
@@ -534,6 +554,41 @@ face, because the board's own zoom is the density control.
 
 Knob primitive: rotary 270°, vertical drag (shift = fine), double-click = reset
 to default, wheel nudge; Geist Mono tabular readout; gesture → begin/endGesture.
+
+### Reverb panel (2026-08-08 UX overhaul)
+
+`ReverbBody` renders three fixed bands in the 182px body (`--dock-h` unchanged):
+a 28px mode row (kit `Segmented` on `<block>_algo`, six frozen modes, plus the
+INTERVAL `ParamMenu` in the right slot only in Shimmer), an elastic `.rvMain`
+(four `lg` primary dials — DECAY/WINDOW, MIX, SIZE/TANK, and an
+**always-mounted SHIMMER dial that greys outside Shimmer** — beside three
+captioned non-scrolling groups of four `ParamSlider` rows: SPACE — PRE, DIFF,
+EARLY, WIDTH · TONE — LO CUT, HI CUT, TILT, COLOR · TAIL — DAMP, BASS, MOD,
+DUCK), and an 18px hover **info strip**. All `.rv*` CSS is reverb-only;
+`knobSpecs.ts` exports `REVERB_GROUPS`/`reverbPrimarySpecs` and the per-mode
+relabels/greying/decay-readout ceilings are unchanged in meaning
+(docs/REVERB.md §5.2 + its 2026-08-08 amendment). A mode change writes
+`reverb_algo` and nothing else.
+
+- **Info-strip pattern (panel-level, reusable)**: wrapper elements carry
+  `data-rv-key` (base param id, `g:<group>`, or the mode bar's
+  `data-rv-modebar`); one delegated `pointerover`/`focusin`/`pointerleave`
+  listener set on the body root (`useReverbInfo`) resolves
+  `closest("[data-rv-key]")` and paints three `textContent` spans
+  (`ReverbInfoStrip`, `role="note"`, no `aria-live`) — zero React renders per
+  hover. Copy lives in `reverbInfo.ts` (sourced from docs/REVERB.md §3–5); the
+  range chunk is derived from `SLIDER_SPEC_BY_ID` + `REVERB_DECAY_CEILING`,
+  never hand-written; greyed controls report "inert here" (their disabled
+  controls are `pointer-events: none`, so the wrapper still hovers). Idle state
+  is the current mode's blurb; hovering a mode segment previews that mode.
+- **Per-mode tint — the mode hue never leaves the body**: ReverbBody's root
+  stamps `data-reverb-algo="room|plate|hall|spring|shimmer|reverse"` and
+  `theme/tokens.css` redeclares the `--block-*` accent set for that subtree
+  only (room = reverb cyan; plate `#a5f3fc`; hall `#38bdf8`; spring `#e3a857`;
+  shimmer `#f0abfc`; reverse `#94a3b8`). The panel header, board tile and
+  connectors stay reverb-cyan in every mode — block hue identifies the block,
+  mode hue identifies the mode. Accent switches are instant (no transitions on
+  custom properties; Safari 14 has no `@property`).
 
 ## Motion & design tokens
 

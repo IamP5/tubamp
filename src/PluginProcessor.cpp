@@ -308,6 +308,22 @@ TubampAudioProcessor::TubampAudioProcessor()
         pp.reverbDamping[k] = raw (params::reverbDampingIds[k]);
         pp.reverbMix[k]     = raw (params::reverbMixIds[k]);
         pp.reverbWidth[k]   = raw (params::reverbWidthIds[k]);
+
+        pp.reverbAlgo[k]      = raw (params::reverbAlgoIds[k]);
+        pp.reverbDecay[k]     = raw (params::reverbDecayIds[k]);
+        pp.reverbPredelay[k]  = raw (params::reverbPredelayIds[k]);
+        pp.reverbDiffusion[k] = raw (params::reverbDiffusionIds[k]);
+        pp.reverbLowCut[k]    = raw (params::reverbLowCutIds[k]);
+        pp.reverbHighCut[k]   = raw (params::reverbHighCutIds[k]);
+        pp.reverbMod[k]       = raw (params::reverbModIds[k]);
+        pp.reverbBassMult[k]  = raw (params::reverbBassMultIds[k]);
+        pp.reverbErLevel[k]   = raw (params::reverbErLevelIds[k]);
+        pp.reverbColor[k]     = raw (params::reverbColorIds[k]);
+        pp.reverbTilt[k]      = raw (params::reverbTiltIds[k]);
+        pp.reverbDuck[k]      = raw (params::reverbDuckIds[k]);
+
+        pp.reverbShimmer[k]         = raw (params::reverbShimmerIds[k]);
+        pp.reverbShimmerInterval[k] = raw (params::reverbShimmerIntervalIds[k]);
     }
 
     pendingSlim.store (valueOf (raw (params::ampSlim)), std::memory_order_relaxed);
@@ -898,6 +914,11 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
             prevPresent[(size_t) restored[(size_t) i]] = true;
     }
 
+    // docs/REVERB.md §6.4: the first block after a prepare must not glide — the engines
+    // were just cleared and reconfigured, so their geometry starts where the parameters
+    // already say it is.
+    armReverbSnap();
+
     updateLatency();
 }
 
@@ -1065,8 +1086,10 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         if (drained == kMaxResetsPerCallback)
             break;
 
-        resetBlockInstance ((chain::BlockId) index);
-        pendingReset[(size_t) index] = false;
+        // A block whose clear is chunked re-arms itself until its last chunk is done
+        // (the reverb's, docs/REVERB.md §6.3) — still one slot of the budget per
+        // callback, so the bound on per-callback memset work is unchanged.
+        pendingReset[(size_t) index] = ! resetBlockInstance ((chain::BlockId) index);
         ++drained;
     }
 
@@ -1444,11 +1467,42 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         {
             if (isOn (pp.reverbOn[k]) && ! pendingReset[(size_t) id])
             {
-                reverbFx[k].setParameters (valueOf (pp.reverbSize[k], 0.5f),
-                                           valueOf (pp.reverbDamping[k], 0.5f),
-                                           valueOf (pp.reverbMix[k], 0.25f),
-                                           valueOf (pp.reverbWidth[k], 1.0f));
+                // docs/REVERB.md §5, in the spec's order. The fallbacks are the layout's
+                // defaults, so a build without one of these ids behaves as Room does —
+                // the same absent-means-default keystone the restore paths use (§5.3).
+                ReverbFx::Params rp;
+                rp.algo = (int) valueOf (pp.reverbAlgo[k]);
+                rp.size01 = valueOf (pp.reverbSize[k], 0.5f);
+                rp.damping01 = valueOf (pp.reverbDamping[k], 0.5f);
+                rp.mix01 = valueOf (pp.reverbMix[k], 0.25f);
+                rp.width01 = valueOf (pp.reverbWidth[k], 1.0f);
+                rp.decayS = valueOf (pp.reverbDecay[k], 2.0f);
+                rp.predelayMs = valueOf (pp.reverbPredelay[k], 0.0f);
+                rp.diffusion01 = valueOf (pp.reverbDiffusion[k], 0.7f);
+                rp.lowCutHz = valueOf (pp.reverbLowCut[k], 20.0f);
+                rp.highCutHz = valueOf (pp.reverbHighCut[k], 20000.0f);
+                rp.mod01 = valueOf (pp.reverbMod[k], 0.35f);
+                rp.bassMult = valueOf (pp.reverbBassMult[k], 1.0f);
+                rp.erLevel01 = valueOf (pp.reverbErLevel[k], 0.5f);
+                rp.color01 = valueOf (pp.reverbColor[k], 0.0f);
+                rp.tilt = valueOf (pp.reverbTilt[k], 0.0f);
+                rp.duck01 = valueOf (pp.reverbDuck[k], 0.0f);
+                rp.shimmer01 = valueOf (pp.reverbShimmer[k], 0.0f);
+                rp.shimmerInterval = (int) valueOf (pp.reverbShimmerInterval[k], 2.0f);
+
+                // §6.4: one block of "glide nothing" after a clear or a state restore.
+                // Consumed here, where the engine actually reads its parameters — a
+                // pending block never gets this far, so the flag survives until it runs.
+                rp.snap = reverbSnap[(size_t) k].exchange (false, std::memory_order_acq_rel);
+
+                reverbFx[k].setParameters (rp);
                 reverbFx[k].process (block);
+
+                // §6.2 step 3: the wet has faded out, so hand the clear to pendingReset.
+                // The guard above already bypasses the block while it is pending, so the
+                // transition is silence rather than a click.
+                if (reverbFx[k].wantsReset())
+                    pendingReset[(size_t) id] = true;
             }
 
             break;
@@ -1779,7 +1833,7 @@ void TubampAudioProcessor::updateLatency()
                                              isOn (pp.ampOn), isOn (pp.amp2On)));
 }
 
-void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
+bool TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
 {
     const auto k = (size_t) chain::instanceOf (id);
 
@@ -1805,9 +1859,19 @@ void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
         case chain::BlockId::delay2:
         case chain::BlockId::delay3:  delay[k].reset();      break;
 
+        // The one chunked clear (docs/REVERB.md §6.3): one delay line per call, so the
+        // worst case stays in the same class as a DelayFx clear even at 192 kHz. The
+        // first step also adopts a pending mode/window reconfigure (§6.2 step 4).
+        // `snap` is armed for whichever block runs next: after a clear the engine must
+        // land on its stored size, not glide up to it (§6.4).
         case chain::BlockId::reverb:
         case chain::BlockId::reverb2:
-        case chain::BlockId::reverb3: reverbFx[k].reset();   break;
+        case chain::BlockId::reverb3:
+        {
+            const bool done = reverbFx[k].resetStep();
+            reverbSnap[k].store (true, std::memory_order_release);
+            return done;
+        }
 
         // The crossover's filter state is a hundred samples of whatever the chain
         // sounded like when the split left it.
@@ -1839,6 +1903,14 @@ void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
         case chain::BlockId::fx3:
         case chain::BlockId::lane2:   break;
     }
+
+    return true;
+}
+
+void TubampAudioProcessor::armReverbSnap() noexcept
+{
+    for (int k = 0; k < params::maxInstances; ++k)
+        reverbSnap[(size_t) k].store (true, std::memory_order_release);
 }
 
 //==============================================================================
@@ -2056,7 +2128,30 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
         return;
 
     if (auto paramState = root.getChildWithName (apvts.state.getType()); paramState.isValid())
+    {
+        // Absent means default, on THIS path too (docs/REVERB.md §5.3) — the mirror of
+        // applyStateVar's sweep below, and the reason a session saved before
+        // reverb_algo existed resolves to Room rather than to whatever the user last
+        // selected. replaceState does not do it for us: valueTreeRedirected creates a
+        // fresh child for a parameter the incoming tree does not mention and flushes
+        // that parameter's CURRENT value into it, which on a live instance (Logic's
+        // "Load Setting…", AU user-preset recall, some hosts' A/B) is the last value
+        // dialled in. Setting the defaults first makes the flush write the defaults.
+        //
+        // The children are APVTS's own: type PARAM, keyed by an "id" property.
+        for (auto* parameter : getParameters())
+        {
+            if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (parameter))
+                if (! paramState.getChildWithProperty ("id", ranged->paramID).isValid())
+                    ranged->setValueNotifyingHost (ranged->getDefaultValue());
+        }
+
         apvts.replaceState (paramState);
+    }
+
+    // §6.4: whatever the incoming state says, the reverbs adopt it on their next block
+    // rather than gliding into it.
+    armReverbSnap();
 
     setEditorSize ({ (int) root.getProperty ("editorWidth", 0),
                      (int) root.getProperty ("editorHeight", 0) });
@@ -2257,6 +2352,10 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
     // Message thread only (PresetManager, A/B), so adopting directly is safe; the
     // audio thread already got the order via publishChainOrder above.
     adoptChainOrder (chainState.order, chainState.rows);
+
+    // docs/REVERB.md §6.4: a recall is a scene change, not a knob gesture — the reverbs
+    // land on the recalled size and pre-delay instead of rubber-banding into them.
+    armReverbSnap();
 }
 } // namespace tubamp
 

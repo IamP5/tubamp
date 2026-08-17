@@ -168,6 +168,223 @@
   width: 100px;
 }
 
+/* ─────────── reverb body: mode bar / two-tier main / info strip ──────────
+   docs/REVERB.md §5. Budget: 28 + 8 + (flex 122) + 6 + 18 = 182px, the fixed
+   body height (--dock-h is NOT raised). .rvMain is the only elastic band;
+   .rvGroupRows may scroll as a backstop, nothing else ever does.          */
+.rvBody {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rvModeRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 28px;
+}
+
+.rvModeBar {
+  flex: none;
+  width: 420px;
+  display: flex;
+}
+
+/* the Segmented root */
+.rvModeBar > * {
+  flex: 1;
+}
+
+.rvModeBar button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.rvIntervalSlot {
+  margin-left: auto;
+  flex: none;
+}
+
+.rvMain {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.rvPrimary {
+  flex: none;
+  width: 368px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.rvKnobCell {
+  width: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rvGroups {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+}
+
+.rvGroup {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+}
+
+.rvCaption {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 12px;
+  font-size: 9px;
+  line-height: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.rvCaption::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* order: 1 puts the note after the ::after hairline (a pseudo-element is
+   always the last DOM child), so the note reads right-aligned as designed. */
+.rvCaptionNote {
+  flex: none;
+  order: 1;
+  font-size: 9px;
+  line-height: 12px;
+  color: var(--text-disabled);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* backstop only — never scrolls at the design sizes */
+.rvGroupRows {
+  flex: 1;
+  min-height: 0;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.rvGroupRows::-webkit-scrollbar {
+  width: 8px;
+}
+
+.rvGroupRows::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  background-color: var(--border-hover);
+}
+
+/* Scoped row metrics — the same descendant technique the old .knobGrid .field
+   used; these selectors are unreachable from any other panel. */
+.rvGroupRows .field {
+  height: 22px;
+  min-width: 0;
+}
+
+.rvGroupRows .fieldLabel {
+  width: 44px;
+}
+
+.rvGroupRows .sliderTrack {
+  flex: 1;
+  width: auto;
+  min-width: 52px;
+}
+
+.rvGroupRows .readout {
+  min-width: 44px;
+}
+
+.rvRow {
+  display: flex;
+  min-width: 0;
+}
+
+.rvRow > * {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── info strip ── */
+
+.rvStrip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 18px;
+  margin-top: 6px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  background: var(--block-fill-8);
+  box-shadow: inset 0 0 0 1px var(--block-fill-16);
+}
+
+.rvStripKey {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 18px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--block-accent);
+}
+
+.rvStripText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--text-secondary);
+}
+
+.rvStripRange {
+  flex: none;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 18px;
+  color: var(--text-tertiary);
+}
+
 /* ───────────────────────────── amp body ──────────────────────────────── */
 
 /*

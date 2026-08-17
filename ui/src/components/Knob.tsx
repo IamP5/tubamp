@@ -38,6 +38,12 @@ export interface KnobProps {
   accent?: string;
   /** Hide the numeric readout (footer knobs that show their value elsewhere). */
   hideValue?: boolean;
+  /**
+   * Ceiling for the READOUT only, in the parameter's own units: the dial and the
+   * parameter still travel their full range, but the number stops where the DSP
+   * stops clamping (docs/REVERB.md §5, `reverb_decay`'s per-mode ceiling).
+   */
+  displayMax?: number;
   disabled?: boolean;
   className?: string;
 }
@@ -59,6 +65,7 @@ export function Knob({
   size = "md",
   accent,
   hideValue,
+  displayMax,
   disabled,
   className,
 }: KnobProps) {
@@ -73,13 +80,15 @@ export function Knob({
   const dragStart = useRef({ y: 0, value: 0 });
 
   const paintReadout = useCallback(() => {
-    const text = formatParamValue(state.getScaledValue(), state.properties);
+    const scaled = state.getScaledValue();
+    const shown = displayMax === undefined ? scaled : Math.min(scaled, displayMax);
+    const text = formatParamValue(shown, state.properties);
     if (readoutRef.current) readoutRef.current.textContent = text;
     if (dialRef.current) {
-      dialRef.current.setAttribute("aria-valuenow", String(state.getScaledValue()));
+      dialRef.current.setAttribute("aria-valuenow", String(scaled));
       dialRef.current.setAttribute("aria-valuetext", text);
     }
-  }, [state]);
+  }, [state, displayMax]);
 
   /* Keep the motion value + readout in sync with the backend (automation,
      preset loads, our own writes) without re-rendering. */

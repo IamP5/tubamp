@@ -198,7 +198,7 @@ export function blockRecord<T>(make: (id: BlockId) => T): Record<BlockId, T> {
 /* ─────────────────────────── parameter identifiers ─────────────────────── */
 
 /**
- * 89 slider params — ids are the APVTS ids verbatim and are frozen.
+ * 125 slider params — ids are the APVTS ids verbatim and are frozen.
  *
  * The first 29 are v1's, in v1 order. The rest are appended in Parameters.cpp's
  * v2 append order: each duplicable kind's instances 2 and 3 (same ranges,
@@ -207,8 +207,11 @@ export function blockRecord<T>(make: (id: BlockId) => T): Record<BlockId, T> {
  * the instance rule, then the stereo-chain additions (docs/STEREO.md §4):
  * delay ratio x3, delay width x3, reverb width x3, then the split-path
  * additions (docs/SPLIT.md §2): amp2's own input/output, split's crossover,
- * and mix's five level/pan controls — in `WebEditor.cpp`'s `kSliderIds` order,
- * which is not the APVTS layout order (see paramMeta.ts for that one).
+ * and mix's five level/pan controls, then the reverb-engine batch
+ * (docs/REVERB.md §5, `kVersionHint3`): eleven new sliders x3, then the
+ * Shimmer batch (§5, Stage 3, `kVersionHint4`): `reverb_shimmer` x3 — in
+ * `WebEditor.cpp`'s `kSliderIds` order, which is not the APVTS layout order
+ * (see paramMeta.ts for that one).
  */
 export const SLIDER_PARAM_IDS = [
   "input_trim",
@@ -303,6 +306,53 @@ export const SLIDER_PARAM_IDS = [
   "mix_apan",
   "mix_bpan",
   "mix_level",
+
+  /* The reverb engine (docs/REVERB.md §5), appended at `kVersionHint3` in the
+     spec's parameter order, each id x3 instances — `reverb_algo` is a choice
+     and lives in COMBO_PARAM_IDS, and `reverb_size`/`_damping`/`_mix`/`_width`
+     keep their frozen ids above and now drive the new engine. Grouped
+     id-then-instance like the stereo-chain block, because that is the shape
+     `kSliderIds` appends in. */
+  "reverb_decay",
+  "reverb2_decay",
+  "reverb3_decay",
+  "reverb_predelay",
+  "reverb2_predelay",
+  "reverb3_predelay",
+  "reverb_diffusion",
+  "reverb2_diffusion",
+  "reverb3_diffusion",
+  "reverb_lowcut",
+  "reverb2_lowcut",
+  "reverb3_lowcut",
+  "reverb_highcut",
+  "reverb2_highcut",
+  "reverb3_highcut",
+  "reverb_mod",
+  "reverb2_mod",
+  "reverb3_mod",
+  "reverb_bassmult",
+  "reverb2_bassmult",
+  "reverb3_bassmult",
+  "reverb_erlevel",
+  "reverb2_erlevel",
+  "reverb3_erlevel",
+  "reverb_color",
+  "reverb2_color",
+  "reverb3_color",
+  "reverb_tilt",
+  "reverb2_tilt",
+  "reverb3_tilt",
+  "reverb_duck",
+  "reverb2_duck",
+  "reverb3_duck",
+
+  /* Reverb engine batch 2 (docs/REVERB.md §5, Stage 3): Shimmer level. Its
+     partner, `reverb_shimmer_interval`, is a choice and lives in
+     COMBO_PARAM_IDS below. */
+  "reverb_shimmer",
+  "reverb2_shimmer",
+  "reverb3_shimmer",
 ] as const;
 
 /**
@@ -346,9 +396,14 @@ export const TOGGLE_PARAM_IDS = [
   "mix_bphase",
 ] as const;
 
-/** 8 combo params — mod and delay (docs/STEREO.md §4) are the duplicable kinds
- *  with a choice parameter; `split_mode` (docs/SPLIT.md §2) is the split
- *  region's, FROZEN once shipped like `delay_mode`. */
+/** 14 combo params — mod, delay (docs/STEREO.md §4) and now reverb
+ *  (docs/REVERB.md §5) are the duplicable kinds with a choice parameter;
+ *  `split_mode` (docs/SPLIT.md §2) is the split region's, FROZEN once shipped
+ *  like `delay_mode`. `reverb_algo`'s six choices are frozen and declared in
+ *  full from day one (§4) so the choice normalisation divisor never moves under
+ *  a recorded automation lane. `reverb_shimmer_interval` (Stage 3, §3.11) is
+ *  its own FROZEN-4 combo, inert outside Shimmer like `reverb_bassmult` is
+ *  inert in Reverse (§5.2). */
 export const COMBO_PARAM_IDS = [
   "amp_out_mode",
   "mod_type",
@@ -360,6 +415,16 @@ export const COMBO_PARAM_IDS = [
   "delay3_mode",
 
   "split_mode",
+
+  "reverb_algo",
+  "reverb2_algo",
+  "reverb3_algo",
+
+  /* Reverb engine batch 2 (docs/REVERB.md §5, Stage 3): Shimmer's interval,
+     FROZEN at four choices. */
+  "reverb_shimmer_interval",
+  "reverb2_shimmer_interval",
+  "reverb3_shimmer_interval",
 ] as const;
 
 export type SliderParamId = (typeof SLIDER_PARAM_IDS)[number];

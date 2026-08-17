@@ -570,42 +570,148 @@ void DelayFx::process (juce::dsp::AudioBlock<float> block)
 }
 
 //==============================================================================
-// ReverbFx
+// ReverbFx  (docs/REVERB.md §6.1-§6.4)
 //==============================================================================
+namespace
+{
+// §6.2: 60 ms equal-power wet fade either side of a deferred reconfigure.
+constexpr float kReverbFadeSeconds = 0.060f;
+
+float equalPowerGain (float linear) noexcept
+{
+    return std::sin (juce::jlimit (0.0f, 1.0f, linear) * juce::MathConstants<float>::halfPi);
+}
+} // namespace
+
 void ReverbFx::prepare (const juce::dsp::ProcessSpec& spec)
 {
-    reverb.prepare (spec);
-    reverb.reset();
+    fadeInc = 1.0f / juce::jmax (1.0f, kReverbFadeSeconds * (float) spec.sampleRate);
+
+    // configure() first: it only records the mode until the buffers exist, so prepare()
+    // then builds the tables for the mode we actually want and clears once (§6.4).
+    engine.configure (pending.algo, ReverbEngine::windowSecondsFor (pending.decayS));
+    engine.prepare (spec);           // §6.4: prepare() ALWAYS clears
+    reconfigurePending = false;
+    fade = Fade::idle;
+    fadeGain = 1.0f;
+}
+
+bool ReverbFx::needsReconfigure() const noexcept
+{
+    // Compare RESOLVED modes. Every entry of §4 is now a live machine, so this is only the
+    // range clamp — but it stays the chokepoint, so an out-of-range algo cannot fake a
+    // reconfigure against a mode the engine would never configure.
+    const int wantMode = ReverbEngine::resolveMode (pending.algo);
+
+    if (wantMode != engine.getConfiguredMode())
+        return true;
+
+    // In Reverse a decay edit moves all 64 tap positions and renormalises the gain set,
+    // so it rides the same deferred path rather than sweeping 64 combs live (§3.12).
+    return wantMode == ReverbEngine::modeReverse
+           && std::abs (ReverbEngine::windowSecondsFor (pending.decayS)
+                        - engine.getConfiguredWindow()) > 1.0e-4f;
+}
+
+void ReverbFx::latchConfiguration()
+{
+    engine.configure (pending.algo, ReverbEngine::windowSecondsFor (pending.decayS));
+    reconfigurePending = false;
 }
 
 void ReverbFx::reset()
 {
-    reverb.reset();
+    // Reached either from prepareToPlay (nothing pending, the buffers are about to be
+    // empty anyway) or as the one-shot form of the deferred path. Only the latter needs
+    // §6.2's fade-in, because only the latter was left at zero by a fade-out.
+    const bool deferred = reconfigurePending;
+
+    latchConfiguration();
+    engine.reset();
+
+    fade = deferred ? Fade::in : Fade::idle;
+    fadeGain = deferred ? 0.0f : 1.0f;
 }
 
-void ReverbFx::setParameters (float size01, float damping01, float mix01, float width01)
+bool ReverbFx::resetStep()
 {
-    juce::dsp::Reverb::Parameters p;
-    p.roomSize = juce::jlimit (0.0f, 1.0f, size01);
-    p.damping = juce::jlimit (0.0f, 1.0f, damping01);
-    p.wetLevel = juce::jlimit (0.0f, 1.0f, mix01);
-    p.dryLevel = 1.0f - p.wetLevel;
-    p.width = juce::jlimit (0.0f, 1.0f, width01);
-    p.freezeMode = 0.0f;
-    reverb.setParameters (p);
+    if (reconfigurePending)
+        latchConfiguration();        // §6.2 step 4: tables are rebuilt on the first step
+
+    if (! engine.resetStep())
+        return false;
+
+    fade = Fade::in;
+    fadeGain = 0.0f;
+    return true;
+}
+
+void ReverbFx::setParameters (const Params& params)
+{
+    pending = params;
+
+    // A fade already in flight re-reads `pending` when it latches, so a knob drag costs
+    // one fade cycle rather than one per delta. A change arriving during the fade-IN must
+    // still start a new fade-out, or a fast A/B through the combo would be dropped.
+    if (needsReconfigure() && (fade == Fade::idle || fade == Fade::in))
+        fade = Fade::out;
+
+    engine.setParameters (params);
 }
 
 void ReverbFx::process (juce::dsp::AudioBlock<float> block)
 {
-    // juce::dsp::Reverb only handles mono or stereo.
+    // The engine handles mono or stereo; lane B hands it the same shape (§6.9).
     const auto channels = juce::jmin ((size_t) 2, block.getNumChannels());
 
     if (channels == 0)
         return;
 
+    const auto numSamples = (float) block.getNumSamples();
+    const float from = fadeGain;
+    float to = fadeGain;
+
+    switch (fade)
+    {
+        case Fade::out:
+            to = juce::jmax (0.0f, fadeGain - fadeInc * numSamples);
+
+            if (to <= 0.0f)
+            {
+                to = 0.0f;
+
+                // If the value was put back before the fade finished (an A/B flick),
+                // there is nothing to rebuild and no reason to throw the tail away.
+                if (needsReconfigure())
+                {
+                    reconfigurePending = true;    // wantsReset() goes true
+                    fade = Fade::awaitReset;
+                }
+                else
+                {
+                    fade = Fade::in;
+                }
+            }
+
+            break;
+
+        case Fade::in:
+            to = juce::jmin (1.0f, fadeGain + fadeInc * numSamples);
+
+            if (to >= 1.0f)
+                fade = Fade::idle;
+
+            break;
+
+        case Fade::awaitReset: to = 0.0f; break;
+        case Fade::idle:       to = 1.0f; break;
+    }
+
+    fadeGain = to;
+    engine.setWetFade (equalPowerGain (from), equalPowerGain (to));
+
     auto sub = block.getSubsetChannelBlock (0, channels);
-    juce::dsp::ProcessContextReplacing<float> context (sub);
-    reverb.process (context);
+    engine.process (sub);
 }
 
 //==============================================================================

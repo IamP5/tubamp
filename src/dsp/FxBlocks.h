@@ -4,9 +4,13 @@
 
 #include <memory>
 
+#include "ReverbEngine.h"
+
 // Thin wrappers over juce::dsp for the fixed chain. Each block:
 //   prepare(spec) -> reset() -> setParameters(...) (audio thread, per block) -> process(context)
-// Parameter setters take plain floats already fetched from APVTS by the processor.
+// Parameter setters take plain floats already fetched from APVTS by the processor —
+// except ReverbFx, whose 17 values arrive as a struct rather than as an unreadable
+// 17-argument call (docs/REVERB.md §6.1).
 namespace tubamp
 {
 /** Oversampled waveshaper drive: gain -> tanh -> tone LPF -> level. Stereo-capable. */
@@ -154,17 +158,44 @@ private:
     double sampleRate = 44100.0;
 };
 
-/** Plate-style reverb (juce::dsp::Reverb) with size/damping/mix/width. */
+/** Single-engine wrapper over ReverbEngine (docs/REVERB.md §6.1).
+
+    The old juce::dsp::Reverb (Freeverb) is erased outright — no "Legacy v1" mode and no
+    two-engine dispatcher (user directive, 2026-08-06). All six algo indices route into
+    the one engine, and from Stage 3 on all six are live machines — no fallbacks remain.
+
+    Everything this class adds on top of the engine is the deferred mode change of §6.2:
+    an algo edit (or, in Reverse, a window edit) starts a 60 ms equal-power wet fade-out,
+    latches `reconfigurePending` at fade end, and waits for the processor's pendingReset
+    drain to call resetStep(). A mode switch therefore never memsets inline in process(),
+    and the transition is silence rather than a click. */
 class ReverbFx
 {
 public:
+    using Params = ReverbEngine::Params;
+
     void prepare (const juce::dsp::ProcessSpec& spec);
+    /** Full clear. Adopts any pending reconfigure in one shot. */
     void reset();
-    void setParameters (float size01, float damping01, float mix01, float width01);
+    /** §6.3. Clears one delay line per call; returns true when the last one is done.
+        Reconfigures the mode tables on the first step. */
+    bool resetStep();
+    void setParameters (const Params& params);
+    /** §6.2. True once the wet has faded out and the engine is waiting to be cleared. */
+    bool wantsReset() const noexcept { return reconfigurePending; }
     void process (juce::dsp::AudioBlock<float> block);
 
 private:
-    juce::dsp::Reverb reverb;
+    enum class Fade { idle, out, awaitReset, in };
+
+    bool needsReconfigure() const noexcept;
+    void latchConfiguration();
+
+    ReverbEngine engine;
+    Params pending;
+    Fade fade = Fade::idle;
+    float fadeGain = 1.0f, fadeInc = 0.0f;
+    bool reconfigurePending = false;
 };
 
 /** Cab IR loader: juce::dsp::Convolution + post low/high cut filters.

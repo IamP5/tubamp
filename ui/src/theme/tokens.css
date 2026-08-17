@@ -367,3 +367,62 @@
   --block-glow: rgba(232, 121, 249, 0.35);
   --block-dim: rgb(136, 76, 149);
 }
+
+/* ── Reverb mode palettes — scoped to the reverb BODY only (the header,
+   board tile and connectors keep --block-reverb cyan: block hue identifies
+   the block, mode hue identifies the mode, and the mode hue never leaves
+   the body). Fills are the accent at 8/16/25/35% alpha; --block-dim is 55%
+   accent over --bg-surface (#12151b) flattened. Six lines per mode, edited
+   as one unit. Literal rgba, never color-mix (safari14 baseline).
+   `data-reverb-algo` is stamped only by ReverbBody's root, inside .dock, so
+   these override the [data-block] set for the reverb body subtree only.
+   Portalled overlays (Menu) do not inherit these vars — they are currently
+   accent-free, so no action is needed there. */
+[data-reverb-algo="room"] {            /* = --block-reverb #22d3ee */
+  --block-accent: var(--block-reverb);
+  --block-fill-8:  rgba(34, 211, 238, 0.08);
+  --block-fill-16: rgba(34, 211, 238, 0.16);
+  --block-fill-25: rgba(34, 211, 238, 0.25);
+  --block-glow:    rgba(34, 211, 238, 0.35);
+  --block-dim:     rgb(27, 126, 143);
+}
+[data-reverb-algo="plate"] {           /* #a5f3fc — bright sheet metal */
+  --block-accent: #a5f3fc;
+  --block-fill-8:  rgba(165, 243, 252, 0.08);
+  --block-fill-16: rgba(165, 243, 252, 0.16);
+  --block-fill-25: rgba(165, 243, 252, 0.25);
+  --block-glow:    rgba(165, 243, 252, 0.35);
+  --block-dim:     rgb(99, 143, 151);
+}
+[data-reverb-algo="hall"] {            /* #38bdf8 — deeper, bigger */
+  --block-accent: #38bdf8;
+  --block-fill-8:  rgba(56, 189, 248, 0.08);
+  --block-fill-16: rgba(56, 189, 248, 0.16);
+  --block-fill-25: rgba(56, 189, 248, 0.25);
+  --block-glow:    rgba(56, 189, 248, 0.35);
+  --block-dim:     rgb(39, 113, 149);
+}
+[data-reverb-algo="spring"] {          /* #e3a857 — brass tank */
+  --block-accent: #e3a857;
+  --block-fill-8:  rgba(227, 168, 87, 0.08);
+  --block-fill-16: rgba(227, 168, 87, 0.16);
+  --block-fill-25: rgba(227, 168, 87, 0.25);
+  --block-glow:    rgba(227, 168, 87, 0.35);
+  --block-dim:     rgb(133, 102, 60);
+}
+[data-reverb-algo="shimmer"] {         /* #f0abfc — ethereal */
+  --block-accent: #f0abfc;
+  --block-fill-8:  rgba(240, 171, 252, 0.08);
+  --block-fill-16: rgba(240, 171, 252, 0.16);
+  --block-fill-25: rgba(240, 171, 252, 0.25);
+  --block-glow:    rgba(240, 171, 252, 0.35);
+  --block-dim:     rgb(140, 104, 151);
+}
+[data-reverb-algo="reverse"] {         /* #94a3b8 — drained, runs backwards */
+  --block-accent: #94a3b8;
+  --block-fill-8:  rgba(148, 163, 184, 0.08);
+  --block-fill-16: rgba(148, 163, 184, 0.16);
+  --block-fill-25: rgba(148, 163, 184, 0.25);
+  --block-glow:    rgba(148, 163, 184, 0.35);
+  --block-dim:     rgb(90, 99, 113);
+}
