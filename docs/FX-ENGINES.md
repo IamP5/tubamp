@@ -185,9 +185,14 @@ inline constexpr float kCompReleaseDefault[CompFx::numTypes] { 120.0f, 120.0f, 1
   Harmonic filters, so only the bad sample's own output is non-finite (N1). Classic paths
   are left as they were except where their section says so. `processBlock` also zeroes
   every non-finite sample of the plugin input, on every channel, before anything reads it,
-  so one NaN cannot latch the always-on DC blocker. It sanitises the plugin INPUT only: a
-  non-finite value produced inside the chain (a hosted plugin, the neural model) is not
-  caught (§8 D-31).
+  so one NaN cannot latch the always-on DC blocker. The same pass (`zeroAbsurd`) zeroes any
+  sample of magnitude 1e6 or more (+120 dBFS, no audio signal; one near FLT_MAX would
+  overflow in the input trim): at the input, before the trim, and again at the output
+  before the DC blocker, so a non-finite or absurd value made inside the chain (a hosted
+  plugin, the neural model) becomes silence there and the next callback starts clean.
+  Anything below 1e6 passes bit for bit. There is no limiter: levels above full scale pass
+  unclipped and finite (compressor makeup up to 48 dB, Small Stone Color on up to +13.6 dB
+  over a full-scale input, §8 D-39).
 - **No shared statics.** No mutable static or global state; two instances never
   interact.
 
@@ -308,17 +313,17 @@ Inside the engines, never in the processor. Rules for every new type:
   `--reset-repeat` renders input, resets, renders again; the two outputs are identical.
 - LFO start phases after reset are specified per engine.
 - **Reset on switch-on.** The processor calls `reset()` on an engine when its block starts
-  again and the engine's type is, or was, non-Classic (`engineStarts`: the block ran before,
-  stopped, and holds audio from then; a Classic type that last ran as Classic keeps what it
-  held, as it always did). A block that re-enters the chain is reset through `pendingReset`.
-  A block never replays what it held when it left. Each engine's
+  again, whatever its type (`engineStarts`: the block ran before, stopped, and holds audio
+  from then; Classic included, which replayed stale audio when it was switched back on
+  before the second round). A block that re-enters the chain is reset through
+  `pendingReset`. A block never replays what it held when it left. Each engine's
   `reset()` leaves nothing to replay: lines and filters cleared, gains started at unity or
   closed as the section says, and the wet path faded in where a section says so (chorus
   §4.5.4, tremolo §4.7.4, phaser §4.6.4). The fxbench keys that drive this are in
   `tools/fxbench/README.md` (EQ `reenable`, chorus `reset`, phaser `reset_on_enable`; the
   tremolo adapter does it itself).
-- **Crossfade at switch-on and switch-off.** For all five block kinds (gate in Tight and
-  Smooth, compressor, drive, EQ, modulation) a non-Classic type goes in and out of the
+- **Crossfade at switch-on and switch-off.** For all five block kinds (gate, compressor,
+  drive, EQ, modulation), every type, Classic included, goes in and out of the
   signal through `BypassFader` (`src/dsp/FxBlocks.h`): the block's input and the engine's
   output are crossfaded over 10 ms (the fade is a linear ramp of the wet amount, applied as
   a smoothstep `w * w * (3 - 2 * w)` so neither end has a corner). A block that comes back
@@ -326,9 +331,17 @@ Inside the engines, never in the processor. Rules for every new type:
   while its filters fill from zero, then fades in over 10 ms: 20 ms from the reset to full
   wet. A fade out keeps the engine running for its 10 ms (`needsEngine`). The input is
   delayed by the engine's latency so both sides line up (non-zero for drive only, §2.9).
-  Classic types switch exactly as before: the fader only keeps its input history and rest
-  state current (`follow()`) and does not touch the audio. This closes the EQ step that
-  D-27 listed (worst switch-on pop -119.9 dBFS, was -7.2 dBFS).
+  The fader's input delay moves through a `DelayGlide` (read with 4-point Lagrange
+  interpolation, exact at whole samples), so it slides over 10 ms from where the tap is
+  whenever the delay changes: when the type of a bypassed drive changes, and for a Classic
+  drive, whose rule is unchanged (3 samples, counted only while it runs, §2.9). Its input
+  path slides between 0 and 3 samples while the engine is unheard (settling on, and after
+  its fade off), so the fade always meets the engine aligned. This replaces the earlier
+  rule that Classic types switch exactly as before: Classic toggles no longer burst or pop
+  (old: up to +6.0 dBFS on a hot drive, -8.1 dBFS EQ, -14 to -28 dBFS chorus, phaser,
+  tremolo; now at most -73 dBFS under the fade, §8 D-42). Static Classic renders stay
+  bit-identical. This closes the EQ step that D-27 listed (worst switch-on pop -119.9
+  dBFS, was -7.2 dBFS).
 
 ### 2.7 Parameters
 
@@ -486,6 +499,19 @@ included, and holds its input back by the same amount while it does not run (`By
 rule: it counts only while it runs and is not waiting for its reset, because delaying a
 bypassed Classic drive would change old sessions (§8 D-7). Latency is computed after the
 reset drain, so what is reported is what the block delays in that callback.
+
+**Who reports it.** `processBlock` never calls `setLatencySamples`. It stores the figure it
+applies in an atomic (`audioLatency`, with the generation it read before decoding the
+chain), and the message thread reports it: a 20 ms timer (`kLatencyTimerMs`), the parameter
+listeners and `updateLatency` call `reportLatency`, the one place that calls
+`setLatencySamples`. With no audio running (none for 500 ms) the message thread computes the
+figure itself from the chain and the parameters. A restore or a parameter change on a host
+thread only raises a flag (`latencyRecheck`) and the timer picks it up. For a drive the audio
+thread counts what the drive applies (`driveReported`, from `DriveTimeline`, §6.3), a switch
+or slide taken at its larger end. In the gap before the host learns of a change, audio
+stays continuous and the split lanes stay aligned with each other; the host's compensation
+is off by the change (at most 5 samples for a drive) for at most about 20 ms plus the
+host's own delay in acting on the report.
 
 ### 2.10 CPU budget
 
@@ -2958,7 +2984,8 @@ later), 2–3 s the chord plus a white-noise burst at −30 dBFS, 3–4 s 1 kHz 
   `setValueNotifyingHost (convertTo0to1 (v))`; **in `--verify`, every new type/mode/voicing
   id that exists in the layout (§2.7.5 table) is first set to 0 (Classic)**, because a fresh
   instance now defaults to the recommended types; `prepareToPlay (fs, block)`; render
-  `gen:music`; hash with `juce::SHA256` over the interleaved float bytes; record
+  `gen:music`; hash with `juce::SHA256` over the interleaved float bytes; run the message
+  loop (60 ms), because the processor reports latency from a timer (§2.9); record
   `getLatencySamples()` after the last block.
 - File row: `case  fs  block  sha256  latency`.
 - `--verify ... --restore host|preset` renders each case the way an old session reaches the
@@ -3031,6 +3058,13 @@ type, resets the incoming one where the old block reset everything and crossfade
 single-instance jump everywhere outside the fades (checked before the DC blocker, reported per
 case). Every other case is bit-identical to `tools/fxbench/legacy`.
 
+After the processor's second round the legacy side also mirrors the bypass fader (the legacy
+class runs through the processor's own `BypassFader`, reset where the processor resets) and the
+`mod_type` crossfade (hold, wait and the 40 ms `PowerCrossfade`). So `--legacy-check` proves
+static Classic renders against the old code, not transitions. Transitions against the real old
+build are covered by the verifiers' harness (`build-verify/compat`, `build-verify/processor-r2`).
+The smoke test runs at 44.1, 48, 96 and 192 kHz.
+
 ---
 
 ## 6. Integration work list
@@ -3061,7 +3095,7 @@ commit's. Do the common part first, then one effect at a time, running `tubamp_g
 | `src/WebEditor.cpp:413-414`, `:1018-1024` | reset the new meter atomics on editor open; emit `dynMeters` (§2.8) in `timerCallback` |
 | `src/WebEditor.h:43` | relay count comment |
 | `docs/REACT-UI.md:59-107, 284` | relay lists and counts; `dynMeters` event contract |
-| `src/dsp/FxBlocks.h/.cpp`, `PluginProcessor.cpp` (processor round) | `BypassFader` (§2.6): per-kind faders (`gateFader`, `compFader[3]`, `driveFader[3]`, `eqFader[3]`, `modFader[3]`), `engineStarts`, `applyGate`; `processBlock` zeroes non-finite input samples first (§2.2) |
+| `src/dsp/FxBlocks.h/.cpp`, `PluginProcessor.cpp` (processor round) | `BypassFader` (§2.6): per-kind faders (`gateFader`, `compFader[3]`, `driveFader[3]`, `eqFader[3]`, `modFader[3]`), `engineStarts`, `applyGate`; `processBlock` zeroes non-finite and absurd (1e6 or more) samples at the input and again before the DC blocker (§2.2); `DelayGlide`, `PowerCrossfade` (round two, §6.5) |
 
 ### 6.1 Gate
 
@@ -3100,15 +3134,18 @@ block's state (`:1094-1104, 1328-1332`).
 | `PluginProcessor.cpp:816, 924, 1837` | prepare / reset with `DriveFx` |
 | `PluginProcessor.cpp:1338-1351` | `DriveParams` from gain, tone, level, type (`driveParams (k)`) |
 | `blockLatency` (the per-entry term `computeChainLatency` sums and the gate's curve delay uses) | for drive instances: `latency = DriveFx::latencyFor (type, preparedSampleRate)`. A non-Classic type returns it whenever the drive is in the chain, bypassed or waiting for its reset included (the FX-slot rule): the block holds its input back by the same amount through `BypassFader`, so toggling it never changes the plugin's latency. Classic returns it only while `drive_on` and not waiting for its reset (`waiting` is `pendingReset`, passed by the audio thread), the amp rule, so a bypassed Classic drive is not delayed and old sessions keep their audio. `latencyFor` is a pure static function of (type, rate) so the message thread (`updateLatency`) can call it without touching the audio-thread object. `preparedSampleRate` is an atomic the processor stores in `prepareToPlay`: `getSampleRate()` is only what the host last announced (0 when `prepareToPlay` is called directly, as the console tools do) |
-| `PluginProcessor.cpp:1730`… | the lane ring (`compensateLaneLatency`) then aligns drive lanes automatically; when a lane's delay changes (a drive switched or retyped, a model swap) each tap slides from the old delay to the new one over 10 ms (`laneTapFadeSamples`), reading history the ring already holds, instead of clearing the ring (step 0.25 before, 0.0033 now) |
+| `PluginProcessor.cpp:2150`… | the lane ring (`compensateLaneLatency`) aligns drive lanes automatically. It follows the lanes' per-sample delay difference (`computeLaneDelta`: blocks by `blockLatency`, a drive by the delay it applied per sample), reading taps with 4-point Lagrange interpolation. A difference that moves smoothly (a drive's own slide) is followed exactly; a jump of up to `kLaneSlideSamples` (16) restarts a slide from where the taps are now (a second jump within the 10 ms retargets it); a larger one (a model swap, a hosted plugin) crossfades from what is heard to the new taps. History the ring already holds is read, so the ring is never cleared (step 0.25 at first, 0.0033 after the first round) |
+| `PluginProcessor.h` `DriveTimeline` | per drive instance, mirrors `DriveFx`'s own type-switch timing (`Drive.cpp`: settle 10 ms, fade 20 ms, slide 10 ms, each at least 8 samples): the outgoing type's latency, a rise slid in over the settle, both at the larger latency through the fade, a drop slid out over the 10 ms after it. Lane alignment and the reported latency follow what the drive applies, not what its parameters ask for; the reported latency holds the larger figure for up to 40 ms during a drive type switch, and lanes stay within 0.41 samples (§8 D-43) |
 | tests | reported latency with drive on/off and per type; D18 split-lane flatness; `splitA`/`splitAB` expectations |
 
 `DriveFx` therefore has, besides §2.1: `static int latencyFor (int type, double sampleRate) noexcept;`
 (`getLatencySamples()` returns `latencyFor (currentType, preparedRate)`).
 
-Invariant: latency is reported from the audio thread when it changes
-(`PluginProcessor.cpp:1034-1045`) and from `updateLatency()`; both use
-`computeChainLatency`.
+Invariant: latency is reported from the message thread only (§2.9): the audio thread stores
+what it applies, the timer, the parameter listeners and `updateLatency()` hand it to the host,
+and with no audio running the message thread computes it; both paths use
+`computeChainLatency`. `DriveFx` cannot report its applied delay during a switch, so
+`DriveTimeline` has to follow any change to `Drive.cpp`'s switch timing (§8 D-50).
 
 ### 6.4 EQ and amp EQ
 
@@ -3150,7 +3187,9 @@ public:
     enum class Type { chorus = 0, phaser = 1, tremolo = 2 };
     struct Timing { float rateHz; double syncPhase; };
     static Timing resolveTiming (const ModParams&, bool classic) noexcept;
-    static int crossfadeSamples (double sampleRate) noexcept;   // 20 ms
+    static int crossfadeSamples (double sampleRate) noexcept;   // 40 ms
+    static int crossfadeWaitSamples (double sampleRate) noexcept;          // 250 ms
+    static int crossfadeLongestWaitSamples (double sampleRate) noexcept;   // 400 ms
     static int crossfadeHoldSamples (const ModParams&, double sampleRate) noexcept;
     void prepare (const juce::dsp::ProcessSpec&);
     void reset();
@@ -3164,32 +3203,40 @@ public:
   or ≤ 1 BPM → 120 for the rate), and `syncPhase = frac(ppqPosition / beats)` while the host
   plays, gives a position and reports a tempo above 1 BPM, else −1 (free-running at the
   synced rate). A tempo at or under 1 BPM runs the LFO free: a song position read at a tempo
-  the song does not run at would hold the LFO still. A synced rate outside the
+  the song does not run at would hold the LFO still. The processor hands the dispatcher the
+  tempo as reported (`hostBpm`: 0 when the host gives none, a tempo that is not positive or
+  is not finite), so a tempo at or under 0 runs the LFO free too. The engines get a sync
+  phase on every block while the transport plays and none when it is stopped. A synced rate outside the
   engines' [0.01, 20] Hz is clamped **and runs free**: a clamped LFO cannot follow the song
   position (1/32 above 150 BPM, 1/16T above 200, 4/1 below 9.6).
 - `mod_type` switch — **a crossfade, not `fx::EngineSwitcher`.** On a change the incoming
   engine is reset in that block and runs from there, exactly where the old block reset
-  everything and jumped; the outgoing engine keeps running for 20 ms on a copy of the input
-  with the last parameters it had (free-running), and the output moves linearly from it to
-  the incoming one over `crossfadeSamples()`. When the fade ends the output is the old
-  block's bit for bit. A switch into Classic chorus holds first: its delay line starts empty
-  and its wet steps in when the line reaches the output, so the outgoing engine sounds alone
-  for `crossfadeHoldSamples` = ceil ((7 + 10 × depth) ms × fs) + 1 samples (the 7 ms centre
-  delay plus the swing `juce::dsp::Chorus` adds, depth clamped to [0, 1]) and the 20 ms
-  crossfade starts after that; every other voicing has no hold (worst tick −67.6 dBFS into
-  Classic chorus). The switcher's fade through dry was not used: it resets the incoming
-  engine 20 ms after the request, so that type would run 20 ms behind the old jump for good.
-  A second change inside a fade cuts the fade short (a new one starts from the engine that
-  was coming in), so every type still starts where the old block started it. A block larger
-  than `prepare()` promised completes the switch outright (the old jump). Snap on the first
-  block after prepare/reset. Only the running engines get `setParameters`, as the old block
-  only set the active type; each engine fades its own voicing and colour switches and is
-  never reset for them.
-- Song-position jumps reach the engines unsmoothed: `syncPhase` is passed on as computed, and
-  each engine glides or dips itself (tremolo and phaser §4.7.4 and §4.6.4, chorus §4.5).
-  Voicing switches inside one type are handled by the engines too, not by the dispatcher.
-  The level can leave both steady levels for a moment while they do (known open item,
-  §8 D-32).
+  everything and jumped; the outgoing engine keeps running on a copy of the input with the
+  last parameters it had (still following the song if it was synced), and is heard alone
+  while the incoming one settles unheard. That hold (`crossfadeHoldSamples`) is 30 ms for
+  a phaser or tremolo, 50 ms for chorus modes 1-4, and for Classic chorus
+  ceil ((7 + 10 × depth) ms × fs) + 1 samples (the 7 ms centre delay plus the swing
+  `juce::dsp::Chorus` adds, depth clamped to [0, 1]) plus 10 ms for the power estimates to
+  catch the step its wet makes. Then `PowerCrossfade` starts a 40 ms power-matched crossfade
+  (`crossfadeSamples()`), equal-power gains on a cornerless ramp scaled by the two outputs'
+  measured power and correlation. It starts only when the correlation is acceptable (at least
+  -0.5) and not heading toward antiphase (by its trend, it would not fall below that before the
+  fade is over). After 250 ms it takes any acceptable moment, and at 400 ms it gives up and
+  starts anyway. The level correction is bounded at +18 dB and applied in two bands split at
+  1 kHz (complementary one-pole low-pass and the rest), each with its own gain, because two
+  effects' lows can cancel while their highs (a pick's attack) add and one broadband gain
+  would lift the attack. When the fade ends the output is the incoming engine alone, the old
+  block's output from then on. The switcher's fade through dry was not used: it resets the
+  incoming engine 20 ms after the request, so that type would run late for good. A second
+  change inside a fade cuts the fade short (a new one starts from the engine that was coming
+  in). A block larger than `prepare()` promised completes the switch outright (the old
+  jump). Snap on the first block after prepare/reset. Only the running engines get
+  `setParameters`, as the old block only set the active type. The price is a wait of up to
+  400 ms before a type switch is heard (§8 D-32, D-42).
+- Voicing switches inside one type (and colour switches) go straight to the engines,
+  Classic included, which fade them themselves and are never reset for them. Song-position
+  jumps reach the engines unsmoothed: `syncPhase` is passed on as computed, and each engine
+  glides or dips itself (tremolo and phaser §4.7.4 and §4.6.4, chorus §4.5).
 - `processBlock` reads the play head once (`HostTransport { bpm, ppqPosition, playing }`) and
   hands it to `processChainBlock`; the delays take `bpm` from it, the mod blocks all three.
 
@@ -3199,7 +3246,7 @@ public:
 | `PluginProcessor.cpp:818, 926, 1845` | prepare/reset unchanged in form |
 | `PluginProcessor.cpp:1428-1442` | `modParams (k, transport)` fills `ModParams` from the 4 existing + 9 new ids, raw, and the transport |
 | `PluginProcessor.cpp:965-973` | capture tempo, `ppqPosition` and `isPlaying` once per callback (`HostTransport`) |
-| tests | smoke `runModEngineTests`: every new voicing (knob steps, voicing and colour switches) through the processor equals the engine alone; sync 1/8 at 120 BPM for CE, Phase 90 block and Smooth, host playing and stopped: equal to the engine alone at 4 Hz with `frac(ppq/0.5)` or free-running, output repeats every 250 ms (residual ≤ −60 dB; a 0.1 % tempo error exceeds it), Smooth's dips within 2 ms of each eighth; 120 → 150 BPM followed; no play head = 120 BPM; clamped 1/32 at 200 BPM free at 20 Hz; Classic ignores sync; instances 2/3 drive their own ids; voicing and `mod_type` switches on P7's chord ≤ 3 dB per 1 ms; the crossfade is exactly the engines alone with a linear 20 ms fade. `runModRtTests`: three mod blocks cycling types, voicings, colours, sync, transport, bypass and re-entry allocate nothing. `--legacy-check` mod cases: see §5.4.3. The voicing-id pin is `runLegacyPinTests` |
+| tests | smoke `runModEngineTests`: every new voicing (knob steps, voicing and colour switches) through the processor equals the engine alone; sync 1/8 at 120 BPM for CE, Phase 90 block and Smooth, host playing and stopped: equal to the engine alone at 4 Hz with `frac(ppq/0.5)` or free-running, output repeats every 250 ms (residual ≤ −60 dB; a 0.1 % tempo error exceeds it), Smooth's dips within 2 ms of each eighth; 120 → 150 BPM followed; no play head = 120 BPM; clamped 1/32 at 200 BPM free at 20 Hz; Classic ignores sync; instances 2/3 drive their own ids; voicing and `mod_type` switches on P7's chord ≤ 3 dB per 1 ms; the `mod_type` switch over 440 switches stays within the bounds of §8 D-32 (hold, wait, 40 ms `PowerCrossfade`). `runModRtTests`: three mod blocks cycling types, voicings, colours, sync, transport, bypass and re-entry allocate nothing. `--legacy-check` mod cases: see §5.4.3. The voicing-id pin is `runLegacyPinTests` |
 
 ### 6.6 Invariants that must not regress (whole integration)
 
@@ -3208,25 +3255,33 @@ public:
   `prepareToPlay` (`:808-821`); blocks larger than promised still run (lanes run flat,
   gate passes ungated).
 - Re-entry reset through `pendingReset`, at most two per callback; a pending block
-  processes as bypassed (`:1067-1092`). An engine is `reset()` when its block starts again
-  and its type is or was non-Classic (`engineStarts`), and its input and the engine output
+  processes as bypassed (`:1067-1092`). An engine is `reset()` when its block starts again,
+  every type including Classic (`engineStarts`), and its input and the engine output
   crossfade over 10 ms (`BypassFader`; the engine runs unheard for another 10 ms after a
   reset before it fades in) for all five block kinds (gate, compressor, drive, EQ,
-  modulation); Classic types switch exactly as before (§2.6). `processBlock` zeroes every
-  non-finite sample of the plugin input before anything reads it; a non-finite value
-  produced inside the chain is not caught (§2.2, §8 D-31).
+  modulation); the fader's delay slides (`DelayGlide`) when a bypassed drive's type changes,
+  and a Classic drive keeps its 3-sample rule with its input path sliding 0 to 3 samples
+  while the engine is unheard (§2.6). `processBlock` zeroes every non-finite or absurd
+  (1e6 or more) sample at the input and again before the DC blocker (§2.2, §8 D-31, D-42).
 - `applyStateVar` publishes the chain order before any synchronous model/IR loading;
   `setStateInformation` publishes immediately and defers `adoptChainOrder` (`:2127-2170`).
   The legacy pin must not reorder these.
 - Latency counts only blocks that run; FX slots and a non-Classic drive count while bypassed
   (the drive holds its input back by it, so toggling it never moves the latency); a Classic
   drive counts only while running and not waiting for its reset. Latency is computed after
-  the reset drain. The lane ring aligns the shorter lane, and a lane's delay change slides
-  over 10 ms instead of clearing the ring (`:1732-1797`).
+  the reset drain, and reported from the message thread only (§2.9). The lane ring aligns the
+  shorter lane: `compensateLaneLatency` follows a per-sample delay difference and restarts a
+  slide from where the tap is, and `DriveTimeline` mirrors the drive's own switch timing so
+  alignment and reported latency follow what the drive applies (§6.3).
 - Chain order is state, never a parameter; `chainLock` is a leaf lock.
 - Reverb/delay untouched (F1); cab untouched (F2).
-- `tubamp_smoke` passes at 44.1, 48, 96 kHz (the 22.05/32 kHz split-path failure is
-  pre-existing on `main`). At 192 kHz it does not pass one row (§8 D-33).
+- `tubamp_smoke` passes at 44.1, 48, 96 and 192 kHz (the 22.05/32 kHz split-path failure is
+  pre-existing on `main`; the 192 kHz row of §8 D-33 is closed).
+- Tests of the processor round: the golden tool reads latency after running the message loop
+  (the processor reports from a timer, §2.9), and its legacy side mirrors the bypass fader
+  and the new crossfade, so `--legacy-check` proves static Classic renders against the old
+  code, not transitions. Transitions against the real old build are covered by the
+  verifiers' harness (`build-verify/compat`, `build-verify/processor-r2`).
 
 ---
 
@@ -3334,7 +3389,7 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-19 | Tremolo depth law, 120 Hz smoother, Optical constants, Bias fit and Harmonic voice have no installed reference (report.md:12, :386). | Built as specified; parity with the prototype is enforced; Harmonic and Bias need a listening pass before release. |
 | D-20 | Golden hashes depend on arch and build type. | Capture and verify on the development Mac, arm64, Release. |
 | D-21 | `mod_color` default on means a new Phase 90 starts as the block-logo (resonant) voicing. | Chosen because it is the validated fit; switch the default to off if the owner prefers the script sound. |
-| D-22 | The NAM resampler's reported latency is 1.9 (44.1 kHz) / 3.0 (96 kHz) samples short of its true delay (§4.1.7), so a deferred Tight/Smooth curve leads the audio by that much, and the host's delay compensation is off by the same amount. | Left as is: D uses the reported latency as specified, and the host figure is frozen by the golden renders. A measured group delay from `NamEngine` (probe at model load), used for D only, would close it for the gate. |
+| D-22 | The NAM resampler's reported latency is 1.9 (44.1 kHz) / 3.0 (96 kHz) / 5.0 (192 kHz: 70 reported against 75.0 measured) samples short of its true delay (§4.1.7), so a deferred Tight/Smooth curve leads the audio by that much, and the host's delay compensation is off by the same amount. | Left as is: D uses the reported latency as specified, and the host figure is frozen by the golden renders. A measured group delay from `NamEngine` (probe at model load), used for D only, would close it for the gate. |
 | D-23 | `eq_tilt`, `eq_level` and the seven `eq_g*` read their default 0 back from the parameter as 8.9e-8 / 1.8e-7 dB on arm64 (exactly 0.1f × 120 − 12 with the product unrounded, as a fused multiply-add in JUCE's `snapToLegalValue` gives; visible in `tests/golden/params-v4.tsv`), so a fresh Parametric or Graphic block in the plugin runs its level/tilt/band stages instead of the exact 0 dB paths E4/E17 test on the engine. Measured through the processor: within −144 dBFS of the input at 44.1 kHz (−150 at 48, −162 at 96). | Left as is: the processor passes values raw and the layout is frozen. Closing it means the engine treating \|dB\| below 1e-5 as 0 (engine owner), never a processor-side rounding. Classic and the amp EQ are unaffected (their knobs read back exactly). Update: fixed in the engine (fe2fee6): a control within 1e-3 dB of neutral counts as neutral (host noise measured at 1.8e-7 dB; rows E22a, E22b), not 1e-5 as written above. |
 | D-24 | **Verification round, 2026-11-11 (seven `dsp:` commits after the integration).** The engines were fixed against the verification reports; this table keeps the earlier decisions above and adds what changed. | Gate (81fd404): the close rule depends on the fall from the recent peak; hold is the wait after a note stops (§4.1.5). Open: a pure 41.2 Hz tone now needs 15.4 dB over threshold to open (was 13.6), the price of the 4th-order 75 Hz sidechain filter. Update (2df395d, second round): that rule is replaced by version 3 (§4.1.5, closes on how fast the level fell); the 15.4 dB was the figure for a tone that starts at a crest, a tone that rises needs 20.8 dB (row X20, rows F), and the costs are in D-35. |
 | D-25 | Compressor type switches (a27b550). | `fx::EngineSwitcher` dropped (§2.4, §4.2.6): switches among Clean, Squash, FET and Opto keep the gain state with no fade; to or from Classic both outputs crossfade over 40 ms (+0.01 dB bump). Total makeup is capped at 48 dB. |
@@ -3344,9 +3399,9 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-29 | Tremolo (2b847b9). | A mono instance ignores Width in every voice; `reset()` starts gains at unity; a song-position jump crossfades over 10 ms; the stereo loudness law is Smooth only (the earlier text said it applied to Optical, Bias and Harmonic as well, which the code never did). |
 | D-30 | **Known limit: the phaser's level between notches depends on the sample rate above 3 kHz.** After the notch-matched discretisation (§4.6.4) the notches and trajectories are rate independent, but the frozen magnitude response at 48 kHz differs from 192 kHz by 1.02 to 1.69 dB (script 1.69, block 1.40, Small Stone off 1.02, on 1.66; at 44.1 kHz 1.24 to 2.05 dB: script 2.05, block 1.70, off 1.24, on 2.00; `evidence/fit/d30.txt`), on the upper slopes of the response rather than inside its top 3 dB (the band where the difference is more than half its largest value runs from 1.8 or 6.0 kHz up to 10 kHz for the script, 1.8 or 4.4 kHz for the block, 1.0 to 10 kHz and 5.4 to 8.7 kHz for Color off, 2.7 to 4.6 kHz at the top for Color on; inside the top 3 dB it is 0.67 to 1.54 dB at 48 kHz and 0.83 to 1.93 dB at 44.1 kHz). The 48 kHz render is the one off the analog response (up to 1.80 dB; 192 kHz is within 0.11 dB): four first-order stages lag the analog cascade by 4.5 to 7.3° near 10 kHz (`docs/research/fx/phaser/evidence/fit/rate_limit.txt`). Row P9 compares every rate with 48 kHz, so it reads the 48 against 192 kHz figure; at 44.1 kHz the script (2.05 dB) and Color on (2.00 dB) exceed the 1.8 dB bar that P9 enforces at 48 kHz. | Left as is; row P9 "frozen response" enforces 1.8 dB as the structure's limit, not 0.1 dB. Tried and measured: four free stage coefficients per position reach only 0.57 to 1.45 dB and give up exact notches. A minimum-phase correction on the wet output closes it (0.06 to 0.28 dB with a 3 dB rise above 10 kHz, 0.03 to 0.12 dB with 6 dB) but lifts the wet above 10 kHz at every rate, which neither the pedals nor the Guitar Rig models do. Owner's call to revisit: that correction, or 2x internal oversampling at 44.1 / 48 kHz (D-8). |
 | D-31 | The processor side of the contract (closed, 678c9c8). | Delivered: (1) `processBlock` zeroes every non-finite sample of the plugin input on every channel before anything reads it; (2) an engine is reset when its block starts again and its type is or was non-Classic, and its input and output crossfade over 10 ms for gate, compressor, drive, EQ and modulation (worst switch-on −119.9 dBFS, was −7.2); Classic switches as before (§2.2, §2.6, §6.6). Not covered: the sanitiser guards the plugin INPUT only. A non-finite value produced inside the chain (a hosted plugin, the neural model) is not caught. |
-| D-32 | **Known open item: level moves at voicing switches inside one type.** The engines handle these switches (§6.5), and the level can leave both steady levels for a moment: a phaser model switch up to 9 dB, a switch into tremolo Smooth about 5 dB, a Classic chorus to CE or Dimension about 6 dB. | Left as is: no fix in the processor or the dispatcher. Closing it means a loudness-matched crossfade in each engine (engine owner). Update (second round): **resolved inside the engines for the phaser, the tremolo and the chorus**, by crossfades with gains from measured power (§2.4). Worst cases measured: phaser P17, +0.95 dB above the higher and −2.88 dB below the lower of the two voicings' own levels over 20 ordered pairs (the old switch: +11.5 and −20.3 dB); tremolo Y3, 0.03 dB outside both voices' trajectories over 160 switches (was 10.06 dB); chorus CH18 +0.69 dB from the span of the levels before and after, CH27 1.70 dB from the envelope of the modes' own levels when switching every 30 ms through all five modes (the old Classic switch was about 6 dB out). **Still open and not part of this round:** the `mod_type` switch between effects (chorus, phaser, tremolo) belongs to the dispatcher (§6.5) and is being fixed there. |
-| D-33 | At 192 kHz the processor smoke test reads −79.6 dBFS for a Classic EQ bass 5 to 10 step against its −80 dBFS bound; the processor equals the engine alone. 192 kHz was not in the proof set before (the proofs are 44.1, 48 and 96 kHz). | Open. Whether it predates this branch is being checked. Update (44e54af, second round): **resolved in the engine.** The Classic knob moves now glide in a double-precision filter (§4.4.3); row E26 covers 44.1, 48, 96 and 192 kHz at blocks 1 / 37 / 64 / 512 with a bar of −80 dBFS and reads −86.4 at worst (bass −86.7 at 192 kHz included). The processor smoke test at 192 kHz was not re-run for this document. |
-| D-34 | Not fixed in 678c9c8 (from its commit message). | `setLatencySamples` is called from two threads (audio and message); `setStateInformation` can run off the message thread; the CabSim flag race; the NAM latency 2 to 3 samples short (D-22); a NaN produced inside the chain (D-31). |
+| D-32 | **Known open item: level moves at voicing switches inside one type.** The engines handle these switches (§6.5), and the level can leave both steady levels for a moment: a phaser model switch up to 9 dB, a switch into tremolo Smooth about 5 dB, a Classic chorus to CE or Dimension about 6 dB. | Left as is: no fix in the processor or the dispatcher. Closing it means a loudness-matched crossfade in each engine (engine owner). Update (second round): **resolved inside the engines for the phaser, the tremolo and the chorus**, by crossfades with gains from measured power (§2.4). Worst cases measured: phaser P17, +0.95 dB above the higher and −2.88 dB below the lower of the two voicings' own levels over 20 ordered pairs (the old switch: +11.5 and −20.3 dB); tremolo Y3, 0.03 dB outside both voices' trajectories over 160 switches (was 10.06 dB); chorus CH18 +0.69 dB from the span of the levels before and after, CH27 1.70 dB from the envelope of the modes' own levels when switching every 30 ms through all five modes (the old Classic switch was about 6 dB out). **Still open and not part of this round:** the `mod_type` switch between effects (chorus, phaser, tremolo) belongs to the dispatcher (§6.5) and is being fixed there. Update (processor rounds, 579b6dd and 2a280b9): **resolved in the dispatcher** (hold, wait, then a 40 ms power-matched crossfade corrected in two bands, §6.5). Over 440 `mod_type` switches the smoke test reads at most 1.18 dB above the higher steady level, 2.28 dB below the lower, and a click of -86.0 dBFS at 48 kHz (was up to -17.1 dB). The price is a wait of up to 400 ms before a type switch is heard. |
+| D-33 | At 192 kHz the processor smoke test reads −79.6 dBFS for a Classic EQ bass 5 to 10 step against its −80 dBFS bound; the processor equals the engine alone. 192 kHz was not in the proof set before (the proofs are 44.1, 48 and 96 kHz). | Open. Whether it predates this branch is being checked. Update (44e54af, second round): **resolved in the engine.** The Classic knob moves now glide in a double-precision filter (§4.4.3); row E26 covers 44.1, 48, 96 and 192 kHz at blocks 1 / 37 / 64 / 512 with a bar of −80 dBFS and reads −86.4 at worst (bass −86.7 at 192 kHz included). The processor smoke test at 192 kHz was not re-run for this document. Update (2a280b9): the smoke test passes at 192 kHz (0 FAIL at 44.1, 48, 96 and 192 kHz). |
+| D-34 | Not fixed in 678c9c8 (from its commit message). | `setLatencySamples` is called from two threads (audio and message); `setStateInformation` can run off the message thread; the CabSim flag race; the NAM latency 2 to 3 samples short (D-22); a NaN produced inside the chain (D-31). Update (579b6dd): `setLatencySamples` is now called from the message thread only (§2.9), and a value of 1e6 or more or a non-finite one made inside the chain is zeroed before the DC blocker (§2.2). Still not fixed: the `setStateInformation` race (D-48), the CabSim flag (D-47), the NAM figure (D-22, D-45). |
 | D-35 | **Gate, version 3 closing rule: stated costs** (2df395d). | Accepted, no parameter, default or API change. A natural decay (not a stop) closes up to 1 s after it passes the close level (version 2: 0.4 s). A stop on a chord whose partials beat fast waits up to 20 ms more. Fast, deep beat troughs dip partway, never to mute, and the crest reopens the gate (12 + 5 verifier cases, deepest about −36 dB; the trade-off table of §4.1.5 from row C: troughs of 12 dB at 4 and 8 Hz dip to −34 and −33 dB for 82 and 45 ms, troughs of 20 dB at 1 to 8 Hz to −30 to −38 dB for 46 to 119 ms). The 75 Hz 4th-order sidechain default reads a pure 41.2 Hz tone 20.8 dB under its level; for bass use the knob's minimum or about 40 Hz (rows F, §4.1.2). |
 | D-36 | **Two wider EQ overshoot bars** (0cc04e2). E25a (gain, Q, shelves, cuts, tilt, level, Graphic) is 1.0 dB; E25b (Parametric mid-frequency moves) is 3.0 dB and E25c (Stack) is 2.0 dB. | Accepted. The reason the script gives: E25b is a narrow cut swept off a held note, which rings as the resonator empties (measured +2.46 dB), and E25c is the passive circuit emptying its capacitors (+1.68 dB, the same at 192 kHz); both are the filters' own response to a 10 ms knob move, not the state mismatch E25a guards (worst +0.58 dB, was +11.62). Tightening them would need a different filter, not a fix. |
 | D-37 | **Squash keeps its feedback recovery above the threshold** (b4afe4b). | Kept: the release is the knob when the signal falls below the threshold and while the output stays above it, and a drop that leaves the input above the threshold but takes the output below it recovers sooner (down to a third of the knob at R 8, a quarter at R 20; the table of §4.2.5). That is what separates Squash from Clean. The second verification had read 41 to 93 ms at knob 150 as a defect (r2-dynamics C5); C26b holds the stated table within 10 % and Clean at the knob within 2 %. |
@@ -3354,6 +3409,16 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-39 | **Phaser headroom**: nothing saturates and there is no limiter (8f8f197). | Small Stone Color on peaks +13.6 dB above a full-scale input (an 82.4 Hz square at 10 Hz); the other voicings +2.4 to +5.9 dB. Guitar Rig 6 peaks the same within 0.3 dB on a −6 dBFS low square, so it is the voicing. The chain after the phaser needs up to 14 dB of headroom (6 dB for every voicing but Color on); the processor's documentation should say so. Not limited in the engine. |
 | D-40 | **Six Guitar Rig 6 reference renders are committed**: `docs/research/fx/phaser/evidence/fit/gr6_takes/` (`p9_block_p050.wav`, `p9_block_p090.wav`, `ss_off_r050.wav`, `ss_off_r075.wav`, `ss_on_r050.wav`, `ss_on_r075.wav`; 4.4 MB in all) (8f8f197). | Rows P13 and P14 of `check_phaser.py` read them, so the acceptance run needs them in the repository. **Whether to keep vendor-plugin renders in the repository is the owner's decision**; without them P13 and P14 cannot run. |
 | D-41 | **Drive limits unchanged by the second round**: aliasing for input tones above 12 kHz and the Screamer's droop of 0.84 dB at 10 kHz. | Known and not fixed. Tones of 13 to 19.5 kHz at 44.1 kHz alias to −43.1 dBc (Fuzz), −47.2 (Screamer) and −69.0 (Distortion); an 8x factor would double the CPU. D-26 stated the aliasing limit as "above 5 kHz" from commit 0af54cf; the second verification measured it from 12 kHz (1 to 12 kHz: −68.3 dBc at worst). |
+| D-42 | **Declared differences from the old build** (579b6dd, 2a280b9): (1) Classic toggles no longer burst or pop (old: up to +6.0 dBFS on a hot drive, -8.1 dBFS EQ, -14 to -28 dBFS chorus, phaser, tremolo; now at most -73 dBFS under the fade); (2) the `mod_type` fade is hold, wait, then 40 ms where it was 20 ms linear; (3) reported latency holds the larger figure for up to 40 ms during a drive type switch; (4) samples of magnitude 1e6 or more become 0; (5) a split session that automates `amp_on` in a lane holding a resampled model crossfades the other lane over 10 ms (-20.6 dBFS against the old render at 96 kHz) where the old build blanked it for 27 to 42 samples. | Accepted; static Classic renders stay bit-identical (golden and `--legacy-check`, §5.4.3). |
+| D-43 | `DriveTimeline` keeps split lanes within 0.41 samples of each other through a drive type switch, because it follows the drive's applied delay rather than the delay its parameters ask for (§6.3). | Kept; see D-50 for what it costs to maintain. |
+| D-44 | A chain reorder while playing still peaks about 4.4 dB over any steady order, at blocks of 256 and 2048: a removed or moved block switches hard. | Not changed. Fixing it needs two chains running side by side. |
+| D-45 | The NAM latency is reported 2 to 5 samples short of the measured delay (27 against 28.9 at 44.1 kHz, 70 against 75.0 at 192 kHz; D-22). | Not changed. |
+| D-46 | `NamEngine::collectGarbage` and `applyStaging`/`process` write the same four slots unsynchronised during model swaps; the worst case is a leaked model. | Not changed; `NamEngine` is untouched by this branch. |
+| D-47 | `CabSim`'s `irLoaded` is an unsynchronised one-byte flag, also written on every restore without an IR. | Not changed. |
+| D-48 | Off-thread `setStateInformation` races the parameter flush. | Not fixed, because blocking on or deferring to the message thread is not provably safe in every host. |
+| D-49 | Automating `amp_slim` still calls `triggerAsyncUpdate` from the audio thread. | Not changed; older than this branch. |
+| D-50 | **Known coupling:** `DriveFx` cannot report its applied delay during a type switch, so `DriveTimeline` (`PluginProcessor.h`) mirrors the timing in `Drive.cpp` (`kSwitchSettleSeconds`, `kSwitchFadeSeconds`, `kSwitchSlideSeconds`). | `DriveTimeline` must follow any change to `Drive.cpp`'s switch timing, or lane alignment and reported latency drift from the audio. |
+| D-51 | The plugin has not been run in a real host and `auval` has not been run against it. | The second verifier recommends a pass in Logic to see how it handles latency reports that change during playback (§2.9). |
 ---
 
 ## Appendix A — parameter count
