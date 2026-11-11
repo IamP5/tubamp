@@ -28,10 +28,12 @@ export const REVERB_STARTING_POINTS: StartingPoints = {
   damping: [0.65, 0.65, 0.5, 0.5, 0.55],
 };
 
-/** Classic, Tight, Smooth (Gate.h `kGateReleaseDefault`, `kGateHoldDefault`). */
+/** Classic, Tight, Smooth (Gate.h `kGateReleaseDefault`, `kGateHoldDefault`,
+ *  `kGateScHpfDefault`). */
 export const GATE_STARTING_POINTS: StartingPoints = {
   release: [30, 30, 80],
   hold: [6, 6, 10],
+  sc_hpf: [75, 75, 75],
 };
 
 /** Classic, Clean, Squash, FET, Opto (Compressor.h `kCompKneeDefault`,
@@ -44,11 +46,11 @@ export const COMP_STARTING_POINTS: StartingPoints = {
 
 /** Classic, Screamer, Distortion, Fuzz, Boost, Treble (Drive.h `kDriveGainDefault`,
  *  `kDriveToneDefault`, `kDriveLevelDefault`; Distortion and Fuzz levels are the
- *  measured L2 = -8.2 and L3 = 4.6). */
+ *  measured L2 = -8.2 and L3 = 5.0). */
 export const DRIVE_STARTING_POINTS: StartingPoints = {
   gain: [12, 12, 18, 18, 12, 12],
   tone: [4000, 4000, 2449, 2449, 12000, 3000],
-  level: [0, 0, -8.2, 4.6, 0, 0],
+  level: [0, 0, -8.2, 5.0, 0, 0],
 };
 
 /** Classic, Wide, CE, Dimension, Tri (Chorus.h). */
