@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Acceptance for the eq engine: the common checks of docs/FX-ENGINES.md §2.11, then
-the effect's own table (§4.4.9, rows E1-E19). Prints a PASS/FAIL table and a table of
+the effect's own table (§4.4.9, rows E1-E19), then E20-E24, added after the verification of
+.audit/fx-verify/drive-eq.md and code.md: the bell against the analog curve over its whole
+range, non-finite input, host float noise on neutral controls, re-enabling after a bypass, and
+a Classic retarget in a ramp's last segment. Prints a PASS/FAIL table and a table of
 measurements; exit status 1 on any FAIL.
 
     python3 -I tools/fxbench/check_eq.py [--quick] [--types 1,2] [--only E5,E12] [--no-common]
@@ -235,7 +238,10 @@ def e5_residual(report):
                f"{r:.1f} dBc (Classic {c:.1f}; limit -120)")
 
 
-E6_POINTS = [("bass", 50.0, 19.5), ("bass", 150.0, 10.1), ("mid", 425.0, 15.0), ("treble", 1800.0, 5.0),
+# The study's table has +10.1 dB at 150 Hz; the old and the new Classic both read +10.00 there,
+# which is what a +20 dB shelf with its corner at 150 Hz gives (half its gain). The +10.1 was a
+# misreading of the installed-AU table, so the point is +10.0 within the same 0.05 dB.
+E6_POINTS = [("bass", 50.0, 19.5), ("bass", 150.0, 10.0), ("mid", 425.0, 15.0), ("treble", 1800.0, 5.0),
              ("treble", 10000.0, 10.0)]
 
 
@@ -251,7 +257,8 @@ def e6_response(report, rates):
             rows.append(f"{sr // 1000}k {band}@{f:g}: {got:+.3f}{'' if good else ' FAIL'}")
         measure("E6 Classic reference", f"Classic bass 10 @150 Hz {sr} Hz", f"{at_freq_db(old['bass'], sr, 150.0):+.3f} dB")
     report.add("E6 response at 10", "Parametric single band at 10", ok,
-               "; ".join(r for r in rows if "FAIL" in r) or "all points within 0.05 dB")
+               ("; ".join(r for r in rows if "FAIL" in r) or "all points within 0.05 dB")
+               + " (150 Hz point +10.0, restated from the study's +10.1: legacy Classic reads +10.00 too)")
     measure("E6 detail", "Parametric", "; ".join(rows))
     return ok
 
@@ -378,11 +385,21 @@ def e12_e13_stack(report, rates12, quick):
     ok12 = all(e <= 0.01 for e in worst12.values())
     report.add("E12 stack vs design.py", f"{len(grid)} knob settings x 4 voices", ok12,
                f"worst {max(worst12.values()):.5f} dB at " + ", ".join(f"{r // 1000}k" for r in rates12) + " (limit 0.01)")
-    lim = {44100: 1.6, 96000: 0.3}
+    # Restated from 1.6 / 0.3 dB: E12 requires the engine to be design.py's own bilinear
+    # transform, and that reference is itself 1.65 dB (44.1 kHz) and 0.31 dB (96 kHz) off the
+    # analog curve to 10 kHz on this grid, so the old bars sat below what E12 allows.
+    lim = {44100: 1.7, 96000: 0.35}
+    ref13 = {}
+    f10 = f20[f20 <= 10000]
+    for sr in (44100, 96000):
+        ref13[sr] = max(float(np.max(np.abs(stack_digital_db(kt / 10, ref.taper(km / 10), ref.taper(kl / 10), v, sr, f10)
+                                            - stack_analog_db(kt / 10, ref.taper(km / 10), ref.taper(kl / 10), v, f10))))
+                        for v in range(4) for kt, km, kl in grid)
     ok13 = all(e <= lim[sr] for (sr, v), e in worst13.items())
     report.add("E13 stack vs analog", "to 10 kHz, 5x5x5 grid, 4 voices", ok13,
                "; ".join(f"{sr // 1000}k {VOICE_NAMES[v]} {e:.3f}" for (sr, v), e in sorted(worst13.items()))
-               + " (limits 1.6 / 0.3)")
+               + f" (limits 1.7 / 0.35, restated from 1.6 / 0.3: the bilinear reference E12 requires is itself "
+               f"{ref13[44100]:.3f} / {ref13[96000]:.3f} dB off)")
 
 
 def dip_hz(h, sr, lo=100.0, hi=3000.0):
@@ -508,6 +525,249 @@ def e18_switch(report):
     report.add("E18 switches", f"{len(cases)} type/voice switches x blocks 37/64/512", ok,
                ("; ".join(bad) + "; " if bad else "") + f"fade {min(fades):.2f}..{max(fades):.2f} ms (40 +- 2), "
                f"envelope at most {max(overs):+.2f} dB over the louder of old/new/dry (limit 3)")
+
+
+# ---------------------------------------------------------------------------- E20-E24 (post-verification)
+
+# The bilinear bell with Orfanidis decramping above 2.5 kHz (the engine before E20), worst error
+# at Q 8 on the same grid: the matched bell must not be worse for narrow bells.
+E20_OLD_Q8 = {22050: 0.415, 44100: 0.067, 48000: 0.055, 96000: 0.013, 192000: 0.003}
+E20_Q = [0.5, 0.7, 1.0, 1.4, 2.0, 3.0, 4.0, 8.0]
+
+
+def e20_bell_map(report, quick):
+    """Parametric bell against the analog prototype, 20 Hz to min(20 kHz, 0.45 fs), over f0, Q,
+    gain and rate. Verification found 1.91 dB at Q 0.5, 8 kHz, 44.1 kHz (the decramping
+    overshot on wide bells); 22.05 kHz was 13.5 dB off."""
+    rates = [22050, 48000] if quick else [22050, 44100, 48000, 96000, 192000]
+    f0s = [100, 250, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000]
+    gains = [(10, 15.0), (0, -15.0), (7, 6.0), (4, -3.0)]
+    jobs = [(sr, f0, q, knob, g) for sr in rates for f0 in f0s for q in E20_Q for knob, g in gains]
+
+    def one(job):
+        sr, f0, q, knob, g = job
+        h = impulse_response({"type": 1, "mid": knob, "mid_freq": f0, "mid_q": q}, sr)
+        f = np.geomspace(20, min(20000, 0.45 * sr), 1500)
+        # Bins of at most 0.1 Hz: a Q 8 peak at 100 Hz is misread by 0.03 dB at 0.37 Hz.
+        pad = 1 << int(np.ceil(np.log2(sr / 0.1)))
+        e = np.abs(response_db(h, sr, f, pad=pad) - fx.db(np.abs(ref.ana_peak(f, f0, q, g))))
+        return float(np.max(e))
+
+    errs = pmap(one, jobs)
+    worst = {}
+    for (sr, f0, q, knob, g), e in zip(jobs, errs):
+        key = (sr, q)
+        if e > worst.get(key, (0.0,))[0]:
+            worst[key] = (e, f0, g)
+    ok, rows = True, []
+    for sr in rates:
+        wide = max(worst[(sr, q)] for q in E20_Q if q <= 4.0)
+        narrow = worst[(sr, 8.0)]
+        good = wide[0] < 1.0 and narrow[0] <= E20_OLD_Q8[sr]
+        ok &= good
+        rows.append(f"{sr // 1000 if sr % 1000 == 0 else sr / 1000:g}k: Q 0.5-4 {wide[0]:.2f} dB (f0 {wide[1]} Hz {wide[2]:+g} dB), "
+                    f"Q 8 {narrow[0]:.3f} (old {E20_OLD_Q8[sr]})" + ("" if good else " FAIL"))
+        measure("E20 bell error by Q", f"{sr} Hz", " ".join(f"Q{q:g} {worst[(sr, q)][0]:.2f}" for q in E20_Q))
+    report.add("E20 bell vs analog", f"Q 0.5-8, f0 100 Hz-8 kHz, +-15/+6/-3 dB", ok,
+               "; ".join(rows) + " (limits: Q 0.5-4 < 1 dB; Q 8 no worse than the old design)")
+
+
+def e21_non_finite(report, quick):
+    """One run of NaN, +Inf or -Inf (10 samples) in a 220 Hz sine: the output must hold no
+    non-finite sample and equal, bit for bit, the render of the same input with zeros in their
+    place (no state kept anything of them). A finite 3e38 sample (it overflows Classic's float
+    biquads) must leave the output finite and back within 1e-4 of that render 100 ms later.
+    Verification: one NaN latched Classic, Parametric, Stack and non-flat Graphic for good."""
+    sr = 48000
+    cases = [("Classic 10/5/7", {"type": 0, "bass": 10, "treble": 7}), ("Classic flat", {"type": 0}),
+             ("Parametric all sections", {"type": 1, "bass": 7, "mid": 10, "mid_freq": 100, "mid_q": 8, "lowcut": 80,
+                                          "highcut": 5000, "tilt": 3, "level": 3}),
+             ("Parametric defaults", {"type": 1}), ("Graphic", {"type": 3, "g100": 12, "g1k6": -6, "level": 2}),
+             ("Graphic flat", {"type": 3})] + [(f"Stack {VOICE_NAMES[v]}", {"type": 2, "voice": v, "bass": 10}) for v in range(4)]
+    blocks = [37, 512] if quick else [1, 37, 512]
+    chans = [2] if quick else [1, 2]
+    at = sr // 2
+    jobs = [(name, keys, bad, bs, ch) for name, keys in cases for bad in (np.nan, np.inf, -np.inf, 3e38)
+            for bs in blocks for ch in chans]
+
+    def one(job):
+        name, keys, bad, bs, ch = job
+        x = 0.25 * np.sin(2 * np.pi * 220 * np.arange(sr) / sr)
+        clean = x.copy()
+        clean[at:at + 10] = 0.0
+        x[at:at + 10] = bad
+        opts = [f"--block={bs}", f"--channels={ch}"]
+        y = fx.run(EFFECT, np.vstack([x] * ch), keys, opts, sr)[0]
+        yc = fx.run(EFFECT, np.vstack([clean] * ch), keys, opts, sr)[0]
+        nonfinite = int(np.count_nonzero(~np.isfinite(y)))
+        if bad == 3e38:
+            tail = slice(at + int(0.1 * sr), None)
+            dev = float(np.max(np.abs(y[:, tail] - yc[:, tail]))) if nonfinite == 0 else float("inf")
+            good = nonfinite == 0 and dev < 1e-4
+        else:
+            dev = 0.0 if np.array_equal(y.view(np.uint64), yc.view(np.uint64)) else float("inf")
+            good = nonfinite == 0 and dev == 0.0
+        return good, f"{name} {bad:g} block {bs} {ch} ch: {nonfinite} non-finite" + ("" if nonfinite else f", |dev| {dev:.3g}")
+
+    res = pmap(one, jobs)
+    bad_rows = [d for good, d in res if not good]
+    report.add("E21 non-finite input", f"NaN/+-Inf/3e38 x {len(cases)} settings x blocks {blocks} x {chans} ch",
+               not bad_rows, "; ".join(bad_rows[:6]) or f"{len(jobs)} renders: never a non-finite output sample; "
+               "NaN/Inf renders equal the zero-substituted input bit for bit, 3e38 back within 1e-4 after 100 ms")
+
+
+# The values the host hands back for neutral defaults (drive-eq.md E-f): eq_level and the graphic
+# bands 1.79e-7 dB, eq_tilt 8.94e-8 dB; the knobs 5 + 1 ulp; the cut end stops a float step in.
+NOISE = 1.79e-7
+
+
+def e22_neutral(report, quick):
+    """Every control at its neutral value plus host float noise must leave an exact
+    pass-through (fresh instance, and after moving away and back), and one 0.1 dB step must
+    still be honoured."""
+    rates = [48000] if quick else [44100, 96000, 192000]
+    neutral = [("tilt", {"type": 1, "tilt": 8.94e-8}), ("level", {"type": 1, "level": NOISE}),
+               ("-level", {"type": 1, "level": -NOISE}), ("bass", {"type": 1, "bass": 5.00000048}),
+               ("mid", {"type": 1, "mid": 4.99999952}), ("treble", {"type": 1, "treble": 5.00000048}),
+               ("lowcut", {"type": 1, "lowcut": 20.0000019}), ("highcut", {"type": 1, "highcut": 19999.998}),
+               ("all Parametric", {"type": 1, "tilt": 8.94e-8, "level": NOISE, "bass": 5.00000048, "lowcut": 20.0000019,
+                                   "highcut": 19999.998}),
+               ("Graphic level", {"type": 3, "level": NOISE})]
+    neutral += [(f"Graphic {k}", {"type": 3, k: NOISE}) for k in GRAPHIC_KEYS] + [(f"Graphic -{GRAPHIC_KEYS[0]}", {"type": 3, GRAPHIC_KEYS[0]: -NOISE})]
+    neutral += [("all Graphic", dict({"type": 3, "level": NOISE}, **{k: NOISE for k in GRAPHIC_KEYS}))]
+    moved = [("Parametric moved and back", ["type=1", "tilt=3", "level=6", "bass=8", "tilt@0.3=8.94e-8", f"level@0.3={NOISE}",
+                                            "bass@0.3=5.00000048"]),
+             ("Graphic moved and back", ["type=3", "level=6"] + [f"{k}=6" for k in GRAPHIC_KEYS]
+              + [f"level@0.3={NOISE}"] + [f"{k}@0.3={NOISE}" for k in GRAPHIC_KEYS])]
+    jobs = [(sr, ch, name, keys) for sr in rates for ch in (1, 2) for name, keys in neutral + moved]
+
+    def one(job):
+        sr, ch, name, keys = job
+        noise = fx.white(2.0, -12.0, sr).astype(np.float32).astype(np.float64)
+        inp = np.vstack([noise] * ch)
+        out = fx.run(EFFECT, inp, keys, [f"--channels={ch}"], sr)[0]
+        start = int(1.0 * sr) if isinstance(keys, list) else 0
+        differ = int(np.count_nonzero(out[:, start:].view(np.uint64) != inp[:, start:].view(np.uint64)))
+        return differ == 0, f"{name} {sr} {ch} ch: {differ} differ"
+
+    res = pmap(one, jobs)
+    bad = [d for good, d in res if not good]
+    # Stack is never a pass-through, but level at noise must be level at 0 exactly.
+    sr = 48000
+    noise = fx.white(1.0, -12.0, sr).astype(np.float32).astype(np.float64)
+    st = fx.run(EFFECT, noise, {"type": 2, "level": NOISE}, ["--channels=1"], sr)[0]
+    st0 = fx.run(EFFECT, noise, {"type": 2, "level": 0.0}, ["--channels=1"], sr)[0]
+    stack_ok = bool(np.array_equal(st.view(np.uint64), st0.view(np.uint64)))
+    report.add("E22a neutral float noise", f"{len(neutral) + len(moved)} cases x {len(rates)} rates x 1/2 ch", not bad and stack_ok,
+               "; ".join(bad[:6]) or f"output == input bit for bit in all {len(jobs)}; Stack level {NOISE:g} == level 0: {stack_ok}")
+
+    # One deliberate step of 0.1 dB is still a 0.1 dB change.
+    ok, rows = True, []
+    for name, keys, f, want in ([("level", {"type": 1, "level": d}, 1000.0, d) for d in (0.1, -0.1)]
+                                + [("Graphic level", {"type": 3, "level": 0.1}, 1000.0, 0.1)]
+                                + [(k, {"type": 3, k: d}, c, d) for k, c in zip(GRAPHIC_KEYS, GRAPHIC_HZ) for d in (0.1, -0.1)]
+                                + [("tilt", {"type": 1, "tilt": d}, 20.0, -d) for d in (0.1, -0.1)]
+                                + [("bass 5.1", {"type": 1, "bass": 5.1}, 20.0, 0.4)]):
+        got = at_freq_db(impulse_response(keys, 48000), 48000, f)
+        good = abs(got - want) <= 0.005
+        ok &= good
+        if not good or name in ("level", "tilt", "g100"):
+            rows.append(f"{name} {keys.get(name, keys.get('level', ''))}: {got:+.4f} dB at {f:g} Hz" + ("" if good else " FAIL"))
+    report.add("E22b smallest step", "0.1 dB on level, tilt, each band; 0.1 knob on bass", ok,
+               "; ".join(rows) + " (each within 0.005 dB of the step)")
+
+
+def e23_reenable(report, quick):
+    """The processor's bypass: the block is processed, not called at all for a second, then
+    reset() and processed again (fxbench on=0 / on=1; reenable=0 shows the frozen state the
+    verification heard). A +12 dB boost on a low band under a 98 Hz -12 dBFS note.
+    Silent input at the return: nothing may come out (frozen state replayed before). Note held:
+    no output step larger than the settled output's own (continuous with the dry signal before
+    it), the first sample within -20 dB of the note's peak of the dry sample (a fade from silence
+    or a replay reads near 0 dB), and no overshoot (+0.5 dB) in the first 100 ms."""
+    sr = 48000
+    cases = [("Parametric mid +12 @100 Hz", {"type": 1, "mid": 9, "mid_freq": 100, "mid_q": 0.7}),
+             ("Parametric bass +12", {"type": 1, "bass": 8}),
+             ("Parametric bass +20, mid +15 @100 Hz Q 8", {"type": 1, "bass": 10, "mid": 10, "mid_freq": 100, "mid_q": 8}),
+             ("Graphic 100 Hz +12", {"type": 3, "g100": 12})]
+    blocks = [37] if quick else [1, 37, 512]
+    ok, rows = True, []
+    t_on = 2.0031
+    for block in blocks:
+        for name, keys in cases:
+            toks = [f"{k}={v}" for k, v in keys.items()] + ["on@1.0=0", f"on@{t_on}=1"]
+            opts = [f"--block={block}", "--channels=1"]
+            xa = fx.sine(98, -12, 3.0, sr)
+            xa[int(1.2 * sr):] = 0
+            n0 = int(np.ceil(t_on * sr / block)) * block
+            frozen = float(np.max(np.abs(fx.run(EFFECT, xa, toks + ["reenable=0"], opts, sr)[0][0][n0:])))
+            silent = float(np.max(np.abs(fx.run(EFFECT, xa, toks, opts, sr)[0][0][n0:])))
+            xb = fx.sine(98, -12, 3.0, sr)
+            xf = xb.astype(np.float32).astype(np.float64)
+            y = fx.run(EFFECT, xb, toks, opts, sr)[0][0]
+            ys = fx.run(EFFECT, xb, keys, opts, sr)[0][0]
+            settled = slice(int(2.5 * sr), int(2.9 * sr))
+            first = abs(y[n0] - xf[n0]) / np.max(np.abs(xf))
+            step = float(np.max(np.abs(np.diff(y[n0 - 1:n0 + int(0.005 * sr)]))))
+            steady_step = float(np.max(np.abs(np.diff(ys[settled]))))
+            over = float(fx.db(np.max(np.abs(y[n0:n0 + int(0.1 * sr)])) / np.max(np.abs(ys[settled]))))
+            good = silent == 0.0 and first <= 0.1 and step <= steady_step and over <= 0.5
+            ok &= good
+            rows.append(f"{name} blk {block}: silent return {fx.db(frozen + 1e-30):+.1f} dBFS frozen -> "
+                        f"{'nothing' if silent == 0 else f'{fx.db(silent):+.1f} dBFS'}; held note first sample "
+                        f"{fx.db(first + 1e-30):.0f} dB re dry, step {fx.db(step / steady_step):+.1f} dB re settled, "
+                        f"peak {over:+.2f} dB" + ("" if good else " FAIL"))
+    report.add("E23 re-enable after bypass", f"process, 1 s not called, reset, process; blocks {blocks}", ok,
+               "; ".join(r for r in rows if "FAIL" in r or "blk 37" in r))
+    for r in rows:
+        measure("E23 re-enable", r.split(":")[0], r.split(": ", 1)[1])
+
+
+def e24_retarget(report, quick):
+    """Classic: a knob moved again while the previous ramp's last 16-sample segment straddles a
+    block boundary. The engine used to snap the smoother to the new target while the filter
+    held the old one, then jump to the new design in one step (code.md 8; -8 dBFS on a treble
+    move under a low note). Over the same second moves at the same instants, a retarget must
+    click no more than the move made from rest (first move 0.25 s earlier) +3 dB."""
+    sr = 48000
+    x = fx.sine(82.41, -12, 1.0, sr)
+
+    def hf(y, a, b):
+        y = fx.mono(y).astype(np.float64)
+        n = len(y)
+        spec = np.fft.rfft(y * np.hanning(n))
+        spec[np.fft.rfftfreq(n, 1 / sr) < 1000.0] = 0
+        return float(fx.db(np.max(np.abs(np.fft.irfft(spec, n)[a:b])) + 1e-30))
+
+    jobs = []
+    for band in ("treble", "mid"):
+        k1 = int(0.3 * sr)
+        jobs += [(band, 1, 10, 0, k1, k1 + d) for d in range(int(0.0665 * sr), int(0.0685 * sr), 2 if quick else 1)]
+        for block in ([37] if quick else [37, 77, 100]):
+            k1 = int(0.3 * sr / block)
+            jobs += [(band, block, v1, 0 if v1 > 5 else 10, k1, k1 + d) for v1 in (10, 9, 8, 7, 0, 2)
+                     for d in range(int(0.05 * sr / block), int(0.09 * sr / block) + 1)]
+
+    def one(job):
+        band, block, v1, v2, k1, k2 = job
+        t2 = k2 * block / sr
+        out = []
+        for t1 in (k1 * block / sr, k1 * block / sr - 0.25):
+            toks = ["type=0", f"{band}@{t1!r}={v1}", f"{band}@{t2!r}={v2}"]
+            y = fx.run(EFFECT, x, toks, [f"--block={block}", "--channels=1"], sr)[0]
+            out.append(hf(y, int(t2 * sr) - 200, int(t2 * sr) + 2400))
+        return band, block, out[0], out[1]
+
+    res = pmap(one, jobs)
+    ok, rows = True, []
+    for band in ("treble", "mid"):
+        for block in sorted({j[1] for j in jobs}):
+            r = [q for q in res if q[0] == band and q[1] == block]
+            worst, rest = max(q[2] for q in r), max(q[3] for q in r)
+            good = worst <= rest + 3.0
+            ok &= good
+            rows.append(f"{band} blk {block}: {worst:.1f} dBFS (from rest {rest:.1f}, {len(r)} moves)" + ("" if good else " FAIL"))
+    report.add("E24 classic retarget", "move again in a ramp's last segment, treble/mid", ok, "; ".join(rows))
 
 
 # ---------------------------------------------------------------------------- measurements
@@ -709,6 +969,16 @@ def specific_checks(report, args):
         e17_graphic_flat(report)
     if want("E18"):
         e18_switch(report)
+    if want("E20"):
+        e20_bell_map(report, quick)
+    if want("E21"):
+        e21_non_finite(report, quick)
+    if want("E22"):
+        e22_neutral(report, quick)
+    if want("E23"):
+        e23_reenable(report, quick)
+    if want("E24"):
+        e24_retarget(report, quick)
     if want("E19") and len(results) == 4:
         report.add("E19 rates", "E2, E4, E6, E7 at " + ", ".join(f"{r // 1000}k" for r in rates3), all(results.values()),
                    ", ".join(f"{k} {'ok' if v else 'FAIL'}" for k, v in results.items()))

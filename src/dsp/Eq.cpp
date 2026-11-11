@@ -24,7 +24,16 @@ constexpr double kClassicSettle = 1.0e-4;     // [study: R1] a Classic band stop
 constexpr double kSettle = 1.0e-5;            // [choice: new types settle 10x tighter than Classic, in their own
                                               //  units (knob, dB, octaves): the final snap is a step below -100 dB]
 constexpr double kFlushBelow = 1.0e-15;       // [§2.6] recursive double state flushed to 0 once per block
+constexpr double kStateLimit = 1.0e12;        // [choice: a state this large can only come from a bad sample; zeroed]
+constexpr double kInputLimit = 1.0e6;         // [§2.2] fx::sanitise's bound: larger input is silenced (new types)
 constexpr int kChunk = 64;                    // [choice: work-buffer length for the double-precision types]
+
+// A gain control within this of 0 dB is 0 dB, so the section is an exact pass-through. The
+// host hands a stepped range's default back with float noise from start + step * k (eq_level and
+// the graphic bands read 1.79e-7 dB, eq_tilt 8.94e-8 dB; at most a few ulp of the range end,
+// ~1e-6 dB at 12 dB), and the smallest deliberate move is one 0.1 dB step. 1e-3 dB sits a
+// thousand times above the first and a hundred times below the second [choice].
+constexpr double kNeutralDb = 1.0e-3;
 
 constexpr double kPi = 3.141592653589793238462643383279502884;
 
@@ -38,9 +47,13 @@ constexpr double kHighCutOffHz = 19999.0;     // [§4.4.2] at or above: off
 constexpr double kHighCutMaxFs = 0.45;        // [§4.4.4] high cut at most 0.45 fs
 constexpr double kMaxFs = 0.49;               // [§2.2] every frequency at most 0.49 fs before tan()
 constexpr double kTiltPivotHz = 700.0;        // [study: R2, own constant] geometric centre of 80 Hz-6 kHz
-constexpr double kBlendLowHz = 1500.0;        // [study: R3, blend width tagged guess] plain bell below
-constexpr double kBlendHighHz = 2500.0;       // [study: R3] Orfanidis bell above
-constexpr double kOrfanidisMaxDw = 0.98 * kPi;  // [§4.4.4, design.py:126-139] bandwidth guard
+
+// Matched bell (see matchedBell): the third match point sits a fraction c of the way from f0 to
+// Nyquist, c = 0.75 up to f0 = 0.45 Nyquist, falling to 0.02 at 0.74 Nyquist, never above 20 kHz
+// [own fit: minimax error against the analog bell over Q 0.5-8, 22.05-192 kHz].
+constexpr double kMatchFrac = 0.75, kMatchMinFrac = 0.02;
+constexpr double kMatchKnee = 0.45, kMatchFall = 2.5;
+constexpr double kMatchTopHz = 20000.0;
 
 // Graphic (§4.4.6).
 constexpr int kGraphicBands = 7;
@@ -75,7 +88,44 @@ float clampOr (float value, float lo, float hi, float fallback) noexcept
 
 double dbToGain (double db) noexcept { return std::pow (10.0, db / 20.0); }
 
-double flushed (double x) noexcept { return std::abs (x) < kFlushBelow ? 0.0 : x; }
+/** Once per block for every recursive double state: denormal-range values to 0, and anything
+    non-finite or absurd to 0 too, so a bad value cannot live in a loop [§2.2, §2.6]. */
+double flushed (double x) noexcept
+{
+    const double a = std::abs (x);
+    return a >= kFlushBelow && a < kStateLimit ? x : 0.0;   // false for NaN as well
+}
+
+/** Input to the double-precision types: NaN, infinities and absurd values become silence. */
+double sanitisedInput (float x) noexcept
+{
+    const auto v = (double) x;
+    return std::abs (v) < kInputLimit ? v : 0.0;   // false for NaN as well
+}
+
+/** Non-finite samples become silence before any type, or the switcher's dry copy, sees them.
+    Finite samples are untouched, which keeps Classic bit-identical. */
+void replaceNonFinite (juce::dsp::AudioBlock<float>& block) noexcept
+{
+    const auto n = block.getNumSamples();
+
+    for (size_t ch = 0; ch < block.getNumChannels(); ++ch)
+    {
+        auto* x = block.getChannelPointer (ch);
+
+        for (size_t i = 0; i < n; ++i)
+            if (! std::isfinite (x[i]))
+                x[i] = 0.0f;
+    }
+}
+
+double neutralDb (float db) noexcept { return std::abs ((double) db) < kNeutralDb ? 0.0 : (double) db; }
+
+/** A bass/mid/treble knob whose gain is within kNeutralDb of 0 dB reads as exactly 5. */
+double neutralKnob (float knob, double dbPerUnit) noexcept
+{
+    return std::abs (dbPerUnit * ((double) knob - 5.0)) < kNeutralDb ? 5.0 : (double) knob;
+}
 
 /** (1 - a)^n and n a (1 - a)^n for n = 0..16: the two cascaded one-poles advanced n
     samples in closed form (e1' = r^n e1, e2' = r^n e2 + n a r^n e1, errors from the target). */
@@ -189,7 +239,7 @@ public:
 
             if (snapOnNextUpdate)
             {
-                s.snap (targets[band]);
+                s.snap ((double) targets[band]);
 
                 if (ramps[band].active)
                 {
@@ -205,12 +255,12 @@ public:
             }
             else if (! s.moving && std::abs ((double) targets[band] - s.s2) <= kClassicSettle)
             {
-                s.snap (targets[band]);
+                s.snap ((double) targets[band]);
                 designIfChanged (band, targets[band]);
             }
             else
             {
-                s.target = targets[band];
+                s.target = (double) targets[band];
                 s.moving = true;
             }
         }
@@ -246,6 +296,7 @@ public:
             // A static block is processed in a single call, as before (snapToZero acts per call).
             bypassed = false;
             runFilters (block);
+            guardOverflow (block);
             return;
         }
 
@@ -280,6 +331,8 @@ public:
             if (untilDesign == 0)
                 endSegment();
         }
+
+        guardOverflow (block);
     }
 
 private:
@@ -313,6 +366,29 @@ private:
     {
         juce::dsp::ProcessContextReplacing<float> context (block);
         filter (band).process (context);
+    }
+
+    // The input is finite (EqFx::process), but a finite sample near the float limit can still
+    // overflow a biquad. Its state is then non-finite for good, so the block's last output is
+    // too: the filters start again from silence and the bad samples become silence.
+    void guardOverflow (juce::dsp::AudioBlock<float> block)
+    {
+        const auto n = block.getNumSamples();
+        bool bad = false;
+
+        if (n == 0)
+            return;
+
+        for (size_t ch = 0; ch < block.getNumChannels(); ++ch)
+            bad = bad || ! std::isfinite (block.getChannelPointer (ch)[n - 1]);
+
+        if (! bad)
+            return;
+
+        bass.reset();
+        mid.reset();
+        treble.reset();
+        replaceNonFinite (block);
     }
 
     // While a band moves, design (s2) is computed once per 16 samples, one segment ahead,
@@ -381,7 +457,9 @@ private:
             r.active = false;
             last (band) = r.value;
 
-            if (r.settles)
+            // Settled onto the value the coefficients now hold, unless the knob was moved again
+            // while this segment ran: then it keeps smoothing toward the new target.
+            if (r.settles && juce::exactlyEqual (knobs[band].target, (double) r.value))
                 knobs[band].snap (knobs[band].target);
         }
     }
@@ -454,13 +532,6 @@ struct SvfCoeffs
     {
         return juce::exactlyEqual (m0, 1.0) && juce::exactlyEqual (m1, 0.0) && juce::exactlyEqual (m2, 0.0);
     }
-
-    /** a + w (b - a): identical sets blend to themselves exactly, so a 0 dB band stays (1, 0, 0). */
-    static SvfCoeffs blend (const SvfCoeffs& a, const SvfCoeffs& b, double w) noexcept
-    {
-        return { a.g + w * (b.g - a.g), a.k + w * (b.k - a.k), a.m0 + w * (b.m0 - a.m0),
-                 a.m1 + w * (b.m1 - a.m1), a.m2 + w * (b.m2 - a.m2) };
-    }
 };
 
 double prewarp (double hz, double sampleRate) noexcept
@@ -490,56 +561,85 @@ SvfCoeffs plainBell (double sampleRate, double hz, double q, double db) noexcept
     return { prewarp (hz, sampleRate), k, 1.0, k * (A * A - 1.0), 0.0 };
 }
 
-/** Orfanidis' prescribed-Nyquist-gain bell (G1 = the analog gain at Nyquist, Vicanek
-    eq. 17 there [ver: V:31]) as SVF parameters: in the bilinear s-plane it is
-    (G1 s^2 + B s + W2) / (s^2 + A s + W2), so g = sqrt(W2), k = A/g, m = (G1, (B - G1 A)/g,
-    1 - G1) [study: R3, design.py:126-139]. */
-SvfCoeffs orfanidisBell (double sampleRate, double hz, double q, double db) noexcept
+/** A biquad (b0 + b1/z + b2/z^2) / (a0 + a1/z + a2/z^2) as SVF parameters. Through
+    s = (z - 1)/(z + 1) it is (n2 s^2 + n1 s + n0) / (d2 s^2 + d1 s + d0), so g = sqrt(d0/d2),
+    k = d1/(d2 g), m0 = n2/d2, m1 = n1/(d2 g) - m0 k, m2 = n0/d0 - m0. */
+SvfCoeffs fromBiquad (double b0, double b1, double b2, double a0, double a1, double a2) noexcept
 {
-    const double f = juce::jmin (hz, kMaxFs * sampleRate);
-
-    if (std::abs (db) < 1.0e-6)
-        return { prewarp (f, sampleRate), 1.0 / q, 1.0, 0.0, 0.0 };
-
-    const double G = dbToGain (db), GB = std::sqrt (G);
-    const double G2 = G * G, GB2 = GB * GB;
-    const double w0 = 2.0 * kPi * f / sampleRate, Dw = w0 / q;
-    const double F = std::abs (G2 - GB2), G00 = std::abs (G2 - 1.0), F00 = std::abs (GB2 - 1.0);
-    const double p = w0 * w0 - kPi * kPi;
-    const double bw = F00 * kPi * kPi * Dw * Dw / F;
-    const double G1 = std::sqrt ((p * p + G2 * bw) / (p * p + bw));
-    const double G01 = std::abs (G2 - G1), G11 = juce::jmax (1.0e-300, std::abs (G2 - G1 * G1));
-    const double F01 = std::abs (GB2 - G1), F11 = juce::jmax (1.0e-300, std::abs (GB2 - G1 * G1));
-    const double tw = std::tan (w0 / 2.0);
-    const double W2 = std::sqrt (G11 / G00) * tw * tw;
-    const double DW = (1.0 + std::sqrt (F00 / F11) * W2) * std::tan (juce::jmin (Dw, kOrfanidisMaxDw) / 2.0);
-    const double C = F11 * DW * DW - 2.0 * W2 * (F01 - std::sqrt (F00 * F11));
-    const double D = 2.0 * W2 * (G01 - std::sqrt (G00 * G11));
-    const double A = std::sqrt ((C + D) / F), B = std::sqrt ((G2 * C + GB2 * D) / F);
-    const double g = std::sqrt (W2);
-    const SvfCoeffs c { g, A / g, G1, (B - G1 * A) / g, 1.0 - G1 };
-
-    // Never reached over the parameter ranges (checked on a 290 000-design grid, 22.05-192 kHz),
-    // but a degenerate design must not reach the audio.
-    if (! (std::isfinite (c.g) && std::isfinite (c.k) && std::isfinite (c.m0) && std::isfinite (c.m1)
-           && std::isfinite (c.m2) && c.g > 0.0 && c.k > 0.0))
-        return plainBell (sampleRate, f, q, db);
-
-    return c;
+    const double d2 = a0 - a1 + a2, d1 = 2.0 * (a0 - a2), d0 = a0 + a1 + a2;
+    const double n2 = b0 - b1 + b2, n1 = 2.0 * (b0 - b2), n0 = b0 + b1 + b2;
+    const double g = std::sqrt (d0 / d2);
+    const double k = d1 / (d2 * g);
+    const double m0 = n2 / d2;
+    return { g, k, m0, n1 / (d2 * g) - m0 * k, n0 / d0 - m0 };
 }
 
-/** The bell used by Parametric's mid and every Graphic band: plain below 1.5 kHz, Orfanidis
-    above 2.5 kHz, the two parameter sets crossfaded linearly in f between [study: R3]. */
-SvfCoeffs bell (double sampleRate, double hz, double q, double db) noexcept
+/** The bell of Parametric's mid and every Graphic band: the analog prototype
+    (s^2 + (A/Q) s + 1) / (s^2 + s/(A Q) + 1) matched after Vicanek, "Matched Second Order
+    Digital Filters" (2016), peaking EQ. The poles are the analog poles by impulse invariance;
+    the numerator is the minimum-phase one whose magnitude equals the analog curve at DC, at f0
+    and at a third frequency fm. Vicanek's own third conditions (zero slope at f0, or the gain at
+    Nyquist) leave 1.1 and 1.6 dB at Q 0.5 and 22.05 kHz; fm between f0 and Nyquist (kMatch*)
+    keeps every bell from Q 0.5 to 8 within 0.7 dB of the analog curve up to min(20 kHz, 0.45 fs)
+    at every rate from 22.05 kHz, where the bilinear bell with Orfanidis decramping above 2.5 kHz
+    was 1.9 dB off at 44.1 kHz and 13.8 dB at 22.05 kHz (check_eq E20). A cut is the boost
+    turned upside down, which is exact for this prototype. */
+SvfCoeffs matchedBell (double sampleRate, double hz, double q, double db) noexcept
 {
-    if (hz <= kBlendLowHz)
-        return plainBell (sampleRate, hz, q, db);
+    const double f0 = juce::jmin (hz, kMaxFs * sampleRate), nyquist = 0.5 * sampleRate;
+    const double G = dbToGain (std::abs (db)), A = std::sqrt (G);
+    const double w0 = 2.0 * kPi * f0 / sampleRate, zeta = 1.0 / (2.0 * A * q);
 
-    if (hz >= kBlendHighHz)
-        return orfanidisBell (sampleRate, hz, q, db);
+    const double decay = std::exp (-zeta * w0);
+    const double a1 = zeta <= 1.0 ? -2.0 * decay * std::cos (std::sqrt (1.0 - zeta * zeta) * w0)
+                                  : -2.0 * decay * std::cosh (std::sqrt (zeta * zeta - 1.0) * w0);
+    const double a2 = decay * decay;
 
-    return SvfCoeffs::blend (plainBell (sampleRate, hz, q, db), orfanidisBell (sampleRate, hz, q, db),
-                             (hz - kBlendLowHz) / (kBlendHighHz - kBlendLowHz));
+    // |H(w)|^2 = (B0 p0 + B1 p1 + B2 p2) / (A0 p0 + A1 p1 + A2 p2) with p1 = sin^2(w/2),
+    // p0 = 1 - p1, p2 = 4 p0 p1; B0 = A0 is the match at DC.
+    const double dc = 1.0 + a1 + a2, ny = 1.0 - a1 + a2;
+    const double A0 = dc * dc, A1 = ny * ny, A2 = -4.0 * a2;
+    const auto phis = [] (double w, double& p0, double& p1, double& p2)
+    {
+        const double s = std::sin (0.5 * w);
+        p1 = s * s;
+        p0 = 1.0 - p1;
+        p2 = 4.0 * p0 * p1;
+    };
+
+    const double c = juce::jlimit (kMatchMinFrac, kMatchFrac, kMatchFrac - kMatchFall * (f0 / nyquist - kMatchKnee));
+    const double fm = juce::jmin (f0 + c * (nyquist - f0), juce::jmax (kMatchTopHz, f0 + kMatchMinFrac * (nyquist - f0)));
+    const double x = fm / f0, re = 1.0 - x * x, wide = A * x / q, narrow = x / (A * q);
+    const double analogFm = (re * re + wide * wide) / (re * re + narrow * narrow);
+
+    double p0, p1, p2, pm0, pm1, pm2;
+    phis (w0, p0, p1, p2);
+    phis (2.0 * kPi * fm / sampleRate, pm0, pm1, pm2);
+    const double r1 = G * G * (A0 * p0 + A1 * p1 + A2 * p2) - A0 * p0;
+    const double r2 = analogFm * (A0 * pm0 + A1 * pm1 + A2 * pm2) - A0 * pm0;
+    const double det = p1 * pm2 - p2 * pm1;
+    const double B1 = (r1 * pm2 - p2 * r2) / det, B2 = (p1 * r2 - pm1 * r1) / det;
+
+    const double rootB1 = std::sqrt (juce::jmax (0.0, B1));
+    const double W = 0.5 * (dc + rootB1);
+    const double b0 = 0.5 * (W + std::sqrt (juce::jmax (0.0, W * W + B2)));
+    const double b1 = 0.5 * (dc - rootB1);
+    const double b2 = -B2 / (4.0 * b0);
+
+    SvfCoeffs out = db >= 0.0 ? fromBiquad (b0, b1, b2, 1.0, a1, a2) : fromBiquad (1.0, a1, a2, b0, b1, b2);
+
+    // Never reached over the parameter ranges (checked on a 740 000-design grid, 22.05-192 kHz),
+    // but a degenerate design must not reach the audio.
+    if (! (std::isfinite (out.g) && std::isfinite (out.k) && std::isfinite (out.m0) && std::isfinite (out.m1)
+           && std::isfinite (out.m2) && out.g > 0.0 && out.k > 0.0))
+        return plainBell (sampleRate, f0, q, db);
+
+    // At exactly 0 dB the section is an exact pass-through; g and k stay those of the design, so
+    // a gain ramp away from 0 dB starts from the same poles.
+    if (juce::exactlyEqual (db, 0.0))
+        out = { out.g, out.k, 1.0, 0.0, 0.0 };
+
+    return out;
 }
 
 /** 12 dB/oct Butterworth cut, crossfaded from the identity by `amount` so the end stops can
@@ -797,8 +897,11 @@ public:
 
     void flush() noexcept
     {
-        y1[0] = flushed (y1[0]);
-        y1[1] = flushed (y1[1]);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            x1[ch] = flushed (x1[ch]);
+            y1[ch] = flushed (y1[ch]);
+        }
     }
 
 private:
@@ -927,7 +1030,7 @@ private:
 
             for (int ch = 0; ch < NC; ++ch)
                 for (int i = 0; i < len; ++i)
-                    work[ch][i] = (double) io[ch][pos + i];
+                    work[ch][i] = sanitisedInput (io[ch][pos + i]);
 
             engine.template render<NC> (work, len);
 
@@ -972,17 +1075,17 @@ public:
     void setTargets (const EqParams& p) noexcept
     {
         double v[numControls];
-        v[cBass] = p.bass;
-        v[cMid] = p.mid;
-        v[cTreble] = p.treble;
+        v[cBass] = neutralKnob (p.bass, kBassDb);
+        v[cMid] = neutralKnob (p.mid, kMidDb);
+        v[cTreble] = neutralKnob (p.treble, kTrebleDb);
         v[cMidHz] = std::log2 ((double) p.midFreqHz);
         v[cMidQ] = std::log2 ((double) p.midQ);
         v[cLowHz] = std::log2 ((double) p.lowCutHz);
-        v[cLowOn] = p.lowCutHz > kLowCutOffHz ? 1.0 : 0.0;
+        v[cLowOn] = (double) p.lowCutHz > kLowCutOffHz ? 1.0 : 0.0;
         v[cHighHz] = std::log2 (juce::jmin ((double) p.highCutHz, kHighCutMaxFs * sampleRate));
-        v[cHighOn] = p.highCutHz < kHighCutOffHz ? 1.0 : 0.0;
-        v[cTilt] = p.tiltDb;
-        v[cLevel] = p.levelDb;
+        v[cHighOn] = (double) p.highCutHz < kHighCutOffHz ? 1.0 : 0.0;
+        v[cTilt] = neutralDb (p.tiltDb);
+        v[cLevel] = neutralDb (p.levelDb);
 
         if (snapOnNextUpdate)
         {
@@ -1088,7 +1191,7 @@ private:
         {
             case lowCut:      return cut (sampleRate, std::exp2 (controls[cLowHz].s2), true, controls[cLowOn].s2);
             case bassShelf:   return lowShelf (sampleRate, kBassShelfHz, kShelfQd, knobDb (cBass, kBassDb));
-            case midBell:     return bell (sampleRate, std::exp2 (controls[cMidHz].s2), std::exp2 (controls[cMidQ].s2),
+            case midBell:     return matchedBell (sampleRate, std::exp2 (controls[cMidHz].s2), std::exp2 (controls[cMidQ].s2),
                                            knobDb (cMid, kMidDb));
             case trebleShelf: return highShelf (sampleRate, kTrebleShelfHz, kShelfQd, knobDb (cTreble, kTrebleDb));
             case highCut:     return cut (sampleRate, std::exp2 (controls[cHighHz].s2), false, controls[cHighOn].s2);
@@ -1137,19 +1240,19 @@ public:
 
             for (int b = 0; b < kGraphicBands; ++b)
             {
-                gains[b].snap (p.graphicDb[b]);
-                bands[b].snapTo (bell (sampleRate, kGraphicHz[b], kGraphicQ, gains[b].s2));
+                gains[b].snap (neutralDb (p.graphicDb[b]));
+                bands[b].snapTo (matchedBell (sampleRate, kGraphicHz[b], kGraphicQ, gains[b].s2));
             }
 
-            levelDb.snap (p.levelDb);
+            levelDb.snap (neutralDb (p.levelDb));
             level.snapTo (dbToGain (levelDb.s2));
             return;
         }
 
         for (int b = 0; b < kGraphicBands; ++b)
-            gains[b].setTarget (p.graphicDb[b]);
+            gains[b].setTarget (neutralDb (p.graphicDb[b]));
 
-        levelDb.setTarget (p.levelDb);
+        levelDb.setTarget (neutralDb (p.levelDb));
     }
 
     bool isSettled() const noexcept
@@ -1171,7 +1274,7 @@ public:
             {
                 s.advance (steps, kControlInterval);
                 s.settle (kSettle);
-                bands[b].rampTo (bell (sampleRate, kGraphicHz[b], kGraphicQ, s.s2));
+                bands[b].rampTo (matchedBell (sampleRate, kGraphicHz[b], kGraphicQ, s.s2));
             }
         }
 
@@ -1240,7 +1343,7 @@ public:
 
     void setTargets (const EqParams& p) noexcept
     {
-        const double v[3] { p.treble, p.mid, p.bass };
+        const double v[3] { (double) p.treble, (double) p.mid, (double) p.bass };
 
         if (snapOnNextUpdate)
         {
@@ -1249,7 +1352,7 @@ public:
             for (int k = 0; k < 3; ++k)
                 knobs[k].snap (v[k]);
 
-            levelDb.snap (p.levelDb);
+            levelDb.snap (neutralDb (p.levelDb));
             design (cur);
             rampLeft = 0;
             level.snapTo (dbToGain (levelDb.s2));
@@ -1259,7 +1362,7 @@ public:
         for (int k = 0; k < 3; ++k)
             knobs[k].setTarget (v[k]);
 
-        levelDb.setTarget (p.levelDb);
+        levelDb.setTarget (neutralDb (p.levelDb));
     }
 
     bool isSettled() const noexcept
@@ -1574,6 +1677,7 @@ void EqFx::process (juce::dsp::AudioBlock<float> block)
     auto& s = *impl;
     const int requested = switchKey (s.params.type, s.params.voice);
     const int n = (int) block.getNumSamples();
+    replaceNonFinite (block);
 
     if (s.snapEngine)
     {
