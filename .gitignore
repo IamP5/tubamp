@@ -1,5 +1,6 @@
 # Build
 build/
+build-fx/
 dist/
 cmake-build-*/
 .cache/

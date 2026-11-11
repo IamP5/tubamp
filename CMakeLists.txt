@@ -269,6 +269,30 @@ target_link_libraries(tubamp_smoke PRIVATE
     juce::juce_recommended_config_flags)
 
 # ---------------------------------------------------------------------------
+# Golden renders of the whole processor (docs/FX-ENGINES.md §5.4): built exactly like
+# tubamp_smoke, plus the frozen legacy effect classes for --legacy-check.
+# ---------------------------------------------------------------------------
+juce_add_console_app(tubamp_golden PRODUCT_NAME "tubamp_golden")
+target_sources(tubamp_golden PRIVATE
+    tools/golden/GoldenRender.cpp
+    tools/fxbench/legacy/LegacyFx.cpp
+    ${tubamp_core_sources})
+target_include_directories(tubamp_golden PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(tubamp_golden PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_STANDALONE_APPLICATION=1
+    TUBAMP_HEADLESS=1
+    TUBAMP_T3K_CLIENT_ID="${TUBAMP_T3K_CLIENT_ID}")
+target_link_libraries(tubamp_golden PRIVATE
+    nam_core
+    juce::juce_audio_utils
+    juce::juce_cryptography
+    juce::juce_dsp
+    juce::juce_recommended_config_flags)
+
+# ---------------------------------------------------------------------------
 # Offline renderer for the reverb and delay engines: one block, a known stimulus, a
 # float WAV out. Compiles only the two engines (no processor, no NAM), so it builds
 # in seconds and the engines can be measured (decay per band, echo density, repeat spacing) without the
@@ -287,6 +311,66 @@ target_compile_definitions(tubamp_fxrender PRIVATE
     JUCE_USE_CURL=0
     JUCE_STANDALONE_APPLICATION=1)
 target_link_libraries(tubamp_fxrender PRIVATE
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+# ---------------------------------------------------------------------------
+# Offline bench for the effect engines (docs/FX-ENGINES.md §5.3, tools/fxbench/README.md).
+# Each tools/fxbench/fx_<effect>.cpp registers itself from a static initialiser, which
+# works because the objects are linked straight into the executable. The legacy
+# reference's NoiseGate needs AudioDSPTools, hence nam_core.
+#
+# TUBAMP_FXBENCH_ONLY=<effect> compiles only that effect's engine and adapter (plus
+# main.cpp and the whole legacy reference), so engineers building half-finished engines
+# side by side in their own build trees never break each other's builds.
+# ---------------------------------------------------------------------------
+set(TUBAMP_FXBENCH_ONLY "" CACHE STRING
+    "Build tubamp_fxbench with one effect only: gate, comp, drive, eq, chorus, phaser or tremolo (empty = all)")
+
+set(tubamp_fxbench_effects gate comp drive eq chorus phaser tremolo)
+set(tubamp_fxbench_engine_gate    Gate)
+set(tubamp_fxbench_engine_comp    Compressor)
+set(tubamp_fxbench_engine_drive   Drive)
+set(tubamp_fxbench_engine_eq      Eq)
+set(tubamp_fxbench_engine_chorus  Chorus)
+set(tubamp_fxbench_engine_phaser  Phaser)
+set(tubamp_fxbench_engine_tremolo Tremolo)
+
+file(GLOB tubamp_fxbench_sources CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/fxbench/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/fxbench/legacy/*.cpp")
+
+if(TUBAMP_FXBENCH_ONLY)
+    if(NOT TUBAMP_FXBENCH_ONLY IN_LIST tubamp_fxbench_effects)
+        message(FATAL_ERROR "TUBAMP_FXBENCH_ONLY='${TUBAMP_FXBENCH_ONLY}' is not one of: ${tubamp_fxbench_effects}")
+    endif()
+
+    set(tubamp_fxbench_built ${TUBAMP_FXBENCH_ONLY})
+    list(FILTER tubamp_fxbench_sources EXCLUDE REGEX "/tools/fxbench/fx_[^/]*\\.cpp$")
+    list(APPEND tubamp_fxbench_sources
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/fxbench/fx_${TUBAMP_FXBENCH_ONLY}.cpp")
+else()
+    set(tubamp_fxbench_built ${tubamp_fxbench_effects})
+endif()
+
+foreach(effect IN LISTS tubamp_fxbench_built)
+    list(APPEND tubamp_fxbench_sources
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/${tubamp_fxbench_engine_${effect}}.cpp")
+endforeach()
+
+juce_add_console_app(tubamp_fxbench PRODUCT_NAME "tubamp_fxbench")
+target_sources(tubamp_fxbench PRIVATE ${tubamp_fxbench_sources})
+target_include_directories(tubamp_fxbench PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/fxbench")
+target_compile_definitions(tubamp_fxbench PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_STANDALONE_APPLICATION=1)
+target_link_libraries(tubamp_fxbench PRIVATE
+    nam_core
     juce::juce_audio_formats
     juce::juce_dsp
     juce::juce_recommended_config_flags
