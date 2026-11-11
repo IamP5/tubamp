@@ -3,8 +3,10 @@
 the effect's own table (§4.4.9, rows E1-E19), then E20-E24, added after the verification of
 .audit/fx-verify/drive-eq.md and code.md: the bell against the analog curve over its whole
 range, non-finite input, host float noise on neutral controls, re-enabling after a bypass, and
-a Classic retarget in a ramp's last segment. Prints a PASS/FAIL table and a table of
-measurements; exit status 1 on any FAIL.
+a Classic retarget in a ramp's last segment; then E25-E28, added after the second
+verification (.audit/fx-verify/r2-tone.md): overshoot when a control moves under a held note,
+Classic knob moves at every rate and block, type-switch click and level, absurd finite input.
+Prints a PASS/FAIL table and a table of measurements; exit status 1 on any FAIL.
 
     python3 -I tools/fxbench/check_eq.py [--quick] [--types 1,2] [--only E5,E12] [--no-common]
 
@@ -468,11 +470,17 @@ def chord(sr, secs):
     return 0.25 * x / np.max(np.abs(x))
 
 
+# The engine's switch: the incoming type is reset on the 16-sample grid and runs unheard for
+# kSwitchSettleSeconds (Eq.cpp), rounded up to the grid, before its fade starts.
+SWITCH_SETTLE_S = 0.05
+
+
 def switch_case(keys_old, keys_new, sr=48000, block=64, t_sw=1.0):
     """Renders a switch at t_sw and measures (fade ms, overshoot dB). The fade runs from the
     first sample that leaves the outgoing type's own output to the first sample from which
-    the output equals a fresh render of the incoming type started where the switcher reset
-    it (the end of the run of samples that equal the dry input exactly)."""
+    the output equals a fresh render of the incoming type started where the switch reset it
+    (the settle time before the fade's first sample; the switch used to fade through a run
+    of dry samples, and the reset was found at its end)."""
     x = chord(sr, 2.0)
     toks_old = [f"{k}={v}" for k, v in keys_old.items()]
     toks_sw = toks_old + [f"{k}@{t_sw}={v}" for k, v in keys_new.items()]
@@ -480,19 +488,28 @@ def switch_case(keys_old, keys_new, sr=48000, block=64, t_sw=1.0):
     old = fx.run(EFFECT, x, toks_old, opts, sr)[0][0]
     sw = fx.run(EFFECT, x, toks_sw, opts, sr)[0][0]
     xf = x.astype(np.float32).astype(np.float64)
-    start = int(np.argmax(sw != old))
-    dry = np.nonzero(sw[start:] == xf[start:])[0]
-    if len(dry) == 0:
-        return None
-    # The engine is reset on the 16-sample grid that follows the faded-out run of dry samples.
-    run_end = start + int(dry[-1]) if np.all(np.diff(dry) == 1) else start + int(dry[np.argmax(np.diff(dry) > 1)])
-    h1 = (run_end + 1 + 15) // 16 * 16
     merged = dict(keys_old, **keys_new)
-    fresh = fx.run(EFFECT, x[h1:], [f"{k}={v}" for k, v in merged.items()], opts, sr)[0][0]
-    diff = np.abs(sw[h1:] - fresh)
-    tol = 1e-6 * max(np.max(np.abs(fresh)), 1e-9)
-    bad = np.nonzero(diff > tol)[0]
-    end = h1 + (int(bad[-1]) + 1 if len(bad) else 0)
+    if np.array_equal(sw, old):
+        # Two types that give the same output (Parametric and Graphic at neutral, same level):
+        # the crossfade between them leaves the audio untouched, and there is no fade to time.
+        new_static = fx.run(EFFECT, x, [f"{k}={v}" for k, v in merged.items()], opts, sr)[0][0]
+        return ("identical", 0.0) if np.array_equal(sw, new_static) else None
+    start = int(np.argmax(sw != old))
+    # The fade's first samples can round to the outgoing output exactly (its weight starts at
+    # ~1e-6), so the reset is the grid point, settle time before the fade, that a fresh render
+    # of the incoming type started there matches.
+    end = None
+    first = (start - 16 * int(np.ceil(SWITCH_SETTLE_S * sr / 16))) // 16 * 16
+    for h1 in range(first, max(first - 16 * 16, 0), -16):
+        fresh = fx.run(EFFECT, x[h1:], [f"{k}={v}" for k, v in merged.items()], opts, sr)[0][0]
+        diff = np.abs(sw[h1:] - fresh)
+        tol = 1e-6 * max(np.max(np.abs(fresh)), 1e-9)
+        bad = np.nonzero(diff > tol)[0]
+        if len(bad) == 0 or bad[-1] < len(diff) - int(0.5 * sr):
+            end = h1 + (int(bad[-1]) + 1 if len(bad) else 0)
+            break
+    if end is None:
+        return None
     new_static = fx.run(EFFECT, x, [f"{k}={v}" for k, v in merged.items()], opts, sr)[0][0]
     a, b = start, end + int(0.005 * sr)
     bound = np.maximum.reduce([env_rms(old, sr), env_rms(new_static, sr), env_rms(xf, sr)])
@@ -508,23 +525,27 @@ def e18_switch(report):
              ("level pair P -> G", {"type": 1, "level": 6}, {"type": 3})]
     cases += [(f"Stack voice {VOICE_NAMES[a]} -> {VOICE_NAMES[b]}", {"type": 2, "voice": a}, {"voice": b})
               for a, b in ((0, 1), (1, 2), (2, 3), (3, 0))]
-    ok, fades, overs, bad = True, [], [], []
+    ok, fades, overs, bad, same = True, [], [], [], set()
     for block in (37, 64, 512):
         for name, old, new in cases:
             r = switch_case(old, new, block=block)
             if r is None:
                 ok = False
-                bad.append(f"{name} block {block}: no dry point found")
+                bad.append(f"{name} block {block}: no reset point found")
                 continue
             fade, over = r
-            fades.append(fade)
             overs.append(over)
+            if fade == "identical":
+                same.add(name)
+                continue
+            fades.append(fade)
             if abs(fade - 40.0) > 2.0 or over > 3.0:
                 ok = False
                 bad.append(f"{name} block {block}: {fade:.1f} ms {over:+.1f} dB")
     report.add("E18 switches", f"{len(cases)} type/voice switches x blocks 37/64/512", ok,
                ("; ".join(bad) + "; " if bad else "") + f"fade {min(fades):.2f}..{max(fades):.2f} ms (40 +- 2), "
-               f"envelope at most {max(overs):+.2f} dB over the louder of old/new/dry (limit 3)")
+               f"envelope at most {max(overs):+.2f} dB over the louder of old/new/dry (limit 3)"
+               + (f"; {', '.join(sorted(same))}: output identical to both types throughout, no fade to time" if same else ""))
 
 
 # ---------------------------------------------------------------------------- E20-E24 (post-verification)
@@ -770,6 +791,268 @@ def e24_retarget(report, quick):
     report.add("E24 classic retarget", "move again in a ramp's last segment, treble/mid", ok, "; ".join(rows))
 
 
+# ---------------------------------------------------------------------------- E25-E28 (second verification)
+
+def guitar(f0, secs, sr, peak_db=-12.0, harmonics=12):
+    """A guitar-like held note: 12 harmonics at 1/h^1.2 with scrambled phases (an asymmetric
+    waveform), peak-normalised."""
+    t = np.arange(int(round(secs * sr))) / sr
+    x = sum(h ** -1.2 * np.sin(2 * np.pi * f0 * h * t + 0.7 * h * h) for h in range(1, harmonics + 1) if f0 * h < 0.45 * sr)
+    return x * fx.amp(peak_db) / np.max(np.abs(x))
+
+
+def hp_peak(y, sr, a, b, fc=1000.0):
+    """Peak in samples a..b of y high-passed at fc: zero-phase, eighth-order Butterworth magnitude,
+    applied in the frequency domain (the verification's click metric)."""
+    y = fx.mono(y).astype(np.float64)
+    f = np.fft.rfftfreq(len(y), 1 / sr)
+    r = (np.maximum(f, 1e-9) / fc) ** 8
+    yh = np.fft.irfft(np.fft.rfft(y) * (r / np.sqrt(1 + r * r)), len(y))
+    return float(fx.db(np.max(np.abs(yh[a:b])) + 1e-30))
+
+
+LOG_KEYS = ("mid_freq", "mid_q", "lowcut", "highcut")
+
+
+def e25_cases(quick):
+    """(row, name, static keys, moved key, from, to, note Hz)."""
+    c = []
+    for g in (10, 0):
+        for qa, qb in ((8, 0.5), (0.5, 8)):
+            c.append(("E25a", f"P mid Q {qa}->{qb} at knob {g}", {"type": 1, "mid": g, "mid_freq": 110}, "mid_q", qa, qb, 110))
+    for q in (8, 0.7):
+        for a, b in ((10, 0), (0, 10), (5, 10), (10, 5), (5, 0), (0, 5)):
+            c.append(("E25a", f"P mid {a}->{b} Q {q}", {"type": 1, "mid_freq": 110, "mid_q": q}, "mid", a, b, 110))
+        for a, b in ((220, 110), (110, 220), (8000, 110), (110, 8000)):
+            for g in (10, 0):
+                c.append(("E25b", f"P mid freq {a}->{b} Q {q} knob {g}", {"type": 1, "mid": g, "mid_q": q}, "mid_freq", a, b, 110))
+    for a, b in ((0, 10), (10, 0)):
+        c.append(("E25a", f"P bass {a}->{b}", {"type": 1}, "bass", a, b, 150))
+        c.append(("E25a", f"P treble {a}->{b}", {"type": 1}, "treble", a, b, 1800))
+    for a, b in ((20, 400), (400, 20), (400, 100), (100, 400)):
+        c.append(("E25a", f"P low cut {a}->{b}", {"type": 1}, "lowcut", a, b, 110))
+    for a, b in ((20000, 2000), (2000, 20000), (2000, 8000), (8000, 2000)):
+        c.append(("E25a", f"P high cut {a}->{b}", {"type": 1}, "highcut", a, b, 2000))
+    for a, b in ((-6, 6), (6, -6)):
+        c.append(("E25a", f"P tilt {a}->{b} at 110 Hz", {"type": 1}, "tilt", a, b, 110))
+        c.append(("E25a", f"P tilt {a}->{b} at 5 kHz", {"type": 1}, "tilt", a, b, 5000))
+    for a, b in ((-12, 12), (12, -12)):
+        c.append(("E25a", f"P level {a}->{b}", {"type": 1}, "level", a, b, 110))
+        c.append(("E25a", f"G level {a}->{b}", {"type": 3, "g100": 12}, "level", a, b, 110))
+        for k, f in zip(GRAPHIC_KEYS, GRAPHIC_HZ):
+            c.append(("E25a", f"G {k} {a}->{b}", {"type": 3}, k, a, b, f))
+    for v in range(4):
+        for k in ("bass", "mid", "treble"):
+            for a, b in ((0, 10), (10, 0)):
+                for other in (0, 10):
+                    for f in (41.2, 196.0):
+                        c.append(("E25c", f"S {VOICE_NAMES[v]} {k} {a}->{b} others {other} at {f:g} Hz",
+                                  {"type": 2, "voice": v, "bass": other, "mid": other, "treble": other}, k, a, b, f))
+    if quick:
+        c = c[::3]
+    return c
+
+
+def e25_overshoot(report, quick):
+    """A control moved under a held note at the band's centre (a sine at -12 dBFS and a
+    guitar-like note of the same peak): the output's peak during the move must not exceed the
+    steady peak of any setting on the move's path (both ends and nine settings between, spaced in
+    the control's smoothing domain) by more than 1 dB. Steps and ramps of 10 ms, 50 ms, 0.3 s;
+    block 64; 48 kHz (96 kHz too for the Q and bell-gain moves). Verification (r2-tone N2): Q 8 to
+    0.5 at +15 dB overshot +11.6 dB (+10.0 on the guitar note); the Stack, never tested, +15.5 dB."""
+    t_move, settle = 0.6, 0.9
+    durs = [0.0, 0.01, 0.05, 0.3]
+    cases = e25_cases(quick)
+
+    def path(key, a, b):
+        if key in LOG_KEYS:
+            return list(np.exp2(np.linspace(np.log2(a), np.log2(b), 11)))
+        return list(np.linspace(a, b, 11))
+
+    def signal(kind, f0, secs, sr):
+        return fx.sine(f0, -12.0, secs, sr) if kind == "sine" else guitar(f0, secs, sr)
+
+    def steady(job):
+        (_, _, base, key, _, _, f0), value, kind, sr = job
+        secs = 1.2
+        y = fx.run(EFFECT, signal(kind, f0, secs, sr), [f"{k}={v}" for k, v in base.items()] + [f"{key}={float(value)!r}"],
+                   ["--block=64", "--channels=1"], sr)[0][0]
+        return float(np.max(np.abs(y[-int(0.3 * sr):])))
+
+    def moved(job):
+        (_, _, base, key, a, b, f0), dur, kind, sr = job
+        secs = t_move + dur + settle
+        toks = [f"{k}={v}" for k, v in base.items()] + [f"{key}={a}",
+                                                         f"{key}@{t_move}={b}" if dur == 0 else f"{key}@{t_move}..{t_move + dur}={a}..{b}"]
+        y = fx.run(EFFECT, signal(kind, f0, secs, sr), toks, ["--block=64", "--channels=1"], sr)[0][0]
+        return float(np.max(np.abs(y[int(t_move * sr):len(y) - int(0.3 * sr)])))
+
+    jobs = [(c, kind, sr) for c in cases for kind in ("sine", "guitar")
+            for sr in ([48000, 96000] if c[3] in ("mid_q", "mid") and not quick else [48000])]
+    statics = pmap(steady, [(c, v, kind, sr) for c, kind, sr in jobs for v in path(c[3], c[4], c[5])])
+    bound = {}
+    for i, (c, kind, sr) in enumerate(jobs):
+        bound[(c[1], kind, sr)] = max(statics[11 * i:11 * i + 11])
+    moves = [(c, d, kind, sr) for c, kind, sr in jobs for d in durs]
+    peaks = pmap(moved, moves)
+    worst = {}
+    for (c, d, kind, sr), p in zip(moves, peaks):
+        over = float(fx.db(p / max(bound[(c[1], kind, sr)], 1e-12)))
+        row = c[0]
+        if over > worst.get(row, (-1e9,))[0]:
+            worst[row] = (over, f"{c[1]}, {'step' if d == 0 else f'{d:g} s'}, {kind}, {sr // 1000}k")
+        worst.setdefault(row + "n", [0, 0])
+        worst[row + "n"][0] += 1
+        worst[row + "n"][1] += over > 1.0
+    scopes = {"E25a": "Parametric gain, Q, shelves, cuts, tilt, level; Graphic",
+              "E25b": "Parametric mid-frequency moves", "E25c": "Stack, every knob and voice"}
+    for row in ("E25a", "E25b", "E25c"):
+        if row not in worst:
+            continue
+        over, where = worst[row]
+        n, bad = worst[row + "n"]
+        report.add(f"{row} move overshoot", scopes[row], over <= 1.0,
+                   f"worst {over:+.2f} dB over the path's steady peak ({where}); {bad} of {n} moves above +1 dB (limit +1)")
+
+
+def e26_classic_moves(report, quick):
+    """Classic (and the amp tone stack): bass, mid and treble moved under a low E (82.41 Hz,
+    -12 dBFS), steps of every size across 5 and to and from it, ramps of 10 ms to 1 s; the
+    output's peak above 1 kHz (the verification's eighth-order high-pass) from 50 ms before the
+    move to 1.5 s, at 44.1 / 48 / 96 / 192 kHz and blocks 1 / 37 / 64 / 512. Verification
+    (r2-tone N3, N9): mid 10 to 0 read -59.9 dBFS at 48 kHz and -51.7 at 192 kHz (the frozen
+    design switches Q at 5); bass 5 to 10 -79.6 at 192 kHz; the bound for knob moves is -80."""
+    rates = [48000, 192000] if quick else [44100, 48000, 96000, 192000]
+    blocks = [37, 512] if quick else [1, 37, 64, 512]
+    moves = []
+    for k in ("bass", "mid", "treble"):
+        for a, b in ((10, 0), (0, 10), (8, 2), (2, 8), (6, 4), (5.5, 4.5), (5.1, 4.9), (5, 10), (5, 0), (10, 5), (0, 5)):
+            moves.append((f"{k} {a}->{b} step", [f"{k}={a}", f"{k}@0.5={b}"]))
+        for d in (0.01, 0.05, 0.3, 1.0):
+            moves.append((f"{k} 10->0 in {d:g} s", [f"{k}=10", f"{k}@0.5..{0.5 + d}=10..0"]))
+            moves.append((f"{k} 0->10 in {d:g} s", [f"{k}=0", f"{k}@0.5..{0.5 + d}=0..10"]))
+    if quick:
+        moves = moves[::3]
+
+    def one(job):
+        (name, toks), sr, block = job
+        x = fx.sine(82.41, -12, 2.2, sr)
+        y = fx.run(EFFECT, x, ["type=0"] + toks, [f"--block={block}", "--channels=1"], sr)[0]
+        return hp_peak(y, sr, int(0.45 * sr), int(2.0 * sr))
+
+    jobs = [(m, sr, bs) for m in moves for sr in rates for bs in blocks]
+    peaks = pmap(one, jobs)
+    worst = max(zip(peaks, jobs), key=lambda r: r[0])
+    by_knob = {k: max(p for p, j in zip(peaks, jobs) if j[0][0].startswith(k)) for k in ("bass", "mid", "treble")}
+    report.add("E26 classic knob moves", f"{len(moves)} moves x {len(rates)} rates x blocks {blocks}", worst[0] <= -80.0,
+               f"worst {worst[0]:.1f} dBFS above 1 kHz ({worst[1][0][0]}, {worst[1][1]} Hz, block {worst[1][2]}); "
+               + ", ".join(f"{k} {v:.1f}" for k, v in by_knob.items()) + " (limit -80)")
+
+
+# Strong settings for the switch rows; every type reads its own keys out of the same set.
+E27_SETS = {
+    "low boost": {"bass": 8, "mid": 10, "mid_freq": 100, "mid_q": 0.7, "treble": 5, "g100": 12, "g200": 12},
+    "high cut": {"bass": 5, "mid": 5, "treble": 0, "highcut": 2000, "g3k2": -12, "g6k4": -12},
+    "extremes": {"bass": 10, "mid": 0, "treble": 10, "mid_freq": 300, "mid_q": 4, "lowcut": 80, "tilt": 3, "level": 3,
+                 "g100": 12, "g200": -12, "g400": 12, "g800": -12, "g1k6": 12, "g3k2": -12, "g6k4": 12},
+}
+
+
+def e27_switch_quality(report, quick):
+    """Every ordered pair of the four types, and of the four Stack voices, switched at 1 s under
+    strong settings. Click: the peak above 1 kHz (eighth-order high-pass) under a 98 Hz -12 dBFS
+    note, from 10 ms before the switch to 250 ms after. Level: the 5 ms RMS of a guitar-like
+    110 Hz note during the switch against both types' own steady ranges (before the switch, and
+    from 0.5 s after it): never more than 1 dB below the lower or above the higher. 44.1, 48,
+    96, 192 kHz, block 64 (37 and 512 at 48 kHz). Verification (r2-tone N4): Parametric to
+    Graphic under a +15 dB low boost read -54.8 dBFS at 96 kHz and dipped 9.1 dB."""
+    t_sw = 1.0
+    rates = [48000, 192000] if quick else [44100, 48000, 96000, 192000]
+    pairs = [((a, None), (b, None)) for a in range(4) for b in range(4) if a != b]
+    pairs += [((2, va), (2, vb)) for va in range(4) for vb in range(4) if va != vb]
+    jobs = []
+    for sr in rates:
+        for block in ([37, 64, 512] if sr == 48000 and not quick else [64]):
+            for name, keys in E27_SETS.items():
+                for (a, va), (b, vb) in pairs:
+                    if va is not None and name != "low boost":
+                        continue
+                    jobs.append((sr, block, name, keys, a, va, b, vb))
+    if quick:
+        jobs = jobs[::4]
+
+    def env(y, sr):
+        n = int(0.005 * sr)
+        c = np.concatenate([[0.0], np.cumsum(y * y)])
+        return np.sqrt(np.maximum(c[n:] - c[:-n], 0.0) / n)
+
+    def one(job):
+        sr, block, name, keys, a, va, b, vb = job
+        toks = [f"{k}={v}" for k, v in keys.items()] + [f"type={a}", f"type@{t_sw}={b}"]
+        if va is not None:
+            toks += [f"voice={va}", f"voice@{t_sw}={vb}"]
+        opts = [f"--block={block}", "--channels=1"]
+        y = fx.run(EFFECT, fx.sine(98.0, -12.0, 2.0, sr), toks, opts, sr)[0][0]
+        click = hp_peak(y, sr, int((t_sw - 0.01) * sr), int((t_sw + 0.25) * sr))
+        g = fx.run(EFFECT, guitar(110.0, 2.2, sr), toks, opts, sr)[0][0]
+        e = env(g, sr)
+        t = np.arange(len(e)) / sr
+        before, after = e[(t > 0.5) & (t < t_sw - 0.01)], e[t > t_sw + 0.5]
+        during = e[(t >= t_sw - 0.005) & (t <= t_sw + 0.5)]
+        dip = float(fx.db(during.min() / min(before.min(), after.min())))
+        bump = float(fx.db(during.max() / max(before.max(), after.max())))
+        label = f"{a}{'' if va is None else f'v{va}'}->{b}{'' if vb is None else f'v{vb}'} {name} {sr // 1000}k/{block}"
+        return click, dip, bump, label
+
+    res = pmap(one, jobs)
+    wc = max(res, key=lambda r: r[0])
+    wd = min(res, key=lambda r: r[1])
+    wb = max(res, key=lambda r: r[2])
+    ok = wc[0] <= -75.0 and wd[1] >= -1.0 and wb[2] <= 1.0
+    report.add("E27 switch click/level", f"{len(jobs)} type/voice switches, strong settings", ok,
+               f"click worst {wc[0]:.1f} dBFS ({wc[3]}; limit -75); level dip {wd[1]:+.2f} dB ({wd[3]}), "
+               f"bump {wb[2]:+.2f} dB ({wb[3]}) (limits +-1 dB outside both types' own ranges)")
+
+
+def e28_absurd_input(report, quick):
+    """One finite sample no instrument produces (1e4, 1e10, 1e30, 3e38) in a 220 Hz -12 dBFS
+    sine: Classic (and every type) must give, bit for bit, the render with that sample at 0, so
+    the output never passes +12 dBFS. One sample of 999 (+59.99 dBFS) must still be processed
+    as the old code did (--legacy, Classic 10/5/7). Verification (r2-tone N11): 1e30 kept
+    Classic above +12 dBFS for 173 ms."""
+    sr = 48000
+    at = sr // 2
+    cases = [("Classic 10/5/7", {"type": 0, "bass": 10, "treble": 7}), ("Classic 0/0/0", {"type": 0, "bass": 0, "mid": 0, "treble": 0}),
+             ("Parametric", {"type": 1, "bass": 8, "mid": 10, "mid_freq": 100}), ("Stack", {"type": 2, "bass": 10}),
+             ("Graphic", {"type": 3, "g100": 12})]
+    jobs = [(name, keys, big, bs) for name, keys in cases for big in (1e4, 1e10, 1e30, 3e38) for bs in ([37] if quick else [1, 37, 512])]
+
+    def one(job):
+        name, keys, big, bs = job
+        x = 0.25 * np.sin(2 * np.pi * 220 * np.arange(sr) / sr)
+        clean = x.copy()
+        clean[at] = 0.0
+        x[at] = big
+        opts = [f"--block={bs}", "--channels=1"]
+        y = fx.run(EFFECT, x, keys, opts, sr)[0][0]
+        yc = fx.run(EFFECT, clean, keys, opts, sr)[0][0]
+        same = bool(np.array_equal(y.view(np.uint64), yc.view(np.uint64)))
+        loud = float(np.max(np.abs(np.where(np.isfinite(y), y, np.inf))))
+        return same and loud < 4.0, f"{name} {big:g} block {bs}: {'equal' if same else 'differs'}, peak {fx.db(loud):+.1f} dBFS"
+
+    res = pmap(one, jobs)
+    bad = [d for good, d in res if not good]
+    x = 0.25 * np.sin(2 * np.pi * 220 * np.arange(sr) / sr)
+    x[at] = 999.0
+    keys = {"type": 0, "bass": 10, "treble": 7}
+    y = fx.run(EFFECT, x, keys, ["--channels=1"], sr)[0][0]
+    old = fx.run(EFFECT, x, keys, ["--channels=1", "--legacy"], sr)[0][0]
+    kept = bool(np.array_equal(y.view(np.uint64), old.view(np.uint64)))
+    report.add("E28 absurd input", f"one sample of 1e4..3e38, {len(cases)} settings x blocks", not bad and kept,
+               ("; ".join(bad[:4]) + "; " if bad else f"{len(jobs)} renders equal the render with the sample at 0; ")
+               + f"one sample of 999 processed as the old code: {kept}")
+
+
 # ---------------------------------------------------------------------------- measurements
 
 def measure_nyquist(rates):
@@ -979,6 +1262,14 @@ def specific_checks(report, args):
         e23_reenable(report, quick)
     if want("E24"):
         e24_retarget(report, quick)
+    if want("E25"):
+        e25_overshoot(report, quick)
+    if want("E26"):
+        e26_classic_moves(report, quick)
+    if want("E27"):
+        e27_switch_quality(report, quick)
+    if want("E28"):
+        e28_absurd_input(report, quick)
     if want("E19") and len(results) == 4:
         report.add("E19 rates", "E2, E4, E6, E7 at " + ", ".join(f"{r // 1000}k" for r in rates3), all(results.values()),
                    ", ".join(f"{k} {'ok' if v else 'FAIL'}" for k, v in results.items()))
