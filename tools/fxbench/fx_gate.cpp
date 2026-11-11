@@ -1,9 +1,11 @@
 // fxbench adapter for the gate (docs/FX-ENGINES.md §4.1). Keys:
-//   mode threshold release hold range sc_hpf delay deferred on lag
+//   mode threshold release hold range sc_hpf delay deferred on lag prepare_block
 // on=0 neither measures nor applies (the processor's gate_on off). deferred=1 applies the
 // curve the way the processor does when the amp follows the gate: to the channels' mono
 // mean, which is then copied back to every channel. delay=N is setCurveDelay; lag=N delays
 // that mono audio by N samples first (deferred only), standing in for the amp's latency.
+// prepare_block=N re-prepares the gate for blocks of at most N samples, so --block larger
+// than N feeds it oversized blocks (test hook: it allocates, so never with --rt-check).
 // --trace writes the applied gain (linear), read by applying the curve to a buffer of ones.
 #include "FxBench.h"
 #include "legacy/LegacyFx.h"
@@ -116,7 +118,9 @@ public:
 
     void prepare (double sampleRate, int maxBlock, int numChannels) override
     {
-        gate.prepare ({ sampleRate, (juce::uint32) maxBlock, (juce::uint32) numChannels });
+        spec = { sampleRate, (juce::uint32) maxBlock, (juce::uint32) numChannels };
+        preparedFor = 0;
+        gate.prepare (spec);
         gate.reset();
         mono.assign ((size_t) maxBlock, 0.0f);
         probe.assign ((size_t) maxBlock, 1.0f);
@@ -140,6 +144,19 @@ public:
         p.holdMs = (float) a.get ("hold", p.holdMs);
         p.rangeDb = (float) a.get ("range", p.rangeDb);
         p.scHpfHz = (float) a.get ("sc_hpf", p.scHpfHz);
+
+        if (const int block = (int) a.get ("prepare_block", 0.0); block != preparedFor)
+        {
+            preparedFor = block;
+            auto smaller = spec;
+
+            if (block > 0)
+                smaller.maximumBlockSize = (juce::uint32) block;
+
+            gate.prepare (smaller);
+            gate.reset();
+        }
+
         gate.setParameters (p);
         gate.setCurveDelay ((int) a.get ("delay", 0.0));
         deferred = a.get ("deferred", 0.0) > 0.5;
@@ -225,13 +242,14 @@ private:
     }
 
     tubamp::GateFx gate;
+    juce::dsp::ProcessSpec spec {};
     std::vector<float> mono, probe, lagLine;
-    int lagWrite = 0, lag = 0, traced = 0;
+    int lagWrite = 0, lag = 0, traced = 0, preparedFor = 0;
     bool deferred = false, on = true;
 };
 
 FXBENCH_REGISTER ("gate", GateBench,
                   "mode(0 Classic,1 Tight,2 Smooth) threshold release hold range sc_hpf delay deferred(0/1) on(0/1) "
-                  "lag(deferred audio delay, samples); "
+                  "lag(deferred audio delay, samples) prepare_block(test: re-prepare for N-sample blocks); "
                   "--trace = applied gain (linear); --meters = state, GR dB, detector dBFS");
 } // namespace

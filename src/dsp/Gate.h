@@ -7,8 +7,10 @@
 // The noise gate block (docs/FX-ENGINES.md §4.1). One engine, three modes:
 //
 //   Classic   AudioDSPTools' trigger + gain, exactly as before (mode 0, frozen).
-//   Tight     windowed-peak detector, 6 dB hysteresis, hold, dB-linear release to range.
-//   Smooth    Tight's detector and state machine; closed = 3:1 downward expander.
+//   Tight     windowed-peak detector, 6 dB hysteresis, dB-linear release to range. It waits
+//             the hold after a note stops and up to 0.4 s while a level only dips or fades.
+//   Smooth    Tight's detector and state machine; closed = 3:1 downward expander on a
+//             steadied estimate of the floor.
 //
 // The gate measures where it sits and may apply its gain further down the chain (on the
 // amp's mono output), so it splits the usual process() into measure() and apply().
@@ -22,7 +24,7 @@ struct GateParams
     float releaseMs = 30.0f;    // [5, 500] time for 60 dB of gain change
     float holdMs = 6.0f;        // [0, 250] (kGateHoldDefault[Tight])
     float rangeDb = -90.0f;     // [-90, 0]; <= -89.95 means mute (gain exactly 0)
-    float scHpfHz = 90.0f;      // [20, 300]; <= 20.5 means off
+    float scHpfHz = 75.0f;      // [20, 300], 4th-order Butterworth; <= 20.5 means off (kGateScHpfDefault[Tight])
 };
 
 class GateFx
@@ -33,7 +35,9 @@ public:
     enum class Mode { classic = 0, tight = 1, smooth = 2 };
     static constexpr int numModes = 3;
     static constexpr int numTypes = numModes;
-    static constexpr int kMaxCurveDelaySamples = 8192;
+    /** The largest curve delay honoured: the processor's lane rings hold 65 536 samples, so no
+        span it can align is longer. A larger request is clamped to this. */
+    static constexpr int kMaxCurveDelaySamples = 65535;
 
     GateFx();
     ~GateFx();
@@ -48,7 +52,8 @@ public:
         onto the amp output). Clamped to [0, kMaxCurveDelaySamples]. Classic ignores it. */
     void setCurveDelay (int samples) noexcept;
     /** Analyses `block` (mean of its channels) and computes this block's gain curve.
-        Does not touch the audio. Blocks larger than maxBlockSize: no curve (pass ungated). */
+        Does not touch the audio. Blocks larger than maxBlockSize: no curve (pass ungated);
+        the detector and the meters still follow them (Classic reads open, 0 dB). */
     void measure (const juce::dsp::AudioBlock<float>& block, int numSamples);
     /** In place, every channel, at the gate's own position: never delayed. A no-op unless
         the last measure() made a curve of exactly numSamples. Changes no state. */
@@ -79,8 +84,12 @@ private:
 
 /** Release in ms for 60 dB: short for the hard gate, longer for the expander. */
 inline constexpr float kGateReleaseDefault[GateFx::numModes] { 30.0f, 30.0f, 80.0f };
-/** Hold in ms. Tight closes once nothing has crossed the close level for window (12 ms) +
-    hold: 6 ms is the shortest span that rides a 41 Hz note's decay without chattering, and
-    it mutes 50 ms palm-mute gaps to -38 dB (10 ms reaches only -30). Smooth keeps 10 ms. */
+/** Hold in ms: how long the gate stays open after a note stops (its level falls 26 dB or more
+    from its recent peak to below the close level), on top of the 12 ms detector window. Dips
+    and slow fades are ridden for up to 0.4 s whatever the hold, so it can stay short for
+    palm mutes: with 6 ms, 40 / 50 ms gaps reach -31 / -51 dB. Smooth keeps 10 ms. */
 inline constexpr float kGateHoldDefault[GateFx::numModes] { 6.0f, 6.0f, 10.0f };
+/** Sidechain high-pass corner in Hz (4th-order Butterworth): a low E reads 1.7 dB under its
+    level, 50 / 60 Hz hum 14 / 8 dB. Was 90 Hz at 2nd order (3.9 dB; 11 / 8 dB). */
+inline constexpr float kGateScHpfDefault[GateFx::numModes] { 75.0f, 75.0f, 75.0f };
 } // namespace tubamp

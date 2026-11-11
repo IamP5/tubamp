@@ -20,17 +20,40 @@ constexpr double kGateHoldTime = 0.01;
 constexpr double kGateCloseTime = 0.05;
 
 // --- Tight and Smooth (docs/FX-ENGINES.md §4.1.5) ----------------------------
-constexpr double kAttackSeconds = 0.0005;              // for 60 dB [study: gate/report.md R1]
+constexpr double kOpenSeconds = 0.0002;                // linear, mute to full gain [choice: no more splatter than the 0.5 ms / 60 dB dB-ramp it replaces, check_gate X16]
 constexpr float kHysteresisDb = 6.0f;                  // [study: R1, inside the references' 4.8-9.5 dB]
 constexpr double kWindowSeconds = 0.012;               // half period of 42 Hz [study: R1 Nwin]
 constexpr float kExpanderSlope = 3.0f;                 // Smooth below the close level [study: R1]
-constexpr double kButterworthK = 1.4142135623730951;   // sqrt 2 [study: gate/evidence/bb/proto.py:16-22]
+// 4th-order Butterworth high-pass as two sections: at the 75 Hz default a low E reads 1.7 dB
+// low (the 2nd-order 90 Hz filter read 3.9) and 50 / 60 Hz hum is cut 14 / 8 dB (was 11 / 8).
+// Its longer ringing does not delay a stopped note: the stop detector below ignores it.
+// [choice, check_gate X20, G15; section damping 2cos(pi/8), 2cos(3pi/8)]
+constexpr double kHighPassDamping[2] { 1.8477590650225735, 0.7653668647301796 };
 constexpr float kScHpfOffHz = 20.5f;                   // at or below: no sidechain filter [§4.1.2]
 constexpr float kMuteDb = -89.95f;                     // range at or below: gain exactly 0 [§4.1.2]
 constexpr float kPeakFloor = 1.0e-9f;                  // Smooth's log guard [§4.1.5]
 constexpr float kSidechainLimit = 1.0e6f;              // [choice: fx::sanitise's bound, but clamped so a huge input still opens the gate]
 constexpr double kFlushBelow = 1.0e-15;                // filter state, once per block [§2.6]
 constexpr float kDbToGain = 0.11512925464970229f;      // ln(10) / 20
+
+// How long an open gate waits below the close level depends on how far the level has fallen
+// from its recent peak. A note that stops (palm mute, a choked chord) falls 30 dB or more and
+// closes after the hold; a decaying chord whose strings beat, or a tremolo, dips a few dB
+// around the threshold and is ridden. [choice, check_gate X10-X13: every verifier chord and
+// beating case, gb2.py / gb.py, and the palm-mute gaps]
+constexpr float kRefReleaseDbPerSecond = 20.0f;        // the recent peak forgets this fast
+constexpr float kShallowFallDb = 16.0f;                // at or within: wait kRideSeconds
+constexpr float kDeepFallDb = 26.0f;                   // at or beyond: wait the hold
+constexpr double kRideSeconds = 0.4;                   // longest beat trough ridden: 1 Hz, 15 dB swing
+constexpr double kWaitDone = 1.0 - 1.0e-9;
+constexpr double kStopCornerRatio = 2.0;               // the stop detector's one-pole, x the sidechain corner: 50/60 Hz -10/-9 dB
+
+// Smooth's floor estimate while closed: the dB peak level, averaged over half the time since the
+// gate closed (or since the level jumped), up to kFloorTauMaxSeconds, so it lands on a new floor
+// at once and then holds still on hiss and hum. [choice, check_gate X14]
+constexpr float kFloorRestartDb = 6.0f;
+constexpr double kFloorTauGrowth = 0.5;
+constexpr double kFloorTauMaxSeconds = 0.2;
 
 // --- mode switches and meters -------------------------------------------------
 constexpr float kSwitchSeconds = 0.02f;                // linear curve crossfade [§4.1.8]
@@ -136,6 +159,11 @@ struct ClassicGate
                 sum += block.getChannelPointer ((size_t) ch)[i];
 
             monoIn[(size_t) i] = (DSP_SAMPLE) (sum * scale);
+
+            // A NaN would stay in the trigger's level state for good and an Inf would hold it
+            // open; read both as silence. Finite input is untouched.
+            if (! std::isfinite (monoIn[(size_t) i]))
+                monoIn[(size_t) i] = (DSP_SAMPLE) 0;
         }
 
         run (numSamples, thresholdDb);
@@ -168,6 +196,118 @@ struct ClassicGate
 };
 
 //==============================================================================
+/** One TPT state-variable high-pass section, in double [study: gate/evidence/bb/proto.py:16-22]. */
+struct SvfHighPass
+{
+    double k = 1.0, a1 = 1.0, a2 = 0.0, a3 = 0.0, ic1 = 0.0, ic2 = 0.0;
+
+    void setup (double g, double damping) noexcept
+    {
+        k = damping;
+        a1 = 1.0 / (1.0 + g * (g + k));
+        a2 = g * a1;
+        a3 = g * a2;
+    }
+
+    double process (double x) noexcept
+    {
+        const double v3 = x - ic2;
+        const double v1 = a1 * ic1 + a2 * v3;
+        const double v2 = ic2 + a2 * ic1 + a3 * v3;
+        ic1 = 2.0 * v1 - ic1;
+        ic2 = 2.0 * v2 - ic2;
+        return x - k * v1 - v2;
+    }
+
+    void clear() noexcept { ic1 = ic2 = 0.0; }
+
+    /** Tiny states to zero (denormals without FTZ), a state that went bad back to rest. */
+    void endBlock() noexcept
+    {
+        if (! (std::abs (ic1) < 1.0e12) || ! (std::abs (ic2) < 1.0e12))
+            clear();
+
+        if (std::abs (ic1) < kFlushBelow)
+            ic1 = 0.0;
+
+        if (std::abs (ic2) < kFlushBelow)
+            ic2 = 0.0;
+    }
+};
+
+/** Exact maximum over the last `length` samples, so a detector reads the true level as soon
+    as the last crest leaves the window (van Herk / Gil-Werman: the window is the tail of the
+    previous segment, whose suffix maxima were computed when it filled, plus the head of the
+    current one; no data-dependent branches). */
+struct MaxWindow
+{
+    std::vector<float> segment, suffix;   // suffix[length] stays 0
+    int length = 1, pos = 0;
+    float prefix = 0.0f;
+
+    void prepare (int newLength)
+    {
+        length = newLength;
+        segment.assign ((size_t) length, 0.0f);
+        suffix.assign ((size_t) length + 1, 0.0f);
+        clear();
+    }
+
+    void clear() noexcept
+    {
+        std::fill (segment.begin(), segment.end(), 0.0f);
+        std::fill (suffix.begin(), suffix.end(), 0.0f);
+        pos = 0;
+        prefix = 0.0f;
+    }
+
+    float push (float a) noexcept
+    {
+        segment[(size_t) pos] = a;
+        prefix = juce::jmax (prefix, a);
+        const float m = juce::jmax (suffix[(size_t) pos + 1], prefix);
+
+        if (++pos == length)
+        {
+            float s = 0.0f;
+
+            for (int j = length - 1; j >= 0; --j)
+            {
+                s = juce::jmax (s, segment[(size_t) j]);
+                suffix[(size_t) j] = s;
+            }
+
+            pos = 0;
+            prefix = 0.0f;
+        }
+
+        return m;
+    }
+};
+
+/** A windowed peak and its recent peak, released at kRefReleaseDbPerSecond. */
+struct FallMeter
+{
+    MaxWindow window;
+    float peak = 0.0f, ref = kPeakFloor;
+
+    void clear() noexcept
+    {
+        window.clear();
+        peak = 0.0f;
+        ref = kPeakFloor;
+    }
+
+    void push (float a, float refDecay) noexcept
+    {
+        peak = window.push (a);
+        ref = juce::jmax (peak, juce::jmax (ref * refDecay, kPeakFloor));
+    }
+
+    /** Under `level` and at least the deep fall below the recent peak. */
+    bool stopped (float level, float deepRatio) const noexcept { return peak < level && peak <= ref * deepRatio; }
+};
+
 /** Tight and Smooth share one detector and one state machine (§4.1.5); only the closed
     target differs, so both gain-reduction ramps run side by side every sample and a switch
     between the two is a crossfade of two live curves. */
@@ -177,27 +317,37 @@ public:
     void prepare (double newSampleRate)
     {
         sampleRate = newSampleRate;
-        windowLength = juce::jmax (1, (int) std::lround (kWindowSeconds * sampleRate));
+        const int windowLength = juce::jmax (1, (int) std::lround (kWindowSeconds * sampleRate));
+        main.window.prepare (windowLength);
+        raw.window.prepare (windowLength);
+        stop.window.prepare (windowLength);
 
-        segment.assign ((size_t) windowLength, 0.0f);
-        suffix.assign ((size_t) windowLength + 1, 0.0f);
-
-        attackStep = (float) (60.0 / (kAttackSeconds * sampleRate));
+        openStep = (float) (1.0 / (kOpenSeconds * sampleRate));
+        refDecay = (float) std::pow (10.0, -kRefReleaseDbPerSecond / (20.0 * sampleRate));
+        deepRatio = std::pow (10.0f, -kDeepFallDb / 20.0f);
+        shallowRatio = std::pow (10.0f, -kShallowFallDb / 20.0f);
+        rideSamples = kRideSeconds * sampleRate;
+        floorTauMax = kFloorTauMaxSeconds * sampleRate;
+        floorGrowSamples = (int) std::ceil (floorTauMax / kFloorTauGrowth);
         lastThreshold = lastRelease = lastHold = lastRange = lastHpf = -1.0e9f;
         reset();
     }
 
-    /** Closed at the range, window empty, filter at rest. */
+    /** Closed at the range, windows empty, filters at rest. */
     void reset() noexcept
     {
-        ic1 = ic2 = 0.0;
-        std::fill (segment.begin(), segment.end(), 0.0f);
-        std::fill (suffix.begin(), suffix.end(), 0.0f);
-        segmentPos = 0;
-        prefix = 0.0f;
-        peak = 0.0f;
+        for (auto& section : hpf)
+            section.clear();
+
+        stopLowpass = 0.0;
+        main.clear();
+        raw.clear();
+        stop.clear();
         open = false;
-        holdLeft = 0;
+        waited = 0.0;
+        stoppedFor = 0;
+        floorDb = 0.0f;
+        floorSince = 0;
         grTight = grSmooth = range;
         invalidateCaches();
     }
@@ -222,7 +372,9 @@ public:
         if (! juce::exactlyEqual (holdMs, lastHold))
         {
             lastHold = holdMs;
-            holdSamples = (int) std::lround ((double) holdMs * 0.001 * sampleRate);
+            holdSamples = (double) std::lround ((double) holdMs * 0.001 * sampleRate);
+            lnHold = std::log (juce::jmax (1.0, holdSamples));
+            lnRide = std::log (juce::jmax (rideSamples, holdSamples));
         }
 
         if (! juce::exactlyEqual (rangeDb, lastRange))
@@ -241,88 +393,102 @@ public:
 
             if (hpfOn)
             {
-                const double fc = juce::jmin ((double) scHpfHz, 0.49 * sampleRate);
-                const double g = std::tan (juce::MathConstants<double>::pi * fc / sampleRate);
-                a1 = 1.0 / (1.0 + g * (g + kButterworthK));
-                a2 = g * a1;
-                a3 = g * a2;
+                const double pi = juce::MathConstants<double>::pi;
+                const double g = std::tan (pi * juce::jmin ((double) scHpfHz, 0.49 * sampleRate) / sampleRate);
+
+                for (int i = 0; i < 2; ++i)
+                    hpf[i].setup (g, kHighPassDamping[i]);
+
+                const double g1 = std::tan (pi * juce::jmin (kStopCornerRatio * scHpfHz, 0.49 * sampleRate) / sampleRate);
+                stopG = g1 / (1.0 + g1);
             }
 
             if (hpfOn != wasOn)
-                ic1 = ic2 = 0.0;
+            {
+                for (auto& section : hpf)
+                    section.clear();
+
+                stopLowpass = 0.0;
+            }
         }
     }
 
-    /** One sample of the mono sidechain: filter, sliding-window peak, state, both ramps. */
+    /** One sample of the mono sidechain: filters, windowed peaks, state, both ramps. */
     void advance (float s) noexcept
     {
-        double x = (double) s;
+        const double x = (double) s;
+        double filtered = x, stopFiltered = x;
 
         if (hpfOn)
         {
-            const double v3 = x - ic2;
-            const double v1 = a1 * ic1 + a2 * v3;
-            const double v2 = ic2 + a2 * ic1 + a3 * v3;
-            ic1 = 2.0 * v1 - ic1;
-            ic2 = 2.0 * v2 - ic2;
-            x = x - kButterworthK * v1 - v2;
+            filtered = hpf[1].process (hpf[0].process (x));
+
+            const double v = (x - stopLowpass) * stopG;
+            const double lp = v + stopLowpass;
+            stopLowpass = lp + v;
+            stopFiltered = x - lp;
         }
 
-        const float a = (float) std::abs (x);
+        main.push ((float) std::abs (filtered), refDecay);
+        raw.push (std::abs (s), refDecay);
+        stop.push ((float) std::abs (stopFiltered), refDecay);
 
-        // Exact maximum over the last windowLength samples, so the detector reads the true
-        // level as soon as the last crest leaves the window (van Herk / Gil-Werman: the
-        // window is the tail of the previous segment, whose suffix maxima were computed
-        // when it filled, plus the head of the current one; no data-dependent branches).
-        segment[(size_t) segmentPos] = a;
-        prefix = juce::jmax (prefix, a);
-        peak = juce::jmax (suffix[(size_t) segmentPos + 1], prefix);
+        const float peak = main.peak;
+        const bool wasOpen = open;
 
-        if (++segmentPos == windowLength)
+        // The note has stopped, whatever the sidechain filter is still ringing (up to 10 ms
+        // after a loud low note): unfiltered, or through a one-pole that keeps hum out, the
+        // level is under the close level and far below its recent peak. Neither reads more
+        // than 4.9 dB under the main filter, inside the 6 dB hysteresis, so this never closes
+        // on a level that could reopen the gate.
+        if (raw.stopped (closeLevel, deepRatio) || stop.stopped (closeLevel, deepRatio))
         {
-            float m = 0.0f;
-
-            for (int j = windowLength - 1; j >= 0; --j)
-            {
-                m = juce::jmax (m, segment[(size_t) j]);
-                suffix[(size_t) j] = m;
-            }
-
-            segmentPos = 0;
-            prefix = 0.0f;
-        }
-
-        if (peak >= openLevel)
-        {
-            open = true;
-            holdLeft = holdSamples;
-        }
-        else if (open)
-        {
-            if (peak >= closeLevel)
-                holdLeft = holdSamples;
-            else if (holdLeft > 0)
-                --holdLeft;
-            else
+            if (open && (double) ++stoppedFor > holdSamples)
                 open = false;
+        }
+        else
+        {
+            stoppedFor = 0;
+
+            if (peak >= openLevel)
+            {
+                open = true;
+                waited = 0.0;
+            }
+            else if (open)
+            {
+                if (peak >= closeLevel)
+                    waited = 0.0;
+                else if ((waited += 1.0 / (waitSamples() + 1.0)) >= kWaitDone)
+                    open = false;
+            }
         }
 
         float smoothTarget = 0.0f;
 
         if (! open)
         {
-            if (! juce::exactlyEqual (peak, smoothPeak))
-            {
-                smoothPeak = peak;
-                const float law = (kExpanderSlope - 1.0f) * 20.0f * std::log10 (juce::jmax (peak, kPeakFloor)) - smoothOffsetDb;
-                smoothLaw = juce::jlimit (range, 0.0f, law);
-            }
+            // The lower reading, so filter ringing after a stopped note does not hold the
+            // expander up; otherwise the filtered one (hum stays out).
+            const float level = juce::jmin (peak, raw.peak);
+            const float levelDb = 20.0f * std::log10 (juce::jmax (level, kPeakFloor));
 
-            smoothTarget = smoothLaw;
+            if (wasOpen || levelDb - floorDb > kFloorRestartDb)
+                floorSince = 0;
+
+            if (floorSince == 0)
+                floorDb = levelDb;
+            else
+                floorDb += (levelDb - floorDb) * (floorSince < floorGrowSamples
+                                                      ? (float) (1.0 / juce::jmax (1.0, kFloorTauGrowth * floorSince))
+                                                      : (float) (1.0 / floorTauMax));
+
+            floorSince = juce::jmin (floorSince + 1, floorGrowSamples);
+            smoothTarget = juce::jlimit (range, 0.0f, (kExpanderSlope - 1.0f) * floorDb - smoothOffsetDb);
         }
 
-        grTight = slew (grTight, open ? 0.0f : range);
-        grSmooth = slew (grSmooth, smoothTarget);
+        grTight = slew (grTight, open ? 0.0f : range, tightCache);
+        grSmooth = slew (grSmooth, smoothTarget, smoothCache);
     }
 
     float tightGain() noexcept { return gainFor (grTight, tightCache); }
@@ -330,26 +496,22 @@ public:
     float gainOf (int mode) noexcept { return mode == (int) GateFx::Mode::smooth ? smoothGain() : tightGain(); }
     float grOf (int mode) const noexcept { return mode == (int) GateFx::Mode::smooth ? grSmooth : grTight; }
 
-    /** Once per block: tiny filter states to zero (denormals without FTZ), and a state
-        that went bad back to rest. */
+    /** Once per block: filter states that went tiny or bad. */
     void endBlock() noexcept
     {
-        if (! (std::abs (ic1) < 1.0e12) || ! (std::abs (ic2) < 1.0e12))
-            ic1 = ic2 = 0.0;
+        for (auto& section : hpf)
+            section.endBlock();
 
-        if (std::abs (ic1) < kFlushBelow)
-            ic1 = 0.0;
-
-        if (std::abs (ic2) < kFlushBelow)
-            ic2 = 0.0;
+        if (! (std::abs (stopLowpass) < 1.0e12) || std::abs (stopLowpass) < kFlushBelow)
+            stopLowpass = 0.0;
     }
 
-    float currentPeak() const noexcept { return peak; }
+    float currentPeak() const noexcept { return main.peak; }
     bool isMuted (float gr) const noexcept { return mute && gr <= kMuteDb; }
     float floorGain() const noexcept { return mute ? 0.0f : std::exp (range * kDbToGain); }
 
     /** 2 open, 1 in the hysteresis band or holding, 0 closed (§4.1.5). */
-    int state() const noexcept { return open ? (peak >= openLevel ? 2 : 1) : 0; }
+    int state() const noexcept { return open ? (main.peak >= openLevel ? 2 : 1) : 0; }
 
 private:
     struct GainCache
@@ -357,12 +519,37 @@ private:
         float gr = 1.0f, gain = 1.0f;
     };
 
-    float slew (float gr, float target) const noexcept
+    /** Samples to wait under the close level at the present fall from the recent peak: the
+        hold for a deep fall, kRideSeconds for a shallow one, log-interpolated between. */
+    double waitSamples() const noexcept
+    {
+        if (main.peak <= main.ref * deepRatio)
+            return holdSamples;
+
+        if (main.peak >= main.ref * shallowRatio)
+            return std::exp (lnRide);
+
+        const double fallDb = 20.0 * std::log10 ((double) main.ref / (double) main.peak);
+        const double f = (fallDb - kShallowFallDb) / (kDeepFallDb - kShallowFallDb);
+        return std::exp (lnRide + f * (lnHold - lnRide));
+    }
+
+    /** Release: dB-linear. Attack: linear in gain, so the opening spends no time at
+        inaudible gains. */
+    float slew (float gr, float target, const GainCache& cache) const noexcept
     {
         const float d = target - gr;
 
-        if (d > attackStep)
-            return gr + attackStep;
+        if (d > 0.0f)
+        {
+            const float from = juce::exactlyEqual (gr, cache.gr) ? cache.gain : (isMuted (gr) ? 0.0f : std::exp (gr * kDbToGain));
+            const float next = from + openStep;
+
+            if (next >= std::exp (target * kDbToGain))
+                return target;
+
+            return std::log (next) / kDbToGain;
+        }
 
         if (d < -releaseStep)
             return gr - releaseStep;
@@ -384,28 +571,27 @@ private:
     void invalidateCaches() noexcept
     {
         tightCache = smoothCache = GainCache { 1.0f, 1.0f };
-        smoothPeak = -1.0f;
     }
 
     double sampleRate = 48000.0;
 
-    // Sidechain high-pass (TPT SVF, Butterworth), in double.
-    double a1 = 1.0, a2 = 0.0, a3 = 0.0, ic1 = 0.0, ic2 = 0.0;
+    SvfHighPass hpf[2];
+    double stopG = 0.0, stopLowpass = 0.0;
     bool hpfOn = false;
 
-    std::vector<float> segment, suffix;   // suffix[windowLength] stays 0
-    int windowLength = 1, segmentPos = 0;
-    float prefix = 0.0f;
+    FallMeter main, raw, stop;   // filtered, unfiltered, one-pole high-passed
 
     float openLevel = 1.0e-4f, closeLevel = 5.0e-5f, smoothOffsetDb = 0.0f;
-    float attackStep = 2.5f, releaseStep = 0.04f, range = -90.0f;
-    int holdSamples = 0;
+    float openStep = 0.1f, releaseStep = 0.04f, range = -90.0f, refDecay = 1.0f;
+    float deepRatio = 0.05f, shallowRatio = 0.16f;
+    double holdSamples = 0.0, rideSamples = 19200.0, lnHold = 0.0, lnRide = 0.0, floorTauMax = 9600.0;
+    int floorGrowSamples = 19200;
     bool mute = true;
 
-    float peak = 0.0f, grTight = -90.0f, grSmooth = -90.0f;
-    float smoothPeak = -1.0f, smoothLaw = 0.0f;
+    float grTight = -90.0f, grSmooth = -90.0f, floorDb = 0.0f;
+    int floorSince = 0, stoppedFor = 0;
     bool open = false;
-    int holdLeft = 0;
+    double waited = 0.0;
 
     GainCache tightCache, smoothCache;
     float lastThreshold = -1.0e9f, lastRelease = -1.0e9f, lastHold = -1.0e9f, lastRange = -1.0e9f, lastHpf = -1.0e9f;
@@ -421,7 +607,12 @@ float clampSidechain (float s) noexcept
     if (std::abs (s) < kSidechainLimit)
         return s;
 
-    return s > 0.0f ? kSidechainLimit : (s < 0.0f ? -kSidechainLimit : 0.0f);
+    // NaN and Inf carry no level: read as silence, so nothing non-finite reaches a state and
+    // the gate is back on the real signal the next sample.
+    if (! std::isfinite (s))
+        return 0.0f;
+
+    return s > 0.0f ? kSidechainLimit : -kSidechainLimit;
 }
 } // namespace
 
@@ -439,7 +630,6 @@ struct GateFx::Impl
     int ringMask = 1, ringWrite = 0;
     // Weight of the Classic curve per sample, while Classic fades in or out.
     std::vector<float> classicWeight;
-    std::vector<float> mono;
 
     double sampleRate = 48000.0;
     int maxBlockSize = 1;
@@ -511,7 +701,6 @@ void GateFx::prepare (const juce::dsp::ProcessSpec& spec)
     s.ring.assign ((size_t) ringSize, 0.0f);
     s.ringMask = ringSize - 1;
     s.classicWeight.assign ((size_t) s.maxBlockSize, 0.0f);
-    s.mono.assign ((size_t) s.maxBlockSize, 0.0f);
 
     s.fadeStep = 1.0f / (kSwitchSeconds * (float) s.sampleRate);
 
@@ -582,8 +771,8 @@ void GateFx::measure (const juce::dsp::AudioBlock<float>& block, int numSamples)
 
     const auto numChannels = (int) block.getNumChannels();
 
-    if (numSamples <= 0 || numChannels <= 0 || numSamples > s.maxBlockSize)
-        return; // oversized block: pass through ungated rather than reallocate here
+    if (numSamples <= 0 || numChannels <= 0)
+        return;
 
     if (s.restartPeak)
     {
@@ -592,7 +781,23 @@ void GateFx::measure (const juce::dsp::AudioBlock<float>& block, int numSamples)
         std::fill (s.ring.begin(), s.ring.end(), s.peak.floorGain());
     }
 
+    // A block longer than maxBlockSize gets no curve and passes ungated, but the detector still
+    // hears it and the ring still records its curve, so the state, the meters and a deferred
+    // apply further down the chain all stay continuous.
+    const bool oversized = numSamples > s.maxBlockSize;
+
+    // The ring always carries a Tight/Smooth curve, even under steady Classic, so a switch
+    // to either finds a warm, correctly delayed history.
+    const bool newToNew = s.switching && from != (int) Mode::classic && to != (int) Mode::classic;
+    const bool classicFade = s.switching && ! newToNew && ! oversized;
+    const int ringMode = from != (int) Mode::classic ? from : (to != (int) Mode::classic ? to : (int) Mode::tight);
+    const int meterMode = to;
+
+    s.curve = classicFade ? Impl::Curve::mixed : (from == (int) Mode::classic ? Impl::Curve::classic : Impl::Curve::peak);
+
     const float scale = 1.0f / (float) numChannels;
+    float maxPeak = 0.0f, minGr = 0.0f, maxIn = 0.0f;
+    bool muted = false;
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -601,24 +806,8 @@ void GateFx::measure (const juce::dsp::AudioBlock<float>& block, int numSamples)
         for (int ch = 0; ch < numChannels; ++ch)
             sum += block.getChannelPointer ((size_t) ch)[i];
 
-        s.mono[(size_t) i] = sum * scale;
-    }
-
-    // The ring always carries a Tight/Smooth curve, even under steady Classic, so a switch
-    // to either finds a warm, correctly delayed history.
-    const bool newToNew = s.switching && from != (int) Mode::classic && to != (int) Mode::classic;
-    const bool classicFade = s.switching && ! newToNew;
-    const int ringMode = from != (int) Mode::classic ? from : (to != (int) Mode::classic ? to : (int) Mode::tight);
-    const int meterMode = to;
-
-    s.curve = classicFade ? Impl::Curve::mixed : (from == (int) Mode::classic ? Impl::Curve::classic : Impl::Curve::peak);
-
-    float maxPeak = 0.0f, minGr = 0.0f;
-    bool muted = false;
-
-    for (int i = 0; i < numSamples; ++i)
-    {
-        s.peak.advance (clampSidechain (s.mono[(size_t) i]));
+        const float monoSample = sum * scale;
+        s.peak.advance (clampSidechain (monoSample));
 
         float w = 0.0f;
 
@@ -648,6 +837,10 @@ void GateFx::measure (const juce::dsp::AudioBlock<float>& block, int numSamples)
             minGr = juce::jmin (minGr, gr);
             muted = muted || s.peak.isMuted (gr);
         }
+        else if (oversized && std::isfinite (monoSample))
+        {
+            maxIn = juce::jmax (maxIn, std::abs (monoSample));
+        }
     }
 
     s.ringWrite = (s.ringWrite + numSamples) & s.ringMask;
@@ -661,7 +854,17 @@ void GateFx::measure (const juce::dsp::AudioBlock<float>& block, int numSamples)
 
     if (meterMode == (int) Mode::classic)
     {
-        s.classicMeters (numSamples);
+        if (oversized)
+        {
+            // The Classic trigger cannot take the block (its buffers are fixed): it passed at unity.
+            s.meterState = 2;
+            s.meterGrDb = 0.0f;
+            s.meterLevelDb = maxIn > 0.0f ? juce::jmax (kMeterFloorDb, 20.0f * std::log10 (maxIn)) : kMeterFloorDb;
+        }
+        else
+        {
+            s.classicMeters (numSamples);
+        }
     }
     else
     {
@@ -670,7 +873,8 @@ void GateFx::measure (const juce::dsp::AudioBlock<float>& block, int numSamples)
         s.meterLevelDb = maxPeak > 0.0f ? juce::jmax (kMeterFloorDb, 20.0f * std::log10 (maxPeak)) : kMeterFloorDb;
     }
 
-    s.curveFrames = numSamples;
+    if (! oversized)
+        s.curveFrames = numSamples;
 }
 
 void GateFx::apply (juce::dsp::AudioBlock<float> block, int numSamples)
