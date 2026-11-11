@@ -6,6 +6,13 @@
 #include <juce_events/juce_events.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "../src/PluginProcessor.h"
+#include "../src/dsp/Chorus.h"
+#include "../src/dsp/Compressor.h"
+#include "../src/dsp/Drive.h"
+#include "../src/dsp/Eq.h"
+#include "../src/dsp/Gate.h"
+#include "../src/dsp/Phaser.h"
+#include "../src/dsp/Tremolo.h"
 
 #include <algorithm>
 #include <array>
@@ -158,6 +165,13 @@ void setFloatParam (tubamp::TubampAudioProcessor& proc, const char* paramId, flo
 {
     if (auto* p = proc.apvts.getParameter (paramId))
         p->setValueNotifyingHost (p->convertTo0to1 (rawValue));
+}
+
+/** Current choice index of a parameter, read the way the audio thread reads it. */
+int choiceIndex (tubamp::TubampAudioProcessor& proc, const char* paramId)
+{
+    auto* raw = proc.apvts.getRawParameterValue (paramId);
+    return raw != nullptr ? juce::roundToInt (raw->load()) : -1;
 }
 
 /** Pure chain::-level assertions: no processor involved. */
@@ -663,6 +677,19 @@ bool runFactoryPresetTests (double sampleRate, int blockSize)
 
         std::snprintf (what, sizeof (what), "\"%s\" chainOrder is not just \"amp\"", name.toRawUTF8());
         ok &= expect (orderText != "amp", what);
+
+        // Written with every engine type at Classic (docs/FX-ENGINES.md §8 D-2), or by a
+        // build without the types and pinned on load: Classic either way.
+        bool classicTypes = choiceIndex (freshProc, params::gateMode) == 0
+                         && choiceIndex (freshProc, params::compType) == 0
+                         && choiceIndex (freshProc, params::driveType) == 0
+                         && choiceIndex (freshProc, params::eqType) == 0
+                         && choiceIndex (freshProc, params::modChorusMode) == 0
+                         && choiceIndex (freshProc, params::modPhaserModel) == 0
+                         && choiceIndex (freshProc, params::modTremVoice) == 0;
+
+        std::snprintf (what, sizeof (what), "\"%s\" runs every engine on its Classic type", name.toRawUTF8());
+        ok &= expect (classicTypes, what);
     }
 
     return ok;
@@ -1732,13 +1759,6 @@ bool runDelayModeTests (tubamp::TubampAudioProcessor& proc, double sampleRate, i
     return ok;
 }
 
-/** Current choice index of a parameter, read the way the audio thread reads it. */
-int choiceIndex (tubamp::TubampAudioProcessor& proc, const char* paramId)
-{
-    auto* raw = proc.apvts.getRawParameterValue (paramId);
-    return raw != nullptr ? juce::roundToInt (raw->load()) : -1;
-}
-
 /** Engine types (docs/REVERB-DELAY.md §1): a fresh instance starts on Digital and Plate
     with duck and damping at those types' own starting points, the type ids round-trip
     through both restore paths -- the host's ValueTree blob and the preset / A/B var --
@@ -1890,6 +1910,417 @@ bool runEngineTypeStateTests (double sampleRate, int blockSize)
         setPicks (proc);
         proc.applyStateVar (older);
         ok &= expect (allDefault (proc), "a preset without the type ids restores Digital and Plate");
+    }
+
+    return ok;
+}
+
+/** Parameters in the layout before the gate/comp/drive/EQ/mod engines
+    (tests/golden/params-base.tsv). Everything after them is a hint-4 addition. */
+constexpr int kBaseParamCount = 166;
+
+/** One engine type id of docs/FX-ENGINES.md §2.7.5 and the block instance it belongs to. */
+struct EngineTypeId
+{
+    const char* id;
+    BlockId block;
+    int recommended;
+};
+
+/** Listed from the per-instance id arrays rather than from the processor's own pin table,
+    so a table that lost an entry cannot pass. */
+std::vector<EngineTypeId> engineTypeIds()
+{
+    namespace chain = tubamp::chain;
+    std::vector<EngineTypeId> ids { { params::gateMode, BlockId::gate, (int) tubamp::GateFx::Mode::tight } };
+
+    for (int k = 0; k < params::maxInstances; ++k)
+    {
+        ids.push_back ({ params::compTypeIds[k], chain::instanceId (BlockId::comp, k), (int) tubamp::CompFx::Type::clean });
+        ids.push_back ({ params::driveTypeIds[k], chain::instanceId (BlockId::drive, k), (int) tubamp::DriveFx::Type::screamer });
+        ids.push_back ({ params::eqTypeIds[k], chain::instanceId (BlockId::eq, k), (int) tubamp::EqFx::Type::parametric });
+        ids.push_back ({ params::modChorusModeIds[k], chain::instanceId (BlockId::mod, k), (int) tubamp::ChorusFx::Mode::wide });
+        ids.push_back ({ params::modPhaserModelIds[k], chain::instanceId (BlockId::mod, k), (int) tubamp::PhaserFx::Model::phase90 });
+        ids.push_back ({ params::modTremVoiceIds[k], chain::instanceId (BlockId::mod, k), (int) tubamp::TremoloFx::Voice::smooth });
+    }
+
+    return ids;
+}
+
+float plainValueOf (const juce::RangedAudioParameter& p)
+{
+    return p.convertFrom0to1 (p.getValue());
+}
+
+/** Every parameter after the base layout, in layout order. */
+std::vector<juce::RangedAudioParameter*> newParams (tubamp::TubampAudioProcessor& proc)
+{
+    std::vector<juce::RangedAudioParameter*> out;
+    const auto& all = proc.getParameters();
+
+    for (int i = kBaseParamCount; i < all.size(); ++i)
+        if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (all[i]))
+            out.push_back (ranged);
+
+    return out;
+}
+
+/** Moves every new parameter off its default to a value that depends on its index, so a
+    restore that fell back to defaults, or swapped two ids, cannot pass. */
+void setNewParamsOffDefault (tubamp::TubampAudioProcessor& proc)
+{
+    int i = 0;
+
+    for (auto* p : newParams (proc))
+    {
+        const float steps = (float) std::max (1, p->getNumSteps() - 1);
+        float v = (float) ((i * 7 + 3) % 11 + 1) / 12.0f;
+
+        if (p->getNumSteps() <= 32)
+            v = std::round (v * steps) / steps;
+
+        if (juce::approximatelyEqual (p->convertFrom0to1 (v), p->convertFrom0to1 (p->getDefaultValue())))
+            v = p->getDefaultValue() > 0.5f ? 0.0f : 1.0f;
+
+        p->setValueNotifyingHost (v);
+        ++i;
+    }
+}
+
+/** Snapshot of every parameter's plain value, indexed like getParameters(). */
+std::vector<float> paramSnapshot (tubamp::TubampAudioProcessor& proc)
+{
+    std::vector<float> values;
+
+    for (auto* raw : proc.getParameters())
+        if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (raw))
+            values.push_back (plainValueOf (*ranged));
+
+    return values;
+}
+
+bool sameRange (const std::vector<float>& a, const std::vector<float>& b, size_t from, size_t to)
+{
+    if (a.size() < to || b.size() < to)
+        return false;
+
+    for (size_t i = from; i < to; ++i)
+        if (a[i] != b[i])
+            return false;
+
+    return true;
+}
+
+bool inOrder (const tubamp::chain::Order& order, BlockId block)
+{
+    return std::find (order.begin(), order.end(), block) != order.end();
+}
+
+/** Records every value one parameter is set to, as the audio thread would see it. */
+struct ValueRecorder final : juce::AudioProcessorParameter::Listener
+{
+    explicit ValueRecorder (juce::RangedAudioParameter& p) : param (p) { param.addListener (this); }
+    ~ValueRecorder() override { param.removeListener (this); }
+
+    void parameterValueChanged (int, float newValue) override { seen.push_back (param.convertFrom0to1 (newValue)); }
+    void parameterGestureChanged (int, bool) override {}
+
+    juce::RangedAudioParameter& param;
+    std::vector<float> seen;
+};
+
+/** The legacy pin (docs/FX-ENGINES.md §2.7.5) on both restore paths: state written before
+    the engine type ids existed restores every type id of a block in its chain at Classic,
+    blocks outside the chain keep the recommended type, state that carries the ids
+    round-trips them exactly, and the base layout is untouched throughout. */
+bool runLegacyPinTests (double sampleRate, int blockSize)
+{
+    std::printf ("legacy pin:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+
+    const auto typeIds = engineTypeIds();
+    ok &= expect (typeIds.size() == 19, "19 engine type ids: gate_mode + comp/drive/eq type x3 + three mod voicings x3");
+
+    // --- layout: 95 hint-4 parameters appended after the frozen 166
+    {
+        tubamp::TubampAudioProcessor fresh;
+        const auto& all = fresh.getParameters();
+        bool hints = all.size() == kBaseParamCount + 95;
+
+        for (int i = 0; i < all.size(); ++i)
+            if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (all[i]))
+                hints &= (i < kBaseParamCount) == (p->getVersionHint() < 4);
+
+        ok &= expect (hints, "261 parameters: the base 166 at hints 1-3, then 95 at hint 4");
+
+        bool recommended = true;
+
+        for (const auto& t : typeIds)
+            recommended &= choiceIndex (fresh, t.id) == t.recommended;
+
+        ok &= expect (recommended, "a fresh instance has every engine type id on the recommended type");
+    }
+
+    // gate, comp, comp3, drive2, eq, eq3, mod, mod2 in the chain; comp2, drive, drive3,
+    // eq2, mod3 out of it — instance 1 of drive absent while instance 2 is present.
+    const chain::Order order { BlockId::gate,  BlockId::comp, BlockId::comp3, BlockId::drive2, BlockId::amp,
+                               BlockId::eq,    BlockId::eq3,  BlockId::mod,   BlockId::mod2 };
+
+    const auto pinnedAsExpected = [&] (tubamp::TubampAudioProcessor& p, const chain::Order& restored)
+    {
+        bool pinned = true;
+
+        for (const auto& t : typeIds)
+            pinned &= choiceIndex (p, t.id) == (inOrder (restored, t.block) ? 0 : t.recommended);
+
+        return pinned;
+    };
+
+    const auto newParamsAtDefault = [] (tubamp::TubampAudioProcessor& p, const std::vector<EngineTypeId>& except)
+    {
+        bool defaults = true;
+
+        for (auto* param : newParams (p))
+        {
+            const bool isType = std::any_of (except.begin(), except.end(),
+                                             [param] (const EngineTypeId& t) { return param->paramID == t.id; });
+
+            if (! isType)
+                defaults &= juce::approximatelyEqual (param->getValue(), param->getDefaultValue());
+        }
+
+        return defaults;
+    };
+
+    // The source rig: every new parameter off its default, non-default types included.
+    tubamp::TubampAudioProcessor source;
+    source.prepareToPlay (sampleRate, blockSize);
+    source.setChainOrder (order, {});
+    setNewParamsOffDefault (source);
+
+    // Types neither Classic (0) nor recommended (1), varied per id.
+    for (size_t i = 0; i < typeIds.size(); ++i)
+        if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (source.apvts.getParameter (typeIds[i].id)))
+            setFloatParam (source, typeIds[i].id, (float) (2 + (int) i % (choice->choices.size() - 2)));
+
+    setFloatParam (source, params::gateThreshold, -55.0f);
+    setFloatParam (source, params::compRatio, 7.5f);
+    const auto sourceValues = paramSnapshot (source);
+    const auto total = sourceValues.size();
+
+    bool typesOff = true;
+
+    for (const auto& t : typeIds)
+        typesOff &= choiceIndex (source, t.id) != 0 && choiceIndex (source, t.id) != t.recommended;
+
+    ok &= expect (typesOff, "the source rig has every type id on a non-default, non-Classic type");
+
+    juce::MemoryBlock blob;
+    source.getStateInformation (blob);
+
+    // --- (c) host state from this layout round-trips every new parameter exactly
+    {
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        proc.setStateInformation (blob.getData(), (int) blob.getSize());
+
+        ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, total),
+                      "host state from this layout round-trips all 261 parameters exactly");
+    }
+
+    // --- (a) host state from the old layout: the blob with all 95 new PARAM children
+    // removed, which is what a session saved before them looks like.
+    juce::MemoryBlock olderBlob;
+    {
+        auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
+        auto root = xml != nullptr ? juce::ValueTree::fromXml (*xml) : juce::ValueTree();
+        auto paramTree = root.getChildWithName (source.apvts.state.getType());
+
+        for (auto* p : newParams (source))
+            paramTree.removeChild (paramTree.getChildWithProperty ("id", p->paramID), nullptr);
+
+        ok &= expect (paramTree.isValid() && paramTree.getNumChildren() == kBaseParamCount,
+                      "old-layout host state carries exactly the base 166 PARAM children");
+
+        if (auto olderXml = root.createXml())
+            juce::AudioProcessor::copyXmlToBinary (*olderXml, olderBlob);
+    }
+
+    {
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        proc.setStateInformation (olderBlob.getData(), (int) olderBlob.getSize());
+
+        ok &= expect (pinnedAsExpected (proc, order),
+                      "old-layout host state: every type id of a block in the chain restores at Classic");
+        ok &= expect (choiceIndex (proc, params::comp2Type) == (int) tubamp::CompFx::Type::clean
+                          && choiceIndex (proc, params::driveType) == (int) tubamp::DriveFx::Type::screamer
+                          && choiceIndex (proc, params::mod3ChorusMode) == (int) tubamp::ChorusFx::Mode::wide,
+                      "(b) old-layout host state: blocks outside the chain keep the recommended type");
+        ok &= expect (newParamsAtDefault (proc, typeIds), "old-layout host state: the other new parameters stay at their defaults");
+        ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, (size_t) kBaseParamCount),
+                      "old-layout host state: all 166 existing parameters restore exactly");
+        ok &= expect (proc.getChainOrder() == order, "old-layout host state: the chain restores as saved");
+
+        // (b) Adding a block that was not in the restored chain starts it on the new type.
+        auto grown = order;
+        grown.push_back (BlockId::comp2);
+        grown.push_back (BlockId::drive);
+        proc.setChainOrder (grown, {});
+        ok &= expect (choiceIndex (proc, params::comp2Type) == (int) tubamp::CompFx::Type::clean
+                          && choiceIndex (proc, params::driveType) == (int) tubamp::DriveFx::Type::screamer,
+                      "(b) a block added after the restore starts on the recommended type");
+    }
+
+    // The pin is written into the restored tree, so a pinned id goes straight to Classic:
+    // the recommended type is never published, not even for one callback.
+    {
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        setFloatParam (proc, params::compType, (float) tubamp::CompFx::Type::fet);
+
+        ValueRecorder recorder (*proc.apvts.getParameter (params::compType));
+        proc.setStateInformation (olderBlob.getData(), (int) olderBlob.getSize());
+
+        ok &= expect (recorder.seen.size() == 1 && recorder.seen.front() == 0.0f,
+                      "old-layout host state: a pinned id moves to Classic without passing through the default");
+    }
+
+    // A session written before the chain was user-arrangeable has no chainOrder at all
+    // and loads as the classic nine, so their type ids pin; the instances do not.
+    {
+        const char* const legacyXml =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<TUBAMP modelPath=\"\" irPath=\"\">\n"
+            "  <PARAMS>\n"
+            "    <PARAM id=\"gate_on\" value=\"1.0\"/>\n"
+            "    <PARAM id=\"gate_threshold\" value=\"-62.0\"/>\n"
+            "    <PARAM id=\"comp_threshold\" value=\"-31.0\"/>\n"
+            "    <PARAM id=\"mod_type\" value=\"2.0\"/>\n"
+            "  </PARAMS>\n"
+            "</TUBAMP>\n";
+
+        juce::MemoryBlock legacyBlob;
+
+        if (auto xml = juce::parseXML (juce::String (legacyXml)))
+            juce::AudioProcessor::copyXmlToBinary (*xml, legacyBlob);
+
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        proc.setStateInformation (legacyBlob.getData(), (int) legacyBlob.getSize());
+
+        ok &= expect (legacyBlob.getSize() > 0 && proc.getChainOrder() == chain::classicOrder(),
+                      "hand-written pre-chain host state loads as the classic order");
+        ok &= expect (pinnedAsExpected (proc, chain::classicOrder()),
+                      "hand-written pre-chain host state: classic blocks at Classic, instances 2-3 recommended");
+        ok &= expect (choiceIndex (proc, params::modType) == 2
+                          && juce::approximatelyEqual (proc.apvts.getRawParameterValue (params::gateThreshold)->load(), -62.0f),
+                      "hand-written pre-chain host state: its own parameters restore");
+    }
+
+    // --- (e) the pin keys on absence only: a present id restores as saved, 0 or not,
+    // in the chain or not.
+    {
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        proc.setChainOrder (order, {});
+
+        setFloatParam (proc, params::gateMode, 0.0f);                                  // in chain, 0
+        setFloatParam (proc, params::compType, (float) tubamp::CompFx::Type::opto);    // in chain, not 0
+        setFloatParam (proc, params::comp2Type, 0.0f);                                 // outside, 0
+        setFloatParam (proc, params::drive2Type, (float) tubamp::DriveFx::Type::fuzz); // in chain, not 0
+        setFloatParam (proc, params::modTremVoice, (float) tubamp::TremoloFx::Voice::smooth); // in chain, = default
+
+        juce::MemoryBlock explicitBlob;
+        proc.getStateInformation (explicitBlob);
+        const auto explicitVar = proc.captureStateVar();
+
+        const auto heldExplicit = [] (tubamp::TubampAudioProcessor& p)
+        {
+            return choiceIndex (p, params::gateMode) == 0
+                && choiceIndex (p, params::compType) == (int) tubamp::CompFx::Type::opto
+                && choiceIndex (p, params::comp2Type) == 0
+                && choiceIndex (p, params::drive2Type) == (int) tubamp::DriveFx::Type::fuzz
+                && choiceIndex (p, params::modTremVoice) == (int) tubamp::TremoloFx::Voice::smooth;
+        };
+
+        const auto scramble = [] (tubamp::TubampAudioProcessor& p)
+        {
+            setFloatParam (p, params::gateMode, (float) tubamp::GateFx::Mode::smooth);
+            setFloatParam (p, params::compType, (float) tubamp::CompFx::Type::squash);
+            setFloatParam (p, params::comp2Type, (float) tubamp::CompFx::Type::fet);
+            setFloatParam (p, params::drive2Type, (float) tubamp::DriveFx::Type::boost);
+            setFloatParam (p, params::modTremVoice, (float) tubamp::TremoloFx::Voice::bias);
+        };
+
+        scramble (proc);
+        proc.setStateInformation (explicitBlob.getData(), (int) explicitBlob.getSize());
+        ok &= expect (heldExplicit (proc), "(e) host state: present type ids restore as saved (0, non-0, default; in chain or not)");
+
+        scramble (proc);
+        proc.applyStateVar (explicitVar);
+        ok &= expect (heldExplicit (proc), "(e) preset: present type ids restore as saved (0, non-0, default; in chain or not)");
+    }
+
+    // --- (d) presets and A/B (captureStateVar / applyStateVar)
+    const auto modern = source.captureStateVar();
+    auto older = source.captureStateVar();
+
+    if (auto* values = older.getProperty ("params", juce::var()).getDynamicObject())
+        for (auto* p : newParams (source))
+            values->removeProperty (juce::Identifier (p->paramID));
+
+    {
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        setNewParamsOffDefault (proc);
+
+        proc.applyStateVar (modern);
+        ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, total),
+                      "(d) a preset from this layout round-trips all 261 parameters exactly");
+
+        // The processor still holds the source's non-default types: absent ids must not
+        // leave them ringing, in or out of the chain.
+        proc.applyStateVar (older);
+        ok &= expect (pinnedAsExpected (proc, order),
+                      "(d) old-layout preset: in-chain type ids at Classic, the rest at the recommended type");
+        ok &= expect (newParamsAtDefault (proc, typeIds), "(d) old-layout preset: the other new parameters reset to their defaults");
+        ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, (size_t) kBaseParamCount),
+                      "(d) old-layout preset: all 166 existing parameters restore exactly");
+
+        setFloatParam (proc, params::eqType, (float) tubamp::EqFx::Type::graphic);
+        ValueRecorder recorder (*proc.apvts.getParameter (params::eqType));
+        proc.applyStateVar (older);
+        ok &= expect (recorder.seen.size() == 1 && recorder.seen.front() == 0.0f,
+                      "(d) old-layout preset: a pinned id moves to Classic without passing through the default");
+
+        // A/B: a slot captured on this layout and recalled over other settings.
+        proc.applyStateVar (modern);
+        proc.presets.captureToSlot (0);
+        setNewParamsOffDefault (proc);
+        setFloatParam (proc, params::compType, 0.0f);
+        proc.presets.recallSlot (0);
+        ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, total),
+                      "(d) an A/B slot round-trips all 261 parameters exactly");
+    }
+
+    // A preset that predates the arrangeable chain loads as the classic nine and pins them.
+    {
+        auto* state = new juce::DynamicObject();
+        auto* values = new juce::DynamicObject();
+        values->setProperty ("comp_threshold", -33.0);
+        state->setProperty ("version", 1);
+        state->setProperty ("params", juce::var (values));
+
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        setNewParamsOffDefault (proc);
+        proc.applyStateVar (juce::var (state));
+
+        ok &= expect (proc.getChainOrder() == chain::classicOrder() && pinnedAsExpected (proc, chain::classicOrder()),
+                      "(d) a v1 preset without a chain: classic blocks at Classic, instances 2-3 recommended");
     }
 
     return ok;
@@ -2288,6 +2719,10 @@ int main (int argc, char** argv)
     std::printf (engineStatePass ? "PASS: engine type defaults and state round-trips are correct\n"
                                  : "FAIL: engine type state behaviour is wrong\n");
 
+    const bool legacyPinPass = runLegacyPinTests (sampleRate, blockSize);
+    std::printf (legacyPinPass ? "PASS: engine type ids pin to Classic for older state and round-trip otherwise\n"
+                               : "FAIL: engine type legacy pin behaviour is wrong\n");
+
     const bool engineRenderPass = runEngineRenderTests (proc, sampleRate, blockSize);
     std::printf (engineRenderPass ? "PASS: every reverb/delay engine renders finite and decays to silence\n"
                                   : "FAIL: a reverb/delay engine render is wrong\n");
@@ -2300,7 +2735,7 @@ int main (int argc, char** argv)
                    && ampEqPass && factoryPass && concurrentPass && fxPass
                    && modelPathBPass && delayModePass
                    && splitPathPass && dualAmpLanePass && splitLatencyPass && splitStatePass
-                   && engineStatePass && engineRenderPass && delaySyncPass
+                   && engineStatePass && legacyPinPass && engineRenderPass && delaySyncPass
                ? 0
                : 1;
 }

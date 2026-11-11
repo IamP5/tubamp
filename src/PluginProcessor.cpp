@@ -11,6 +11,7 @@
  #include "WebEditor.h"
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <utility>
@@ -29,11 +30,13 @@ constexpr int kMaxResetsPerCallback = 2;
 /** split_mode's choice order, frozen with the parameter (docs/SPLIT.md §2). */
 enum class SplitMode { copy = 0, leftRight = 1, crossover = 2 };
 
-// 2 = the chain carries block instances and a row layout. applyStateVar still ignores
-// this number, deliberately: every property added since v1 is optional and "absent
-// means default", so a v1 preset loads correctly without ever consulting it. It is
-// here for the first change that cannot be expressed that way.
-constexpr int kStateVersion = 2;
+// 2 = the chain carries block instances and a row layout. 3 = the gate, comp, drive, EQ
+// and mod engine ids exist. applyStateVar still ignores this number, deliberately: every
+// property added since v1 is optional and "absent means default" — or, for the engine
+// type ids, absent means Classic (kLegacyTypePins), which keys on the id itself — so an
+// older preset loads correctly without ever consulting it. It is here for the first
+// change that cannot be expressed that way.
+constexpr int kStateVersion = 3;
 
 /** Applies a smoothed gain to the whole buffer as a single ramp — one pass, no zipper. */
 void applySmoothedGain (juce::AudioBuffer<float>& buffer, int numSamples,
@@ -215,6 +218,20 @@ SerializedOrder serializeOrder (const chain::Order& order)
 
     return { chain::emptyChainToken, text };
 }
+
+/** Every id kLegacyTypePins covers whose block instance is in `order`: the ids a restore
+    sets to 0 (Classic) when the restored state does not carry them. */
+std::vector<juce::String> legacyPinnedIds (const chain::Order& order)
+{
+    std::vector<juce::String> ids;
+
+    for (auto id : order)
+        for (const auto& pin : kLegacyTypePins)
+            if (chain::kindOf (id) == pin.kind)
+                ids.emplace_back (pin.ids[chain::instanceOf (id)]);
+
+    return ids;
+}
 } // namespace
 
 //==============================================================================
@@ -269,6 +286,12 @@ TubampAudioProcessor::TubampAudioProcessor()
     pp.fxOn[1]       = raw (params::fx2On);
     pp.fxOn[2]       = raw (params::fx3On);
 
+    pp.gateMode      = raw (params::gateMode);
+    pp.gateRelease   = raw (params::gateRelease);
+    pp.gateHold      = raw (params::gateHold);
+    pp.gateRange     = raw (params::gateRange);
+    pp.gateScHpf     = raw (params::gateScHpf);
+
     // Per-instance pointers, in the same index order chain::instanceOf() answers with.
     for (int k = 0; k < params::maxInstances; ++k)
     {
@@ -321,6 +344,36 @@ TubampAudioProcessor::TubampAudioProcessor()
         pp.reverbLowCut[k]   = raw (params::reverbLowCutIds[k]);
         pp.reverbHighCut[k]  = raw (params::reverbHighCutIds[k]);
         pp.reverbModAmt[k]   = raw (params::reverbModAmtIds[k]);
+
+        pp.compType[k]       = raw (params::compTypeIds[k]);
+        pp.compKnee[k]       = raw (params::compKneeIds[k]);
+        pp.compMix[k]        = raw (params::compMixIds[k]);
+        pp.compScHpf[k]      = raw (params::compScHpfIds[k]);
+        pp.compAutoMakeup[k] = raw (params::compAutoMakeupIds[k]);
+
+        pp.driveType[k]      = raw (params::driveTypeIds[k]);
+
+        pp.eqType[k]         = raw (params::eqTypeIds[k]);
+        pp.eqLowCut[k]       = raw (params::eqLowCutIds[k]);
+        pp.eqHighCut[k]      = raw (params::eqHighCutIds[k]);
+        pp.eqMidFreq[k]      = raw (params::eqMidFreqIds[k]);
+        pp.eqMidQ[k]         = raw (params::eqMidQIds[k]);
+        pp.eqTilt[k]         = raw (params::eqTiltIds[k]);
+        pp.eqLevel[k]        = raw (params::eqLevelIds[k]);
+        pp.eqVoice[k]        = raw (params::eqVoiceIds[k]);
+
+        for (int band = 0; band < params::numEqGraphicBands; ++band)
+            pp.eqGraphic[k][band] = raw (params::eqGraphicIds[band][k]);
+
+        pp.modChorusMode[k]  = raw (params::modChorusModeIds[k]);
+        pp.modPhaserModel[k] = raw (params::modPhaserModelIds[k]);
+        pp.modTremVoice[k]   = raw (params::modTremVoiceIds[k]);
+        pp.modSync[k]        = raw (params::modSyncIds[k]);
+        pp.modWidth[k]       = raw (params::modWidthIds[k]);
+        pp.modTone[k]        = raw (params::modToneIds[k]);
+        pp.modShape[k]       = raw (params::modShapeIds[k]);
+        pp.modWave[k]        = raw (params::modWaveIds[k]);
+        pp.modColor[k]       = raw (params::modColorIds[k]);
     }
 
     pendingSlim.store (valueOf (raw (params::ampSlim)), std::memory_order_relaxed);
@@ -2098,16 +2151,6 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
     if (! root.isValid() || ! root.hasType ("TUBAMP"))
         return;
 
-    if (auto paramState = root.getChildWithName (apvts.state.getType()); paramState.isValid())
-        apvts.replaceState (paramState);
-
-    setEditorSize ({ (int) root.getProperty ("editorWidth", 0),
-                     (int) root.getProperty ("editorHeight", 0) });
-
-    const juce::String modelPath = root.getProperty ("modelPath", juce::String()).toString();
-    const juce::String modelPathB = root.getProperty ("modelPathB", juce::String()).toString();
-    const juce::String irPath = root.getProperty ("irPath", juce::String()).toString();
-
     // Tolerant parse: missing or unreadable -> the classic order, so state written
     // before the chain became user-arrangeable still loads as the chain it had.
     // chainOrderV2 wins when it is there (see serializeOrder).
@@ -2123,6 +2166,25 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
 
     const auto order = chainState.order;
     const auto rows = chainState.rows;
+
+    if (auto paramState = root.getChildWithName (apvts.state.getType()); paramState.isValid())
+    {
+        // The pin goes into the tree itself, so replaceState sets each pinned id straight
+        // to Classic: the audio thread never sees the recommended type for a block of an
+        // older session, not even for one callback.
+        for (const auto& id : legacyPinnedIds (order))
+            if (! paramState.getChildWithProperty ("id", id).isValid())
+                paramState.appendChild (juce::ValueTree ("PARAM", { { "id", id }, { "value", 0.0f } }), nullptr);
+
+        apvts.replaceState (paramState);
+    }
+
+    setEditorSize ({ (int) root.getProperty ("editorWidth", 0),
+                     (int) root.getProperty ("editorHeight", 0) });
+
+    const juce::String modelPath = root.getProperty ("modelPath", juce::String()).toString();
+    const juce::String modelPathB = root.getProperty ("modelPathB", juce::String()).toString();
+    const juce::String irPath = root.getProperty ("irPath", juce::String()).toString();
 
     // The audio thread can have the new order immediately (single atomic word); the
     // notification is message-thread only.
@@ -2219,6 +2281,17 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
     if (obj == nullptr)
         return;
 
+    // Presets and A/B slots written before the chain became user-arrangeable have no
+    // "chainOrder": the void var stringifies to "" and parseOrderOrLegacy answers with
+    // the classic order. Parsed ahead of the parameters because the legacy pin depends on
+    // which blocks the restored chain holds.
+    const juce::String orderV2 = obj->getProperty ("chainOrderV2").toString();
+    const auto chainState = sanitiseOrderAndRows (
+        chain::sanitizeStructure (
+            chain::parseOrderOrLegacy (orderV2.isNotEmpty() ? orderV2
+                                                            : obj->getProperty ("chainOrder").toString())),
+        rowsFromString (obj->getProperty ("chainRows").toString()));
+
     const juce::var paramsVar = obj->getProperty ("params");
 
     if (auto* paramValues = paramsVar.getDynamicObject())
@@ -2227,12 +2300,20 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
         // (every v2 instance-pool and amp_eq_* id, from a v1 preset) must not leave
         // whatever the user last dialled in ringing through the recalled sound.
         // Captures from this build carry every parameter, so this only fires for
-        // old files.
+        // old files. The exception is the legacy pin: an absent engine type id of a
+        // block in the restored chain means Classic, the type the preset was made with.
+        const auto pinned = legacyPinnedIds (chainState.order);
+
         for (auto* parameter : getParameters())
         {
             if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (parameter))
-                if (! paramValues->hasProperty (ranged->paramID))
-                    ranged->setValueNotifyingHost (ranged->getDefaultValue());
+            {
+                if (paramValues->hasProperty (ranged->paramID))
+                    continue;
+
+                const bool pin = std::find (pinned.begin(), pinned.end(), ranged->paramID) != pinned.end();
+                ranged->setValueNotifyingHost (pin ? ranged->convertTo0to1 (0.0f) : ranged->getDefaultValue());
+            }
         }
 
         for (const auto& entry : paramValues->getProperties())
@@ -2245,18 +2326,9 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
         }
     }
 
-    // Presets and A/B slots written before the chain became user-arrangeable have no
-    // "chainOrder": the void var stringifies to "" and parseOrderOrLegacy answers with
-    // the classic order. Publish before the (slow, synchronous) model/IR loading below
-    // so the audio thread never runs the restored parameters against the old topology;
-    // adoptChainOrder at the end re-reports latency and notifies the editor.
-    const juce::String orderV2 = obj->getProperty ("chainOrderV2").toString();
-    const auto chainState = sanitiseOrderAndRows (
-        chain::sanitizeStructure (
-            chain::parseOrderOrLegacy (orderV2.isNotEmpty() ? orderV2
-                                                            : obj->getProperty ("chainOrder").toString())),
-        rowsFromString (obj->getProperty ("chainRows").toString()));
-
+    // Publish before the (slow, synchronous) model/IR loading below so the audio thread
+    // never runs the restored parameters against the old topology; adoptChainOrder at
+    // the end re-reports latency and notifies the editor.
     publishChainOrder (chainState.order, chainState.rows);
 
     const juce::String modelPath = obj->getProperty ("modelPath").toString();

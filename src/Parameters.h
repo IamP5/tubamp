@@ -245,6 +245,110 @@ inline constexpr auto reverb3LowCut   = "reverb3_lowcut";
 inline constexpr auto reverb3HighCut  = "reverb3_highcut";
 inline constexpr auto reverb3ModAmt   = "reverb3_mod";
 
+// Gate, compressor, drive, EQ and mod engines (docs/FX-ENGINES.md §2.7), hint 4. Every
+// type/mode/voicing choice is indexed by its engine's frozen enum; a fresh block starts
+// on the recommended type and state saved before these ids existed is pinned to
+// Classic (kLegacyTypePins, PluginProcessor.h).
+inline constexpr auto gateMode    = "gate_mode";    // choice: gateModeChoices (FROZEN), GateFx::Mode
+inline constexpr auto gateRelease = "gate_release"; // ms [5, 500] log, time for 60 dB of gain change
+inline constexpr auto gateHold    = "gate_hold";    // ms [0, 250]
+inline constexpr auto gateRange   = "gate_range";   // dB [-90, 0]; <= -89.95 = mute
+inline constexpr auto gateScHpf   = "gate_sc_hpf";  // Hz [20, 300] log, sidechain high-pass; <= 20.5 = off
+
+inline constexpr auto compType        = "comp_type";         // choice: compTypeChoices (FROZEN), CompFx::Type
+inline constexpr auto compKnee        = "comp_knee";         // dB [0, 24] total knee width
+inline constexpr auto compMix         = "comp_mix";          // % [0, 100] parallel mix, 100 = fully compressed
+inline constexpr auto compScHpf       = "comp_sc_hpf";       // Hz [20, 300] log, detector high-pass; <= 20.5 = off
+inline constexpr auto compAutoMakeup  = "comp_auto_makeup";  // bool: adds -gc(-10 dBFS) to the makeup
+inline constexpr auto comp2Type       = "comp2_type";
+inline constexpr auto comp2Knee       = "comp2_knee";
+inline constexpr auto comp2Mix        = "comp2_mix";
+inline constexpr auto comp2ScHpf      = "comp2_sc_hpf";
+inline constexpr auto comp2AutoMakeup = "comp2_auto_makeup";
+inline constexpr auto comp3Type       = "comp3_type";
+inline constexpr auto comp3Knee       = "comp3_knee";
+inline constexpr auto comp3Mix        = "comp3_mix";
+inline constexpr auto comp3ScHpf      = "comp3_sc_hpf";
+inline constexpr auto comp3AutoMakeup = "comp3_auto_makeup";
+
+inline constexpr auto driveType  = "drive_type";  // choice: driveTypeChoices (FROZEN), DriveFx::Type
+inline constexpr auto drive2Type = "drive2_type";
+inline constexpr auto drive3Type = "drive3_type";
+
+inline constexpr auto eqType     = "eq_type";      // choice: eqTypeChoices (FROZEN), EqFx::Type
+inline constexpr auto eqLowCut   = "eq_lowcut";    // Hz [20, 400] log, Parametric; <= 20.5 = off
+inline constexpr auto eqHighCut  = "eq_highcut";   // Hz [2000, 20000] log, Parametric; >= 19999 = off
+inline constexpr auto eqMidFreq  = "eq_mid_freq";  // Hz [100, 8000] log, Parametric mid bell
+inline constexpr auto eqMidQ     = "eq_mid_q";     // [0.5, 8] log, Parametric mid bell
+inline constexpr auto eqTilt     = "eq_tilt";      // dB [-6, 6] Parametric, + = brighter
+inline constexpr auto eqLevel    = "eq_level";     // dB [-12, 12] Parametric, Stack, Graphic
+inline constexpr auto eqVoice    = "eq_voice";     // choice: eqVoiceChoices (FROZEN), EqFx::Voice, Stack only
+inline constexpr auto eqG100     = "eq_g100";      // dB [-12, 12] Graphic bands, 100 Hz ... 6.4 kHz
+inline constexpr auto eqG200     = "eq_g200";
+inline constexpr auto eqG400     = "eq_g400";
+inline constexpr auto eqG800     = "eq_g800";
+inline constexpr auto eqG1k6     = "eq_g1k6";
+inline constexpr auto eqG3k2     = "eq_g3k2";
+inline constexpr auto eqG6k4     = "eq_g6k4";
+inline constexpr auto eq2Type    = "eq2_type";
+inline constexpr auto eq2LowCut  = "eq2_lowcut";
+inline constexpr auto eq2HighCut = "eq2_highcut";
+inline constexpr auto eq2MidFreq = "eq2_mid_freq";
+inline constexpr auto eq2MidQ    = "eq2_mid_q";
+inline constexpr auto eq2Tilt    = "eq2_tilt";
+inline constexpr auto eq2Level   = "eq2_level";
+inline constexpr auto eq2Voice   = "eq2_voice";
+inline constexpr auto eq2G100    = "eq2_g100";
+inline constexpr auto eq2G200    = "eq2_g200";
+inline constexpr auto eq2G400    = "eq2_g400";
+inline constexpr auto eq2G800    = "eq2_g800";
+inline constexpr auto eq2G1k6    = "eq2_g1k6";
+inline constexpr auto eq2G3k2    = "eq2_g3k2";
+inline constexpr auto eq2G6k4    = "eq2_g6k4";
+inline constexpr auto eq3Type    = "eq3_type";
+inline constexpr auto eq3LowCut  = "eq3_lowcut";
+inline constexpr auto eq3HighCut = "eq3_highcut";
+inline constexpr auto eq3MidFreq = "eq3_mid_freq";
+inline constexpr auto eq3MidQ    = "eq3_mid_q";
+inline constexpr auto eq3Tilt    = "eq3_tilt";
+inline constexpr auto eq3Level   = "eq3_level";
+inline constexpr auto eq3Voice   = "eq3_voice";
+inline constexpr auto eq3G100    = "eq3_g100";
+inline constexpr auto eq3G200    = "eq3_g200";
+inline constexpr auto eq3G400    = "eq3_g400";
+inline constexpr auto eq3G800    = "eq3_g800";
+inline constexpr auto eq3G1k6    = "eq3_g1k6";
+inline constexpr auto eq3G3k2    = "eq3_g3k2";
+inline constexpr auto eq3G6k4    = "eq3_g6k4";
+
+inline constexpr auto modChorusMode   = "mod_chorus_mode";   // choice: modChorusModeChoices (FROZEN), ChorusFx::Mode
+inline constexpr auto modPhaserModel  = "mod_phaser_model";  // choice: modPhaserModelChoices (FROZEN), PhaserFx::Model
+inline constexpr auto modTremVoice    = "mod_trem_voice";    // choice: modTremVoiceChoices (FROZEN), TremoloFx::Voice
+inline constexpr auto modSync         = "mod_sync";          // choice: modSyncChoices (FROZEN), 0 = Off (free mod_rate)
+inline constexpr auto modWidth        = "mod_width";         // [0, 1] chorus wet width; tremolo spread = 180 deg x width
+inline constexpr auto modTone         = "mod_tone";          // [0, 1] chorus wet low-pass; tremolo Harmonic crossover
+inline constexpr auto modShape        = "mod_shape";         // [0, 1] tremolo Smooth skew / pulse duty, Bias knee
+inline constexpr auto modWave         = "mod_wave";          // [0, 1] tremolo Smooth waveform: sine -> triangle -> pulse
+inline constexpr auto modColor        = "mod_color";         // bool: Phase 90 block logo / Small Stone Color
+inline constexpr auto mod2ChorusMode  = "mod2_chorus_mode";
+inline constexpr auto mod2PhaserModel = "mod2_phaser_model";
+inline constexpr auto mod2TremVoice   = "mod2_trem_voice";
+inline constexpr auto mod2Sync        = "mod2_sync";
+inline constexpr auto mod2Width       = "mod2_width";
+inline constexpr auto mod2Tone        = "mod2_tone";
+inline constexpr auto mod2Shape       = "mod2_shape";
+inline constexpr auto mod2Wave        = "mod2_wave";
+inline constexpr auto mod2Color       = "mod2_color";
+inline constexpr auto mod3ChorusMode  = "mod3_chorus_mode";
+inline constexpr auto mod3PhaserModel = "mod3_phaser_model";
+inline constexpr auto mod3TremVoice   = "mod3_trem_voice";
+inline constexpr auto mod3Sync        = "mod3_sync";
+inline constexpr auto mod3Width       = "mod3_width";
+inline constexpr auto mod3Tone        = "mod3_tone";
+inline constexpr auto mod3Shape       = "mod3_shape";
+inline constexpr auto mod3Wave        = "mod3_wave";
+inline constexpr auto mod3Color       = "mod3_color";
+
 // Instance-indexed views of the ids above (index 0 = instance 1). The processor
 // resolves its per-instance pointer arrays through these; the ids stay literals, so
 // nothing anywhere may derive one by string manipulation.
@@ -300,6 +404,47 @@ inline constexpr const char* reverbLowCutIds[maxInstances]   { reverbLowCut,   r
 inline constexpr const char* reverbHighCutIds[maxInstances]  { reverbHighCut,  reverb2HighCut,  reverb3HighCut };
 inline constexpr const char* reverbModAmtIds[maxInstances]   { reverbModAmt,   reverb2ModAmt,   reverb3ModAmt };
 
+inline constexpr const char* compTypeIds[maxInstances]       { compType,       comp2Type,       comp3Type };
+inline constexpr const char* compKneeIds[maxInstances]       { compKnee,       comp2Knee,       comp3Knee };
+inline constexpr const char* compMixIds[maxInstances]        { compMix,        comp2Mix,        comp3Mix };
+inline constexpr const char* compScHpfIds[maxInstances]      { compScHpf,      comp2ScHpf,      comp3ScHpf };
+inline constexpr const char* compAutoMakeupIds[maxInstances] { compAutoMakeup, comp2AutoMakeup, comp3AutoMakeup };
+
+inline constexpr const char* driveTypeIds[maxInstances] { driveType, drive2Type, drive3Type };
+
+inline constexpr const char* eqTypeIds[maxInstances]    { eqType,    eq2Type,    eq3Type };
+inline constexpr const char* eqLowCutIds[maxInstances]  { eqLowCut,  eq2LowCut,  eq3LowCut };
+inline constexpr const char* eqHighCutIds[maxInstances] { eqHighCut, eq2HighCut, eq3HighCut };
+inline constexpr const char* eqMidFreqIds[maxInstances] { eqMidFreq, eq2MidFreq, eq3MidFreq };
+inline constexpr const char* eqMidQIds[maxInstances]    { eqMidQ,    eq2MidQ,    eq3MidQ };
+inline constexpr const char* eqTiltIds[maxInstances]    { eqTilt,    eq2Tilt,    eq3Tilt };
+inline constexpr const char* eqLevelIds[maxInstances]   { eqLevel,   eq2Level,   eq3Level };
+inline constexpr const char* eqVoiceIds[maxInstances]   { eqVoice,   eq2Voice,   eq3Voice };
+inline constexpr const char* eqG100Ids[maxInstances]    { eqG100,    eq2G100,    eq3G100 };
+inline constexpr const char* eqG200Ids[maxInstances]    { eqG200,    eq2G200,    eq3G200 };
+inline constexpr const char* eqG400Ids[maxInstances]    { eqG400,    eq2G400,    eq3G400 };
+inline constexpr const char* eqG800Ids[maxInstances]    { eqG800,    eq2G800,    eq3G800 };
+inline constexpr const char* eqG1k6Ids[maxInstances]    { eqG1k6,    eq2G1k6,    eq3G1k6 };
+inline constexpr const char* eqG3k2Ids[maxInstances]    { eqG3k2,    eq2G3k2,    eq3G3k2 };
+inline constexpr const char* eqG6k4Ids[maxInstances]    { eqG6k4,    eq2G6k4,    eq3G6k4 };
+
+inline constexpr const char* modChorusModeIds[maxInstances]  { modChorusMode,  mod2ChorusMode,  mod3ChorusMode };
+inline constexpr const char* modPhaserModelIds[maxInstances] { modPhaserModel, mod2PhaserModel, mod3PhaserModel };
+inline constexpr const char* modTremVoiceIds[maxInstances]   { modTremVoice,   mod2TremVoice,   mod3TremVoice };
+inline constexpr const char* modSyncIds[maxInstances]        { modSync,        mod2Sync,        mod3Sync };
+inline constexpr const char* modWidthIds[maxInstances]       { modWidth,       mod2Width,       mod3Width };
+inline constexpr const char* modToneIds[maxInstances]        { modTone,        mod2Tone,        mod3Tone };
+inline constexpr const char* modShapeIds[maxInstances]       { modShape,       mod2Shape,       mod3Shape };
+inline constexpr const char* modWaveIds[maxInstances]        { modWave,        mod2Wave,        mod3Wave };
+inline constexpr const char* modColorIds[maxInstances]       { modColor,       mod2Color,       mod3Color };
+
+/** Band-major view of the Graphic EQ ids, in EqParams::graphicDb order (100 Hz ... 6.4 kHz):
+    eqGraphicIds[band][instance]. */
+inline constexpr int numEqGraphicBands = 7;
+inline constexpr const char* const* eqGraphicIds[numEqGraphicBands] {
+    eqG100Ids, eqG200Ids, eqG400Ids, eqG800Ids, eqG1k6Ids, eqG3k2Ids, eqG6k4Ids
+};
+
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
 inline const juce::StringArray modTypeChoices { "Chorus", "Phaser", "Tremolo" };
@@ -325,6 +470,32 @@ inline constexpr const char* reverbTypeNames[] { "Room", "Hall", "Plate", "Sprin
 inline const juce::StringArray delayTypeChoices  { delayTypeNames,  (int) std::size (delayTypeNames) };
 inline const juce::StringArray delaySyncChoices  { delaySyncNames,  (int) std::size (delaySyncNames) };
 inline const juce::StringArray reverbTypeChoices { reverbTypeNames, (int) std::size (reverbTypeNames) };
+
+// Frozen once shipped (docs/FX-ENGINES.md §2.7.2) — append only, never reorder. Each list
+// indexes its engine's enum (Parameters.cpp ties the sizes to numTypes); modSyncNames
+// indexes kModSyncBeats, the beat table the mod dispatcher resolves sync with.
+inline constexpr const char* gateModeNames[]       { "Classic", "Tight", "Smooth" };
+inline constexpr const char* compTypeNames[]       { "Classic", "Clean", "Squash", "FET", "Opto" };
+inline constexpr const char* driveTypeNames[]      { "Classic", "Screamer", "Distortion", "Fuzz", "Boost", "Treble" };
+inline constexpr const char* eqTypeNames[]         { "Classic", "Parametric", "Stack", "Graphic" };
+inline constexpr const char* eqVoiceNames[]        { "Tweed", "Blackface", "British", "Top Boost" };
+inline constexpr const char* modChorusModeNames[]  { "Classic", "Wide", "CE", "Dimension", "Tri" };
+inline constexpr const char* modPhaserModelNames[] { "Classic", "Phase 90", "Small Stone" };
+inline constexpr const char* modTremVoiceNames[]   { "Classic", "Smooth", "Optical", "Bias", "Harmonic" };
+inline constexpr const char* modSyncNames[]        { "Off",  "1/32", "1/16T", "1/16", "1/8T",
+                                                     "1/16.", "1/8", "1/4T",  "1/8.", "1/4",
+                                                     "1/2T", "1/4.", "1/2",   "1/2.", "1/1",
+                                                     "2/1",  "4/1" };
+
+inline const juce::StringArray gateModeChoices       { gateModeNames,       (int) std::size (gateModeNames) };
+inline const juce::StringArray compTypeChoices       { compTypeNames,       (int) std::size (compTypeNames) };
+inline const juce::StringArray driveTypeChoices      { driveTypeNames,      (int) std::size (driveTypeNames) };
+inline const juce::StringArray eqTypeChoices         { eqTypeNames,         (int) std::size (eqTypeNames) };
+inline const juce::StringArray eqVoiceChoices        { eqVoiceNames,        (int) std::size (eqVoiceNames) };
+inline const juce::StringArray modChorusModeChoices  { modChorusModeNames,  (int) std::size (modChorusModeNames) };
+inline const juce::StringArray modPhaserModelChoices { modPhaserModelNames, (int) std::size (modPhaserModelNames) };
+inline const juce::StringArray modTremVoiceChoices   { modTremVoiceNames,   (int) std::size (modTremVoiceNames) };
+inline const juce::StringArray modSyncChoices        { modSyncNames,        (int) std::size (modSyncNames) };
 
 /** Output-gain compensation modes, in the official plugin's index order. */
 enum class OutputMode { raw = 0, normalized = 1, calibrated = 2 };

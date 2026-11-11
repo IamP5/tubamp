@@ -1,0 +1,262 @@
+# index	id	name	kind	min	max	step	skew	default	hint	choices
+0	gate_on	Gate On	bool	0	1	1	1	1	1	
+1	comp_on	Comp On	bool	0	1	1	1	1	1	
+2	drive_on	Drive On	bool	0	1	1	1	0	1	
+3	amp_on	Amp On	bool	0	1	1	1	1	1	
+4	cab_on	Cab On	bool	0	1	1	1	1	1	
+5	eq_on	EQ On	bool	0	1	1	1	1	1	
+6	mod_on	Mod On	bool	0	1	1	1	1	1	
+7	delay_on	Delay On	bool	0	1	1	1	1	1	
+8	reverb_on	Reverb On	bool	0	1	1	1	1	1	
+9	input_trim	Input Trim	float	-24	24	0.100000001	1	3.57627869e-07	1	
+10	output_level	Output Level	float	-60	12	0.100000001	1	8.94069672e-07	1	
+11	gate_threshold	Gate Threshold	float	-100	0	0.100000001	1	-80	1	
+12	comp_threshold	Comp Threshold	float	-60	0	0.100000001	1	-20	1	
+13	comp_ratio	Comp Ratio	float	1	20	0.00999999978	0.407813042	4	1	
+14	comp_attack	Comp Attack	float	0.100000001	100	0.00999999978	0.198893845	5	1	
+15	comp_release	Comp Release	float	10	1000	0.100000001	0.289064825	120	1	
+16	comp_makeup	Comp Makeup	float	0	24	0.100000001	1	0	1	
+17	drive_gain	Drive Gain	float	0	36	0.100000001	1	12	1	
+18	drive_tone	Drive Tone	float	500	12000	1	0.390553981	4000	1	
+19	drive_level	Drive Level	float	-24	12	0.100000001	1	3.57627869e-07	1	
+20	amp_input	Amp Input	float	-20	20	0.100000001	1	2.98023224e-07	1	
+21	amp_output	Amp Output	float	-40	40	0.100000001	1	5.96046448e-07	1	
+22	amp_out_mode	Output Mode	choice	0	2	1	1	1	1	Raw|Normalized|Calibrated
+23	amp_cal_input	Calibrate Input	bool	0	1	1	1	0	1	
+24	amp_cal_level	Input Calibration Level	float	-60	60	0.100000001	1	12.000001	1	
+25	amp_slim	Slim	float	0	1	0.00999999978	1	0	1	
+26	cab_lowcut	Cab Low Cut	float	20	500	1	0.386852801	80	1	
+27	cab_highcut	Cab High Cut	float	2000	20000	1	0.486056685	8000	1	
+28	eq_bass	Bass	float	0	10	0.100000001	1	5	1	
+29	eq_mid	Middle	float	0	10	0.100000001	1	5	1	
+30	eq_treble	Treble	float	0	10	0.100000001	1	5	1	
+31	mod_type	Mod Type	choice	0	2	1	1	0	1	Chorus|Phaser|Tremolo
+32	mod_rate	Mod Rate	float	0.0500000007	10	0.00100000005	0.255069703	1	1	
+33	mod_depth	Mod Depth	float	0	1	0.00100000005	1	0.400000006	1	
+34	mod_mix	Mod Mix	float	0	1	0.00100000005	1	0.350000024	1	
+35	delay_time	Delay Time	float	20	2000	0.100000001	0.289064825	420	1	
+36	delay_feedback	Delay Feedback	float	0	0.949999988	0.00100000005	1	0.350000024	1	
+37	delay_mix	Delay Mix	float	0	1	0.00100000005	1	0.25	1	
+38	reverb_size	Reverb Size	float	0	1	0.00100000005	1	0.5	1	
+39	reverb_damping	Reverb Damping	float	0	1	0.00100000005	1	0.5	1	
+40	reverb_mix	Reverb Mix	float	0	1	0.00100000005	1	0.25	1	
+41	fx1_on	FX 1 On	bool	0	1	1	1	1	1	
+42	fx2_on	FX 2 On	bool	0	1	1	1	1	1	
+43	fx3_on	FX 3 On	bool	0	1	1	1	1	1	
+44	comp2_on	Comp 2 On	bool	0	1	1	1	1	2	
+45	comp2_threshold	Comp 2 Threshold	float	-60	0	0.100000001	1	-20	2	
+46	comp2_ratio	Comp 2 Ratio	float	1	20	0.00999999978	0.407813042	4	2	
+47	comp2_attack	Comp 2 Attack	float	0.100000001	100	0.00999999978	0.198893845	5	2	
+48	comp2_release	Comp 2 Release	float	10	1000	0.100000001	0.289064825	120	2	
+49	comp2_makeup	Comp 2 Makeup	float	0	24	0.100000001	1	0	2	
+50	comp3_on	Comp 3 On	bool	0	1	1	1	1	2	
+51	comp3_threshold	Comp 3 Threshold	float	-60	0	0.100000001	1	-20	2	
+52	comp3_ratio	Comp 3 Ratio	float	1	20	0.00999999978	0.407813042	4	2	
+53	comp3_attack	Comp 3 Attack	float	0.100000001	100	0.00999999978	0.198893845	5	2	
+54	comp3_release	Comp 3 Release	float	10	1000	0.100000001	0.289064825	120	2	
+55	comp3_makeup	Comp 3 Makeup	float	0	24	0.100000001	1	0	2	
+56	drive2_on	Drive 2 On	bool	0	1	1	1	1	2	
+57	drive2_gain	Drive 2 Gain	float	0	36	0.100000001	1	12	2	
+58	drive2_tone	Drive 2 Tone	float	500	12000	1	0.390553981	4000	2	
+59	drive2_level	Drive 2 Level	float	-24	12	0.100000001	1	3.57627869e-07	2	
+60	drive3_on	Drive 3 On	bool	0	1	1	1	1	2	
+61	drive3_gain	Drive 3 Gain	float	0	36	0.100000001	1	12	2	
+62	drive3_tone	Drive 3 Tone	float	500	12000	1	0.390553981	4000	2	
+63	drive3_level	Drive 3 Level	float	-24	12	0.100000001	1	3.57627869e-07	2	
+64	eq2_on	EQ 2 On	bool	0	1	1	1	1	2	
+65	eq2_bass	EQ 2 Bass	float	0	10	0.100000001	1	5	2	
+66	eq2_mid	EQ 2 Middle	float	0	10	0.100000001	1	5	2	
+67	eq2_treble	EQ 2 Treble	float	0	10	0.100000001	1	5	2	
+68	eq3_on	EQ 3 On	bool	0	1	1	1	1	2	
+69	eq3_bass	EQ 3 Bass	float	0	10	0.100000001	1	5	2	
+70	eq3_mid	EQ 3 Middle	float	0	10	0.100000001	1	5	2	
+71	eq3_treble	EQ 3 Treble	float	0	10	0.100000001	1	5	2	
+72	mod2_on	Mod 2 On	bool	0	1	1	1	1	2	
+73	mod2_type	Mod 2 Type	choice	0	2	1	1	0	2	Chorus|Phaser|Tremolo
+74	mod2_rate	Mod 2 Rate	float	0.0500000007	10	0.00100000005	0.255069703	1	2	
+75	mod2_depth	Mod 2 Depth	float	0	1	0.00100000005	1	0.400000006	2	
+76	mod2_mix	Mod 2 Mix	float	0	1	0.00100000005	1	0.350000024	2	
+77	mod3_on	Mod 3 On	bool	0	1	1	1	1	2	
+78	mod3_type	Mod 3 Type	choice	0	2	1	1	0	2	Chorus|Phaser|Tremolo
+79	mod3_rate	Mod 3 Rate	float	0.0500000007	10	0.00100000005	0.255069703	1	2	
+80	mod3_depth	Mod 3 Depth	float	0	1	0.00100000005	1	0.400000006	2	
+81	mod3_mix	Mod 3 Mix	float	0	1	0.00100000005	1	0.350000024	2	
+82	delay2_on	Delay 2 On	bool	0	1	1	1	1	2	
+83	delay2_time	Delay 2 Time	float	20	2000	0.100000001	0.289064825	420	2	
+84	delay2_feedback	Delay 2 Feedback	float	0	0.949999988	0.00100000005	1	0.350000024	2	
+85	delay2_mix	Delay 2 Mix	float	0	1	0.00100000005	1	0.25	2	
+86	delay3_on	Delay 3 On	bool	0	1	1	1	1	2	
+87	delay3_time	Delay 3 Time	float	20	2000	0.100000001	0.289064825	420	2	
+88	delay3_feedback	Delay 3 Feedback	float	0	0.949999988	0.00100000005	1	0.350000024	2	
+89	delay3_mix	Delay 3 Mix	float	0	1	0.00100000005	1	0.25	2	
+90	reverb2_on	Reverb 2 On	bool	0	1	1	1	1	2	
+91	reverb2_size	Reverb 2 Size	float	0	1	0.00100000005	1	0.5	2	
+92	reverb2_damping	Reverb 2 Damping	float	0	1	0.00100000005	1	0.5	2	
+93	reverb2_mix	Reverb 2 Mix	float	0	1	0.00100000005	1	0.25	2	
+94	reverb3_on	Reverb 3 On	bool	0	1	1	1	1	2	
+95	reverb3_size	Reverb 3 Size	float	0	1	0.00100000005	1	0.5	2	
+96	reverb3_damping	Reverb 3 Damping	float	0	1	0.00100000005	1	0.5	2	
+97	reverb3_mix	Reverb 3 Mix	float	0	1	0.00100000005	1	0.25	2	
+98	amp_eq_on	Amp EQ On	bool	0	1	1	1	1	2	
+99	amp_eq_bass	Amp EQ Bass	float	0	10	0.100000001	1	5	2	
+100	amp_eq_mid	Amp EQ Middle	float	0	10	0.100000001	1	5	2	
+101	amp_eq_treble	Amp EQ Treble	float	0	10	0.100000001	1	5	2	
+102	delay_mode	Delay Mode	choice	0	2	1	1	0	2	Stereo|Ping-Pong|Dual
+103	delay_ratio	Delay Ratio	float	25	200	0.100000001	1	100	2	
+104	delay_width	Delay Width	float	0	1	0.00100000005	1	1	2	
+105	delay2_mode	Delay 2 Mode	choice	0	2	1	1	0	2	Stereo|Ping-Pong|Dual
+106	delay2_ratio	Delay 2 Ratio	float	25	200	0.100000001	1	100	2	
+107	delay2_width	Delay 2 Width	float	0	1	0.00100000005	1	1	2	
+108	delay3_mode	Delay 3 Mode	choice	0	2	1	1	0	2	Stereo|Ping-Pong|Dual
+109	delay3_ratio	Delay 3 Ratio	float	25	200	0.100000001	1	100	2	
+110	delay3_width	Delay 3 Width	float	0	1	0.00100000005	1	1	2	
+111	reverb_width	Reverb Width	float	0	1	0.00100000005	1	1	2	
+112	reverb2_width	Reverb 2 Width	float	0	1	0.00100000005	1	1	2	
+113	reverb3_width	Reverb 3 Width	float	0	1	0.00100000005	1	1	2	
+114	amp2_on	Amp 2 On	bool	0	1	1	1	1	2	
+115	amp2_input	Amp 2 Input	float	-20	20	0.100000001	1	2.98023224e-07	2	
+116	amp2_output	Amp 2 Output	float	-40	40	0.100000001	1	5.96046448e-07	2	
+117	split_on	Split On	bool	0	1	1	1	1	2	
+118	split_mode	Split Mode	choice	0	2	1	1	0	2	Copy|L/R|X-Over
+119	split_xover	Split X-Over	float	100	4000	1	0.34809956	800	2	
+120	mix_on	Mix On	bool	0	1	1	1	1	2	
+121	mix_alevel	Mix A Level	float	-60	12	0.100000001	1	8.94069672e-07	2	
+122	mix_blevel	Mix B Level	float	-60	12	0.100000001	1	8.94069672e-07	2	
+123	mix_apan	Mix A Pan	float	-1	1	0.00100000005	1	4.74974513e-08	2	
+124	mix_bpan	Mix B Pan	float	-1	1	0.00100000005	1	4.74974513e-08	2	
+125	mix_bphase	Mix B Phase	bool	0	1	1	1	0	2	
+126	mix_level	Mix Level	float	-60	12	0.100000001	1	8.94069672e-07	2	
+127	delay_type	Delay Type	choice	0	4	1	1	0	3	Digital|Analog|Tape|Lo-Fi|Diffuse
+128	delay_sync	Delay Sync	choice	0	14	1	1	0	3	Off|1/32|1/16T|1/16|1/8T|1/16.|1/8|1/4T|1/8.|1/4|1/2T|1/4.|1/2|1/2.|1/1
+129	delay_lowcut	Delay Low Cut	float	20	1000	1	0.331921577	80	3	
+130	delay_highcut	Delay High Cut	float	1000	20000	1	0.407813013	7000	3	
+131	delay_mod	Delay Mod	float	0	1	0.00100000005	1	0.200000003	3	
+132	delay_color	Delay Color	float	0	1	0.00100000005	1	0	3	
+133	delay_duck	Delay Duck	float	0	1	0.00100000005	1	0.25	3	
+134	delay2_type	Delay 2 Type	choice	0	4	1	1	0	3	Digital|Analog|Tape|Lo-Fi|Diffuse
+135	delay2_sync	Delay 2 Sync	choice	0	14	1	1	0	3	Off|1/32|1/16T|1/16|1/8T|1/16.|1/8|1/4T|1/8.|1/4|1/2T|1/4.|1/2|1/2.|1/1
+136	delay2_lowcut	Delay 2 Low Cut	float	20	1000	1	0.331921577	80	3	
+137	delay2_highcut	Delay 2 High Cut	float	1000	20000	1	0.407813013	7000	3	
+138	delay2_mod	Delay 2 Mod	float	0	1	0.00100000005	1	0.200000003	3	
+139	delay2_color	Delay 2 Color	float	0	1	0.00100000005	1	0	3	
+140	delay2_duck	Delay 2 Duck	float	0	1	0.00100000005	1	0.25	3	
+141	delay3_type	Delay 3 Type	choice	0	4	1	1	0	3	Digital|Analog|Tape|Lo-Fi|Diffuse
+142	delay3_sync	Delay 3 Sync	choice	0	14	1	1	0	3	Off|1/32|1/16T|1/16|1/8T|1/16.|1/8|1/4T|1/8.|1/4|1/2T|1/4.|1/2|1/2.|1/1
+143	delay3_lowcut	Delay 3 Low Cut	float	20	1000	1	0.331921577	80	3	
+144	delay3_highcut	Delay 3 High Cut	float	1000	20000	1	0.407813013	7000	3	
+145	delay3_mod	Delay 3 Mod	float	0	1	0.00100000005	1	0.200000003	3	
+146	delay3_color	Delay 3 Color	float	0	1	0.00100000005	1	0	3	
+147	delay3_duck	Delay 3 Duck	float	0	1	0.00100000005	1	0.25	3	
+148	reverb_type	Reverb Type	choice	0	4	1	1	2	3	Room|Hall|Plate|Spring|Ambient
+149	reverb_predelay	Reverb Pre-Delay	float	0	250	0.100000001	1	10	3	
+150	reverb_decay	Reverb Decay	float	0.200000003	20	0.00999999978	0.289064825	1.60000002	3	
+151	reverb_lowcut	Reverb Low Cut	float	20	1000	1	0.331921577	120	3	
+152	reverb_highcut	Reverb High Cut	float	1000	20000	1	0.407813013	8000	3	
+153	reverb_mod	Reverb Mod	float	0	1	0.00100000005	1	0.350000024	3	
+154	reverb2_type	Reverb 2 Type	choice	0	4	1	1	2	3	Room|Hall|Plate|Spring|Ambient
+155	reverb2_predelay	Reverb 2 Pre-Delay	float	0	250	0.100000001	1	10	3	
+156	reverb2_decay	Reverb 2 Decay	float	0.200000003	20	0.00999999978	0.289064825	1.60000002	3	
+157	reverb2_lowcut	Reverb 2 Low Cut	float	20	1000	1	0.331921577	120	3	
+158	reverb2_highcut	Reverb 2 High Cut	float	1000	20000	1	0.407813013	8000	3	
+159	reverb2_mod	Reverb 2 Mod	float	0	1	0.00100000005	1	0.350000024	3	
+160	reverb3_type	Reverb 3 Type	choice	0	4	1	1	2	3	Room|Hall|Plate|Spring|Ambient
+161	reverb3_predelay	Reverb 3 Pre-Delay	float	0	250	0.100000001	1	10	3	
+162	reverb3_decay	Reverb 3 Decay	float	0.200000003	20	0.00999999978	0.289064825	1.60000002	3	
+163	reverb3_lowcut	Reverb 3 Low Cut	float	20	1000	1	0.331921577	120	3	
+164	reverb3_highcut	Reverb 3 High Cut	float	1000	20000	1	0.407813013	8000	3	
+165	reverb3_mod	Reverb 3 Mod	float	0	1	0.00100000005	1	0.350000024	3	
+166	gate_mode	Gate Mode	choice	0	2	1	1	1	4	Classic|Tight|Smooth
+167	gate_release	Gate Release	float	5	500	0.100000001	0.289064825	30	4	
+168	gate_hold	Gate Hold	float	0	250	0.100000001	1	6	4	
+169	gate_range	Gate Range	float	-90	0	0.100000001	1	-90	4	
+170	gate_sc_hpf	Gate SC HPF	float	20	300	1	0.437674046	90	4	
+171	comp_type	Comp Type	choice	0	4	1	1	1	4	Classic|Clean|Squash|FET|Opto
+172	comp_knee	Comp Knee	float	0	24	0.100000001	1	6	4	
+173	comp_mix	Comp Mix	float	0	100	0.100000001	1	100	4	
+174	comp_sc_hpf	Comp SC HPF	float	20	300	1	0.437674046	20	4	
+175	comp_auto_makeup	Comp Auto Makeup	bool	0	1	1	1	0	4	
+176	comp2_type	Comp 2 Type	choice	0	4	1	1	1	4	Classic|Clean|Squash|FET|Opto
+177	comp2_knee	Comp 2 Knee	float	0	24	0.100000001	1	6	4	
+178	comp2_mix	Comp 2 Mix	float	0	100	0.100000001	1	100	4	
+179	comp2_sc_hpf	Comp 2 SC HPF	float	20	300	1	0.437674046	20	4	
+180	comp2_auto_makeup	Comp 2 Auto Makeup	bool	0	1	1	1	0	4	
+181	comp3_type	Comp 3 Type	choice	0	4	1	1	1	4	Classic|Clean|Squash|FET|Opto
+182	comp3_knee	Comp 3 Knee	float	0	24	0.100000001	1	6	4	
+183	comp3_mix	Comp 3 Mix	float	0	100	0.100000001	1	100	4	
+184	comp3_sc_hpf	Comp 3 SC HPF	float	20	300	1	0.437674046	20	4	
+185	comp3_auto_makeup	Comp 3 Auto Makeup	bool	0	1	1	1	0	4	
+186	drive_type	Drive Type	choice	0	5	1	1	1	4	Classic|Screamer|Distortion|Fuzz|Boost|Treble
+187	drive2_type	Drive 2 Type	choice	0	5	1	1	1	4	Classic|Screamer|Distortion|Fuzz|Boost|Treble
+188	drive3_type	Drive 3 Type	choice	0	5	1	1	1	4	Classic|Screamer|Distortion|Fuzz|Boost|Treble
+189	eq_type	EQ Type	choice	0	3	1	1	1	4	Classic|Parametric|Stack|Graphic
+190	eq_lowcut	EQ Low Cut	float	20	400	1	0.407813042	20	4	
+191	eq_highcut	EQ High Cut	float	2000	20000	1	0.486056685	20000	4	
+192	eq_mid_freq	EQ Mid Freq	float	100	8000	1	0.301762402	425	4	
+193	eq_mid_q	EQ Mid Q	float	0.5	8	0.00999999978	0.43067655	0.699999988	4	
+194	eq_tilt	EQ Tilt	float	-6	6	0.100000001	1	8.94069672e-08	4	
+195	eq_level	EQ Level	float	-12	12	0.100000001	1	1.78813934e-07	4	
+196	eq_voice	EQ Voice	choice	0	3	1	1	2	4	Tweed|Blackface|British|Top Boost
+197	eq_g100	EQ 100 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+198	eq_g200	EQ 200 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+199	eq_g400	EQ 400 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+200	eq_g800	EQ 800 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+201	eq_g1k6	EQ 1.6 kHz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+202	eq_g3k2	EQ 3.2 kHz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+203	eq_g6k4	EQ 6.4 kHz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+204	eq2_type	EQ 2 Type	choice	0	3	1	1	1	4	Classic|Parametric|Stack|Graphic
+205	eq2_lowcut	EQ 2 Low Cut	float	20	400	1	0.407813042	20	4	
+206	eq2_highcut	EQ 2 High Cut	float	2000	20000	1	0.486056685	20000	4	
+207	eq2_mid_freq	EQ 2 Mid Freq	float	100	8000	1	0.301762402	425	4	
+208	eq2_mid_q	EQ 2 Mid Q	float	0.5	8	0.00999999978	0.43067655	0.699999988	4	
+209	eq2_tilt	EQ 2 Tilt	float	-6	6	0.100000001	1	8.94069672e-08	4	
+210	eq2_level	EQ 2 Level	float	-12	12	0.100000001	1	1.78813934e-07	4	
+211	eq2_voice	EQ 2 Voice	choice	0	3	1	1	2	4	Tweed|Blackface|British|Top Boost
+212	eq2_g100	EQ 2 100 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+213	eq2_g200	EQ 2 200 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+214	eq2_g400	EQ 2 400 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+215	eq2_g800	EQ 2 800 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+216	eq2_g1k6	EQ 2 1.6 kHz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+217	eq2_g3k2	EQ 2 3.2 kHz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+218	eq2_g6k4	EQ 2 6.4 kHz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+219	eq3_type	EQ 3 Type	choice	0	3	1	1	1	4	Classic|Parametric|Stack|Graphic
+220	eq3_lowcut	EQ 3 Low Cut	float	20	400	1	0.407813042	20	4	
+221	eq3_highcut	EQ 3 High Cut	float	2000	20000	1	0.486056685	20000	4	
+222	eq3_mid_freq	EQ 3 Mid Freq	float	100	8000	1	0.301762402	425	4	
+223	eq3_mid_q	EQ 3 Mid Q	float	0.5	8	0.00999999978	0.43067655	0.699999988	4	
+224	eq3_tilt	EQ 3 Tilt	float	-6	6	0.100000001	1	8.94069672e-08	4	
+225	eq3_level	EQ 3 Level	float	-12	12	0.100000001	1	1.78813934e-07	4	
+226	eq3_voice	EQ 3 Voice	choice	0	3	1	1	2	4	Tweed|Blackface|British|Top Boost
+227	eq3_g100	EQ 3 100 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+228	eq3_g200	EQ 3 200 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+229	eq3_g400	EQ 3 400 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+230	eq3_g800	EQ 3 800 Hz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+231	eq3_g1k6	EQ 3 1.6 kHz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+232	eq3_g3k2	EQ 3 3.2 kHz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+233	eq3_g6k4	EQ 3 6.4 kHz	float	-12	12	0.100000001	1	1.78813934e-07	4	
+234	mod_chorus_mode	Mod Chorus Mode	choice	0	4	1	1	1	4	Classic|Wide|CE|Dimension|Tri
+235	mod_phaser_model	Mod Phaser Model	choice	0	2	1	1	1	4	Classic|Phase 90|Small Stone
+236	mod_trem_voice	Mod Trem Voice	choice	0	4	1	1	1	4	Classic|Smooth|Optical|Bias|Harmonic
+237	mod_sync	Mod Sync	choice	0	16	1	1	0	4	Off|1/32|1/16T|1/16|1/8T|1/16.|1/8|1/4T|1/8.|1/4|1/2T|1/4.|1/2|1/2.|1/1|2/1|4/1
+238	mod_width	Mod Width	float	0	1	0.00100000005	1	1	4	
+239	mod_tone	Mod Tone	float	0	1	0.00100000005	1	0.5	4	
+240	mod_shape	Mod Shape	float	0	1	0.00100000005	1	0.5	4	
+241	mod_wave	Mod Wave	float	0	1	0.00100000005	1	0	4	
+242	mod_color	Mod Color	bool	0	1	1	1	1	4	
+243	mod2_chorus_mode	Mod 2 Chorus Mode	choice	0	4	1	1	1	4	Classic|Wide|CE|Dimension|Tri
+244	mod2_phaser_model	Mod 2 Phaser Model	choice	0	2	1	1	1	4	Classic|Phase 90|Small Stone
+245	mod2_trem_voice	Mod 2 Trem Voice	choice	0	4	1	1	1	4	Classic|Smooth|Optical|Bias|Harmonic
+246	mod2_sync	Mod 2 Sync	choice	0	16	1	1	0	4	Off|1/32|1/16T|1/16|1/8T|1/16.|1/8|1/4T|1/8.|1/4|1/2T|1/4.|1/2|1/2.|1/1|2/1|4/1
+247	mod2_width	Mod 2 Width	float	0	1	0.00100000005	1	1	4	
+248	mod2_tone	Mod 2 Tone	float	0	1	0.00100000005	1	0.5	4	
+249	mod2_shape	Mod 2 Shape	float	0	1	0.00100000005	1	0.5	4	
+250	mod2_wave	Mod 2 Wave	float	0	1	0.00100000005	1	0	4	
+251	mod2_color	Mod 2 Color	bool	0	1	1	1	1	4	
+252	mod3_chorus_mode	Mod 3 Chorus Mode	choice	0	4	1	1	1	4	Classic|Wide|CE|Dimension|Tri
+253	mod3_phaser_model	Mod 3 Phaser Model	choice	0	2	1	1	1	4	Classic|Phase 90|Small Stone
+254	mod3_trem_voice	Mod 3 Trem Voice	choice	0	4	1	1	1	4	Classic|Smooth|Optical|Bias|Harmonic
+255	mod3_sync	Mod 3 Sync	choice	0	16	1	1	0	4	Off|1/32|1/16T|1/16|1/8T|1/16.|1/8|1/4T|1/8.|1/4|1/2T|1/4.|1/2|1/2.|1/1|2/1|4/1
+256	mod3_width	Mod 3 Width	float	0	1	0.00100000005	1	1	4	
+257	mod3_tone	Mod 3 Tone	float	0	1	0.00100000005	1	0.5	4	
+258	mod3_shape	Mod 3 Shape	float	0	1	0.00100000005	1	0.5	4	
+259	mod3_wave	Mod 3 Wave	float	0	1	0.00100000005	1	0	4	
+260	mod3_color	Mod 3 Color	bool	0	1	1	1	1	4	

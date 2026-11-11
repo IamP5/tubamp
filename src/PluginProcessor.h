@@ -24,6 +24,28 @@ namespace tubamp
 static_assert (params::maxInstances == chain::maxInstancesPerKind,
                "the parameter pool and the block-instance pool must be the same size");
 
+/** The legacy pin (docs/FX-ENGINES.md §2.7.5). A new type/mode/voicing id defaults to
+    the recommended type, but state written before the id existed was made with Classic:
+    when a restore lacks one of these ids and the block instance it belongs to is in the
+    restored chain, the id is set to 0 instead of its default. Blocks outside the chain
+    keep the default, so adding one later starts on the recommended type. Keyed on the
+    id's absence, never on the state version. */
+struct LegacyTypePin
+{
+    chain::BlockId kind;
+    const char* const* ids; // instance-indexed, chain::numInstancesOf (kind) entries
+};
+
+inline constexpr LegacyTypePin kLegacyTypePins[] {
+    { chain::BlockId::gate,  &params::gateMode },
+    { chain::BlockId::comp,  params::compTypeIds },
+    { chain::BlockId::drive, params::driveTypeIds },
+    { chain::BlockId::eq,    params::eqTypeIds },
+    { chain::BlockId::mod,   params::modChorusModeIds },
+    { chain::BlockId::mod,   params::modPhaserModelIds },
+    { chain::BlockId::mod,   params::modTremVoiceIds },
+};
+
 /**
     User-buildable chain between two fixed endpoints:
 
@@ -462,6 +484,41 @@ private:
         std::atomic<float>* mixBPan = nullptr;
         std::atomic<float>* mixBPhase = nullptr;
         std::atomic<float>* mixLevel = nullptr;
+
+        // Gate, compressor, drive, EQ and mod engine parameters (docs/FX-ENGINES.md §2.7).
+        std::atomic<float>* gateMode = nullptr;
+        std::atomic<float>* gateRelease = nullptr;
+        std::atomic<float>* gateHold = nullptr;
+        std::atomic<float>* gateRange = nullptr;
+        std::atomic<float>* gateScHpf = nullptr;
+
+        std::atomic<float>* compType[params::maxInstances] {};
+        std::atomic<float>* compKnee[params::maxInstances] {};
+        std::atomic<float>* compMix[params::maxInstances] {};
+        std::atomic<float>* compScHpf[params::maxInstances] {};
+        std::atomic<float>* compAutoMakeup[params::maxInstances] {};
+
+        std::atomic<float>* driveType[params::maxInstances] {};
+
+        std::atomic<float>* eqType[params::maxInstances] {};
+        std::atomic<float>* eqLowCut[params::maxInstances] {};
+        std::atomic<float>* eqHighCut[params::maxInstances] {};
+        std::atomic<float>* eqMidFreq[params::maxInstances] {};
+        std::atomic<float>* eqMidQ[params::maxInstances] {};
+        std::atomic<float>* eqTilt[params::maxInstances] {};
+        std::atomic<float>* eqLevel[params::maxInstances] {};
+        std::atomic<float>* eqVoice[params::maxInstances] {};
+        std::atomic<float>* eqGraphic[params::maxInstances][params::numEqGraphicBands] {};
+
+        std::atomic<float>* modChorusMode[params::maxInstances] {};
+        std::atomic<float>* modPhaserModel[params::maxInstances] {};
+        std::atomic<float>* modTremVoice[params::maxInstances] {};
+        std::atomic<float>* modSync[params::maxInstances] {};
+        std::atomic<float>* modWidth[params::maxInstances] {};
+        std::atomic<float>* modTone[params::maxInstances] {};
+        std::atomic<float>* modShape[params::maxInstances] {};
+        std::atomic<float>* modWave[params::maxInstances] {};
+        std::atomic<float>* modColor[params::maxInstances] {};
     };
 
     ParamPtrs pp;

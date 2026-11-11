@@ -1,7 +1,14 @@
 #include "Parameters.h"
 
+#include "dsp/Chorus.h"
+#include "dsp/Compressor.h"
 #include "dsp/Delay.h"
+#include "dsp/Drive.h"
+#include "dsp/Eq.h"
+#include "dsp/Gate.h"
+#include "dsp/Phaser.h"
 #include "dsp/Reverb.h"
+#include "dsp/Tremolo.h"
 
 namespace params
 {
@@ -13,12 +20,48 @@ static_assert (std::size (reverbTypeNames) == (size_t) tubamp::ReverbFx::numType
 static_assert (std::size (delaySyncNames) == (size_t) tubamp::kNumDelaySyncChoices,
                "delay_sync choices must match kDelaySyncBeats");
 
+static_assert (std::size (gateModeNames) == (size_t) tubamp::GateFx::numTypes,
+               "gate_mode choices must match GateFx::Mode");
+static_assert (std::size (compTypeNames) == (size_t) tubamp::CompFx::numTypes,
+               "comp_type choices must match CompFx::Type");
+static_assert (std::size (driveTypeNames) == (size_t) tubamp::DriveFx::numTypes,
+               "drive_type choices must match DriveFx::Type");
+static_assert (std::size (eqTypeNames) == (size_t) tubamp::EqFx::numTypes,
+               "eq_type choices must match EqFx::Type");
+static_assert (std::size (eqVoiceNames) == (size_t) tubamp::EqFx::numVoices,
+               "eq_voice choices must match EqFx::Voice");
+static_assert (std::size (modChorusModeNames) == (size_t) tubamp::ChorusFx::numTypes,
+               "mod_chorus_mode choices must match ChorusFx::Mode");
+static_assert (std::size (modPhaserModelNames) == (size_t) tubamp::PhaserFx::numTypes,
+               "mod_phaser_model choices must match PhaserFx::Model");
+static_assert (std::size (modTremVoiceNames) == (size_t) tubamp::TremoloFx::numTypes,
+               "mod_trem_voice choices must match TremoloFx::Voice");
+
 // Damping starts where the default reverb type's table entry puts it (the editor
 // applies the other types' entries when one is picked). reverb_damping is a v1
 // parameter whose default has always been 0.5, which is why Plate, the default type,
 // is the type the knob's centre is calibrated to.
 constexpr float kReverbDampingAtDefaultType = tubamp::kReverbDampingDefault[(int) tubamp::ReverbFx::Type::plate];
 static_assert (kReverbDampingAtDefaultType == 0.5f, "reverb_damping's default is frozen at 0.5");
+
+// The new parameters' defaults are the engines' own (docs/FX-ENGINES.md §2.7.3-4): each
+// Params struct starts on the recommended type, knobs with a per-type table take that
+// type's entry, and the rest take the struct's starting value. tests/golden/params-v4.tsv
+// records the result, so a later change to an engine header shows up in that diff.
+constexpr tubamp::GateParams kGateStart {};
+constexpr tubamp::CompParams kCompStart {};
+constexpr tubamp::EqParams kEqStart {};
+constexpr tubamp::ChorusParams kChorusStart {};
+constexpr tubamp::PhaserParams kPhaserStart {};
+constexpr tubamp::TremoloParams kTremStart {};
+
+static_assert (kGateStart.mode == (int) tubamp::GateFx::Mode::tight, "gate_mode starts on Tight");
+static_assert (kCompStart.type == (int) tubamp::CompFx::Type::clean, "comp_type starts on Clean");
+static_assert (kEqStart.type == (int) tubamp::EqFx::Type::parametric, "eq_type starts on Parametric");
+static_assert (kEqStart.voice == (int) tubamp::EqFx::Voice::british, "eq_voice starts on British");
+static_assert (kChorusStart.mode == (int) tubamp::ChorusFx::Mode::wide, "mod_chorus_mode starts on Wide");
+static_assert (kPhaserStart.model == (int) tubamp::PhaserFx::Model::phase90, "mod_phaser_model starts on Phase 90");
+static_assert (kTremStart.voice == (int) tubamp::TremoloFx::Voice::smooth, "mod_trem_voice starts on Smooth");
 
 namespace
 {
@@ -36,6 +79,11 @@ constexpr int kVersionHint2 = 2;
     shipped hint-2 ones and shift their AU indices; a higher hint sorts the whole group
     after them instead. Every later release that adds parameters needs the next number. */
 constexpr int kVersionHint3 = 3;
+
+/** Hint for the gate, compressor, drive, EQ and mod engine parameters, added after the
+    hint-3 set (reverb/delay engines) shipped — the same reason as kVersionHint3: a fresh
+    hint sorts the whole group after every shipped id in the AU parameter list. */
+constexpr int kVersionHint4 = 4;
 
 /** Range whose normalised 0.5 point sits at the geometric mean — the natural
     feel for frequency / time / ratio controls. */
@@ -62,6 +110,13 @@ void addBool (Layout& layout, const char* id, const juce::String& name, bool def
 {
     layout.add (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { id, versionHint }, name, defaultValue));
+}
+
+void addChoice (Layout& layout, const char* id, const juce::String& name,
+                const juce::StringArray& choices, int defaultIndex, int versionHint)
+{
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { id, versionHint }, name, choices, defaultIndex));
 }
 } // namespace
 
@@ -330,6 +385,74 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
         addFloat (layout, reverbLowCutIds[k],   name + " Low Cut",   logRange (20.0f, 1000.0f, 1.0f),    120.0f, "Hz", kVersionHint3);
         addFloat (layout, reverbHighCutIds[k],  name + " High Cut",  logRange (1000.0f, 20000.0f, 1.0f), 8000.0f, "Hz", kVersionHint3);
         addFloat (layout, reverbModAmtIds[k],   name + " Mod",       { 0.0f, 1.0f, 0.001f },             0.35f,  {},   kVersionHint3);
+    }
+
+    // --- gate, compressor, drive, EQ and mod engines (docs/FX-ENGINES.md §2.7.1), hint 4:
+    // the gate, then comp, drive, EQ and mod instances 1-3, each in the spec's
+    // per-instance order. Defaults come from the engine headers (kGateStart etc. above).
+    addChoice (layout, gateMode, "Gate Mode", gateModeChoices, kGateStart.mode, kVersionHint4);
+    addFloat (layout, gateRelease, "Gate Release", logRange (5.0f, 500.0f, 0.1f),
+              tubamp::kGateReleaseDefault[kGateStart.mode], "ms", kVersionHint4);
+    addFloat (layout, gateHold,    "Gate Hold",    { 0.0f, 250.0f, 0.1f },
+              tubamp::kGateHoldDefault[kGateStart.mode], "ms", kVersionHint4);
+    addFloat (layout, gateRange,   "Gate Range",   { -90.0f, 0.0f, 0.1f },         kGateStart.rangeDb, "dB", kVersionHint4);
+    addFloat (layout, gateScHpf,   "Gate SC HPF",  logRange (20.0f, 300.0f, 1.0f), kGateStart.scHpfHz, "Hz", kVersionHint4);
+
+    const char* const compNames[maxInstances]  { "Comp", "Comp 2", "Comp 3" };
+    const char* const driveNames[maxInstances] { "Drive", "Drive 2", "Drive 3" };
+    const char* const eqNames[maxInstances]    { "EQ", "EQ 2", "EQ 3" };
+    const char* const modNames[maxInstances]   { "Mod", "Mod 2", "Mod 3" };
+
+    for (int k = 0; k < maxInstances; ++k)
+    {
+        const juce::String name { compNames[k] };
+
+        addChoice (layout, compTypeIds[k], name + " Type", compTypeChoices, kCompStart.type, kVersionHint4);
+        addFloat (layout, compKneeIds[k],  name + " Knee",   { 0.0f, 24.0f, 0.1f },
+                  tubamp::kCompKneeDefault[kCompStart.type], "dB", kVersionHint4);
+        addFloat (layout, compMixIds[k],   name + " Mix",    { 0.0f, 100.0f, 0.1f },         kCompStart.mixPct,  "%",  kVersionHint4);
+        addFloat (layout, compScHpfIds[k], name + " SC HPF", logRange (20.0f, 300.0f, 1.0f), kCompStart.scHpfHz, "Hz", kVersionHint4);
+        addBool (layout, compAutoMakeupIds[k], name + " Auto Makeup", kCompStart.autoMakeup, kVersionHint4);
+    }
+
+    for (int k = 0; k < maxInstances; ++k)
+        addChoice (layout, driveTypeIds[k], juce::String (driveNames[k]) + " Type", driveTypeChoices,
+                   (int) tubamp::DriveFx::Type::screamer, kVersionHint4);
+
+    const char* const graphicNames[numEqGraphicBands] { "100 Hz", "200 Hz", "400 Hz", "800 Hz",
+                                                        "1.6 kHz", "3.2 kHz", "6.4 kHz" };
+
+    for (int k = 0; k < maxInstances; ++k)
+    {
+        const juce::String name { eqNames[k] };
+
+        addChoice (layout, eqTypeIds[k], name + " Type", eqTypeChoices, kEqStart.type, kVersionHint4);
+        addFloat (layout, eqLowCutIds[k],  name + " Low Cut",  logRange (20.0f, 400.0f, 1.0f),     kEqStart.lowCutHz,  "Hz", kVersionHint4);
+        addFloat (layout, eqHighCutIds[k], name + " High Cut", logRange (2000.0f, 20000.0f, 1.0f), kEqStart.highCutHz, "Hz", kVersionHint4);
+        addFloat (layout, eqMidFreqIds[k], name + " Mid Freq", logRange (100.0f, 8000.0f, 1.0f),   kEqStart.midFreqHz, "Hz", kVersionHint4);
+        addFloat (layout, eqMidQIds[k],    name + " Mid Q",    logRange (0.5f, 8.0f, 0.01f),       kEqStart.midQ,      {},   kVersionHint4);
+        addFloat (layout, eqTiltIds[k],    name + " Tilt",     { -6.0f, 6.0f, 0.1f },              kEqStart.tiltDb,    "dB", kVersionHint4);
+        addFloat (layout, eqLevelIds[k],   name + " Level",    { -12.0f, 12.0f, 0.1f },            kEqStart.levelDb,   "dB", kVersionHint4);
+        addChoice (layout, eqVoiceIds[k], name + " Voice", eqVoiceChoices, kEqStart.voice, kVersionHint4);
+
+        for (int band = 0; band < numEqGraphicBands; ++band)
+            addFloat (layout, eqGraphicIds[band][k], name + " " + graphicNames[band], { -12.0f, 12.0f, 0.1f },
+                      kEqStart.graphicDb[band], "dB", kVersionHint4);
+    }
+
+    for (int k = 0; k < maxInstances; ++k)
+    {
+        const juce::String name { modNames[k] };
+
+        addChoice (layout, modChorusModeIds[k],  name + " Chorus Mode",  modChorusModeChoices,  kChorusStart.mode,  kVersionHint4);
+        addChoice (layout, modPhaserModelIds[k], name + " Phaser Model", modPhaserModelChoices, kPhaserStart.model, kVersionHint4);
+        addChoice (layout, modTremVoiceIds[k],   name + " Trem Voice",   modTremVoiceChoices,   kTremStart.voice,   kVersionHint4);
+        addChoice (layout, modSyncIds[k],        name + " Sync",         modSyncChoices,        0,                  kVersionHint4);
+        addFloat (layout, modWidthIds[k], name + " Width", { 0.0f, 1.0f, 0.001f }, kChorusStart.width, {}, kVersionHint4);
+        addFloat (layout, modToneIds[k],  name + " Tone",  { 0.0f, 1.0f, 0.001f }, kChorusStart.tone,  {}, kVersionHint4);
+        addFloat (layout, modShapeIds[k], name + " Shape", { 0.0f, 1.0f, 0.001f }, kTremStart.shape,   {}, kVersionHint4);
+        addFloat (layout, modWaveIds[k],  name + " Wave",  { 0.0f, 1.0f, 0.001f }, kTremStart.wave,    {}, kVersionHint4);
+        addBool (layout, modColorIds[k], name + " Color", kPhaserStart.color, kVersionHint4);
     }
 
     return layout;

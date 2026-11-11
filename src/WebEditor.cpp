@@ -87,7 +87,35 @@ const char* const kSliderIds[] = {
     params::reverb2PreDelay, params::reverb2Decay,   params::reverb2LowCut,
     params::reverb2HighCut,  params::reverb2ModAmt,
     params::reverb3PreDelay, params::reverb3Decay,   params::reverb3LowCut,
-    params::reverb3HighCut,  params::reverb3ModAmt };
+    params::reverb3HighCut,  params::reverb3ModAmt,
+    // Gate, compressor, EQ and mod engine controls (docs/FX-ENGINES.md §2.7.1),
+    // appended in spec order.
+    params::gateRelease,     params::gateHold,       params::gateRange,
+    params::gateScHpf,
+    params::compKnee,        params::compMix,        params::compScHpf,
+    params::comp2Knee,       params::comp2Mix,       params::comp2ScHpf,
+    params::comp3Knee,       params::comp3Mix,       params::comp3ScHpf,
+    params::eqLowCut,        params::eqHighCut,      params::eqMidFreq,
+    params::eqMidQ,          params::eqTilt,         params::eqLevel,
+    params::eqG100,          params::eqG200,         params::eqG400,
+    params::eqG800,          params::eqG1k6,         params::eqG3k2,
+    params::eqG6k4,
+    params::eq2LowCut,       params::eq2HighCut,     params::eq2MidFreq,
+    params::eq2MidQ,         params::eq2Tilt,        params::eq2Level,
+    params::eq2G100,         params::eq2G200,        params::eq2G400,
+    params::eq2G800,         params::eq2G1k6,        params::eq2G3k2,
+    params::eq2G6k4,
+    params::eq3LowCut,       params::eq3HighCut,     params::eq3MidFreq,
+    params::eq3MidQ,         params::eq3Tilt,        params::eq3Level,
+    params::eq3G100,         params::eq3G200,        params::eq3G400,
+    params::eq3G800,         params::eq3G1k6,        params::eq3G3k2,
+    params::eq3G6k4,
+    params::modWidth,        params::modTone,        params::modShape,
+    params::modWave,
+    params::mod2Width,       params::mod2Tone,       params::mod2Shape,
+    params::mod2Wave,
+    params::mod3Width,       params::mod3Tone,       params::mod3Shape,
+    params::mod3Wave };
 
 const char* const kToggleIds[] = {
     params::gateOn,  params::compOn,  params::driveOn, params::ampOn,
@@ -103,7 +131,10 @@ const char* const kToggleIds[] = {
     params::ampEqOn,
     // Split/mix chain (docs/SPLIT.md §2), appended in spec order. amp_stereo is
     // gone — SUPERSEDED by amp2 as a chain block (docs/SPLIT.md, top).
-    params::amp2On,  params::splitOn,  params::mixOn,  params::mixBPhase };
+    params::amp2On,  params::splitOn,  params::mixOn,  params::mixBPhase,
+    // Engine switches (docs/FX-ENGINES.md §2.7.1), appended in spec order.
+    params::compAutoMakeup, params::comp2AutoMakeup, params::comp3AutoMakeup,
+    params::modColor,       params::mod2Color,       params::mod3Color };
 
 const char* const kComboIds[] = { params::ampOutMode, params::modType,
                                   params::mod2Type,   params::mod3Type,
@@ -115,11 +146,24 @@ const char* const kComboIds[] = { params::ampOutMode, params::modType,
                                   params::delayType,  params::delaySync,
                                   params::delay2Type, params::delay2Sync,
                                   params::delay3Type, params::delay3Sync,
-                                  params::reverbType, params::reverb2Type, params::reverb3Type };
+                                  params::reverbType, params::reverb2Type, params::reverb3Type,
+                                  // gate/comp/drive/EQ/mod engines (docs/FX-ENGINES.md §2.7.1)
+                                  params::gateMode,
+                                  params::compType,       params::comp2Type,       params::comp3Type,
+                                  params::driveType,      params::drive2Type,      params::drive3Type,
+                                  params::eqType,         params::eqVoice,
+                                  params::eq2Type,        params::eq2Voice,
+                                  params::eq3Type,        params::eq3Voice,
+                                  params::modChorusMode,  params::modPhaserModel,  params::modTremVoice,
+                                  params::modSync,
+                                  params::mod2ChorusMode, params::mod2PhaserModel, params::mod2TremVoice,
+                                  params::mod2Sync,
+                                  params::mod3ChorusMode, params::mod3PhaserModel, params::mod3TremVoice,
+                                  params::mod3Sync };
 
-static_assert (std::size (kSliderIds) == 119, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params + 30 reverb/delay engine params");
-static_assert (std::size (kToggleIds) == 30, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables + 4 split/mix enables (amp_stereo removed)");
-static_assert (std::size (kComboIds) == 17, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode + delay type/sync x3 + reverb type x3");
+static_assert (std::size (kSliderIds) == 183, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params + 30 reverb/delay engine params + 64 gate/comp/EQ/mod engine params");
+static_assert (std::size (kToggleIds) == 36, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables + 4 split/mix enables (amp_stereo removed) + comp_auto_makeup x3 + mod_color x3");
+static_assert (std::size (kComboIds) == 42, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode + delay type/sync x3 + reverb type x3 + 25 gate/comp/drive/EQ/mod engine choices");
 
 /** Upper bound on hosted parameters surfaced to the UI. A handful of plugins publish
     thousands; serializing all of them into every slot payload would cost more than it

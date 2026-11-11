@@ -65,7 +65,7 @@ original id (`comp_threshold`), instances 2 and 3 get `<kind>2_<key>` /
 pre-existing id keeps its index. The amp's own tone stack (`amp_eq_*`) lives at
 the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`.
 
-- Sliders (119): the 29 v1 ids — input_trim, output_level, gate_threshold,
+- Sliders (183): the 29 v1 ids — input_trim, output_level, gate_threshold,
   comp_threshold, comp_ratio, comp_attack, comp_release, comp_makeup, drive_gain,
   drive_tone, drive_level, amp_input, amp_output, amp_cal_level, amp_slim,
   cab_lowcut, cab_highcut, eq_bass, eq_mid, eq_treble, mod_rate, mod_depth,
@@ -81,21 +81,29 @@ the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`
   (docs/SPLIT.md §2): `amp2_input`, `amp2_output`, `split_xover`, `mix_alevel`,
   `mix_blevel`, `mix_apan`, `mix_bpan`, `mix_level`, and, appended for the
   reverb/delay engines (docs/REVERB-DELAY.md §1.4): `delay{,2,3}_lowcut|highcut|mod|
-  color|duck` (15), then `reverb{,2,3}_predelay|decay|lowcut|highcut|mod` (15).
-- Toggles (30): the 13 v1 ids — gate_on, comp_on, drive_on, amp_on, cab_on, eq_on,
+  color|duck` (15), then `reverb{,2,3}_predelay|decay|lowcut|highcut|mod` (15), and,
+  appended for the gate/comp/drive/EQ/mod engines (docs/FX-ENGINES.md §2.7.1, hint 4):
+  `gate_release|hold|range|sc_hpf` (4), `comp{,2,3}_knee|mix|sc_hpf` (9),
+  `eq{,2,3}_lowcut|highcut|mid_freq|mid_q|tilt|level|g100|g200|g400|g800|g1k6|g3k2|g6k4`
+  (39), then `mod{,2,3}_width|tone|shape|wave` (12).
+- Toggles (36): the 13 v1 ids — gate_on, comp_on, drive_on, amp_on, cab_on, eq_on,
   mod_on, delay_on, reverb_on, amp_cal_input, fx1_on, fx2_on, fx3_on — plus every
   instance's bypass (`comp2_on`, `comp3_on`, `drive2_on`, `drive3_on`, `eq2_on`,
   `eq3_on`, `mod2_on`, `mod3_on`, `delay2_on`, `delay3_on`, `reverb2_on`,
   `reverb3_on`), `amp_eq_on`, and, appended for split/mix (docs/SPLIT.md §2):
-  `amp2_on`, `split_on`, `mix_on`, `mix_bphase`. `amp_stereo` (docs/STEREO.md §1)
-  is REMOVED — never shipped, superseded by `amp2` as an ordinary chain block.
-- Combos (17): amp_out_mode, mod_type, mod2_type, mod3_type — mod is the only v1
+  `amp2_on`, `split_on`, `mix_on`, `mix_bphase`, then, appended for the engines
+  (docs/FX-ENGINES.md §2.7.1): `comp{,2,3}_auto_makeup`, `mod{,2,3}_color`.
+  `amp_stereo` (docs/STEREO.md §1) is REMOVED — never shipped, superseded by `amp2` as
+  an ordinary chain block.
+- Combos (42): amp_out_mode, mod_type, mod2_type, mod3_type — mod is the only v1
   duplicable kind with a choice parameter — plus `delay_mode`/`delay2_mode`/
   `delay3_mode` (stereo chain, docs/STEREO.md §4) and `split_mode`
   (docs/SPLIT.md §2, choices FROZEN: Copy | L/R | X-Over), then, appended
   (docs/REVERB-DELAY.md §1.4): `delay_type`, `delay_sync`, `delay2_type`,
   `delay2_sync`, `delay3_type`, `delay3_sync`, `reverb_type`, `reverb2_type`,
-  `reverb3_type`.
+  `reverb3_type`, then, appended (docs/FX-ENGINES.md §2.7.1, choices FROZEN):
+  `gate_mode`, `comp{,2,3}_type`, `drive{,2,3}_type`, `eq{,2,3}_type|voice` (6), and
+  `mod{,2,3}_chorus_mode|phaser_model|trem_voice|sync` (12).
 
 JS uses `getSliderState(id)` etc. from the vendored frontend lib; wrap in hooks
 (`useSliderParam`, `useToggleParam`, `useComboParam`) that subscribe to BOTH
@@ -104,7 +112,7 @@ call `sliderDragStarted/Ended` around gestures (host automation touch).
 
 **These lists are the whole relay surface.** A hosted plugin's parameters are NOT
 relays and never enter `SLIDER_PARAM_IDS` / `paramMeta` / `useSliderParam` — see
-§External AudioUnit slots below. 119/30/17 is the whole surface; a hosted plugin never
+§External AudioUnit slots below. 183/36/42 is the whole surface; a hosted plugin never
 grows it.
 
 ### Chain blocks

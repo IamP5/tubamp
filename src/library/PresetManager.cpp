@@ -193,11 +193,18 @@ void PresetManager::createFactoryPresetsIfMissing()
             p->setValueNotifyingHost (p->convertTo0to1 (rawValue));
     };
 
-    auto writeFactoryPreset = [this] (const juce::String& name)
+    auto writeFactoryPreset = [this, setFloat] (const juce::String& name)
     {
         // Rows stay auto: a factory preset should lay itself out for whatever window
         // the user opens it in, not carry one machine's arrangement.
         proc.setChainOrder (chain::classicOrder(), {});
+
+        // Every engine type at Classic (docs/FX-ENGINES.md §8 D-2): installs that wrote
+        // their presets before the types existed load them pinned to Classic, so a
+        // fresh install writes the same sound rather than the recommended types.
+        for (const auto& pin : kLegacyTypePins)
+            for (int k = 0; k < chain::numInstancesOf (pin.kind); ++k)
+                setFloat (pin.ids[k], 0.0f);
 
         const auto file = presetFileForName (name);
         const auto presetVar = buildPresetVar (name, {}, false, proc.captureStateVar());

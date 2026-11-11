@@ -361,8 +361,11 @@ take their defaults). This spec adds one, owned by the integrator:
   (today `:2116-2125`) **before** `apvts.replaceState` (`:2101-2102`), then add a `PARAM`
   child `{id, value = 0}` to the param tree for each absent pinned id, then
   `replaceState`. The audio thread never sees the recommended type for a pinned block.
-  `applyStateVar` (`:2215`): compute `chainState` (`:2253-2258`) before the parameter loop,
-  and after the "absent means default" loop (`:2231-2236`) set each absent pinned id to 0.
+  `applyStateVar` (`:2215`): compute `chainState` (`:2253-2258`) before the parameter loop;
+  the "absent means default" loop (`:2231-2236`) sets an absent pinned id straight to 0
+  instead of its default, so here too the recommended type is never published.
+  Implemented as one table, `kLegacyTypePins` (`src/PluginProcessor.h`: block kind →
+  instance-indexed id array), which `writeFactoryPreset` (§8 D-2) also walks.
 - `kStateVersion` becomes 3 (`src/PluginProcessor.cpp:36`) with a comment; the pin keys on
   absence of the id, never on the version number.
 
@@ -517,7 +520,7 @@ hint 1). New (hint 4):
 |---|---|---|---|---|---|---|---|
 | `gate_mode` | Gate Mode | Classic, Tight, Smooth | — | — | 1 (Tight) | — | all |
 | `gate_release` | Gate Release | 5 – 500 | 0.1 | log | 30 (`kGateReleaseDefault[Tight]`) | ms (time for 60 dB) | Tight, Smooth |
-| `gate_hold` | Gate Hold | 0 – 250 | 0.1 | linear | 10 | ms | Tight, Smooth |
+| `gate_hold` | Gate Hold | 0 – 250 | 0.1 | linear | 6 (`kGateHoldDefault[Tight]`) | ms | Tight, Smooth |
 | `gate_range` | Gate Range | −90 – 0 | 0.1 | linear | −90 | dB (≤ −89.95 = mute) | Tight, Smooth |
 | `gate_sc_hpf` | Gate SC HPF | 20 – 300 | 1 | log | 90 | Hz (≤ 20.5 = off) | Tight, Smooth |
 
@@ -526,7 +529,10 @@ dBFS**; in Classic it keeps AudioDSPTools' mean-square reading (≈ 3 dB lower f
 `[study: gate/report.md R1 "Threshold semantics"]`
 
 Per-mode starting points (`Gate.h`): `kGateReleaseDefault[3] { 30, 30, 80 }` ms
-`[study: R1 table, 30 ms Tight / 80 ms Smooth]` (Classic's entry is unused).
+`[study: R1 table, 30 ms Tight / 80 ms Smooth]`; `kGateHoldDefault[3] { 6, 6, 10 }` ms
+(Classic's entries are unused). Hold was 10 ms for every mode in the first draft; the
+engine measured 6 ms as the shortest hold that rides a 41 Hz decay without chattering
+while muting 50 ms palm-mute gaps to −38 dB, and the coordinator accepted it for Tight.
 
 Fixed (not parameters): attack 0.5 ms for 60 dB `[study: R1]`; hysteresis H = 6 dB
 `[study: R1, inside the 4.8–9.5 dB the references use]`; detector window 12 ms
@@ -540,7 +546,7 @@ struct GateParams
     int mode = 1;               // GateFx::Mode
     float thresholdDb = -80.0f; // [-100, 0]
     float releaseMs = 30.0f;    // [5, 500] time for 60 dB of gain change
-    float holdMs = 10.0f;       // [0, 250]
+    float holdMs = 6.0f;        // [0, 250] (kGateHoldDefault[Tight])
     float rangeDb = -90.0f;     // [-90, 0]; <= -89.95 means mute (gain exactly 0)
     float scHpfHz = 90.0f;      // [20, 300]; <= 20.5 means off
 };
@@ -671,8 +677,8 @@ ending with a 1 ms raised-cosine fade, over digital silence unless stated. "Clos
 measured on the **per-sample gain trace** (`--trace=gain`), from the end of the fade to the
 first sample with gain ≤ −20 dB — not on windowed RMS, whose 24 ms window at 82 Hz adds up
 to 12 ms (V:37). Each cell is the max over 8 start phases × 4 burst lengths
-(0.3 s + {0, 0.37, 1.13, 2.9} ms). Defaults unless stated (Tight, release 30, hold 10,
-range −90, HPF 90). The bounds were set from a numpy model of §4.1.5 at 48 kHz
+(0.3 s + {0, 0.37, 1.13, 2.9} ms). Defaults unless stated (Tight, release 30, hold 6
+(Smooth: release 80, hold 10), range −90, HPF 90). The bounds were set from a numpy model of §4.1.5 at 48 kHz
 `[sim]`; the model's values are in brackets.
 
 | # | Check | Pass |
