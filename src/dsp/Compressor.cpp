@@ -45,15 +45,40 @@ constexpr float kInputLimit = 1.0e6f;              // +120 dBFS: bounds every pr
 constexpr float kRampSeconds = 0.02f;              // threshold and slope, linear [study: R6]
 constexpr float kSmoothSeconds = 0.02f;            // knee, mix, sc hpf, auto makeup amount [choice: §2.5]
 constexpr int kControlInterval = 16;               // auto makeup and sc hpf updates [contract §4.2.4]
-constexpr int kSwitchSectionSamples = 32;          // granularity of a type switch's reset point [choice]
 constexpr float kAutoMakeupReferenceDb = -10.0f;   // guitar peak level [study: R3, guess]
+
+// Manual plus auto makeup never exceeds this. Auto makeup alone reaches 47.5 dB (T -60, R 20)
+// and manual adds 24: a note the compressor has not attacked yet would pass 71.5 dB of gain
+// (2700 x full scale for a 41 Hz onset at 100 ms attack). 48 dB keeps a full-scale onset under
+// 251 x, and never limits auto makeup alone. [choice: contract §2.2 bound of 1e3]
+constexpr float kMaxTotalMakeupDb = 48.0f;
+
+// A switch to or from Classic crossfades the two outputs (their states are separate); the
+// switches between the other types carry the gain state instead and need no fade.
+constexpr float kCrossfadeSeconds = 0.04f;         // the old fade-out plus fade-in [choice: §2.4]
+// Classic cannot be seeded, so before it fades in it runs unheard from reset until its
+// envelope has risen: four of its attack time constants (knob / 2 pi) plus 2 ms. [choice]
+constexpr float kClassicWarmupAttacks = 4.0f;
+constexpr float kClassicWarmupFloorSeconds = 0.002f;
 
 constexpr float kFetOffsetDbPerOctave = 2.6f;      // threshold rise per doubling of R [fit: R5, 1176 curve_ratio1/4]
 constexpr float kFetOffsetFromRatio = 4.0f;
 constexpr float kFetSlowRatio = 6.4f;              // tauR2 / tauR1 [fit: R5, 1176 Rev A t_a100_r100]
-constexpr float kFetFastWeight = 0.7f;
 constexpr float kOptoSlowRatio = 8.3f;             // [fit: R5, LA-2A Gray t_comp_pr50]
-constexpr float kOptoFastWeight = 0.6f;
+
+// Programme dependence: a memory m in [0, 1] charges toward the depth of the gain reduction
+// (full at 6 dB) and discharges slowly; the slow stage's share of the release grows with it,
+// as FET slow weight 0.43 m^2 and Opto 0.46 m. Steady compression is unchanged (both stages
+// sit on the target); only the release after it gets longer the longer and deeper it was.
+// [fit: comp/evidence/bb/ua_1176a/t_a100_r100.tbA/.tbL (t63 95 / 123 ms after 0.5 / 5 s) and
+// the 56 ms after 0.1 s of verification.md C14: here 66 / 97 / 122 ms;
+// ua_la2a_tc/t_comp_pr50.tbA/.tbL (157 -> 184 ms, x1.17): here 141 -> 162 ms, x1.15]
+constexpr float kMemoryPerDb = 1.0f / 6.0f;
+constexpr float kMemoryDischargeSeconds = 4.0f;
+constexpr float kFetSlowWeightMax = 0.43f;
+constexpr float kFetMemoryChargeSeconds = 0.28f;
+constexpr float kOptoSlowWeightMax = 0.46f;
+constexpr float kOptoMemoryChargeSeconds = 0.25f;
 
 // The share of the detector window taken off each release time constant, so that a
 // release measured from the end of a note keeps the knob's meaning: all of it for the
@@ -67,7 +92,7 @@ constexpr float kHoldCompensationTwoStage = 0.5f;
 constexpr float kDbToLog2 = 0.166096404744368f;    // log2(10) / 20
 
 /** Soft-knee gain computer (Giannoulis, Massberg, Reiss, JAES 2012): o is the level over
-    the threshold, s the slope (1/R - 1, or 1 - R in feedback), wk the knee width. */
+    the threshold, s the slope 1/R - 1, wk the knee width. */
 inline float gainComputer (float o, float s, float wk) noexcept
 {
     if (2.0f * o <= -wk)
@@ -82,25 +107,63 @@ inline float gainComputer (float o, float s, float wk) noexcept
     return s * o;
 }
 
-/** Steady-state gain of the feedback loop g = gc(o + g) with slope s = 1 - R: the static
-    curve Squash really has. The knee acts on the output level, so it spans R + 1 times
-    half the knee on the input side and the feed-forward formula is up to ~1 dB off. */
-inline float feedbackStaticGain (float o, float s, float wk) noexcept
+/** Squash's gain computer, evaluated on the output level o (over the threshold) with the
+    feed-forward slope s = 1/R - 1. Its knee is placed so that the loop's steady state is
+    exactly the textbook curve gainComputer (input level, s, wk): the knee spans the knob's
+    width on the INPUT level, centred on the threshold, as in every other type. Returns the
+    gain and, in loopGain, 1 - d gain / d o: the loop gain the ballistics are divided by so
+    the closed loop moves at the knobs' time constants (1 under the knee, R above it). */
+inline float feedbackGain (float o, float s, float wk, float& loopGain) noexcept
 {
-    const float ratio = 1.0f - s;
     const float h = 0.5f * wk;
+    const float inverseRatio = 1.0f + s;
 
     if (o <= -h)
+    {
+        loopGain = 1.0f;
         return 0.0f;
+    }
 
-    if (wk <= 0.0f || o >= ratio * h)
-        return s * o / ratio;
+    if (o >= h * inverseRatio)
+    {
+        loopGain = 1.0f / inverseRatio;
+        return s * o / inverseRatio;
+    }
 
-    // Knee: with u = o + g + h, u - (o + h) = s u^2 / (2 wk); the positive root.
-    const float a = -s / (2.0f * wk);
+    // Knee: with u = input level + h, o + h = u + a u^2 (a = s / 2 wk); the gain is a u^2.
+    const float a = s / (2.0f * wk);
     const float c = o + h;
-    const float u = 2.0f * c / (1.0f + std::sqrt (1.0f + 4.0f * a * c));
-    return u - c;
+    const float u = 2.0f * c / (1.0f + std::sqrt (juce::jmax (0.0f, 1.0f + 4.0f * a * c)));
+    loopGain = 1.0f / (1.0f + 2.0f * a * u);
+    return c - u;
+}
+
+/** Replaces NaN and infinity with 0 so that nothing non-finite reaches a state. Finite
+    input is left untouched (Classic stays bit for bit). */
+inline void sanitiseInput (juce::dsp::AudioBlock<float>& block) noexcept
+{
+    const auto n = (int) block.getNumSamples();
+
+    for (size_t ch = 0; ch < block.getNumChannels(); ++ch)
+    {
+        float* x = block.getChannelPointer (ch);
+        float probe = 0.0f;
+
+        for (int i = 0; i < n; ++i)
+            probe += x[i] * 0.0f;
+
+        if (std::isfinite (probe))
+            continue;
+
+        for (int i = 0; i < n; ++i)
+            if (! std::isfinite (x[i]))
+                x[i] = 0.0f;
+    }
+}
+
+constexpr bool isTwoStage (int type) noexcept
+{
+    return type == (int) CompFx::Type::fet || type == (int) CompFx::Type::opto;
 }
 
 /** Linear ramp over a fixed number of samples; a new target restarts it from wherever it is. */
@@ -253,7 +316,16 @@ struct CompFx::Impl
         autoMakeupDb.setTimeConstant (kSmoothSeconds, sampleRate);
         scCutoff.setTimeConstant (kSmoothSeconds, sampleRate / (float) kControlInterval);
 
-        switcher.prepare (spec.sampleRate, (int) spec.maximumBlockSize, numChannels, params.type);
+        const int maxBlock = juce::jmax (1, (int) spec.maximumBlockSize);
+        incoming.setSize (juce::jmax (1, numChannels), maxBlock, false, true, false);
+        incomingTrace.assign ((size_t) maxBlock, 0.0f);
+        fadeStep = 1.0f / juce::jmax (1.0f, kCrossfadeSeconds * sampleRate);
+
+        const auto coefficient = [this] (float tau) noexcept { return 1.0f - std::exp (-1.0f / (tau * sampleRate)); };
+        memoryDischargeK = coefficient (kMemoryDischargeSeconds);
+        fetMemoryChargeK = coefficient (kFetMemoryChargeSeconds);
+        optoMemoryChargeK = coefficient (kOptoMemoryChargeSeconds);
+
         reset();
     }
 
@@ -264,7 +336,9 @@ struct CompFx::Impl
         resetDynamics();
         controlPhase = 0;
         snapEngine = true;
+        fading = false;
         gainReductionDb = 0.0f;
+        classicGainReductionDb = 0.0f;
     }
 
     void resetDynamics() noexcept
@@ -274,23 +348,9 @@ struct CompFx::Impl
         for (auto& f : scFilter)
             f.reset();
 
-        g = g1 = g2 = 0.0f;
+        g = g1 = g2 = memory = 0.0f;
+        frozen = 0;
         snapSmoothers = true;
-    }
-
-    /** Called by the switcher while nothing of the effect is audible. */
-    void resetType (int type) noexcept
-    {
-        if (type == (int) Type::classic)
-        {
-            compressor.reset();
-            shadow.reset();
-            return;
-        }
-
-        resetDynamics();
-        updateDynamics ((Type) type);
-        snapDynamics ((Type) type);
     }
 
     //==============================================================================
@@ -307,71 +367,45 @@ struct CompFx::Impl
 
     void process (juce::dsp::AudioBlock<float> block)
     {
+        sanitiseInput (block);
+
         if (snapEngine)
         {
             // Nothing has been heard since prepare() or reset(): start on the requested type.
             snapEngine = false;
             activeType = params.type;
-            switcher.snapTo (params.type);
         }
 
         gainReductionDb = 0.0f;
-        const auto numSamples = (int) block.getNumSamples();
 
-        if (params.type == activeType)
+        if (fading)
+            retarget (params.type);
+        else if (params.type != activeType)
+            beginSwitch (params.type);
+
+        if (! fading)
         {
-            processSection (block, 0);
+            processType (activeType, block, trace, makeup);
         }
         else
         {
-            // The switcher can only reset the incoming type at the start of a call, so
-            // while a switch is due the block goes through it in short sections: the
-            // fade then takes its 40 ms whatever the host's block size.
-            for (int start = 0; start < numSamples; start += kSwitchSectionSamples)
-                processSection (block.getSubBlock ((size_t) start, (size_t) juce::jmin (kSwitchSectionSamples, numSamples - start)),
-                                start);
-        }
+            const auto numSamples = (int) block.getNumSamples();
+            const int capacity = incoming.getNumSamples();
 
-        trace = nullptr;
-    }
-
-    void processSection (juce::dsp::AudioBlock<float> block, int offset)
-    {
-        const int type = switcher.begin (block, params.type, [this] (int next, bool)
-        {
-            resetType (next);
-            return true;
-        });
-
-        activeType = type;
-        float* const sectionTrace = trace != nullptr ? trace + offset : nullptr;
-
-        // While a switch fades out, `type` is still the outgoing one: it keeps running
-        // on its own settings until it is silent.
-        if (type == (int) Type::classic)
-        {
-            measureClassic (block, sectionTrace);
-            processClassic (block);
-        }
-        else
-        {
-            updateDynamics ((Type) type);
-
-            if (snapSmoothers)
-                snapDynamics ((Type) type);
-
-            switch ((Type) type)
+            for (int start = 0; start < numSamples; start += capacity)
             {
-                case Type::squash: runDynamics<Type::squash> (block, sectionTrace); break;
-                case Type::fet:    runDynamics<Type::fet> (block, sectionTrace); break;
-                case Type::opto:   runDynamics<Type::opto> (block, sectionTrace); break;
-                case Type::classic:
-                case Type::clean:
-                default:           runDynamics<Type::clean> (block, sectionTrace); break;
+                const int length = juce::jmin (capacity, numSamples - start);
+                auto section = block.getSubBlock ((size_t) start, (size_t) length);
+                float* const sectionTrace = trace != nullptr ? trace + start : nullptr;
+
+                if (fading)
+                    processFade (section, sectionTrace);
+                else
+                    processType (activeType, section, sectionTrace, makeup);
             }
         }
 
-        switcher.end (block);
+        trace = nullptr;
     }
 
     void skip (int numSamples) noexcept
@@ -384,24 +418,210 @@ struct CompFx::Impl
         if (snapEngine)
             return;
 
-        // Nothing is audible while bypassed, so a type change completes without a fade.
+        // Nothing is audible while bypassed, so a switch completes without a fade.
+        if (fading)
+        {
+            fading = false;
+            activeType = fadeTo;
+        }
+
         if (params.type != activeType)
         {
-            resetType (params.type);
-            switcher.snapTo (params.type);
+            if (params.type == (int) Type::classic)
+            {
+                compressor.reset();
+                shadow.reset();
+            }
+            else if (activeType == (int) Type::classic)
+            {
+                seedFromClassic ((Type) params.type);
+            }
+            else
+            {
+                carryGain (activeType, params.type);
+            }
+
             activeType = params.type;
         }
-        else if (params.type != (int) Type::classic)
+
+        if (activeType != (int) Type::classic)
         {
-            updateDynamics ((Type) params.type);
-            snapDynamics ((Type) params.type);
+            updateDynamics ((Type) activeType);
+            snapDynamics();
+        }
+    }
+
+    //==============================================================================
+    // Type switches
+
+    /** Clean, Squash, FET and Opto share the detector and the gain state, so a switch
+        between them hands the gain over and the new type moves from it with its own
+        ballistics. Anything with Classic crossfades the two outputs. */
+    void beginSwitch (int requested) noexcept
+    {
+        if (activeType != (int) Type::classic && requested != (int) Type::classic)
+        {
+            carryGain (activeType, requested);
+            activeType = requested;
+            return;
+        }
+
+        fading = true;
+        fadeFrom = activeType;
+        fadeTo = requested;
+        fadeWeight = 0.0f;
+        prepareIncoming();
+    }
+
+    void prepareIncoming() noexcept
+    {
+        warmup = 0;
+
+        if (fadeTo == (int) Type::classic)
+        {
+            compressor.reset();
+            shadow.reset();
+            const float attackSeconds = kClassicWarmupAttacks * params.attackMs * 0.001f / juce::MathConstants<float>::twoPi;
+            warmup = (int) std::lround ((attackSeconds + kClassicWarmupFloorSeconds) * sampleRate);
+        }
+        else
+        {
+            seedFromClassic ((Type) fadeTo);
+        }
+    }
+
+    /** A new request while a crossfade runs: within the incoming side it is a hand-over,
+        back to the outgoing side the fade reverses from where it is. */
+    void retarget (int requested) noexcept
+    {
+        if (requested == fadeTo)
+            return;
+
+        const bool towardClassic = requested == (int) Type::classic;
+
+        if (towardClassic == (fadeTo == (int) Type::classic))
+        {
+            carryGain (fadeTo, requested);
+            fadeTo = requested;
+            return;
+        }
+
+        std::swap (fadeFrom, fadeTo);
+        fadeWeight = 1.0f - fadeWeight;
+        warmup = 0;
+
+        if (requested != fadeTo)
+        {
+            carryGain (fadeTo, requested);
+            fadeTo = requested;
+        }
+    }
+
+    void processFade (juce::dsp::AudioBlock<float>& block, float* gainTrace)
+    {
+        const auto numSamples = (int) block.getNumSamples();
+        const auto channels = block.getNumChannels();
+        juce::dsp::AudioBlock<float> in (incoming.getArrayOfWritePointers(), channels, (size_t) numSamples);
+        in.copyFrom (block);
+        float* const inTrace = gainTrace != nullptr ? incomingTrace.data() : nullptr;
+
+        // Classic advances the shared makeup smoother itself; the other side steps a copy
+        // over the same samples, so the smoother moves once per sample.
+        auto makeupCopy = makeup;
+        const bool classicIncoming = fadeTo == (int) Type::classic;
+        processType (fadeFrom, block, gainTrace, classicIncoming ? makeupCopy : makeup);
+        processType (fadeTo, in, inTrace, classicIncoming ? makeup : makeupCopy);
+
+        float w = fadeWeight;
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            if (warmup > 0)
+                --warmup;
+            else
+                w = juce::jmin (1.0f, w + fadeStep);
+
+            for (size_t ch = 0; ch < channels; ++ch)
+            {
+                float* out = block.getChannelPointer (ch);
+                out[i] += w * (in.getChannelPointer (ch)[i] - out[i]);
+            }
+
+            if (gainTrace != nullptr)
+                gainTrace[i] += w * (inTrace[i] - gainTrace[i]);
+        }
+
+        fadeWeight = w;
+
+        if (w >= 1.0f)
+        {
+            fading = false;
+            activeType = fadeTo;
+        }
+    }
+
+    /** The gain a new type is applying now, in dB. */
+    float currentGain (int type) const noexcept
+    {
+        if (! isTwoStage (type))
+            return g;
+
+        return g1 + slowWeight ((Type) type, memory) * (g2 - g1);
+    }
+
+    void carryGain (int from, int to) noexcept
+    {
+        g = g1 = g2 = currentGain (from);
+
+        if (! (isTwoStage (from) && isTwoStage (to)))
+            memory = 0.0f;
+    }
+
+    /** Starts a new type at the reduction Classic was applying, held while the detector
+        window fills; then the type's own ballistics take it to its own value. */
+    void seedFromClassic (Type type) noexcept
+    {
+        resetDynamics();
+        updateDynamics (type);
+        snapDynamics();
+        g = g1 = g2 = -classicGainReductionDb;
+        frozen = windowSamples;
+    }
+
+    void processType (int type, juce::dsp::AudioBlock<float>& block, float* gainTrace,
+                      juce::SmoothedValue<float>& makeupGain)
+    {
+        // While a switch fades out, `type` is still the outgoing one: it keeps running
+        // on its own settings until it is silent.
+        if (type == (int) Type::classic)
+        {
+            measureClassic (block, gainTrace);
+            processClassic (block, makeupGain);
+            return;
+        }
+
+        updateDynamics ((Type) type);
+
+        if (snapSmoothers)
+            snapDynamics();
+
+        makeupGain.setTargetValue (juce::Decibels::decibelsToGain (params.makeupDb));
+
+        switch ((Type) type)
+        {
+            case Type::squash: runDynamics<Type::squash> (block, gainTrace, makeupGain); break;
+            case Type::fet:    runDynamics<Type::fet> (block, gainTrace, makeupGain); break;
+            case Type::opto:   runDynamics<Type::opto> (block, gainTrace, makeupGain); break;
+            case Type::classic:
+            case Type::clean:
+            default:           runDynamics<Type::clean> (block, gainTrace, makeupGain); break;
         }
     }
 
     //==============================================================================
     // Classic
 
-    void processClassic (juce::dsp::AudioBlock<float>& block)
+    void processClassic (juce::dsp::AudioBlock<float>& block, juce::SmoothedValue<float>& makeupGain)
     {
         const auto numSamples = (int) block.getNumSamples();
         juce::dsp::ProcessContextReplacing<float> context (block);
@@ -418,8 +638,8 @@ struct CompFx::Impl
                              block.getNumChannels() > 1 ? block.getChannelPointer (1) : nullptr };
         juce::AudioBuffer<float> buf (channels, juce::jmin (2, (int) block.getNumChannels()), numSamples);
 
-        makeup.setTargetValue (juce::Decibels::decibelsToGain (params.makeupDb));
-        applySmoothedGain (buf, numSamples, makeup);
+        makeupGain.setTargetValue (juce::Decibels::decibelsToGain (params.makeupDb));
+        applySmoothedGain (buf, numSamples, makeupGain);
     }
 
     /** The Classic meter: a copy of juce::dsp::Compressor's own envelope filter, fed the
@@ -442,11 +662,11 @@ struct CompFx::Impl
             return -20.0f * std::log10 (std::pow (env / thresholdLin, ratioInverse - 1.0f));
         };
 
-        float envMax = 0.0f;
+        float envMax = 0.0f, env = 0.0f;
 
         for (int i = 0; i < numSamples; ++i)
         {
-            float env = 0.0f;
+            env = 0.0f;
 
             for (int ch = 0; ch < channels; ++ch)
                 env = juce::jmax (env, shadow.processSample (ch, block.getSample (ch, i)));
@@ -458,6 +678,7 @@ struct CompFx::Impl
         }
 
         gainReductionDb = juce::jmax (gainReductionDb, grFor (envMax));
+        classicGainReductionDb = fx::sanitise (grFor (env));
     }
 
     //==============================================================================
@@ -473,7 +694,7 @@ struct CompFx::Impl
             thresholdTarget += kFetOffsetDbPerOctave * std::log2 (ratio / kFetOffsetFromRatio);
 
         threshold.setTarget (thresholdTarget);
-        slope.setTarget (type == Type::squash ? 1.0f - ratio : 1.0f / ratio - 1.0f);
+        slope.setTarget (1.0f / ratio - 1.0f);
         knee.setTarget (params.kneeDb);
         mix.setTarget (params.mixPct * 0.01f);
         scCutoff.setTarget (params.scHpfHz);
@@ -493,8 +714,8 @@ struct CompFx::Impl
         scFilterOn = filterOn;
 
         const float tauRelease = params.releaseMs * 0.001f;
-        const int windowSamples = juce::jmax (1, (int) std::lround (juce::jlimit (kMinWindowSeconds, kMaxWindowSeconds,
-                                                                                    kWindowPerRelease * tauRelease) * sampleRate));
+        windowSamples = juce::jmax (1, (int) std::lround (juce::jlimit (kMinWindowSeconds, kMaxWindowSeconds,
+                                                                         kWindowPerRelease * tauRelease) * sampleRate));
         window.setLength (windowSamples);
 
         const auto coefficient = [this] (float tau) noexcept
@@ -509,18 +730,19 @@ struct CompFx::Impl
         attackK = coefficient (params.attackMs * 0.001f);
         releaseK1 = coefficient (tauRelease - compensation);
         releaseK2 = coefficient (tauRelease * (type == Type::opto ? kOptoSlowRatio : kFetSlowRatio) - compensation);
-        fastWeight = type == Type::opto ? kOptoFastWeight : kFetFastWeight;
+        memoryChargeK = type == Type::opto ? optoMemoryChargeK : fetMemoryChargeK;
     }
 
-    /** Steady-state auto makeup M = -gc(-10 dBFS - T) on the type's real static curve. */
-    float autoMakeupFor (Type type) const noexcept
+    static float slowWeight (Type type, float m) noexcept
+    {
+        return type == Type::opto ? kOptoSlowWeightMax * m : kFetSlowWeightMax * m * m;
+    }
+
+    /** Steady-state auto makeup M = -gc(-10 dBFS - T), within the total makeup limit. */
+    float autoMakeupFor() const noexcept
     {
         const float o = kAutoMakeupReferenceDb - threshold.getCurrent();
-
-        if (type == Type::squash)
-            return -feedbackStaticGain (o, slope.getCurrent(), knee.getCurrent());
-
-        return -gainComputer (o, slope.getCurrent(), knee.getCurrent());
+        return juce::jmin (-gainComputer (o, slope.getCurrent(), knee.getCurrent()), kMaxTotalMakeupDb - params.makeupDb);
     }
 
     void updateDetectorFilter() noexcept
@@ -539,7 +761,7 @@ struct CompFx::Impl
         }
     }
 
-    void snapDynamics (Type type) noexcept
+    void snapDynamics() noexcept
     {
         threshold.snap();
         slope.snap();
@@ -548,13 +770,13 @@ struct CompFx::Impl
         scCutoff.snap();
         appliedCutoff = -1.0f;
         updateDetectorFilter();
-        autoMakeupDb.setTarget (autoMakeup ? autoMakeupFor (type) : 0.0f);
+        autoMakeupDb.setTarget (autoMakeup ? autoMakeupFor() : 0.0f);
         autoMakeupDb.snap();
         snapSmoothers = false;
     }
 
     template <Type type>
-    void runDynamics (juce::dsp::AudioBlock<float>& block, float* gainTrace) noexcept
+    void runDynamics (juce::dsp::AudioBlock<float>& block, float* gainTrace, juce::SmoothedValue<float>& makeupGain) noexcept
     {
         const auto numSamples = (int) block.getNumSamples();
         float* left = block.getChannelPointer (0);
@@ -567,7 +789,7 @@ struct CompFx::Impl
             if (controlPhase == 0)
             {
                 updateDetectorFilter();
-                autoMakeupDb.setTarget (autoMakeup ? autoMakeupFor (type) : 0.0f);
+                autoMakeupDb.setTarget (autoMakeup ? autoMakeupFor() : 0.0f);
             }
 
             controlPhase = (controlPhase + 1) % kControlInterval;
@@ -577,7 +799,7 @@ struct CompFx::Impl
             const float wk = knee.next();
             const float wet = mix.next();
             const float autoDb = autoMakeupDb.next();
-            const float makeupGain = makeup.getNextValue();
+            const float makeupLinear = makeupGain.getNextValue();
 
             const float inL = juce::jlimit (-kInputLimit, kInputLimit, left[i]);
             const float inR = right != nullptr ? juce::jlimit (-kInputLimit, kInputLimit, right[i]) : 0.0f;
@@ -598,13 +820,22 @@ struct CompFx::Impl
             const float level = 20.0f * std::log10 (juce::jmax (window.push (detector), kLevelFloor));
             float gain;
 
-            if constexpr (type == Type::squash)
+            if (frozen > 0)
             {
-                // Log-domain feedback: the gain computer sees the output level L + g. The
-                // attack step is divided by R, the loop gain, so the closed loop moves at
-                // the knob's time constant whatever the ratio, and never overshoots.
-                const float gc = gainComputer (level + g - thr, s, wk);
-                g += (gc < g ? attackK / (1.0f - s) : releaseK1) * (gc - g);
+                --frozen;
+                gain = currentGain ((int) type);
+            }
+            else if constexpr (type == Type::squash)
+            {
+                // Log-domain feedback: the gain computer sees the output level L + g. Both
+                // steps are divided by the loop gain, so the closed loop moves at the knobs'
+                // time constants at any ratio and never overshoots; left open, the loop sped
+                // the release up R times and distorted low notes more at fast settings. What
+                // stays feedback: after a drop the output falls under the threshold, where the
+                // loop is open and the gain heads for 0 dB, so a partial drop recovers sooner.
+                float loopGain;
+                const float gc = feedbackGain (level + g - thr, s, wk, loopGain);
+                g += (gc < g ? attackK : releaseK1) / loopGain * (gc - g);
                 gain = g;
             }
             else if constexpr (type == Type::fet || type == Type::opto)
@@ -612,7 +843,10 @@ struct CompFx::Impl
                 const float gc = gainComputer (level - thr, s, wk);
                 g1 += (gc < g1 ? attackK : releaseK1) * (gc - g1);
                 g2 += (gc < g2 ? attackK : releaseK2) * (gc - g2);
-                gain = fastWeight * g1 + (1.0f - fastWeight) * g2;
+                gain = g1 + slowWeight (type, memory) * (g2 - g1);
+
+                const float depth = juce::jmin (1.0f, -gain * kMemoryPerDb);
+                memory += (depth > memory ? memoryChargeK : memoryDischargeK) * (depth - memory);
             }
             else
             {
@@ -621,7 +855,7 @@ struct CompFx::Impl
                 gain = g;
             }
 
-            const float linear = std::exp2 ((gain + autoDb) * kDbToLog2) * makeupGain;
+            const float linear = std::exp2 ((gain + autoDb) * kDbToLog2) * makeupLinear;
 
             if (juce::exactlyEqual (wet, 1.0f))
             {
@@ -657,6 +891,17 @@ struct CompFx::Impl
         settle (g);
         settle (g1);
         settle (g2);
+        settle (memory);
+
+        // The detector filter's state is private: probe it on a copy, reset it if broken.
+        for (auto& f : scFilter)
+        {
+            auto probe = f;
+
+            if (! std::isfinite (probe.lowpass (0.0f)))
+                f.reset();
+        }
+
         gainReductionDb = juce::jmax (gainReductionDb, maxReduction);
     }
 
@@ -665,9 +910,16 @@ struct CompFx::Impl
     float sampleRate = 48000.0f;
     int numChannels = 2;
 
-    fx::EngineSwitcher switcher;
     int activeType = (int) Type::clean;
     bool snapEngine = true;
+
+    // Crossfade to or from Classic: the incoming side renders into `incoming`.
+    juce::AudioBuffer<float> incoming;
+    std::vector<float> incomingTrace;
+    bool fading = false;
+    int fadeFrom = 0, fadeTo = 0, warmup = 0;
+    float fadeWeight = 0.0f, fadeStep = 1.0f;
+    float classicGainReductionDb = 0.0f;
 
     juce::SmoothedValue<float> makeup { 1.0f };
     bool makeupPrimed = false;
@@ -676,6 +928,7 @@ struct CompFx::Impl
     juce::dsp::BallisticsFilter<float> shadow;
 
     WindowMax window;
+    int windowSamples = 1, frozen = 0;
     fx::TptOnePole scFilter[2];
     LinearRamp threshold, slope;
     OnePoleSmoother knee, mix, autoMakeupDb, scCutoff;
@@ -683,8 +936,9 @@ struct CompFx::Impl
     bool scFilterOn = false, autoMakeup = false, snapSmoothers = true;
     int controlPhase = 0;
 
-    float attackK = 1.0f, releaseK1 = 1.0f, releaseK2 = 1.0f, fastWeight = 1.0f;
-    float g = 0.0f, g1 = 0.0f, g2 = 0.0f;
+    float attackK = 1.0f, releaseK1 = 1.0f, releaseK2 = 1.0f;
+    float memoryChargeK = 1.0f, memoryDischargeK = 1.0f, fetMemoryChargeK = 1.0f, optoMemoryChargeK = 1.0f;
+    float g = 0.0f, g1 = 0.0f, g2 = 0.0f, memory = 0.0f;
 
     float gainReductionDb = 0.0f;
     float* trace = nullptr;

@@ -11,6 +11,10 @@
 //   Squash    log-domain feedback: the gain computer sees the output level (pedal style).
 //   FET       Clean's detector with a two-stage release and a ratio-dependent threshold.
 //   Opto      Clean's detector with a slow two-stage release and a wide knee.
+//
+// FET and Opto release more slowly after long, deep compression (programme dependence).
+// A type change between Clean, Squash, FET and Opto hands the gain state over (no fade);
+// a change to or from Classic crossfades the two outputs.
 namespace tubamp
 {
 /** Everything a compressor instance needs for one block, in the units Parameters.h documents. */
@@ -21,7 +25,7 @@ struct CompParams
     float ratio = 4.0f;           // [1, 20]
     float attackMs = 5.0f;        // [0.1, 100]
     float releaseMs = 120.0f;     // [10, 1000]
-    float makeupDb = 0.0f;        // [0, 24] manual makeup, added to auto makeup
+    float makeupDb = 0.0f;        // [0, 24] manual makeup, added to auto makeup (total <= 48)
     float kneeDb = 6.0f;          // [0, 24] total knee width (kCompKneeDefault)
     float mixPct = 100.0f;        // [0, 100] parallel mix, 100 = fully compressed
     float scHpfHz = 20.0f;        // [20, 300] detector high-pass; <= 20.5 = off
