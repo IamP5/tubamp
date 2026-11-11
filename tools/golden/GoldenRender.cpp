@@ -335,8 +335,10 @@ bool readGolden (const juce::File& file, GoldenFile& out)
 }
 
 /** One line of expected-changes.tsv: `pattern  audio  latency`, first match wins.
-      audio:   same | any | same_as:<case>   (same_as compares with that case's
-               captured hash at the same fs and block)
+      audio:   same | any | differs | same_as:<case> | off:<id>[,<id>...]
+               (same_as compares with that case's captured hash at the same fs and
+               block; off: with this build's render of the same case with those
+               parameters at 0)
       latency: same | +N                     (captured latency plus N) */
 struct Expectation
 {
@@ -425,6 +427,11 @@ int writeParams (const juce::File& file)
 // --dump <dir> also writes each case's legacy block output (no trim, DC blocker or output
 // level) at 48 kHz / 512 as <case>.wav, and the tubamp_fxbench --legacy command that must
 // reproduce it bit for bit to <dir>/fxbench-commands.txt.
+//
+// The two deliberate EQ changes are the only exceptions, and each case that meets one says
+// so: an EQ or amp EQ at exactly 5/5/5 is now an exact pass-through (FX-ENGINES.md D2 a),
+// so those cases compare with the legacy chain minus the EQ; a knob move is now smoothed
+// (D-4), so a case that steps an EQ knob compares only up to its first step.
 /** PluginProcessor.cpp's applySmoothedGain, verbatim. */
 void applySmoothedGain (juce::AudioBuffer<float>& buffer, int numSamples,
                         juce::SmoothedValue<float>& smoothed)
@@ -449,7 +456,7 @@ struct Step
     back (1), for the absent-block and re-entry paths. */
 const std::string kPresentStep = "@present";
 
-enum class LegacyKind { gate, gateDeferred, comp, drive, eq, mod };
+enum class LegacyKind { gate, gateDeferred, comp, drive, eq, ampEq, mod };
 
 struct LegacyCase
 {
@@ -459,6 +466,11 @@ struct LegacyCase
     std::vector<std::pair<std::string, float>> settings;
     std::vector<Step> steps;
     bool dumpable = true;
+    /** The EQ sits at exactly 5/5/5: the legacy side leaves it out (D2 a). */
+    bool flat = false;
+    /** Compared only before this time, in seconds (< 0: the whole render): an EQ knob step
+        is smoothed now (D-4). */
+    double identicalUntil = -1.0;
 };
 
 std::vector<LegacyCase> buildLegacyCases()
@@ -512,14 +524,33 @@ std::vector<LegacyCase> buildLegacyCases()
     add ("drive_hot", LegacyKind::drive, 0, { { "drive_on", 1.0f }, { "drive_gain", 36.0f }, { "drive_tone", 12000.0f },
                                               { "drive_level", -6.0f } });
     add ("drive3_dark", LegacyKind::drive, 2, { { "drive3_gain", 0.0f }, { "drive3_tone", 500.0f } });
+    add ("drive2_mid", LegacyKind::drive, 1, { { "drive2_gain", 20.0f }, { "drive2_tone", 2000.0f }, { "drive2_level", 3.0f } });
 
     add ("eq_flat", LegacyKind::eq, 0, {});
+    cases.back().flat = true;
     add ("eq_shape", LegacyKind::eq, 0, { { "eq_bass", 10.0f }, { "eq_mid", 0.0f }, { "eq_treble", 7.0f } });
     add ("eq_cut", LegacyKind::eq, 0, { { "eq_bass", 0.0f }, { "eq_mid", 0.0f }, { "eq_treble", 0.0f } });
     add ("eq2_near", LegacyKind::eq, 1, { { "eq2_treble", 5.1f } });
-    add ("eq_steps", LegacyKind::eq, 0, {},
+    add ("eq3_shape", LegacyKind::eq, 2, { { "eq3_bass", 2.0f }, { "eq3_mid", 8.0f }, { "eq3_treble", 3.5f } });
+    add ("eq_toggle", LegacyKind::eq, 0, { { "eq_bass", 7.0f }, { "eq_mid", 3.0f }, { "eq_treble", 6.0f } },
+         { { 1.5, "eq_on", 0.0f }, { 2.5, "eq_on", 1.0f }, { 3.5, "eq_on", 0.0f }, { 4.0, "eq_on", 1.0f } });
+    add ("eq_steps", LegacyKind::eq, 0, { { "eq_bass", 6.0f } },
          { { 1.0, "eq_bass", 8.0f }, { 2.0, "eq_mid", 2.0f }, { 3.0, "eq_mid", 7.0f }, { 4.0, "eq_treble", 0.0f },
            { 4.5, "eq_on", 0.0f }, { 5.0, "eq_on", 1.0f } });
+    cases.back().identicalUntil = 1.0;
+
+    // The amp block's tone stack (no model: the engine passes audio through, so the mono
+    // path is collapse, amp-in gain, tone stack, amp-out gain, expand).
+    add ("ampeq_flat", LegacyKind::ampEq, 0, { { "amp_eq_on", 1.0f } });
+    cases.back().flat = true;
+    cases.back().dumpable = false;
+    add ("ampeq_shape", LegacyKind::ampEq, 0, { { "amp_eq_on", 1.0f }, { "amp_eq_bass", 8.0f }, { "amp_eq_mid", 3.0f },
+                                                { "amp_eq_treble", 6.0f } },
+         { { 2.0, "amp_eq_on", 0.0f }, { 3.0, "amp_eq_on", 1.0f } });
+    cases.back().dumpable = false;
+    add ("ampeq_cut", LegacyKind::ampEq, 0, { { "amp_eq_on", 1.0f }, { "amp_eq_bass", 0.0f }, { "amp_eq_mid", 10.0f },
+                                              { "amp_eq_treble", 0.0f } });
+    cases.back().dumpable = false;
 
     static constexpr const char* typeNames[] { "cho", "pha", "tre" };
     struct ModSetting { const char* name; float rate, depth, mix; };
@@ -554,6 +585,7 @@ chain::Order legacyOrder (const LegacyCase& c)
         case LegacyKind::comp:         return { chain::instanceId (BlockId::comp, c.instance) };
         case LegacyKind::drive:        return { chain::instanceId (BlockId::drive, c.instance) };
         case LegacyKind::eq:           return { chain::instanceId (BlockId::eq, c.instance) };
+        case LegacyKind::ampEq:        return { BlockId::amp };
         case LegacyKind::mod:          return { chain::instanceId (BlockId::mod, c.instance) };
     }
 
@@ -576,6 +608,8 @@ std::vector<std::pair<std::string, std::string>> fxbenchKeys (const LegacyCase& 
                                          { "level", idOf ("drive", k, "level") }, { "on", idOf ("drive", k, "on") } };
         case LegacyKind::eq:    return { { "bass", idOf ("eq", k, "bass") }, { "mid", idOf ("eq", k, "mid") },
                                          { "treble", idOf ("eq", k, "treble") }, { "on", idOf ("eq", k, "on") } };
+        case LegacyKind::ampEq: return { { "bass", "amp_eq_bass" }, { "mid", "amp_eq_mid" }, { "treble", "amp_eq_treble" },
+                                         { "on", "amp_eq_on" } };
         case LegacyKind::mod:   return { { "rate", idOf ("mod", k, "rate") }, { "depth", idOf ("mod", k, "depth") },
                                          { "mix", idOf ("mod", k, "mix") }, { "on", idOf ("mod", k, "on") } };
     }
@@ -608,6 +642,7 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
     const int k = c.instance;
     const bool onFlag = c.kind == LegacyKind::gate || c.kind == LegacyKind::gateDeferred;
     const std::string onId = onFlag ? std::string ("gate_on")
+                           : c.kind == LegacyKind::ampEq ? std::string ("amp_eq_on")
                                     : idOf (c.kind == LegacyKind::comp ? "comp" : c.kind == LegacyKind::drive ? "drive"
                                             : c.kind == LegacyKind::eq ? "eq" : "mod", k, "on");
 
@@ -617,7 +652,7 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
     legacy::NoiseGate gate;
     legacy::LegacyComp comp;
     legacy::Drive drive;
-    legacy::ToneStackEQ eq;
+    legacy::ToneStackEQ eq, ampEq;
     legacy::Modulation modulation;
     tubamp::DcBlocker dc;
     juce::SmoothedValue<float> inputTrimLin { 1.0f }, outputLevelLin { 1.0f }, ampInLin { 1.0f }, ampOutLin { 1.0f };
@@ -627,6 +662,7 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
     comp.prepare (spec);
     drive.prepare (spec);
     eq.prepare (spec);
+    ampEq.prepare (spec);
     modulation.prepare (spec);
     dc.prepare (spec);
 
@@ -774,11 +810,42 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
                 break;
 
             case LegacyKind::eq:
-                if (on)
+                if (on && ! c.flat)
                 {
                     eq.setParameters (raw (idOf ("eq", k, "bass")), raw (idOf ("eq", k, "mid")), raw (idOf ("eq", k, "treble")));
                     eq.process (block);
                 }
+                break;
+
+            case LegacyKind::ampEq:
+                for (int i = 0; i < n; ++i)
+                {
+                    float sum = 0.0f;
+
+                    for (int ch = 0; ch < 2; ++ch)
+                        sum += lp[ch][i];
+
+                    mono[(size_t) i] = sum * (1.0f / 2.0f);
+                }
+
+                ampInLin.setTargetValue (juce::Decibels::decibelsToGain (raw ("amp_input") + 0.0f));
+                ampOutLin.setTargetValue (juce::Decibels::decibelsToGain (raw ("amp_output") + 0.0f));
+
+                for (int i = 0; i < n; ++i)
+                    mono[(size_t) i] *= ampInLin.getNextValue();
+
+                if (on && ! c.flat)
+                {
+                    float* monoPtr = mono.data();
+                    ampEq.setParameters (raw ("amp_eq_bass"), raw ("amp_eq_mid"), raw ("amp_eq_treble"));
+                    ampEq.process (juce::dsp::AudioBlock<float> (&monoPtr, 1, (size_t) n));
+                }
+
+                for (int i = 0; i < n; ++i)
+                    mono[(size_t) i] *= ampOutLin.getNextValue();
+
+                for (int ch = 0; ch < 2; ++ch)
+                    juce::FloatVectorOperations::copy (lp[ch], mono.data(), n);
                 break;
 
             case LegacyKind::mod:
@@ -803,9 +870,11 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
     }
 
     LegacyOutcome outcome;
-    outcome.total = (long) numFrames * 2;
+    const int compared = c.identicalUntil < 0.0 ? numFrames
+                                                : juce::jmin (numFrames, (int) std::llround (c.identicalUntil * cfg.sampleRate));
+    outcome.total = (long) compared * 2;
 
-    for (int i = 0; i < numFrames; ++i)
+    for (int i = 0; i < compared; ++i)
         for (int ch = 0; ch < 2; ++ch)
         {
             const float a = procOut.getSample (ch, i), b = legacyOut.getSample (ch, i);
@@ -833,7 +902,8 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
             writer->writeFromAudioSampleBuffer (legacyPreDc, 0, numFrames);
 
         const char* effect = c.kind == LegacyKind::comp ? "comp" : c.kind == LegacyKind::drive ? "drive"
-                           : c.kind == LegacyKind::eq ? "eq" : c.kind == LegacyKind::mod ? "mod" : "gate";
+                           : c.kind == LegacyKind::eq || c.kind == LegacyKind::ampEq ? "eq"
+                           : c.kind == LegacyKind::mod ? "mod" : "gate";
         juce::String cmd;
 
         if (c.kind == LegacyKind::mod)
@@ -882,9 +952,13 @@ int legacyCheck (const juce::File& dumpDir)
             const auto r = runLegacyCase (c, cfg, dumpDir, commands);
             ++runs;
             failures += r.differing != 0 ? 1 : 0;
+            const juce::String note = c.flat ? "  (D2 a: against the legacy chain without the EQ)"
+                                    : c.identicalUntil >= 0.0 ? juce::String::formatted ("  (D-4: up to the first knob step, %.1f s)",
+                                                                                         c.identicalUntil)
+                                                              : juce::String();
             if (r.differing == 0)
-                std::printf ("ok   %-18s %6d %4d  0 of %ld samples differ\n", c.name.c_str(), (int) cfg.sampleRate,
-                             cfg.block, r.total);
+                std::printf ("ok   %-18s %6d %4d  0 of %ld samples differ%s\n", c.name.c_str(), (int) cfg.sampleRate,
+                             cfg.block, r.total, note.toRawUTF8());
             else
                 std::printf ("FAIL %-18s %6d %4d  %ld of %ld samples differ (first frame %ld: processor %.9g, legacy %.9g)\n",
                              c.name.c_str(), (int) cfg.sampleRate, cfg.block, r.differing, r.total, r.firstFrame,
@@ -1044,7 +1118,7 @@ int main (int argc, char** argv)
         for (const auto& row : golden.rows)
             capturedHash[rowKey (row.name, row.fs, row.block)] = row.hash;
 
-        int checked = 0, differences = 0, skipped = 0;
+        int checked = 0, differences = 0, skipped = 0, identical = 0, changed = 0;
 
         for (const auto& row : golden.rows)
         {
@@ -1082,6 +1156,24 @@ int main (int argc, char** argv)
             {
                 audioOk = true;
             }
+            else if (audioRule == "differs")
+            {
+                wantHash = "!" + row.hash;
+                audioOk = r.hash != row.hash;
+            }
+            else if (audioRule.startsWith ("off:"))
+            {
+                auto variant = *it->second;
+                juce::StringArray ids;
+                ids.addTokens (audioRule.fromFirstOccurrenceOf ("off:", false, false), ",", "");
+
+                for (const auto& id : ids)
+                    variant.settings.push_back ({ id.trim().toStdString(), 0.0f });
+
+                wantHash = render (variant, { (double) row.fs, row.block }, inputs).hash;
+                audioOk = r.hash == wantHash;
+                std::printf ("     %-18s %6d %4d  off-variant %s\n", row.name.c_str(), row.fs, row.block, wantHash.c_str());
+            }
             else if (audioRule.startsWith ("same_as:"))
             {
                 const auto other = rowKey (audioRule.fromFirstOccurrenceOf ("same_as:", false, false).toStdString(), row.fs, row.block);
@@ -1105,15 +1197,24 @@ int main (int argc, char** argv)
                              row.name.c_str(), row.fs, row.block, audioOk ? "ok" : "DIFFERS",
                              wantHash.substr (0, 16).c_str(), r.hash.substr (0, 16).c_str(), r.latency, wantLatency);
             }
+            else if (r.hash == row.hash && r.latency == row.latency)
+            {
+                ++identical;
+                std::printf ("ok   %-18s %6d %4d\n", row.name.c_str(), row.fs, row.block);
+            }
             else
             {
-                std::printf ("ok   %-18s %6d %4d\n", row.name.c_str(), row.fs, row.block);
+                ++changed;
+                std::printf ("chg  %-18s %6d %4d  audio %s, latency %d -> %d (as expected: %s / %s)\n", row.name.c_str(),
+                             row.fs, row.block, r.hash == row.hash ? "same" : "changed", row.latency, r.latency,
+                             audioRule.toRawUTF8(), latencyRule.toRawUTF8());
             }
 
             std::fflush (stdout);
         }
 
-        std::printf ("verify: %d rows checked, %d differences, %d skipped\n", checked, differences, skipped);
+        std::printf ("verify: %d rows checked: %d identical, %d changed as expected, %d unexpected; %d skipped\n",
+                     checked, identical, changed, differences, skipped);
         return differences == 0 && checked > 0 ? 0 : 1;
     }
 

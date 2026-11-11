@@ -8,6 +8,8 @@
 #include "dsp/NamEngine.h"
 #include "dsp/FxBlocks.h"
 #include "dsp/Compressor.h"
+#include "dsp/Drive.h"
+#include "dsp/Eq.h"
 #include "dsp/Gate.h"
 #include "dsp/FxHost.h"
 #include "dsp/FxCatalog.h"
@@ -312,6 +314,8 @@ private:
     /** Audio thread: this block's engine parameters, read raw (the engines clamp). */
     GateParams gateParams() const noexcept;
     CompParams compParams (int instance) const noexcept;
+    DriveParams driveParams (int instance) const noexcept;
+    EqParams eqParams (int instance) const noexcept;
 
     /** Audio thread: collapse to mono -> engine -> deferred gate -> tone stack -> out
         gain -> expand, on whichever buffer `block` views. Both amp blocks run through
@@ -559,15 +563,20 @@ private:
     chain::Order uiChainOrder { chain::defaultOrder() };
     std::vector<int> uiChainRows;
 
+    /** The rate the blocks were last prepared at, for the drive's latency rule on any thread:
+        getSampleRate() is only what the host last announced, and is 0 until it does. */
+    std::atomic<double> preparedSampleRate { 44100.0 };
+
     // chain blocks — one object per instance, all prepared eagerly in prepareToPlay
     // regardless of what the current order contains.
     GateFx gate;
     std::array<CompFx, params::maxInstances> comp;
-    std::array<Drive, params::maxInstances> drive;
+    std::array<DriveFx, params::maxInstances> drive;
     CabSim cab;
-    std::array<ToneStackEQ, params::maxInstances> eq;
-    /** The amp block's own tone stack, between the model's gated output and amp-out. */
-    ToneStackEQ ampEq;
+    std::array<EqFx, params::maxInstances> eq;
+    /** The amp block's own tone stack, between the model's gated output and amp-out: a
+        mono EqFx that always runs Classic. */
+    EqFx ampEq;
     DcBlocker dcBlocker;
     std::array<Modulation, params::maxInstances> modulation;
     std::array<DelayFx, params::maxInstances> delay;

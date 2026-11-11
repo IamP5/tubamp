@@ -12,49 +12,6 @@
 // Parameter setters take plain floats already fetched from APVTS by the processor.
 namespace tubamp
 {
-/** Oversampled waveshaper drive: gain -> tanh -> tone LPF -> level. Stereo-capable. */
-class Drive
-{
-public:
-    void prepare (const juce::dsp::ProcessSpec& spec);
-    void reset();
-    void setParameters (float gainDb, float toneHz, float levelDb);
-    /** Processes in place. */
-    void process (juce::dsp::AudioBlock<float> block);
-
-private:
-    std::unique_ptr<juce::dsp::Oversampling<float>> oversampling;
-    juce::dsp::StateVariableTPTFilter<float> toneFilter;
-    juce::SmoothedValue<float> gainLin { 1.0f }, levelLin { 1.0f };
-    double sampleRate = 44100.0;
-};
-
-/** Port of the official plugin's dsp::tone_stack::BasicNamToneStack: three Audio EQ
-    Cookbook biquads in series, driven by 0-10 knob values where 5 is flat.
-
-      Bass    low shelf  150 Hz,  Q 0.707,          gain 4*(v-5) dB
-      Middle  peaking    425 Hz,  Q 1.5 cut/0.7 boost, gain 3*(v-5) dB
-      Treble  high shelf 1800 Hz, Q 0.707,          gain 2*(v-5) dB
-
-    The middle band's Q is deliberately asymmetric (wider when cutting) — see
-    ToneStack.cpp:22-61 in the reference plugin. */
-class ToneStackEQ
-{
-public:
-    void prepare (const juce::dsp::ProcessSpec& spec);
-    void reset();
-    /** Knob units in [0, 10]; 5 = flat. */
-    void setParameters (float bass010, float mid010, float treble010);
-    void process (juce::dsp::AudioBlock<float> block);
-
-private:
-    using Filter = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>,
-                                                  juce::dsp::IIR::Coefficients<float>>;
-    Filter bass, mid, treble;
-    double sampleRate = 44100.0;
-    float lastBass = 1e9f, lastMid = 1e9f, lastTreble = 1e9f;
-};
-
 /** Fixed 5 Hz high-pass that always runs after the cab, matching the reference
     plugin's kDCBlockerFrequency stage. TPT rather than a biquad: at 5 Hz a direct-form
     IIR with float coefficients is numerically fragile, especially at 96 kHz. */

@@ -1,12 +1,19 @@
 # The only cases allowed to differ from tests/golden/fx-golden.tsv (docs/FX-ENGINES.md section 5.4.3).
 # tubamp_golden --verify <golden> --expected <this file>. Editing it needs the owner's sign-off.
 # Columns (tab-separated): case pattern (wildcards, first match wins), audio rule, latency rule.
-#   audio:   same | any | same_as:<case>  (that case's captured hash at the same fs and block)
+#   audio:   same | any | differs | same_as:<case> | off:<id>[,<id>...]
+#            same_as: that case's captured hash at the same fs and block
+#            off:     this build's render of the same case with those parameters at 0
 #   latency: same | +N                    (captured latency plus N)
 # A case no line matches must be identical in audio and latency.
 eq?_flat	same_as:empty	same
 ampeq_flat	same_as:amp_noeq	same
+# amp_eq_on and eq_on default on at 5/5/5, so these chains carry a flat amp EQ (and classic
+# a flat EQ block): exact pass-throughs now, so each must equal itself with them off.
+gateamp	off:amp_eq_on	same
+ampM	off:amp_eq_on	same
+gateampM	off:amp_eq_on	same
+classic	off:amp_eq_on,eq_on	+3
 drive*	same	+3
-classic	same	+3
 splitAB	same	+3
-splitA	any	+3
+splitA	differs	+3

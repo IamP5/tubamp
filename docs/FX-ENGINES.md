@@ -1196,7 +1196,7 @@ of them `[study: R2 metric; ver: V:77 "worst below 20 kHz", not "below f0"]`.
 | D15 | Boost / Treble | THD < 0.01 % at −6 dBFS out; Boost flat ± 0.1 dB 20 Hz–2 kHz with tone 12 kHz; Treble +gain ± 0.5 dB at 10·f_c, 0 ± 0.5 dB at f_c/10, 6 dB/oct between |
 | D16 | Level | Distortion and Fuzz at their starting points: −18 dBFS 1 kHz in → −12 ± 1 dBFS peak out (Screamer's start is the frozen defaults and is exempt) |
 | D17 | Tone sweep zipper: T 0 → 1 over 0.5 s, Screamer d = 0, −40 dBFS 1 kHz | non-harmonic content above 4 kHz ≤ −80 dBc |
-| D18 | Split-lane alignment (processor test, §6.3): Classic drive at gain 0, −40 dBFS, lane A; lane B empty; summed | flat within 0.5 dB to 16 kHz (today: comb null near 7.38 kHz) |
+| D18 | Split-lane alignment (processor test, §6.3): Classic drive at gain 0, −40 dBFS, lane A; lane B empty; summed | flat within 0.5 dB to 10 kHz, the tone filter's own response divided out (today: comb null near 7.38 kHz). Restated from 16 kHz: Classic's frozen 2x IIR delay rises from 3.14 samples at low frequency to 3.84 at 16 kHz, so a 3-sample wait cannot hold 0.5 dB there at 44.1/48 kHz (measured through the processor: −0.38 / −0.25 dB worst to 10 kHz, −8.2 / −3.9 dB at 16 kHz; 96 kHz −0.02 dB) |
 
 ### 4.4 EQ — `EqFx` (`src/dsp/Eq.h/.cpp`)
 
@@ -2054,10 +2054,19 @@ Default for every case: audio identical, latency identical. Exceptions (the only
 |---|---|---|
 | `eq{1,2,3}_flat` | must equal the `empty` case's hash at the same fs/block (exact pass-through, D2 a) | same |
 | `ampeq_flat` | must equal `amp_noeq` | same |
-| `drive*`, `classic`, `splitAB` | identical | 0 → 3 (D2 b) |
-| `splitA` | differs (lane B now waits 3 samples for lane A) — checked by smoke D18 instead | 0 → 3 |
+| `gateamp`, `ampM`, `gateampM` | must equal this build's render of the same case with `amp_eq_on` off: `amp_eq_on` defaults on at 5/5/5, so these chains carry a flat amp EQ (D2 a) | same |
+| `classic` | must equal this build's render with `amp_eq_on` and `eq_on` off (a flat amp EQ and a flat EQ block, D2 a) | 0 → 3 (D2 b) |
+| `drive*`, `splitAB` | identical | 0 → 3 (D2 b) |
+| `splitA` | must differ (lane B now waits 3 samples for lane A) — checked by smoke D18 | 0 → 3 |
 
 Anything else that differs is a regression. Editing this file needs the owner's sign-off.
+The audio rules `off:<id>,…` (equal to the same case rendered with those ids at 0) and
+`differs` were added to express the rows above; for the four `off:` cases the off renders were
+also captured with the processor as it stood before the EQ/drive integration and are identical
+to this build's, so each case equals the old plugin with its flat EQs removed. `tubamp_golden
+--legacy-check` meets the same two fixes: its flat cases (`eq_flat`, `ampeq_flat`) compare
+with the legacy chain without the EQ, and `eq_steps` compares only up to its first knob step
+(D-4 smoothing); every other case is bit-identical to `tools/fxbench/legacy`.
 
 ---
 
@@ -2096,7 +2105,7 @@ commit's. Do the common part first, then one effect at a time, running `tubamp_g
 |---|---|
 | `PluginProcessor.cpp:805-806` | `gate.prepare (spec)` (prepare resets) |
 | `PluginProcessor.cpp:919` | `gate.reset()` in `releaseResources`, and in `resetBlockInstance` on re-entry: the gate is now drained through `pendingReset` like every block and runs as bypassed while pending (`gateRuns`). Classic's reset only drops its curve, so Classic is unaffected (legacy case `gate_absent`) |
-| `PluginProcessor.cpp:1064-1065` → | after `deferGateToAmp` (now computed after the reset drain): D = Σ `blockLatency (order[i])` for i from `gateIndex + 1` through `ampIndex`; `blockLatency` is the per-entry term `computeChainLatency` sums (amp, amp2 with a live model, FX slots), so the amp's own latency and anything between share one rule; `gate.setCurveDelay (deferGateToAmp ? D : 0)`. **Drive latency is not in it yet**: the drive integrator adds it to `blockLatency` and both the host report and D pick it up |
+| `PluginProcessor.cpp:1064-1065` → | after `deferGateToAmp` (now computed after the reset drain): D = Σ `blockLatency (order[i])` for i from `gateIndex + 1` through `ampIndex`; `blockLatency` is the per-entry term `computeChainLatency` sums (amp, amp2 with a live model, FX slots), so the amp's own latency and anything between share one rule; `gate.setCurveDelay (deferGateToAmp ? D : 0)`. Drive latency is in `blockLatency` (§6.3), so the host report, the lane ring and D all count it |
 | `PluginProcessor.cpp:1299-1310` | fill `GateParams` from `gate_threshold`, `gate_mode`, `gate_release`, `gate_hold`, `gate_range`, `gate_sc_hpf` (`gateParams()`); `setParameters`; `measure (block, n)`; if not deferred `apply (block, n)`; publish meters; `gateState = −1` is stored in `processBlock` whenever the gate is absent, off or pending |
 | `PluginProcessor.cpp:1254-1255` | unchanged call `gate.apply (mono, numSamples)` |
 | `tests/ProcessorSmokeTest.cpp` | new: gate modes render finite; deferred alignment G16 (with the smoke model at 44.1 kHz); pin rule for `gate_mode` |
@@ -2125,8 +2134,8 @@ block's state (`:1094-1104, 1328-1332`).
 | File:line | Change |
 |---|---|
 | `PluginProcessor.cpp:816, 924, 1837` | prepare / reset with `DriveFx` |
-| `PluginProcessor.cpp:1338-1351` | `DriveParams` from gain, tone, level, type |
-| `PluginProcessor.cpp:1764-1794` (`computeChainLatency`) | for drive instances: `latency = isOn (pp.driveOn[k]) ? DriveFx::latencyFor ((int) valueOf (pp.driveType[k]), sampleRate) : 0` (the amp rule: only when the block runs). `latencyFor` is a pure static function of (type, rate) so the message thread (`updateLatency`) can call it without touching the audio-thread object |
+| `PluginProcessor.cpp:1338-1351` | `DriveParams` from gain, tone, level, type (`driveParams (k)`) |
+| `blockLatency` (the per-entry term `computeChainLatency` sums and the gate's curve delay uses) | for drive instances: `latency = isOn (pp.driveOn[k]) ? DriveFx::latencyFor ((int) valueOf (pp.driveType[k]), preparedSampleRate) : 0` (the amp rule: only when the block runs). `latencyFor` is a pure static function of (type, rate) so the message thread (`updateLatency`) can call it without touching the audio-thread object. `preparedSampleRate` is an atomic the processor stores in `prepareToPlay`: `getSampleRate()` is only what the host last announced (0 when `prepareToPlay` is called directly, as the console tools do) |
 | `PluginProcessor.cpp:1730`… | the lane ring (`compensateLaneLatency`) then aligns drive lanes automatically |
 | tests | reported latency with drive on/off and per type; D18 split-lane flatness; `splitA`/`splitAB` expectations |
 
@@ -2142,8 +2151,8 @@ Invariant: latency is reported from the audio thread when it changes
 | File:line | Change |
 |---|---|
 | `PluginProcessor.cpp:817, 824-825, 925, 932, 1841` | prepare / reset with `EqFx` |
-| `PluginProcessor.cpp:1414-1426` | `EqParams` from the instance's 15 ids + bass/mid/treble |
-| `PluginProcessor.cpp:1263-1268` | `ampEq.setParameters (EqParams { .type = 0, bass, mid, treble })` (C++20 designated init or field assignment); process on the mono block |
+| `PluginProcessor.cpp:1414-1426` | `EqParams` from the instance's 15 ids + bass/mid/treble (`eqParams (k)`) |
+| `PluginProcessor.cpp:1263-1268` | `ampEq` is prepared mono (`numChannels` 1) and fed `EqParams` with `type = 0` and the three `amp_eq_*` knobs; process on the mono block, still after the deferred gate |
 | tests | `runAmpEqTests` (`ProcessorSmokeTest.cpp:575`) extended: flat amp EQ == amp EQ off exactly |
 
 ### 6.5 Mod block (chorus, phaser, tremolo) — `Modulation` becomes the dispatcher
@@ -2321,6 +2330,7 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-20 | Golden hashes depend on arch and build type. | Capture and verify on the development Mac, arm64, Release. |
 | D-21 | `mod_color` default on means a new Phase 90 starts as the block-logo (resonant) voicing. | Chosen because it is the validated fit; switch the default to off if the owner prefers the script sound. |
 | D-22 | The NAM resampler's reported latency is 1.9 (44.1 kHz) / 3.0 (96 kHz) samples short of its true delay (§4.1.7), so a deferred Tight/Smooth curve leads the audio by that much, and the host's delay compensation is off by the same amount. | Left as is: D uses the reported latency as specified, and the host figure is frozen by the golden renders. A measured group delay from `NamEngine` (probe at model load), used for D only, would close it for the gate. |
+| D-23 | `eq_tilt`, `eq_level` and the seven `eq_g*` read their default 0 back from the parameter as 8.9e-8 / 1.8e-7 dB on arm64 (exactly 0.1f × 120 − 12 with the product unrounded, as a fused multiply-add in JUCE's `snapToLegalValue` gives; visible in `tests/golden/params-v4.tsv`), so a fresh Parametric or Graphic block in the plugin runs its level/tilt/band stages instead of the exact 0 dB paths E4/E17 test on the engine. Measured through the processor: within −144 dBFS of the input at 44.1 kHz (−150 at 48, −162 at 96). | Left as is: the processor passes values raw and the layout is frozen. Closing it means the engine treating \|dB\| below 1e-5 as 0 (engine owner), never a processor-side rounding. Classic and the amp EQ are unaffected (their knobs read back exactly). |
 
 ---
 

@@ -859,6 +859,8 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     const auto numChannels = (juce::uint32) juce::jmax (1, getTotalNumOutputChannels());
     const juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) juce::jmax (1, samplesPerBlock), numChannels };
 
+    preparedSampleRate.store (sampleRate, std::memory_order_relaxed);
+
     // Every instance is prepared whether or not it is in the current order: a block the
     // user drops onto the board has to run in the same block, and preparing one there
     // would allocate on the audio thread.
@@ -875,7 +877,7 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     }
 
     cab.prepare (spec);
-    ampEq.prepare (spec);
+    ampEq.prepare ({ spec.sampleRate, spec.maximumBlockSize, 1 });
     dcBlocker.prepare (spec);
 
     splitLow.prepare (spec);
@@ -1286,6 +1288,39 @@ GateParams TubampAudioProcessor::gateParams() const noexcept
     return gp;
 }
 
+DriveParams TubampAudioProcessor::driveParams (int instance) const noexcept
+{
+    const auto k = (size_t) instance;
+    DriveParams dp;
+    dp.type    = (int) valueOf (pp.driveType[k], (float) DriveFx::Type::screamer);
+    dp.gainDb  = valueOf (pp.driveGain[k], 12.0f);
+    dp.toneHz  = valueOf (pp.driveTone[k], 4000.0f);
+    dp.levelDb = valueOf (pp.driveLevel[k]);
+    return dp;
+}
+
+EqParams TubampAudioProcessor::eqParams (int instance) const noexcept
+{
+    const auto k = (size_t) instance;
+    EqParams ep;
+    ep.type      = (int) valueOf (pp.eqType[k], (float) EqFx::Type::parametric);
+    ep.bass      = valueOf (pp.eqBass[k], 5.0f);
+    ep.mid       = valueOf (pp.eqMid[k], 5.0f);
+    ep.treble    = valueOf (pp.eqTreble[k], 5.0f);
+    ep.lowCutHz  = valueOf (pp.eqLowCut[k], 20.0f);
+    ep.highCutHz = valueOf (pp.eqHighCut[k], 20000.0f);
+    ep.midFreqHz = valueOf (pp.eqMidFreq[k], 425.0f);
+    ep.midQ      = valueOf (pp.eqMidQ[k], 0.7f);
+    ep.tiltDb    = valueOf (pp.eqTilt[k]);
+    ep.levelDb   = valueOf (pp.eqLevel[k]);
+    ep.voice     = (int) valueOf (pp.eqVoice[k], (float) EqFx::Voice::british);
+
+    for (int band = 0; band < params::numEqGraphicBands; ++band)
+        ep.graphicDb[band] = valueOf (pp.eqGraphic[k][band]);
+
+    return ep;
+}
+
 CompParams TubampAudioProcessor::compParams (int instance) const noexcept
 {
     const auto k = (size_t) instance;
@@ -1356,8 +1391,13 @@ void TubampAudioProcessor::processAmpMono (NamEngine& engine, juce::dsp::AudioBl
     // user who wants them adds an eq instance behind it.
     if (useToneStack && isOn (pp.ampEqOn))
     {
-        ampEq.setParameters (valueOf (pp.ampEqBass, 5.0f), valueOf (pp.ampEqMid, 5.0f),
-                             valueOf (pp.ampEqTreble, 5.0f));
+        EqParams ep;
+        ep.type   = (int) EqFx::Type::classic;
+        ep.bass   = valueOf (pp.ampEqBass, 5.0f);
+        ep.mid    = valueOf (pp.ampEqMid, 5.0f);
+        ep.treble = valueOf (pp.ampEqTreble, 5.0f);
+
+        ampEq.setParameters (ep);
         ampEq.process (juce::dsp::AudioBlock<float> (&mono, 1, (size_t) numSamples));
     }
 
@@ -1434,9 +1474,7 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         {
             if (isOn (pp.driveOn[k]) && ! pendingReset[(size_t) id])
             {
-                drive[k].setParameters (valueOf (pp.driveGain[k], 12.0f),
-                                        valueOf (pp.driveTone[k], 4000.0f),
-                                        valueOf (pp.driveLevel[k]));
+                drive[k].setParameters (driveParams ((int) k));
                 drive[k].process (block);
             }
 
@@ -1503,15 +1541,14 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
             break;
         }
 
-        // --- tone stack
+        // --- EQ
         case chain::BlockId::eq:
         case chain::BlockId::eq2:
         case chain::BlockId::eq3:
         {
             if (isOn (pp.eqOn[k]) && ! pendingReset[(size_t) id])
             {
-                eq[k].setParameters (valueOf (pp.eqBass[k], 5.0f), valueOf (pp.eqMid[k], 5.0f),
-                                     valueOf (pp.eqTreble[k], 5.0f));
+                eq[k].setParameters (eqParams ((int) k));
                 eq[k].process (block);
             }
 
@@ -1788,8 +1825,8 @@ void TubampAudioProcessor::compensateLaneLatency (juce::AudioBuffer<float>& lane
     {
         const int delay = delays[(size_t) lane];
 
-        // Equal latencies (the common case, and always so when neither lane holds an amp
-        // or an fx slot): nothing to compensate, and the ring is not touched at all.
+        // Equal latencies (the common case, and always so when neither lane holds an amp,
+        // a drive or an fx slot): nothing to compensate, and the ring is not touched at all.
         if (delay == 0)
             continue;
 
@@ -1883,6 +1920,17 @@ int TubampAudioProcessor::blockLatency (chain::BlockId id, bool ampOn, bool amp2
 
     if (id == chain::BlockId::amp2)
         return (amp2On && namEngineB.hasLiveModel()) ? namEngineB.getLatencySamples() : 0;
+
+    // The drive's oversampling delay, by the amp's rule (FX-ENGINES.md D-7): counted while
+    // the drive is on, so automating drive_on or drive_type moves the report. latencyFor
+    // is a pure function of type and rate: this runs on the message thread too.
+    if (chain::kindOf (id) == chain::BlockId::drive)
+    {
+        const auto k = (size_t) chain::instanceOf (id);
+        return isOn (pp.driveOn[k]) ? DriveFx::latencyFor ((int) valueOf (pp.driveType[k]),
+                                                           preparedSampleRate.load (std::memory_order_relaxed))
+                                    : 0;
+    }
 
     // A loaded FX slot contributes its plugin's latency whether or not the slot is
     // bypassed: fxN_on is a normal automatable parameter, and letting an automation
