@@ -6,6 +6,12 @@ measured them through a headless Audio Unit host, and wrote a spec for tubamp. A
 independent agent then re-checked every load-bearing claim of each report against the
 binaries and re-rendered the measurements.
 
+> Update: the engines specified from this study were implemented and verified in two rounds.
+> The contract is `docs/FX-ENGINES.md`; the verification reports are in `.audit/fx-verify/`.
+> The phaser figures below are superseded by `phaser/voicings.md`. Notch-1 trajectory error
+> against Guitar Rig 6 is now 0.41 to 0.70 % rms (Phase 90 block), 0.12 to 0.21 % (Small Stone
+> Color off) and 0.30 to 0.44 % (Small Stone Color on).
+
 Reverb and delay are not here. Their study is `docs/REVERB-DELAY.md`, which today exists
 only as an uncommitted file in the main checkout.
 The amp block (a neural model player), split, mix and the external AU slots were out of

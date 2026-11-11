@@ -239,28 +239,39 @@ single shared helper the Classic path uses.
 
 ### 2.4 Type switches without clicks
 
-- Drive, EQ, phaser and tremolo own one `fx::EngineSwitcher` (from `FxPrimitives.h`, used
-  read-only) exactly as `DelayFx` does (`src/dsp/Delay.cpp:508-576`): on a type change the effect
-  fades to the untouched input over 20 ms, the incoming type is reset while silent, and
-  fades back in over 20 ms. While steady the switcher costs one comparison and does not
-  touch the audio, which is what keeps static Classic renders bit-identical.
-- First block after `prepare()` or `reset()`: `switcher.snapTo (requestedType)` (the
-  `snapEngine` pattern of `DelayFx`), so a session that starts on any type renders as if
-  it had always been on it.
-- Engines with a second choice inside a type (EQ `eq_voice` in Stack; the mod engines
-  have one choice each) key the switcher on `type * 16 + subChoice`.
-- **Exceptions — compressor and chorus.** The compressor does not use the switcher: a
-  switch among Clean, Squash, FET and Opto hands the gain state over with no fade, and a
-  switch to or from Classic crossfades both outputs over 40 ms (§4.2.6). The chorus keeps
-  the outgoing mode sounding while the incoming line fills, then crossfades by measured
-  power (§4.5.4). The tremolo and phaser use the switcher (their sync jumps are separate
-  10 ms glides, §4.7.4 and §4.6.4).
-- **Exception — gate.** A gate fading to "dry" would open for 40 ms. `GateFx` instead
-  runs all detectors continuously and crossfades the two gain curves linearly over 20 ms
-  (§4.1.8); while not switching, the active curve is used directly (no multiply by 1).
-- **Bool switches inside a type** (`mod_color`, `comp_auto_makeup`) are not crossfaded
-  by the switcher: `mod_color` goes through the switcher key (`voicing * 2 + color`);
-  `comp_auto_makeup` fades the amount it adds through a 20 ms one-pole (target M or 0).
+None of the seven engines uses `fx::EngineSwitcher` (from `FxPrimitives.h`); only `DelayFx`
+and `ReverbFx` do (`Delay.cpp`, `Reverb.cpp`). The switcher fades to the untouched input, and
+that let the dry guitar through: +19 dB over the louder type for 40 ms on a drive with its level
+at −20 dB, +11.5 dB on the phaser, +15 dB on the compressor. Each engine now keeps both types
+(or voicings) running and never lets the input itself pass. Every row below is a rule in the
+engine and a row in its check script.
+
+- **Drive (§4.3.6), EQ (§4.4.3), phaser (§4.6.4).** The incoming type starts from reset and
+  runs unheard so its states settle (drive 10 ms, EQ 50 ms, phaser 30 ms). Then the two outputs
+  cross over (drive 20 ms, EQ 40 ms raised cosine, phaser 40 ms raised cosine) with gains
+  that come from the short-term powers of the two outputs and their correlation, so the level
+  moves on a straight line between the two types' own levels. The fade has no corner at either
+  end. A request that arrives during a switch waits for it to end.
+- **Tremolo (§4.7.4).** Both voices run on one LFO (the phase carries over, Classic included)
+  and their outputs crossfade over 40 ms; the incoming voice joins its own steady trajectory.
+- **Chorus (§4.5.4), unchanged.** The outgoing mode keeps sounding while the incoming mode's
+  line fills, then the two wets crossfade over 20 ms scaled by their measured powers.
+- **Compressor (§4.2.6).** A switch among Clean, Squash, FET and Opto hands the gain state over
+  with no fade. A switch to or from Classic crossfades both outputs over 40 ms, with the
+  detector and the gain computer live from the first sample.
+- **Gate (§4.1.8).** A gate fading to "dry" would open for 40 ms. `GateFx` runs all detectors
+  continuously and crossfades the two gain curves linearly over 20 ms; while not switching,
+  the active curve is used directly (no multiply by 1).
+- First block after `prepare()` or `reset()`: the engine starts on the requested type, with no
+  switch in flight (the `snapEngine` pattern of `DelayFx`), so a session that starts on any type
+  renders as if it had always been on it. While steady, none of these paths touches the audio,
+  which is what keeps static Classic renders bit-identical.
+- Choices inside a type take part in the same crossfade: the EQ's `eq_voice` in Stack (two
+  Stacks run during a voice change), the phaser's `mod_color` (§4.6.4: "Model and Color
+  switches"). The `mod_type` switch between effects is the dispatcher's, not an engine's
+  (§6.5, §8 D-5, D-32).
+- **Bool switches inside a type** (`comp_auto_makeup`) fade the amount they add through a 20 ms
+  one-pole (target M or 0).
 
 ### 2.5 Where smoothing lives
 
@@ -556,7 +567,7 @@ Study: `docs/research/fx/gate/report.md` (R1–R5), corrected by its Verificatio
 | index | name | what |
 |---|---|---|
 | 0 | Classic | today's AudioDSPTools gate, bit-for-bit |
-| 1 | Tight | hard gate: windowed-peak detector, 6 dB hysteresis, hold after a note stops (a dip or fade is ridden for up to 0.4 s), 0.2 ms linear opening, dB-linear release to `range` |
+| 1 | Tight | hard gate: windowed-peak detector, 6 dB hysteresis, closing rule by how fast the level fell (a stop closes after the hold; a decay or a beat trough is ridden for up to 1 s, §4.1.5), opening that follows the onset (0.2 ms linear for a pick up to a 5 ms smoothstep for a swell), dB-linear release to `range` |
 | 2 | Smooth | Tight's detector and state machine; when closed, a 3:1 downward expander instead of a jump to `range` |
 
 Default for new blocks: **Tight**. Legacy pin: `gate_mode` → 0 (§2.7.5). The gate is a singleton.
@@ -574,26 +585,57 @@ hint 1). New (hint 4):
 | `gate_range` | Gate Range | −90 – 0 | 0.1 | linear | −90 | dB (≤ −89.95 = mute) | Tight, Smooth |
 | `gate_sc_hpf` | Gate SC HPF | 20 – 300 | 1 | log | 75 (`kGateScHpfDefault[Tight]`) | Hz, 4th-order Butterworth, 24 dB per octave (≤ 20.5 = off) | Tight, Smooth |
 
-`gate_threshold` means, in Tight/Smooth, the **peak level of the filtered sidechain in
-dBFS**; in Classic it keeps AudioDSPTools' mean-square reading (≈ 3 dB lower for a sine).
+`gate_threshold` means, in Tight/Smooth, the **peak level of the sidechain in dBFS**, read as
+the lower of the filtered and the unfiltered 12 ms peak (§4.1.5); in Classic it keeps AudioDSPTools' mean-square reading (≈ 3 dB lower for a sine).
 `[study: gate/report.md R1 "Threshold semantics"]`
 
 Per-mode starting points (`Gate.h`): `kGateReleaseDefault[3] { 30, 30, 80 }` ms
 `[study: R1 table, 30 ms Tight / 80 ms Smooth]`; `kGateHoldDefault[3] { 6, 6, 10 }` ms;
 `kGateScHpfDefault[3] { 75, 75, 75 }` Hz (Classic's entries are unused). Hold was 10 ms
 for every mode in the first draft; the engine measured 6 ms as the shortest hold that
-rides a 41 Hz decay without chattering while muting 50 ms palm-mute gaps to −38 dB, and
-the coordinator accepted it for Tight. With the adaptive wait of §4.1.5, hold means the
-wait after a note stops, and 40 / 50 ms palm-mute gaps reach −31 / −51 dB (`Gate.h`).
+rides a 41 Hz decay without chattering, and the coordinator accepted it for Tight. Under the
+closing rule of §4.1.5 (version 3) hold is the wait after a **stop**, a fall of the level from
+the open level to the close level within 50 ms, at any floor depth: check A2 shows the wait
+moves one for one with the knob over 0 to 250 ms (largest error 0.0 ms), and with 6 ms every
+50 ms palm-mute gap closes over floors 12 to 40 dB under the notes (A3: 240 of 240 gaps; 40 /
+50 ms gaps over a −40 dBFS threshold reach −31 / −51 dB, X13). Slow falls and beat troughs are
+ridden whatever the hold.
 
-Fixed (not parameters): opening is a linear rise from mute to full gain in 0.2 ms
-(`kOpenSeconds`; it replaced the study's 0.5 ms for 60 dB dB-ramp, `[study: R1]`, with no
-more splatter, check X16); hysteresis H = 6 dB `[study: R1, inside the 4.8–9.5 dB the
-references use]`; detector window 12 ms `[study: R1 Nwin, half period of 42 Hz]`;
-expander slope S = 3 `[study: R1]`.
-Sidechain HPF default 75 Hz, 4th-order Butterworth `[choice, check_gate X20, G15: a low E
-opens 1.7 dB over threshold (the 2nd-order 90 Hz filter: 3.9 dB) and 50 Hz hum is cut
-14.3 dB; the study's figures were measured with 90 Hz, ver: gate/verification.md V:31]`.
+Fixed (not parameters): **opening** follows the onset, `kOpenRatio` 0.5: the rise lasts half
+the time the level took to climb the hysteresis band, from 0.2 ms (`kOpenMinSeconds`) up to
+5 ms (`kOpenMaxSeconds`). At 0.2 ms the rise is linear, which keeps a pick whole (version 2's
+only shape; it replaced the study's 0.5 ms for 60 dB dB-ramp, `[study: R1]`); from twice that
+(0.4 ms) it is a smoothstep, blended between, so a swell opens without a click. Hysteresis
+H = 6 dB `[study: R1, inside the 4.8–9.5 dB the references use]`; detector window 12 ms
+`[study: R1 Nwin, half period of 42 Hz]`; expander slope S = 3 `[study: R1]`.
+
+Sidechain HPF default 75 Hz, 4th-order Butterworth `[choice, check_gate X20, F rows: a low E
+reads 1.7 dB under its level, 50 / 60 Hz hum 14 / 8 dB; the 2nd-order 90 Hz filter of the first
+draft read a low E 3.9 dB under and hum 11 / 8 dB; the study's figures were measured with
+90 Hz, ver: gate/verification.md V:31]`. It is a guitar default. What a pure tone at −40 dBFS
+threshold needs, in dB over the threshold, to open the gate (rows F, printed, not enforced;
+"steady" is a tone that rises over 0.3 s, "abrupt" one that starts at a crest and must still
+hold the gate open 0.4 s later):
+
+| sidechain HPF | pure tone | steady: dB over threshold to open | abrupt onset: dB over threshold |
+|---|---|---|---|
+| 75 Hz (default) | 30.87 Hz | +30.1 | +24.9 |
+| 75 Hz | 41.2 Hz | +20.8 | +15.4 |
+| 75 Hz | 82.41 Hz | +1.7 | +0.2 |
+| 40 Hz | 30.87 Hz | +9.5 | +3.6 |
+| 40 Hz | 41.2 Hz | +2.6 | +0.2 |
+| 40 Hz | 82.41 Hz | +0.1 | +0.1 |
+| off (knob at 20) | 30.87 / 41.2 / 82.41 Hz | +0.1 | +0.1 |
+
+(Tight, threshold −40 dBFS; check `F bass, level to open`, printed and not enforced. "Steady"
+rises over 0.3 s; "abrupt" starts at a crest and must hold the gate open 0.4 s later.) A decaying
+dull note shuts the gate when the true peak is, over the threshold, −32.0 dB at 41.2 Hz and
+−8.4 dB at 55 Hz with 75 Hz, −13.7 and −15.7 dB with 40 Hz, −15.9 dB with the filter off (a
+30.87 Hz note never opens it with 75 or 40 Hz): the closing rule rides it for up to 1 s. Hum
+reads, against the fundamental's amplitude with the 12 ms window: 75 Hz filter −3.9 dB at 50 Hz
+and −1.9 dB at 60 Hz; 40 Hz filter +2.5 / +3.2 dB; filter off +3.2 / +3.2 dB.
+
+For bass use the knob's minimum (exactly off) or about 40 Hz.
 
 ```cpp
 struct GateParams
@@ -653,6 +695,7 @@ else 1; level = 20·log10(max |mono| in block), floor −120.
 
 #### 4.1.5 Tight and Smooth — algorithm
 
+This is **version 3** of the closing rule (`Gate.h` states it, `Gate.cpp` implements it).
 Per sample, on the mono mean `s` of the block's channels (`fs` = sample rate). A
 non-finite `s` is read as 0 (a sample that is finite but huge is clamped to ±1e6, so it
 still opens the gate):
@@ -664,50 +707,108 @@ sc   = HP4(s)  if scHpfHz > 20.5 else s     // two TPT SVF high-pass sections in
                                             // v3 = x-ic2; v1 = a1*ic1+a2*v3; v2 = ic2+a2*ic1+a3*v3;
                                             // ic1 = 2v1-ic1; ic2 = 2v2-ic2; y = x - k*v1 - v2
                                             // [study: gate/evidence/bb/proto.py:16-22], state in double
-a    = |sc|
-pk   = max of a over the last Nwin samples  // exact sliding-window maximum (van Herk / Gil-Werman),
-                                            // Nwin = round(0.012 * fs)
-raw  = same windowed max of |s|             // two more 12 ms windows, for the stop detector:
-stp  = same windowed max of |s - LP1(s)|    // LP1 = one-pole low-pass at 2 * scHpfHz (when the filter is on)
+pk   = max of |sc| over the last Nwin samples     // exact sliding-window maximum (van Herk / Gil-Werman),
+                                                  // Nwin = round(0.012 * fs); the filtered peak
+raw  = same windowed max of |s|                   // the unfiltered peak
+lev  = min(pk, raw)  if the filter is on else pk  // the level the state machine reads
 open  = 10^(T/20);  close = open * 10^(-6/20)
-ref  = max(pk, ref * 10^(-20 dB/s / fs), 1e-9)          // the recent peak: forgets 20 dB per second
-stopped(w) = (w < close and w <= ref * 10^(-26/20))      // a fall of 26 dB or more from the recent peak
-if stopped(raw) or stopped(stp):                          // the note has stopped
-    if state == OPEN and ++c > Nhold:  state = CLOSED     // c counts samples; Nhold = round(hold * fs)
-else:
-    c = 0
-    if pk >= open:          state = OPEN;  wait = 0
-    elif state == OPEN:
-        if pk >= close:     wait = 0                      // inside the hysteresis band
-        else:               wait += 1 / (W + 1);  if wait >= 1: state = CLOSED
-W = Nhold                      if pk <= ref * 10^(-26/20)   // deep fall
-  = kRideSeconds * fs          if pk >= ref * 10^(-16/20)   // shallow fall, kRideSeconds = 0.4
-  = log-linear between the two, in the fall in dB          // a dip or fade is ridden
+```
+
+**The level.** The state machine reads the lower of the filtered and the unfiltered windowed
+peak. The 4th-order filter rings for tens of ms after a note stops (up to 45 ms more after a
+loud low note over a deep floor); the unfiltered signal stops with the note. On a guitar note
+the unfiltered peak is the higher, so the hysteresis stays whole; hum keeps the filtered peak
+lower. This replaces version 2's separate stop detector (check X10, B1).
+
+**The closing rule.** What closes the gate is how fast the level fell through the 6 dB
+hysteresis band (from `open` to `close`), not how far it fell, because the noise floor decides
+how far a stopped note can fall.
+
+```
+lev >= open:                 below = 0;  state = OPEN
+                             (on entering OPEN, start the opening ramp, see Opening)
+OPEN, close <= lev < open:   below = 0                       // inside the band: nothing counts
+OPEN, lev < close:           the level has just fallen through the band; fall = samples since
+                             lev was last >= open
+    fall <= 50 ms (kFastFallSeconds):  a STOP, at any floor depth
+        wait = hold + extend           // extend: see below
+    fall  > 50 ms:                     a decay or a beat trough
+        wait = max (hold + extend, min (1 s, 2 * fall))      // kRideRatio 2, kRideMaxSeconds 1
+        the wait counts from where the level stops falling: below restarts at 0 whenever lev
+        makes a new low 1 dB under the previous mark; and everything restarts if lev climbs
+        6 dB back from its lowest point; the gate closes at the latest 1 s after the
+        crossing, whatever the level does
+    below += 1 per sample under close;  state = CLOSED once below > wait
+```
+
+- **Extra wait after fast dips** (`extend`). While the gate is open the engine remembers fast
+  dips of the level: a fall of 6 dB (`kDipDb`) under its own recent maximum within 50 ms that
+  comes back to within 3 dB (`kBackDb`) of it, at most 200 ms long. These are a chord's
+  partials beating 15 to 40 times a second, which the 12 ms window cannot fill. A stop that
+  follows waits `1.25 × (length of the longest remembered dip) + 1 ms` more, at most 20 ms
+  (`kExtendMaxSeconds`). The memory forgets 40 ms per second.
+- **Beat troughs that fall as fast as a stop** cannot be told from one. The gate closes on the
+  stop's timing and reaches −20 dB at the release rate, then falls only 20 dB per 1.5 remembered
+  trough lengths (`kGentleFromDb`, `kGentleDbPerDip`; only if the gate reopened as slowly as a
+  beat crest climbs, `kDipRiseSeconds` 15 ms, so a palm-muted note that reopens it at once does
+  not count). The trough costs a partial dip and the crest reopens the gate.
+- **Opening** follows the onset: the rise lasts half the time the level took to climb from
+  `close` to `open`, between 0.2 ms and 5 ms (§4.1.2).
+
+```
 target_dB = 0                                                 if OPEN
           = R                                                 if CLOSED and Tight
           = clamp(2 * (F - 20*log10(close)), R, 0)            if CLOSED and Smooth   (S-1 = 2)
-          // F = floor estimate, dB of min(pk, raw) while closed (below)
+          // F = floor estimate, dB of lev while closed (below)
 gr_dB: closing    gr_dB -= min(gr_dB - target_dB, 60/(release*fs))              // dB-linear release
-       opening    gain rises linearly by 1/(0.0002*fs) per sample to the target  // 0.2 ms, mute to full gain
+       opening    gain rises over the onset-dependent length, linear at 0.2 ms to smoothstep from 0.4 ms
 gain  = (R <= -89.95 and gr_dB <= -89.95) ? 0 : 10^(gr_dB/20)
 ```
-`R` = `rangeDb`. Smooth's floor estimate F is the dB peak level averaged with a time
-constant of half the time since the gate closed (or since the level jumped by more than
-6 dB, or since the gate was last open), up to 0.2 s: it lands on a new floor at once and
-then holds still on hiss and hum (largest 10 ms gain move 0.33 dB, check X14). The
-slew limiter **is** the smoothing for every gate parameter (threshold, range and hold
-changes cannot click because `gr_dB` can only move at the release rate and the 0.2 ms
-opening rate) `[study: R1 dB-linear ramp]`.
+`R` = `rangeDb`. **Smooth** under the threshold: the floor estimate F is the dB level averaged
+with a time constant of half the time since the gate closed (or since the level jumped by more
+than 6 dB, or since the gate was last open), up to 0.2 s (`kFloorTauMaxSeconds`); the expander
+gain follows its target **at most 1 dB per 10 ms** (`kFloorSlewDbPerSecond` 100), so a floor
+that jumps or wobbles moves no faster. Right after a reset the estimate and the gain take the
+level as it comes until the window has filled once (no floor yet to protect). Version 2 let the
+gain move 12.4 dB in 10 ms on a +5 dB floor step; now the largest 10 ms move is 1 dB (check E1)
+and 0.33 dB on hiss and hum (check X14).
 
-**Why the closing rule depends on the fall.** A wait that was a fixed hold made Tight
-chatter on decaying chords and beating notes (49 of 328 verifier cases). Now a note that
-stops (palm mute, a choked chord) falls 26 dB or more from its recent peak and closes
-after the hold; a dip or fade of 16 dB or less is ridden for up to 0.4 s (a 1 Hz beat
-with a 15 dB swing); between 16 and 26 dB the wait is interpolated. The stop detector
-reads the unfiltered signal and a signal through a one-pole that keeps hum out, so the
-sidechain filter's ringing (up to 10 ms after a loud low note) does not delay a stopped
-note; neither reads more than 4.9 dB under the main filter, inside the 6 dB hysteresis,
-so it never closes on a level that could reopen the gate (`Gate.cpp`, check X10 to X13).
+**Range and the other parameters.** `range` is smoothed per sample, a one-pole in dB with a
+10 ms time constant (`kRangeSeconds`; it snaps once within 0.001 dB), so a range automation
+cannot step at block rate (check G1: largest gain step 0.00004 per sample against 0.0121 in
+version 2; bar 0.001). The slew limiter and the release rate **are** the smoothing for
+every other gate parameter (threshold, hold and sidechain changes cannot click because
+`gr_dB` can only move at the release rate and the opening rate) `[study: R1 dB-linear ramp]`.
+
+**Why the closing rule depends on how fast the level fell.** A wait that was a fixed hold made
+Tight chatter on decaying chords and beating notes (49 of 328 verifier cases). Version 2 waited
+according to how far the level had fallen from a recent peak. The noise floor decides how far a
+stopped note can fall, so with the floor within about 22 dB of the notes Tight stayed open
+418 to 430 ms after a stop, closed 0 of 8 palm-mute gaps, the hold knob stopped meaning the
+wait, and the remembered peak brought chatter back behind a louder note. A hand stop takes 1 to
+44 ms to cross the band whatever the floor, a decay at 60 dB per second takes 100 ms, so the
+band time tells them apart.
+
+**Stated costs (version 3).**
+- A natural decay (not a stop) closes up to 1 s after it passes the close level (version 2:
+  0.4 s).
+- A stop on a chord whose partials beat fast waits up to 20 ms more.
+- Fast, deep beat troughs (a trough that falls as fast as a stop) dip partway and the crest
+  reopens the gate; they never cut to mute. See the table below.
+- The sidechain filter's cost on bass: see the table in §4.1.2 (rows F). Neither the 75 Hz
+  default nor the 4th-order filter is changed.
+
+The trade-off, from check C (two tones 110 and 196 Hz beating, troughs 6, 12 and 20 dB, thresholds −40 and −55 dBFS), as the deepest dip of the gain and its length where a trough falls as fast as a stop:
+
+| trough | 0.5 Hz | 1 Hz | 2 Hz | 4 Hz | 8 Hz |
+|---|---|---|---|---|---|
+| 6 dB | no dip | no dip | no dip | no dip | no dip |
+| 12 dB | no dip | no dip | no dip | −34 dB, 82 ms | −33 dB, 45 ms |
+| 20 dB | no dip | −38 dB, 69 ms | −33 dB, 101 ms | −37 dB, 119 ms | −30 dB, 46 ms |
+
+Never to mute (the bar: above −60 dB). Slower troughs are ridden. In verifier 1's and
+verifier 2's cases (X10 to X12, B1) 12 + 5 cases dip partway at stop-fast troughs, deepest
+about −36 dB (X11: −36.2; B1: −32.8 in the run of this document), and none behind a louder note.
 
 **Detector change against the study (load-bearing):** the prototype held the peak for
 12 ms and then let it fall with a 3 ms exponential; that fall costs 0.35 ms per dB of
@@ -715,18 +816,18 @@ level above threshold and up to 12 ms of jitter, which is why it closed in 30–
 −40 dB and 38–47 ms at −60 dB, missing its own 35 ms target `[ver: gate/verification.md
 V:31, V:37]`. This spec uses an exact sliding-window maximum instead: after the last
 crest leaves the window the detector reads the true current level at once, so the close
-time no longer grows with level (the stop detector above keeps the sidechain filter's
-ringing from adding to it) `[choice, sim: §4.1.10 numbers]`. Nwin = 12 ms still covers the
+time no longer grows with level (the lower-of-two reading above keeps the sidechain
+filter's ringing from adding to it) `[choice, sim: §4.1.10 numbers]`. Nwin = 12 ms still covers the
 half period of 42 Hz so the held value cannot droop between half-cycles of a low note.
 
-`state` for the meter: 2 if OPEN and pk ≥ open; 1 if OPEN and pk < open (hysteresis band
-or holding); 0 if CLOSED. GR meter = max over the block of −gr_dB, clamped to [0, 90]
-(90 when muted); level meter = max over the block of 20·log10(pk), floor −120.
+`state` for the meter: 2 if OPEN and the filtered peak `pk` ≥ open; 1 if OPEN and `pk` < open
+(hysteresis band or waiting); 0 if CLOSED. GR meter = max over the block of −gr_dB, clamped to
+[0, 90] (90 when muted); level meter = max over the block of 20·log10(pk), floor −120.
 
-**Start state after `reset()`:** CLOSED, `gr_dB = R`, the wait and stop counters 0, all
-three windows empty, filter state 0, the floor estimate restarted, curve ring filled with
-the corresponding floor gain (0 if mute). A gate that re-enters the chain starts closed
-and opens on the first note within 1 ms (G8; the rise itself takes 0.2 ms).
+**Start state after `reset()`:** CLOSED, `gr_dB = R`, the wait and fall counters 0, the dip
+memories empty, all three windows empty, filter state 0, the floor estimate restarted, curve ring
+filled with the corresponding floor gain (0 if mute). A gate that re-enters the chain starts closed
+and opens on the first note within 1 ms (G8: 0.188 ms to −1 dB).
 
 #### 4.1.6 Lookahead
 
@@ -778,7 +879,7 @@ to 12 ms (V:37). Each cell is the max over 8 start phases × 4 burst lengths
 (0.3 s + {0, 0.37, 1.13, 2.9} ms). Defaults unless stated (Tight, release 30, hold 6
 (Smooth: release 80, hold 10), range −90, HPF 75, 4th order). The G bounds were set from
 a numpy model of the first §4.1.5 at 48 kHz `[sim]`; the model's values are in brackets
-(they predate the adaptive wait and the 4th-order filter; the bars are what the script
+(they predate the closing rule of §4.1.5 and the 4th-order filter; the bars are what the script
 enforces). The rows X1 to X20 below the table are the verifier-driven proofs.
 
 | # | Check | Pass |
@@ -809,9 +910,9 @@ enforces). The rows X1 to X20 below the table are the verifier-driven proofs.
 | X6 | Mode switches: all 6 transitions, 3 steady inputs, blocks 64 / 512 | added gain step per sample ≤ 1.5 × a full-scale 20 ms linear fade |
 | X7 | Rates 22.05 and 192 kHz | G2 and G5 cells, bounds 36 ms and 51 ms |
 | X9 | Low-note decay: 41.2 / 46.25 / 82.41 Hz with harmonics, tau 0.7 / 1.5 / 3 s, thr −40 / −55 | at most 2 open/close changes (one open, one close) |
-| X10 | Chord decay: 14 verifier chords × thr −30…−65 step 5; the 4 hardest chords also at 22.05 / 44.1 / 96 / 192 kHz (`--quick`: 44.1 and 96 kHz) | at most one open and one close in every cell |
-| X11 | Beating: AM notes (82.41 and 110 Hz, depth 0.2 / 0.33 / 0.5 / 0.7 = 3.5 to 15 dB, rate 1 / 3 / 7 / 15 / 30 Hz, thr −40); two strings a few hertz apart, thr −30…−60 | at most one open and one close |
-| X12 | Single decays: 41.2…330 Hz × tau 0.15…2.5 s × thr −20…−70 | at most one open and one close |
+| X10 | Chord decay: 14 verifier chords × thr −30…−65 step 5; the 4 hardest chords also at 22.05 / 44.1 / 96 / 192 kHz (`--quick`: 44.1 and 96 kHz) | no reopening dip after a slow fall (a fall through the hysteresis band in more than 52 ms); dips that follow a stop-fast fall are counted and reported (check C, §4.1.5), never a failure |
+| X11 | Beating: AM notes (82.41 and 110 Hz, depth 0.2 / 0.33 / 0.5 / 0.7 = 3.5 to 15 dB, rate 1 / 3 / 7 / 15 / 30 Hz, thr −40); two strings a few hertz apart, thr −30…−60 | the same: none after a slow fall; the dips at stop-fast troughs reported (6 + 6 cases, deepest −31.8 / −36.2 dB, longest 149 / 114 ms in the run of this document) |
+| X12 | Single decays: 41.2…330 Hz × tau 0.15…2.5 s × thr −20…−70 | the same: none after a slow fall |
 | X13 | Palm-mute gaps by gain energy over the last 10 ms of each gap, Tight thr −40 | 50 ms gaps: median ≤ −36 dB, worst ≤ −30 dB; 40 ms gaps: median ≤ −20 dB. Also reported, not enforced: the 30 / 40 / 50 / 75 / 100 ms table and the gaps over 50 Hz hum |
 | X14 | Smooth floor: noise, hum and buzz under thr −40, 44.1 / 48 / 96 kHz | largest gain move in 10 ms ≤ 0.5 dB, largest one-sample step ≤ 0.1 dB |
 | X15 | Pick attack: picked notes 12 / 20 / 34 dB over thr −40, 82.41 / 196 / 1000 Hz | energy lost in the first millisecond ≤ 3 dB |
@@ -819,17 +920,40 @@ enforces). The rows X1 to X20 below the table are the verifier-driven proofs.
 | X17 | Non-finite input: NaN / ±Inf bursts in every mode and across switches, blocks 1 / 37 / 512, mono and stereo | gain equals the zero-substituted render bit for bit; meters finite |
 | X18 | Oversized blocks: block 512 on a 256-sample prepare | audio unchanged; meters those of the same input in normal blocks (Classic: open, 0 dB) |
 | X19 | Long curve delay: deferred, D = 8193 / 30000 / 65535 | bit-exact against the undelayed render, D samples later |
-| X20 | Low-note threshold (reported, not enforced): steady sine needed to open at thr −40 | 41.2 / 73.42 / 82.41 / 110 Hz; a pure 41.2 Hz tone needs 15.4 dB over threshold (was 13.6), a low E 1.7 dB (was 3.9) |
+| X20 | Low-note threshold (reported, not enforced): sine needed to open at thr −40, HPF 75, a tone that rises over 0.3 s (steady) and one that starts at a crest and must hold the gate open 0.4 s later (abrupt) | 41.2 / 73.42 / 82.41 / 110 Hz: +20.8 / +3.4 / +1.7 / +0.2 dB steady, +15.3 / +0.2 / +0.2 / +0.0 dB abrupt (the earlier row read 15.4 dB for 41.2 Hz, which is the abrupt figure; the steady one is 20.8 dB, the 4th-order 75 Hz filter's price; a low E needs 1.7 dB, was 3.9 with the 2nd-order 90 Hz filter). The table of rows F in §4.1.2 gives the same figures at HPF 75, 40 Hz and off |
+| A1 | Stop close: hand stops of notes (41.2 / 82.41 / 196 / 1000 Hz), floor 8, 12, 20, 40, 60, 90 dB under the note, falls of 5 / 15 / 30 ms, Tight; and at 44.1 / 96 / 192 kHz, blocks 1 / 37 / 512, mono and stereo | closed (−20 dB) at most 12 + hold + release/3 + 3 = 31 ms after the level leaves the close level (measured worst 28.0; after the end of the fall 32.2) |
+| A2 | Hold one for one: hold 0 / 6 / 20 / 50 / 100 / 250 ms, floors 8 to 90 dB under | \|wait(hold) − wait(0) − hold\| ≤ the larger of 10 % of hold and 3 ms (measured 0.0 ms) |
+| A3 | Palm mutes over a floor 12, 18, 22, 26, 30, 40 dB under the notes, gaps 50, 75, 100, 150, 250 ms, threshold floor + 8 dB | every gap closed (240 of 240; version 2: 140); the first 10 ms of the notes 12 dB or more over the threshold keep −1 dB or better (measured −0.07) |
+| A4 | No hang: soft notes 8 to 40 dB over a hiss floor, stopped by hand | closed within 60 ms of the stop (measured 29.5 to 47.5; version 2: 418 to 430) |
+| B1 | Verifier 2's chords: 16 chords × thr −30…−65 × decay times, rates 44.1 / 96 / 192 kHz, Smooth, holds 0 / 6 / 250 ms (382 cases) | no dropout after a slow fall; stop-fast-trough dropouts counted and printed (5 cases, deepest −32.8 dB) |
+| B2 | A quiet decaying chord behind a louder note: 104 cases (loud −3 / −12 dBFS 0.25 s before; Tight, Smooth, holds 6 / 20 / 50) and 72 cases of the second sweep (+12…28 dB, 0.1 to 0.6 s) | no chatter and no case with more dropouts than the same chord alone (version 2: 22 of 104) |
+| C | Two tones 110 / 196 Hz beating 0.5 to 8 Hz, troughs 6 / 12 / 20 dB, thr −40 / −55, decaying through the threshold | none after a slow fall; the stop-fast troughs' deepest dip above −60 dB, never mute (measured −37.8). The trade-off table of §4.1.5 is printed |
+| D1 | Pick front: picks 20 and 34 dB over the threshold at 41.2 / 61.74 / 82.41 / 196 / 1000 Hz, and 82.41 Hz at 44.1 / 96 / 192 kHz | the first millisecond keeps −1.5 dB or better (measured −1.33) |
+| D2 | Opening click: swells of 150 and 600 ms, 41.2 / 82.41 / 110 / 220 Hz, thr −30 / −40 / −50, sine and plucked string | above 3 kHz at the opening, re the note: sines ≤ −50 dB (measured −72.6); strings ≤ −50 dB or the dry string's own level +1 dB |
+| E1 | Smooth floor slew: hiss steps +5 / +8 / −8 dB, wobbles ±4 / ±7 dB at 4 Hz, crackle under thr −40, 44.1 / 48 / 96 kHz, block 64 | largest gain move in 10 ms ≤ 1.01 dB (the slew; measured 1.00; version 2: 3.6 / 12.4 dB); a note after the floor reaches −1 dB within 1 ms of the onset (measured 0.19) |
+| F | Sidechain filter on bass and hum (printed, not enforced): level to open at HPF 75 / 40 / off for 30.87, 41.2, 82.41 Hz, steady and abrupt; the true peak when a decaying dull note shuts the gate; the hum reading | the tables of §4.1.2 |
+| G1 (range) | Range smoothing: closed, range ramped −90 → −10 dB, blocks 64 and 512 | largest gain step ≤ 0.001 per sample (measured 0.00004; version 2: 0.0121 at block 512) |
 
-check_gate.py ran 79 checks, 0 FAIL, at the commit that added X10 to X20 (`81fd404`). G16 in
-the script is a proxy (`lag = delay`: the output must be the undelayed render, D samples
-later, bit for bit, at D = 1 / 37 / 512 / 3000, blocks 64 / 512); the processor test is the
-integrator's.
+Rows X10 to X12 were restated for the closing rule: any reopening dip of the gain is classified
+by how long the level took to fall through the band before it. A dip after a fall of more than
+52 ms is chatter and fails; a dip after a fall as fast as a stop is the trade-off of §4.1.5 and
+is counted and printed. The table lists every row id `check_gate.py` has (including the
+common checks of §2.11 run per mode), with the bar the script enforces. `check_gate.py --rows=A,B,...`
+runs only the named closing-rule rows (A to G; `X` adds X10 to X20 and the other verifier rows)
+and `--verbose` lists every dip that rows B and C classify; the full run is the acceptance.
+Measured, the close times of G2 to G6, G17 and X7 are 27.7 to 28.0 ms in every cell
+(12 + hold + release / 3 = 28), well inside their bars; the bracketed values of the G rows are
+the first numpy model's. Full run: **102 checks, 0 FAIL** (79 at the commit that added X10 to
+X20, `81fd404`). G16 in the script is a proxy (`lag = delay`: the output must be the undelayed
+render, D samples later, bit for bit, at D = 1 / 37 / 512 / 3000, blocks 64 / 512); the
+processor test is the integrator's.
 
 fxbench keys: `mode threshold release hold range sc_hpf delay deferred on lag prepare_block`
 (`delay` = curve delay, applied with `apply` after `measure` as the processor does; `lag`
 delays the deferred audio as the amp would; `prepare_block=N` re-prepares for N-sample
-blocks, for X18).
+blocks, for X18). `--trace` writes the applied gain per sample (linear); `--meters` writes per
+block the state, the gain reduction in dB and the detector level in dBFS.
+`check_gate.py` takes `--rows=A,B,...` and `--verbose` (§4.1.10).
 
 ### 4.2 Compressor — `CompFx` (`src/dsp/Compressor.h/.cpp`)
 
@@ -914,7 +1038,10 @@ clamped to ±1e6 (`kInputLimit`, +120 dBFS):
 
 ```
 xd[ch] = HP1(x[ch])  if scHpf > 20.5 else x[ch]   // TPT one-pole high-pass on the detector only
-                                                  // [study: R3, one-pole; Shadow Hills 90 Hz evidence]
+                                                  // [study: R3, one-pole; Shadow Hills 90 Hz evidence];
+                                                  // its coefficient is set the moment the filter switches
+                                                  // on (reset() keeps the old one), not at the next
+                                                  // 16-sample control tick (C31)
 d      = max over channels of |xd[ch]|            // linked stereo [study: R1]
 held   = max of d over the last W samples         // exact sliding-window maximum (monotonic deque)
 W      = round(clamp(0.25 * tauR1, 1 ms, 12.5 ms) * fs)   // tauR1 = release knob (s)
@@ -970,7 +1097,11 @@ y      = mix * wet + (1 - mix) * x               mix = comp_mix/100; when mix ==
 ```
 Auto makeup `[study: R3, published −x_sc(0) rule at a −10 dBFS guitar peak; reference level tagged guess]`;
 for Squash M uses the equivalent static curve (same formula). Auto makeup on/off fades
-the amount M through a 20 ms one-pole (no step).
+the amount M through a 20 ms one-pole (no step). **M is a fixed gain, calibrated so that a steady
+signal peaking at −10 dBFS comes out at the level it went in (C20); it does not follow the
+playing.** A steady −20 dBFS signal comes out 4 to 10 dB louder, a −3 dBFS one 3.5 to 7 dB quieter,
+and a plucked chord peaking at −10 dBFS 2 to 12 dB louder in rms (its decay is reduced less than
+its peak) (`Compressor.h`, `CompParams::autoMakeup`; §8 D-38).
 
 #### 4.2.5 Type algorithms
 
@@ -989,6 +1120,21 @@ the amount M through a 20 ms one-pole (no step).
   state: g = (1/R − 1)(L − T) above the knee, i.e. the static curve is exactly ratio R.
   What stays feedback: after a drop the output falls under the threshold, where the loop
   is open and the gain heads for 0 dB, so a partial drop recovers sooner (printed in C26).
+  **Squash keeps this feedback recovery above the threshold**, and it is what separates it from
+  Clean (Clean's recovery is the knob in every cell). The release is the knob (t63) when the signal
+  falls below the threshold, and while the output stays above it; a drop that leaves the input above
+  the threshold but takes the output below it recovers sooner. Measured t63 in ms at knob 150 ms
+  (Clean: 149 ms in every cell), T −24, knee 6, from −4 dBFS (copied from `Compressor.h`, held within
+  10 % by C26b):
+
+  | ratio | to −8 dBFS | −10 | −14 | −18 | −22 |
+  |---|---|---|---|---|---|
+  | 2 | 149 | 149 | 142 | 111 | 127 |
+  | 4 | 149 | 121 | 75 | 93 | 127 |
+  | 8 | 83 | 53 | 65 | 92 | 127 |
+  | 20 | 38 | 44 | 64 | 92 | 127 |
+
+  (A recovery down to a third of the knob at R 8, a quarter at R 20.)
   **Change against the study:** the study fed the detector with the previous output
   sample (`|y[n−1]|`); with any detector lag that loop undershoots — its own prototype
   dipped to −53 dB before settling at −24.6 dB (`comp/evidence/bb/proto/squash_fb.tbA.tsv`
@@ -1028,21 +1174,36 @@ the current gain reduction over with no fade and the new type moves from it with
 ballistics (the uncompressed signal never passes: the old switch let +15 dB through for
 40 ms). A switch to or from Classic crossfades both outputs over 40 ms
 (`kCrossfadeSeconds`): the incoming new type is seeded at the reduction Classic was
-applying and held while the detector window fills; an incoming Classic runs unheard until
-its envelope has risen (four attack time constants, knob / 2π, plus 2 ms). A request
-during a fade hands over within the incoming side, or reverses the fade from where it is.
-While bypassed (`skip`), a switch completes without a fade.
+applying; an incoming Classic runs unheard until its envelope has risen (four attack time
+constants, knob / 2π, plus 2 ms). **The detector and the gain computer run from the first
+sample after a seed from Classic.** While the detector window (12.5 ms at most) refills, its
+maximum can only be lower than the full window's, so only **attacks act**: an attack it calls for
+is real, a release is not yet known (the release rates are zero until the window has filled). The
+earlier rule froze the seeded gain for the window and an attack inside it passed unattacked. C29
+(20 ordered pairs × 3 settings × gaps of 0 to 30 ms between the switch in silence and an attack):
++11.03 dB → +0.94 dB over the louder of the one-type renders (bar 1.0 dB). A request during a
+fade hands over within the incoming side, or reverses the fade from where it is. While bypassed
+(`skip`), a switch completes without a fade. `reset()` also clears the sidechain filter's
+on flag, so a filter that was on is switched on again with its coefficient set (C31).
 
 #### 4.2.7 Meter, latency, CPU
 
-GR = max over the block of −g (dB, makeup excluded, ≥ 0); Classic from the shadow filter.
-Latency 0. CPU per instance: Classic as today (≤ 0.3 %); new types ≤ 0.35 % (one `log10`
+GR = max over the block of −g (dB, makeup excluded, ≥ 0); Classic from the shadow filter, whose
+input is limited to ±1e6 like the other types' (a 3e38 sample overflowed its `env / threshold`
+and gave an infinite reduction; the audio is untouched, C32). **The meter shows what the
+compressor applies to its wet path**, as a hardware meter does: with mix under 100 % the net
+change heard is smaller (decision, enforced by C30: 0.000 dB against the wet-path reduction).
+**During a crossfade to or from Classic the meter and the trace blend the two engines'
+reductions linearly with the fade gains**, as the output does (the old meter read the larger
+engine, up to 9.4 dB over what was applied; C30: 4.52 → 0.000 dB). Latency 0. CPU per instance: Classic as today (≤ 0.3 %); new types ≤ 0.35 % (one `log10`
 and one `exp2` per sample, deque amortised O(1)).
 
 #### 4.2.8 fxbench keys
 
 `type threshold ratio attack release makeup knee mix sc_hpf auto_makeup on` (`on=0` calls
-`skip()`); `--trace=gain` writes the per-sample gain in dB (−g, before makeup).
+`skip()`); `--trace=gain` writes the per-sample gain reduction in dB (−g, before makeup, a
+positive number) (`CompFx::setGainTrace`); `--meters` writes the per-block gain reduction.
+`--rt-check` counts allocations on the render thread only (§5.3, `tools/fxbench/README.md`).
 
 #### 4.2.9 Acceptance (`check_comp.py`)
 
@@ -1053,7 +1214,7 @@ the fundamental and DC over the last 1 s of a 2.5 s steady tone, −10 dBFS, at 
 **not** harmonic THD, which ignores the inharmonic sidebands the study's hold produced
 (V:77). Acceptance frequencies are deliberately not divisors of the sample rate:
 41.2, 82.4, 98 Hz (and 100 Hz for comparison with the study). Settings T −20, R 4 unless
-stated. Model values in brackets `[sim]`. Rows below C20 (C3b onward, C21 to C28 and K) are
+stated. Model values in brackets `[sim]`. Rows below C20 (C3b onward, C21 to C33 and K) are
 the verifier-driven proofs; the table lists every row id `check_comp.py` has, with its bar.
 
 | # | Check | Pass |
@@ -1095,13 +1256,19 @@ the verifier-driven proofs; the table lists every row id `check_comp.py` has, wi
 | C26 | Squash release: (a) 45 bursts to silence (levels −16 / −10 / 0 dBFS × R 2…20 × knee 0 / 6 / 24); (b) drops that leave the output above the threshold and beyond the knee (−4 → −6 / −8 / −10 / −16 dBFS) | t63 within 20 % of the 150 ms knob. Printed, not enforced: drops that take the output under the threshold recover sooner |
 | C27 | Squash knee: R 4 / 8 / 20 / 1.5 with knees 6 / 6 / 24 / 12, GR of a steady tone at T − k/2, T, T + k/2, T + 10 | within 20 % of the textbook curve (0.1 dB where the curve is under 0.5 dB) |
 | C28 | Programme release: FET (T −24, R 6, knee 4, attack 0.3, release 55) and Opto (T −24, R 4, knee 12, attack 2, release 60): t63 after 0.1 / 0.5 / 5 s bursts | t63 grows ≥ 5 % per step; the 5 s / 0.5 s ratio (and 0.1 s / 0.5 s for FET) within 20 % of the unit's (FET 123/95 and 56/95, Opto 184/157); a −20 dBFS burst releases faster than a −10 dBFS one; a 0.5 s burst 12 s after a 5 s one releases within 5 % of a fresh one |
+| C26b | Squash recovery above the threshold: ratios 2 / 4 / 8 / 20 × drops from −4 dBFS to −8 / −10 / −14 / −18 / −22 dBFS, knob 150 ms, T −24, knee 6, attack 2.5; Squash and Clean | every cell within 10 % of the `Compressor.h` table (§4.2.5); none longer than the knob (≤ 153 ms); Clean within 2 % of the knob in every cell (measured: the difference between the two is the feedback, not an assumption) |
+| C29 | A switch in silence, then an attack 0 / 5 / 10 / 20 / 30 ms later: a strummed pluck chord, every ordered pair of the five types, three settings (T −30 R 4; T −50 R 20 0.1/10; T −40 R 8, makeup 12, auto), 600 cases, with and without an earlier hand-stopped note | the output level in 2 ms frames over the 0.6 s after the attack is at most **+1.0 dB** over the louder of the render that stayed on the old type, the render that was always on the new type, and the new type's own render without the earlier note's history (its slow stage and memory start empty after a switch from Classic, which has neither to hand over: Opto is up to 3.7 dB louder at the onset 0.5 s after a note) (measured +0.94 dB; before the fix +11.03 dB) |
+| C30 | The meter in fades and at mix 50 %: (a) DC input, −10 dBFS stepped to 0 dBFS at the switch, T −30, attack 30 / release 300, every switch with Classic (8), blocks 64 / 37 / 512; (b) mix 50 %, every new type, same signal | (a) every block's meter equals the largest reduction applied in it within 0.05 dB; (b) the meter equals −20·log10 (2·out/in − 1), the wet path's reduction, within 0.05 dB (measured 0.000 dB; was 4.52 dB in the fades) |
+| C31 | Reset determinism with the detector filter moving: two automation sets of `sc_hpf` (120, 20, 250, 20, 80 Hz and 120, 300, 20, 99 Hz, steps between control ticks), every type, blocks 1 / 16 / 37 / 48 / 512, mono and stereo, `--reset-repeat`, 2 s of `gen:music` | 0 failures (was 8 of 100) |
+| C32 | 3e38 input: 8 samples of +3e38 on every channel, then 8 of −3e38 on the left; every type, `sc_hpf` off and 100, blocks 512 / 37 / 1, mono and stereo, `auto_makeup` | output, gain trace and meter finite everywhere; 4 s later the output within 1 dB of the render of the same note without the spikes |
+| C33 | `--rt-check` with a WAV input (every type switched through, `sc_hpf`, mix, auto makeup and makeup moving), block 37, 20 identical runs | 20 of 20 pass (the hook counted frees made by reader threads: 19 of 20 failed) |
 | K | Per-control rows, 45: for each type, each control the type reads is moved while the block runs. Classic: threshold, ratio, attack, release, makeup; knee, mix, sc_hpf and auto_makeup (not read) must leave its output bit for bit unchanged. Each new type: threshold, ratio, attack, release, makeup, knee, mix, sc_hpf, auto_makeup | output level change in the right direction and within max (0.25 dB, 20 %) of what the type's curve predicts (the predicted change is at least 1 dB); for makeup, mix and auto makeup the GR change must also match (0 dB for makeup, within max (0.1 dB, 20 %)); attack and release: t63 ratio within 25 % of the knob ratio (1 → 20 ms, 50 → 400 ms). The row that exposed makeup doing nothing in four types |
 
 Also printed, not pass/fail: the low-frequency residual split into harmonic distortion and
 inharmonic sidebands for every type at its starting point and at the fastest settings
 (41.2 / 82.4 / 98 / 110 Hz at 44.1 and 48 kHz), attack and release per type, and the
-Classic crossfade timing at 44.1 kHz. `check_comp.py` ran 145 checks, 0 FAIL, at the commit
-that added the K rows (`a27b550`). C1 in the script is two nulls: ramps and `skip`
+Classic crossfade timing at 44.1 kHz. Full run: **152 checks, 0 FAIL** (145 at the commit
+that added the K rows, `a27b550`, all still passing; 7 new rows: C26b, C29, C30 twice, C31, C32, C33). C1 in the script is two nulls: ramps and `skip`
 sequences (blocks 512 / 37 / 1) and a mono `skip`-first sequence.
 
 ### 4.3 Drive — `DriveFx` (`src/dsp/Drive.h/.cpp`)
@@ -1187,7 +1354,7 @@ samples, `[ver: drive/verification.md V:28, V:109]`). The audio is unchanged; th
 0.137 sample is a comb null near 175 kHz, far out of band.
 
 Non-finite input: `DriveFx::process` replaces every NaN and infinity in the block with 0
-before any type (or the switcher's dry copy) sees it; finite samples are untouched, so the
+before any type (or the type switch's copy of the input) sees it; finite samples are untouched, so the
 Classic null still holds. A finite input near `FLT_MAX` can overflow Classic's float
 half-bands: if Classic's output holds a non-finite sample, those samples become 0 and Classic
 is reset (`clearNonFinite`, `Impl::run`). Where its output is finite it is passed on exactly.
@@ -1201,7 +1368,8 @@ x  = HP1(x, 15.9 Hz)                     // DC block, bilinear one-pole in doubl
 x↑ = upsample_N(x)                       // N from the rate table below
 y↑ = TYPE(x↑)                            // all linear voicing, clipping, the clean path AND the tone stage at N·fs
 y  = downsample_N(y↑)
-y  = HP(y, 1.9 Hz)                       // Fuzz only: CB4 into the output bias divider (see Fuzz)
+y  = HP(y, f_out)                        // the type's output coupling capacitor: Screamer 1.58 Hz,
+                                         // Distortion 1.59 Hz, Fuzz 1.9 Hz (§4.3.5), base rate
 out = y * level / V_REF
 ```
 
@@ -1256,7 +1424,9 @@ cost 1.2 to 1.4 dB at 10 kHz (48 kHz) against the 0.5 dB D8 allows (comment in
 
   Constant per (type, rate). (This spec first had 3 at 88.2/96 kHz and 1 at 176.4/192 kHz
   for every oversampled type: it predates the second-order clipper, the second Fuzz clipper
-  and Distortion's doubled factor.)
+  and Distortion's doubled factor.) `getLatencySamples()` is `latencyFor` of the **requested**
+  type, so the host sees the new latency as soon as the type is asked for; during a type switch
+  the audio is delayed as §4.3.6 says, and after it by exactly `latencyFor (type)`.
 - **Smoothing:** d, T and level each go through a `Glide`: two one-poles in series, each half
   the 20 ms section default (10 ms each, so 63 % at about 21 ms like the single 20 ms pole),
   without the corner a single pole puts at the start of a move; within 1e-6 (1 + |target|)
@@ -1271,11 +1441,18 @@ cost 1.2 to 1.4 dB at 10 kHz (48 kHz) against the 0.5 dB D8 allows (comment in
   3 kHz after a tone step under a 98 Hz note). Worst zipper over all knobs now −84.2 dBc
   (row Z). A change of series resistance re-evaluates the clipper's stored previous
   inputs on the new curve (`refresh`) so it does not put a step into the next difference.
+  **The glide is cheap.** A moving Screamer drive used to re-solve the clipper's stored points from
+  scratch every base sample (2.33 % of real time against the 2.0 % budget). The re-evaluation is
+  now one Halley step from the old root, and the diodes' curve follows R2 in steps of at most
+  5e-4 of it (`kClipStep`), landing exactly with the glide (a step of 5e-4 moves v by at most
+  23 µV, 90 dB under the clipped note). With all three knobs ramped the Screamer costs 1.80 to
+  1.87 % (static 1.75 %). Boost and Treble glide their tone as the warped integrator gain, with no
+  `tan` per sample: 0.037 % of real time, were 0.047 and 0.049 % (commit 0b891cb, idle machine).
 - **Pot taper** for the Screamer's Drive pot and the Distortion's Filter pot:
   `A(p) = (81^p − 1)/80` (10 % of the resistance at mid travel) `[circuit: both are
   audio-taper ("A") pots; 81 is the common 10 %-at-half A-taper convention]`. The Distortion
   gain and the Fuzz sustain are not pot tapers: they are laws in dB (§4.3.5).
-- **Non-finite input:** `DriveFx::process` zeroes NaN and infinity before the switcher; the
+- **Non-finite input:** `DriveFx::process` zeroes NaN and infinity before the type switch sees them; the
   pedal types also clamp to ±1000 V, and states outside 1e−15…1e12 are cleared once per block.
 
 #### 4.3.5 Type algorithms
@@ -1309,6 +1486,11 @@ pedals", DAFx-07; study: R3]`:
   Gl·Yw/(G + Yw).) T' → 1 is bright (+14.8 dB shelf), T' → 0 dark. Bilinear, c = 2·N·fs
   (the tone stage runs at the oversampled rate, §4.3.4), as a trapezoidal state-variable filter.
   Known limit, not fixed: the Screamer droops 0.84 dB at 10 kHz (commit `0af54cf`).
+- **Output coupling** `[circuit: cushychicken.github.io/ltspice-tube-screamer, its
+  tube_screamer.asc]`: the TS-808 leaves through C7 1 µF and R14 1 kΩ into the 100 kΩ Level
+  pot, whose far end sits on the bias rail: a high-pass at 1/(2π · 1 µF · 101 kΩ) = **1.58 Hz**
+  (`kTsOutputHz`), a first-order section at the base rate after the down-sampler. Without it
+  an asymmetric waveform leaves DC (−38 dBFS from a guitar-like stack).
 
 **Distortion (2)** — `[circuit: ProCo RAT; values confirmed in the ElectroSmash RAT analysis
 (electrosmash.com/proco-rat: 47 Ω/2.2 µF → 1539 Hz, 560 Ω/4.7 µF → 60 Hz, 100 kΩ pots,
@@ -1338,6 +1520,12 @@ pedals", DAFx-07; study: R3]`:
 - TONE (at N·fs): one-pole low-pass, R = 1.5 kΩ + 100 kΩ·A(1 − T) (the CUT pot is an audio
   taper in the schematic; the spec assumed linear, the ends are the same),
   C = 3.3 nF → 32.2 kHz (T = 1) … 475 Hz (T = 0), clamped to 0.45·N·fs.
+- **Output coupling** `[circuit: the Runt2020 BOM above, C9 1 µF and VOL 100kA, placed as in the RAT's
+  output buffer]`: 1 µF into the 100 kΩ Volume pot, a high-pass at **1.59 Hz** (`kRatOutputHz`).
+  The buffer's own gate coupling (22 nF into 1 MΩ, C12 and R8: 7.2 Hz) is left out `[choice]`: it
+  would take 0.14 dB off 40 Hz, and the rest of the output stage is folded into `drive_level`.
+  Both couplings together: DC below −194 dBFS (X4), 40 to 100 Hz moved by at most 0.007 dB
+  (X5, bar 0.1 dB), no thump at a note's start or at a switch (X6).
 
 **Fuzz (3)** — `[circuit: Big Muff π early-version values, guitarscience.net "bigmuff.pdf"
 Fig. 1 and §4 (tone network, notch at 900 Hz)]`:
@@ -1403,8 +1591,36 @@ memory, sinc resampling.
 
 #### 4.3.6 Type switches
 
-`fx::EngineSwitcher` (§2.4). A switch between types with different latency changes the
-reported latency (the host re-aligns at its next opportunity); the fade hides the step.
+`fx::EngineSwitcher` is not used (§2.4): it faded the effect out to the dry input and back, so
+with the level knob low the unprocessed guitar came through (+19.0 dB over the louder type for
+40 ms at level −20, Fuzz to Treble; all 30 ordered pairs over +7 dB; a −9.9 dB dip at the
+starting points). Now **both types run and their outputs are crossfaded**; the input itself is
+never heard.
+
+- The incoming type starts from a reset and runs **unheard for 10 ms** (`kSwitchSettleSeconds`,
+  `BypassFader`'s settle time, §2.6), then a **20 ms fade** (`kSwitchFadeSeconds`, §2.4's figure).
+  The fade is a smoothstep ramp `r` through equal-power gains `cos (πr/2)`, `sin (πr/2)`, so it
+  has no corner at either end.
+- The gains are corrected by the **measured powers and correlation** of the two outputs (two
+  cascaded 4 ms one-poles, so a low note's ripple does not modulate them) so the short-term
+  power moves on a straight line **in dB** between the two types' own: equal power alone bumps
+  3 dB where the two outputs are alike and holds where they are not, and drive types are anywhere
+  between. It is in dB because two types can sit 30 dB apart (Fuzz to Boost at gain 24); a target
+  linear in power rose faster than the incoming gain and doubled the outgoing Fuzz's edges. A
+  slack of 0.1 keeps the correction finite where two outputs nearly cancel.
+- **Latency during a switch.** The two types are lined up at the **larger of their latencies**:
+  a rise is slid in on the outgoing type during the settle (10 ms), a drop is slid out of the
+  incoming type in the 10 ms after the fade (4-point Lagrange, exact at whole samples), after
+  which the delay is exactly `latencyFor (type)`. The reported latency is that of the requested
+  type from the moment it is asked for (§4.3.4).
+- An outgoing type keeps its knobs; the knobs that arrive with a new type (its starting points)
+  reach the incoming one only. A type asked for during a switch waits for it to end. After
+  `reset()` the next block starts on the requested type with nothing in flight.
+- Classic is unchanged (0 samples differ, nine null runs).
+- Measured over every ordered pair, at level −20 / the starting points / +6, a guitar-like
+  stack and a low note: in the commit's sweep over 22.05 to 192 kHz and blocks 1 to 4096 the worst
+  dip is −0.76 dB and the worst bump +0.75 dB; check S1 (48 kHz) reads −0.7 / +0.7 dB against
+  its bar of 1.5 dB. Boost ↔ Treble leaves nothing above 3 kHz (S2).
 
 #### 4.3.7 Latency, CPU
 
@@ -1413,15 +1629,31 @@ type, prepared rate) and `static int latencyFor (int type, double sampleRate) no
 function the processor's latency rule can call from the message thread (§6.3). The type table
 gives 48 kHz; the figures at every rate are in §4.3.4 (Classic 3 at every rate; Screamer 5 / 4 / 1,
 Distortion 5 / 5 / 4, Fuzz 5 / 4 / 2 at 44.1–48 / 88.2–96 / 176.4–192 kHz; Boost, Treble 0).
-CPU per instance (the factor adapts to the rate, so budgets
-hold at every rate), as `BUDGETS` in `check_drive.py`: Classic ≤ 0.35 %; Screamer ≤ 2.0 %;
-Distortion ≤ 3.5 % and Fuzz ≤ 4.0 % (raised from 2.0 / 3.0 % by the coordinator for
-the anti-aliasing scheme, per the script's comment); Boost, Treble ≤ 0.05 %. After a knob move the CPU must return to
-the settled figure (row C).
+CPU per instance (the factor adapts to the rate, so budgets hold at every rate), as `BUDGETS` in
+`check_drive.py`, in percent of real time at 48 kHz, block 64, pink noise, the minimum of three runs.
+The same bar holds for knobs at rest (the common `cpu` row) and with gain, tone and level ramped all
+the time for 10 s (row C2, `gain@0..10=0..36 tone@0..10=500..12000 level@0..10=-24..12`):
+
+| type | bar | static, measured | automated, measured |
+|---|---|---|---|
+| Classic | ≤ 0.35 | 0.214 | 0.219 |
+| Screamer | ≤ 2.0 | 1.72 | 1.84 |
+| Distortion | ≤ 3.5 | 1.89 | 1.79 |
+| Fuzz | ≤ 4.0 | 2.97 | 3.18 |
+| Boost | ≤ 0.05 | 0.020 | 0.036 |
+| Treble | ≤ 0.05 | 0.020 | 0.036 |
+
+(Measured on the idle-ish machine of this document, by `tubamp_fxbench --bench`; the commit that
+added the cheaper glide read the Screamer at 1.75 % static and 1.80 to 1.87 % automated, and the old
+glide 2.33 %.) The Distortion and Fuzz budgets were raised from 2.0 / 3.0 % by the coordinator for the
+anti-aliasing scheme, per the script's comment. A check run while other work loads the machine reads
+higher (a run of this document with six other check scripts going read the Screamer at 2.45 % static
+and 2.05 % automated, over its bar); the bars are idle-machine bars. After a knob move the CPU must
+return to the settled figure (row C).
 
 #### 4.3.8 fxbench keys
 
-`type gain tone level on`; `--latency` prints the reported latency.
+`type gain tone level on`; `--latency` prints the reported latency (the requested type's).
 
 #### 4.3.9 Acceptance (`check_drive.py`)
 
@@ -1442,7 +1674,7 @@ of them `[study: R2 metric; ver: V:77 "worst below 20 kHz", not "below f0"]`.
 | D5 | Alias, Distortion and Fuzz, same f0 | worst ≤ −45 dB, sum ≤ −40 dB (hard-knee clipping; tanh hard-clip model −51.6 sum, study alias_schemes.tsv) |
 | D6 | Alias at 1244 Hz, −6 dBFS, d = 1, all three | sum ≤ −80 dB `[study: R2 proof]` |
 | D7 | D4–D6 at 44.1, 96, 192 kHz | same bounds |
-| D8 | Screamer small-signal vs analog, d ∈ {0, 0.5, 1}, T ∈ {0, 0.5, 1}, 30 Hz–10 kHz | within 0.5 dB at 48 kHz (bilinear warping above) |
+| D8 | Screamer small-signal vs analog, d ∈ {0, 0.5, 1}, T ∈ {0, 0.5, 1}, 30 Hz–10 kHz (the reference includes the output coupling of §4.3.5) | within 0.5 dB at 48 kHz (bilinear warping above) |
 | D9 | Screamer pre-clip emphasis (input for 1 dB compression vs frequency, d = 0.5) | 110 Hz −16.4 ± 1.0 dB and 640 Hz −3.5 ± 0.7 dB relative to 2.5 kHz (first-order 720.5 Hz high-pass; GR6 Skreamer AU at Bass 0.5 reads −15.0/−2.7 with its 587 Hz corner, V:64) |
 | D10 | Screamer response peak (d = 0.5, T = 0.5) | 650–800 Hz; 110 Hz and 5 kHz each −9 to −13 dB re peak |
 | D11 | Screamer symmetry | H2 at 1 kHz −18 dBFS ≤ −60 dB |
@@ -1457,8 +1689,16 @@ of them `[study: R2 metric; ver: V:77 "worst below 20 kHz", not "below f0"]`.
 | X1 | DC: Screamer, Distortion, Fuzz, Boost, Treble at gain 36, tone 12 kHz, 100 Hz −6 dBFS, 2 s | mean ≤ −80 dBFS |
 | X2 | Gain step 0 → 36 dB at 1 s under a 1 kHz −18 dBFS sine, every new type | largest sample step at the move ≤ 1.1 × the largest step the steady signal makes at any gain in 0, 3 … 36 dB |
 | X3 | Type switches 0-1-2-3-4-5-1 under a 220 Hz −12 dBFS sine at gain 24, tone 4000 | largest step in a switch ≤ 1.1 × the larger neighbouring steady step |
+| S1 | Level through a type switch: every ordered pair of the six types (30 pairs), at level −20, at the starting points and at level +6, a guitar-like stack and a low note (6 rows), switched at 1 s; 5 ms rms | the dip and the bump both within 1.5 dB of the two types' own steady levels (measured dip −0.7 dB, bump +0.7 dB at worst) |
+| S2 | Switch click between the clean types: Boost ↔ Treble under an 82 Hz −12 dBFS note | content above 3 kHz at most −60 dBFS over the steady content (measured −240) |
+| S3 | After a switch: 30 pairs, from 1 s after it | max \|out − the new type alone\| ≤ 1e-3 re peak, at its reported latency (measured 1.6e-6) |
+| S4 | Switch real-time safety: a switch every 50 ms and every 10 ms, 22.05–192 kHz, blocks 1 / 37 / 4096, mono and stereo, starting off Classic (its frozen start-up ramp is not reset-deterministic, §2.11) | no allocation, identical after reset, finite |
+| X4 | DC on a guitar-like asymmetric stack: 110 Hz stack −12 dBFS through Screamer (gain 12 and 36), Distortion (gain 18 and 36, level −8.2 and 0), Fuzz (gain 18 and 36, levels 5 and 0) | DC ≤ −90 dBFS (measured −194 to −238; the clippers made −38.2 and up to −26.6 dBFS before the output coupling) |
+| X5 | The output coupling leaves everything above 40 Hz alone: Screamer and Distortion at gain 0, 40 / 60 / 100 Hz re 1 kHz, against the circuit without it | the change at most 0.1 dB (measured 0.007 at most) |
+| X6 | No thump at a note's start or at a switch: Screamer and Distortion at gain 36 | content below 20 Hz at most −20 dB re the output peak at the start (the DC the clipped note makes, −21.6 dB without the coupling) and −60 dB 0.6 s later (measured −25.1 and −103.6) |
 | Z | Knob zipper, every knob (gain, tone, level) of every new type: steps and 50 ms ramps both ways at block 64, under a 98 Hz note and 40–800 Hz noise at a level that keeps the circuit linear (Screamer −65, Distortion −70, Fuzz −110, Boost and Treble −12 dBFS) | worst frame's power above 3 kHz during the move ≤ −80 dBc re the settled output (worst now −84.2 dBc); the rest floor is reported |
 | C | CPU one second after a move of all three knobs (30 s pink noise, `--bench`, min of 3) | ≤ 1.05 × the CPU of the settled values (the Treble shelf used to cost 23 % more after a gain move) |
+| C2 | CPU while all three knobs move all the time: gain 0 → 36, tone 500 → 12000, level −24 → 12 over 10 s, pink noise, `--bench`, min of 3 | ≤ the type's budget (the table of §4.3.7) |
 | Y1 | Dynamics, guitar-like 110 Hz stack −30 → −12 dBFS peak, gain 0, Screamer, Distortion, Fuzz | output moves ≥ 12 dB for the 18 dB |
 | Y2 | The same at gain 18: Screamer and Distortion | output moves ≥ 5 dB |
 | Y2 (Fuzz, "sustain mid") | The same at gain 18, Fuzz | output moves ≤ 3 dB for the 18 dB: a Big Muff is a sustainer and D14 requires it saturated at half sustain, so it follows the pick only over the first part of the knob (0.7 dB measured, commit `0af54cf`) |
@@ -1470,9 +1710,14 @@ of them `[study: R2 metric; ver: V:77 "worst below 20 kHz", not "below f0"]`.
 
 The script also prints, without a bar: the latency table, the alias table (also at 1, 2.5,
 3.137, 5, 7.5 kHz, 44.1 and 48 kHz), harmonics, level against gain, pre-clip emphasis and level
-curves. **Known limits, not fixed** (commit `0af54cf`): aliasing for input tones above 5 kHz
-(Fuzz −43.1 dBc worst; an 8x factor would double the CPU) and the Screamer's 0.84 dB droop at
-10 kHz. The D4 to D7 bars hold at the tones they name.
+curves. **Known limits, not fixed, unchanged by the second round** (§8 D-41): aliasing for input
+tones above 12 kHz (tones of 13 to 19.5 kHz at 44.1 kHz: Fuzz −43.1 dBc worst, Screamer −47.2,
+Distortion −69.0; from 1 to 12 kHz the loudest inharmonic line is −68.3 dBc in the second
+verification's 7728 runs; an 8x factor would double the CPU) and the Screamer's 0.84 dB droop at
+10 kHz. The D4 to D7 bars hold at the tones they name (up to 7919 Hz). Commit `0af54cf` stated the
+alias limit as "above 5 kHz"; the second verification's figures (`.audit/fx-verify/r2-tone.md`, D6)
+put the edge at 12 kHz. Full run: **164 checks, 0 FAIL** on an idle machine (143 before this round; 21 new rows: S1 ×6, S2 to S4, X4 ×3,
+X5 ×2, X6, C2 ×6). Run beside six other check scripts, the two Screamer CPU rows read over their bar.
 
 ### 4.4 EQ — `EqFx` (`src/dsp/Eq.h/.cpp`)
 
@@ -1495,6 +1740,19 @@ and `ours.cpp` (zipper model).
 
 Default for new blocks: **Parametric**. Legacy pin: `eq<n>_type` → 0. `eq_voice` list
 (frozen): Tweed, Blackface, British, Top Boost.
+
+**Type switch** (§2.4; every ordered pair of the four types, and every pair of Stack voices; no
+`fx::EngineSwitcher`). A crossfade of both engines' outputs. The incoming type starts from reset on
+the grid and runs **unheard for 50 ms** (`kSwitchSettleSeconds`), then a **40 ms raised cosine**
+(`kSwitchFadeSeconds`) crosses the two outputs, `out = G · ((1 − w) A + w B)` with `w` the raised
+cosine. The gain keeps the level between the two: `G = a_t / a_mix`, where `a_t = (1 − w) √P_A + w √P_B` is
+the straight line between the two outputs' amplitudes and `a_mix` is the amplitude the plain mix is
+predicted to have from the powers and the cross term (running estimates, two cascaded 10 ms one-poles,
+`kSwitchPowerSeconds`, which average over a low E's period). `G` is held between 1 and 2
+(`kSwitchMaxGain`, +6 dB, which is where two outputs are
+in antiphase). Two Stacks run for a voice change. Under strong settings (E27's "low boost", "high cut" and "extremes" sets) the click above 1 kHz is −83.8 dBFS at worst (was −39.4) and the level dip
+−0.55 dB (was −14.0), E27; E18 reads a fade of 39.46 to 39.94 ms and an envelope at most +0.63 dB
+over the louder of old, new and dry.
 
 #### 4.4.2 Parameters
 
@@ -1559,6 +1817,24 @@ block is processed in 16-sample sub-blocks with `coeffs = design(s2)` at each su
 start; when |v_t − s2| ≤ 1e-4 the band snaps `s1 = s2 = v_t`, designs `design(v_t)` once
 and stops moving. First `setParameters` after `prepare/reset`: snap (no ramp). **A static
 block is processed in a single call**, as today (on Intel `snapToZero` acts per call).
+**A moving Classic band glides in a double-precision state-variable filter.** The float direct form
+cannot follow a moving design (treble 10 to 0 left −68 dBFS above 1 kHz under a low E at
+44.1 kHz, mid across 5 −51.7 at 192 kHz, bass −79.6 at 192 kHz, from float designs jittering 1 %
+at 16-sample knots), and a knob change under 1e-4 units was applied at once, so slow automation at
+small blocks never counted as a move. Now each Classic knob goes through **three cascaded 5 ms
+one-poles** (the new types use two), and while a band is moving it is run in a **double TPT
+state-variable filter designed in closed form every 4 samples** (`kGlideKnot`), linear between,
+from the smoothed value. The SVF takes over the float filter's state when the move starts
+and **fades back to the float filter, designed at the target, over 10 ms**
+(`kHandoverSeconds`) once the knob rests. The float filter is JUCE's TDF2 loop verbatim with its
+state in reach, so a static band is untouched. **The mid blends Q 1.5 → 0.7 across ±3 dB**
+(mid knob 4 to 6, a smoothstep, `kMidBlendDb`) during a glide: the frozen design switches Q at
+exactly 0 dB, the bell is flat there whatever its Q but its slope against the knob is not, and a
+mid step across 5 under a low E left up to −72 dBFS above 1 kHz depending on the note's phase;
+outside the blend, and at rest anywhere, the frozen design holds. Static Classic is bit-identical (E1,
+27 nulls). E26: 57 moves × 4 rates × blocks 1 / 37 / 64 / 512 under a low E: worst −86.4 dBFS above
+1 kHz (was −51.1), bar −80 (bass −86.7, mid −86.4, treble −102.1); 192 kHz is in the proof set.
+
 **A smoothing segment snaps only if its target has not moved:** when a ramp's last 16-sample
 segment ends, the smoother snaps onto the value the coefficients now hold only if the knob's
 target still equals it; if the knob was moved again meanwhile it keeps smoothing toward the new
@@ -1573,10 +1849,12 @@ flat is ≈ 0, so nothing audible is lost); on leaving it they start from zero s
 today (non-flat static renders stay bit-identical; the flat render becomes the input).
 
 Addition 3 — **non-finite input** (all types): `EqFx::process` replaces every NaN and infinity
-with 0 before any type or the switcher sees it (finite samples are untouched, so Classic stays
+with 0 before any type or the type switch sees it (finite samples are untouched, so Classic stays
 bit-identical). A finite sample near `FLT_MAX` can still overflow Classic's float biquads: if
 the block's last output sample is non-finite, the three filters are `reset()` and the non-finite
-samples become 0 (`guardOverflow`). The new types read their input through
+samples become 0 (`guardOverflow`). **Absurd input:** a sample above +60 dBFS (magnitude above
+1000, `kAbsurdInput`) is silenced for every type, so a 1e30 sample cannot hold Classic above
++12 dBFS for 173 ms (E28; a sample of 999 is processed as before, `--legacy`). The new types read their input through
 `sanitisedInput`: |x| ≥ 1e6 or NaN is 0 (§2.2's `fx::sanitise` bound), and every recursive
 double state outside 1e−15 … 1e12 (or non-finite) is zeroed once per block. Row E21.
 
@@ -1596,6 +1874,11 @@ a1 = 1/(1 + g(g + k));  a2 = g a1;  a3 = g a2
 v3 = x − ic2;  v1 = a1 ic1 + a2 v3;  v2 = ic2 + a2 ic1 + a3 v3
 ic1 = 2 v1 − ic1;  ic2 = 2 v2 − ic2;  y = m0 x + m1 v1 + m2 v2
 ```
+**Each section feeds its core `k·x` and mixes `m1/k` and `m2/k`**: the same filter, whose states hold
+what the note leaves whatever `k` is. The SVF fed `x` holds `x/k` in its band-pass at the
+resonance, so a fast Q or bell-gain move rescaled the band-pass term at once while its state lagged:
+Q 8 → 0.5 at +15 dB on a 110 Hz note overshot +11.6 dB (a guitar note +10.0, a −15 dB cut +11.3).
+The worst gain, Q, shelf, cut, tilt, level or Graphic move now overshoots +0.58 dB (row E25a).
 With A = 10^(dB/40), t = tan(π f/fs):
 
 | section | f | Q | gain | g | k | (m0, m1, m2) |
@@ -1658,9 +1941,15 @@ constants equal Classic's so Parametric at 10/10/10 matches Classic's boost resp
 Yeh–Smith closed-form third-order passive tone stack `[study: R4; Yeh & Smith, DAFx-06]`:
 `H(s) = (b1 s + b2 s² + b3 s³)/(1 + a1 s + a2 s² + a3 s³)` with the coefficients of
 `design.py:174-192` (`yeh_coeffs`, verified against an independent nodal solve to
-0.000000 dB, `design_stack.tsv`) — **transcribe them from that file**, and the bilinear
-digitisation of `design.py:234-239` (c = 2·fs). One third-order transposed direct form II
-section in double. Knobs: t = treble/10 (linear), m = taper(mid/10), l = taper(bass/10),
+0.000000 dB, `design_stack.tsv`): **transcribe them from that file**. **The Stack is the circuit
+itself in the trapezoidal rule**: each of the three capacitors is discretised with the trapezoidal
+rule (a conductance `G = 2·C·fs` in parallel with a current source `G·s`), the network is solved by
+nodal analysis into a 4 × 4 state-space map (`design`), and **the state is the capacitor
+voltages**, in double. It has the same bilinear response as `design.py`'s digitisation (c = 2·fs; E12
+0.00043 dB). The earlier transposed direct form II section overshot +15.9 dB when mid went 10 → 0 at
+41 Hz, because its states do not hold what a moving circuit's capacitors do; now the worst move
+overshoots +1.68 dB, what the circuit does (the same at 192 kHz; row E25c, bar 2.0 dB). Knobs:
+t = treble/10 (linear), m = taper(mid/10), l = taper(bass/10),
 taper(x) = (b^x − 1)/(b − 1), b = (1/0.3 − 1)² `[study: design.py:242-246, 261, 264; the
 report prose says linear mid, the script and the verifier use the taper on mid too, ver: V:30]`.
 
@@ -1672,10 +1961,10 @@ report prose says linear mid, the script and the verifier use the taper on mid t
 | 3 Top Boost (AC30) | 1 M | 1 M | 10 k | 100 k | 50 pF | 22 nF | 22 nF | +13.6 dB | caps ToneStack.cc |
 
 Makeup = minus the mean noon level over 80 Hz – 5 kHz on a log axis `[study: design_stack.tsv §3b]`,
-then `eq_level`. Coefficients every 16 samples from the R1-smoothed knobs (no
-interpolation). Fallback if the zipper check fails: a three-state trapezoidal state-space
-form `[study: report:426, untested]`. Voice changes go through the switcher (key
-`type·16 + voice`).
+then `eq_level`. The 4 × 4 map is designed every 16 samples from the R1-smoothed knobs and
+interpolated linearly per sample over the next 16 (the study's fallback form, a three-state
+trapezoidal state-space, `[study: report:426]`, is what is built). A voice change runs two Stacks
+and crossfades them as a type switch does (§4.4.1).
 
 #### 4.4.6 Graphic (type 3)
 
@@ -1722,7 +2011,7 @@ Zipper metric (study `ours zip` + `zip_an.py`): bass knob swept 5 → 10 in 0.5 
 | E15 | Stack zipper (bass sweep) | ≤ −85 dBFS |
 | E16 | Graphic single band +12 dB (each band) | peak 12.0 ± 0.1 dB at the centre; half-gain width 1.0 ± 0.05 octave; 6.4 kHz band error vs analog at 10/15/20 kHz ≤ 0.3 dB (44.1 kHz) |
 | E17 | Graphic all bands 0 | bit-exact pass-through |
-| E18 | Type and voice switch on a sustained chord | no step > 3 dB within 1 ms; fade 40 ± 2 ms |
+| E18 | Type and voice switch on a sustained chord (9 type / voice switches × blocks 37 / 64 / 512; the reset point is found from the settle time, there is no dry run any more) | fade 40 ± 2 ms (measured 39.46 to 39.94); the envelope at most 3 dB over the louder of old, new and dry (measured +0.63 dB); a pair whose two outputs are identical shows no fade to time |
 | E19 | Rates | E2, E4, E6, E7 at 44.1, 96, 192 kHz |
 | E20 | Parametric bell vs the analog prototype over Q ∈ {0.5, 0.7, 1, 1.4, 2, 3, 4, 8}, f0 100 Hz – 8 kHz (13 values), gains +15 (mid knob 10), −15 (knob 0), +6 (knob 7), −3 (knob 4) dB, 22.05, 44.1, 48, 96, 192 kHz, 20 Hz to min(20 kHz, 0.45 fs) | at each rate: worst error for Q 0.5 to 4 < 1 dB; for Q 8 no worse than the old design (0.415 / 0.067 / 0.055 / 0.013 / 0.003 dB at 22.05 / 44.1 / 48 / 96 / 192 kHz). Verification had found 1.91 dB at Q 0.5, 8 kHz, 44.1 kHz, and 13.5 dB at 22.05 kHz |
 | E21 | Non-finite input: a 10-sample run of NaN, +Inf or −Inf in a 220 Hz sine, and one finite 3e38 sample; Classic 10/5/7 and flat, Parametric all sections and defaults, Graphic and Graphic flat, Stack in four voices; blocks 1, 37, 512; 1 and 2 channels | never a non-finite output sample; NaN and Inf renders equal, bit for bit, the render with zeros in their place; after 3e38, within 1e-4 of the clean render 100 ms later. (One NaN had latched Classic, Parametric, Stack and non-flat Graphic for good) |
@@ -1730,6 +2019,19 @@ Zipper metric (study `ours zip` + `zip_an.py`): bass knob swept 5 → 10 in 0.5 
 | E22b | Smallest step: 0.1 dB on level, tilt, each graphic band; 0.1 knob on bass; 48 kHz | each within 0.005 dB of the step (level ±0.1, band ±0.1 at its centre, tilt ∓0.1 at 20 Hz, bass 5.1 gives +0.4 dB at 20 Hz) |
 | E23 | Re-enable after bypass: process, 1 s not called, `reset()`, process (fxbench `on=0` then `on=1`), +12 dB low boosts under a 98 Hz −12 dBFS note; blocks 1, 37, 512 | silent input at the return gives silence (the frozen state used to replay); held note: first sample within 0.1 of the dry sample (re peak), no step larger than the settled output's own, no overshoot above +0.5 dB in the first 100 ms |
 | E24 | Classic retarget: a knob moved again in a ramp's last segment (treble and mid, blocks 1, 37, 77, 100) | click at the retarget ≤ the click of the same move from rest + 3 dB |
+| E25a | Move overshoot (a control moved under a held note at the band's centre, a sine at −12 dBFS and a guitar-like note of the same peak; steps and ramps of 10 ms, 50 ms and 0.3 s; block 64; 48 kHz, and 96 kHz for the Q and bell-gain moves): Parametric gain, Q, shelves, cuts, tilt and level, Graphic bands and level (528 moves) | the output's peak during the move is at most **1.0 dB** over the largest steady peak of the ends and nine settings between (spaced in the control's smoothing domain) (measured +0.58 dB, was +11.62) |
+| E25b | The same for Parametric mid-frequency moves of a narrow cut (110 ↔ 220 Hz, 110 ↔ 8 kHz at Q 8 and 0.7, knob 10 and 0) (128 moves) | at most **3.0 dB** (measured +2.46 dB: a Q 8 cut swept from 110 Hz to 8 kHz in 10 ms off a held note rings as the resonator empties; the overshoot is the filter's own response, not a state mismatch, and E25a's bar does not apply) |
+| E25c | The same for the Stack: every knob, 0 ↔ 10, other knobs at 0 and 10, every voice, at 41.2 and 196 Hz (1024 moves) | at most **2.0 dB** (measured +1.68 dB: bass 0 → 10 in 10 ms at 41.2 Hz; the passive circuit emptying its capacitors, the same at 192 kHz) |
+| E26 | Classic (and the amp tone stack) knob moves under a low E (82.41 Hz, −12 dBFS): bass, mid, treble, 11 steps and 8 ramps (10 ms, 50 ms, 0.3 s, 1 s, both ways) per knob across 5 and to and from it (57 moves), at 44.1 / 48 / 96 / 192 kHz and blocks 1 / 37 / 64 / 512 | the output's peak above 1 kHz (an eighth-order high-pass, 0.45 s to 2.0 s) ≤ **−80 dBFS** (measured −86.4: mid 10 → 0 step at 44.1 kHz block 512; bass −86.7, mid −86.4, treble −102.1; it was −51.1). 192 kHz is in the proof set |
+| E27 | Switch click and level: every ordered pair of the four types and of the four Stack voices, three strong settings ("low boost", "high cut", "extremes"), switched at 1 s under a 98 Hz −12 dBFS note; 44.1 / 48 / 96 / 192 kHz at block 64, and blocks 37 and 512 at 48 kHz (288 switches); level from a guitar-like 110 Hz note, 5 ms rms | click above 1 kHz (eighth-order high-pass, 10 ms before to 250 ms after) ≤ −75 dBFS (measured −83.8; was −39.4); the level never more than 1 dB below the lower or above the higher of the two types' own steady ranges (measured dip −0.55 dB, bump +0.07 dB; was −14.0 dB) |
+| E28 | Absurd input: one finite sample of 1e4, 1e10, 1e30 or 3e38 in a 220 Hz −12 dBFS sine; Classic 10/5/7 and 0/0/0, Parametric, Stack, Graphic; blocks 1 / 37 / 512 (60 renders); and one sample of 999 | each render equals, bit for bit, the render with the sample at 0 (and so never passes +12 dBFS); the sample of 999 is processed as the old code (`--legacy`, Classic 10/5/7) |
+
+Full run: **84 checks, 0 FAIL**. The table lists every row id `check_eq.py` has, with the bar the
+script enforces. **E25a, E25b and E25c have three different bars on purpose.** The commit that
+fixed the overshoot (44e54af) left E25b (+2.46 dB) and E25c (+1.68 dB) failing against E25a's
+1.0 dB; a second commit (0cc04e2) stated bars of 3.0 and 2.0 dB for them with this reason: E25b is a Q 8
+cut swept off a held note, which rings as the resonator empties, and E25c is the passive circuit emptying
+its capacitors, not the state mismatch E25a guards; E25a stays at 1.0 dB (§8 D-36).
 
 ### 4.5 Chorus — `ChorusFx` (`src/dsp/Chorus.h/.cpp`)
 
@@ -1800,12 +2102,17 @@ struct ChorusParams
     float width = 1.0f;        // [0, 1]
     float tone = 0.5f;         // [0, 1]
     double syncPhase = -1.0;   // >= 0: LFO phase in cycles at this block's first sample (song position lock)
+                               // Given every block while the song plays: each is compared with where the
+                               // last one, moved on at rateHz, predicts; a small difference is pulled in
+                               // slowly, a large one is a jump.
 };
 ```
-When `syncPhase ≥ 0` the engine sets its master LFO phase to it at block start (voices keep
-their offsets) **through a dip** (§4.5.4 "Transitions"), not by sliding. Classic ignores
-rate sync and `syncPhase` (the dispatcher passes `mod_rate` to Classic, §6.5).
-`process()` treats a non-finite input sample as 0 and writes the 0 back (all modes).
+When `syncPhase ≥ 0` the engine follows the host's song position (voices keep their offsets,
+§4.5.4 "Sync"): a small difference from where the last block predicts is pulled in by a slow
+rate nudge, a large one is a jump made by a **tap crossfade**, never a slide and no longer a
+dip. Classic ignores rate sync and `syncPhase` (the dispatcher passes `mod_rate` to Classic,
+§6.5). `process()` treats a non-finite input sample, or one beyond ±1e6, as 0 and writes the 0
+back (all modes).
 `reset()` clears every line, starts every smoother at its target, and in modes 1–4 passes
 the dry at once and fades the wet in as the lines refill; the processor calls it when a
 bypassed Wide/CE/Dimension/Tri block is switched back on (§2.6).
@@ -1850,23 +2157,57 @@ out_ch  =  dry * x_ch + wet * w'_ch
 - Smoothing: rate, depth, mix, width, tone through 20 ms one-poles per sample (`kSmoothSeconds`);
   D recomputed every 16 samples from the smoothed values (linear in between); filters'
   coefficients every 16 samples (TPT is modulation-safe).
-- **Transitions keep the pitch** (`Chorus.cpp`: `kPitchAllowance`, `kDipSeconds`,
-  `kSettleSeconds`, `kQuietSeconds`, `kSyncSlackCycles`). A voice's pitch is the slope of its
-  delay, so while settings move every voice delay is **slope-limited to the largest steady
-  peak slope of the settings involved plus 4 cents** (`2^(4/1200) − 1`). A change that this
-  limit cannot finish within 200 ms (`kSettleSeconds`) of the knob stopping is a step: the
-  wet fades out over 10 ms, every delay moves to its new law in the silence, and the wet fades
-  back in over 10 ms (`kDipSeconds` per side). A knob counts as stopped after 80 ms without
-  a move (`kQuietSeconds`), so a ramp is followed, not dipped. A sync phase that differs from
-  the running LFO by more than 1e-3 cycles (`kSyncSlackCycles`: transport start, locate,
-  loop, note-value change) is honoured through the same dip, never by a slide.
+- **Transitions keep the pitch** (`Chorus.cpp`: `kPitchAllowance`, `kQuietSeconds`,
+  `kGlideSeconds`, `kCatchUpSeconds`, `kTapMeasureSeconds`, `kTapFadeSeconds`, `kLockSlackCycles`).
+  A voice's pitch is the slope of its delay, so while settings move every voice delay is
+  **slope-limited to the largest steady peak slope of the settings involved plus 4 cents**
+  (`2^(4/1200) − 1`). **Pitch is judged per tap** (CH15, CH25): the delay of every audible tap,
+  from the engine's trace, stays inside that bound; the instantaneous frequency of the
+  summed output is not the measure while two taps sound.
+- **Large changes are made by a tap crossfade, not by a dip.** (The earlier rule faded the wet out
+  over 10 ms, moved every delay in the silence and faded back in: a hole at mix 1 that also fired
+  on ordinary Wide knob moves, up to 41 dB deep on tempo steps.) A change is a crossfade when the
+  glide cannot finish soon: the knob stopped 30 ms ago (`kQuietSeconds`) and the glide would need
+  more than 50 ms (`kGlideSeconds`); or a moving knob's glide fell 100 ms behind (`kCatchUpSeconds`),
+  not sooner than 100 ms after the last crossfade ended. Then every voice starts a second
+  read tap that lands on the new law **silent**; its power and its correlation with the old tap are
+  measured for 10 ms (`kTapMeasureSeconds`, two cascaded 4 ms one-poles; a retarget restarts the
+  measurement only inside a 20 ms pre-roll); then a **cornerless 30 ms fade** (`kTapFadeSeconds`) runs,
+  **directly or through the taps half way between** the old and the new, whichever the measured
+  correlation says is more alike (the path choice keeps a tone's two faded taps no worse than −0.5
+  correlated; the power correction has headroom of at most +8.8 dB, `kTapSlack`). The gains are
+  scaled so the wet's short-term power moves on the straight line between the two taps' own. The
+  **outgoing tap** blends its slope over 5 ms into the new tap's and then runs a fixed distance from
+  it, so two taps of one signal carry no pitch of their own, only a comb while both sound. Wide's
+  pairs glide in lockstep. Ordinary knob moves at the starting points start no audible event: a
+  depth step, a rate step, eight hand moves each, the output within 0.26 dB of the steady and note
+  dips at most 0.50 dB (CH26); Wide, Dimension and Tri start one crossfade for a step, CE none.
+- **Lag.** After the knob stops, the heard detune is back inside its own steady band within
+  123 ms, which includes the 10 ms measuring window (CH27; the earlier worst was 189 ms in CH15,
+  now 73 ms there); a ramp's lag behind the knob is 80 ms.
+- **Sync** (`ChorusParams::syncPhase`, given every block while the song plays). The host's phase
+  is compared with where its previous one predicts, `previous + rate × block`. **Within
+  `max (0.01 cycle, 5 ms of LFO time)`** (`kLockSlackCycles`, `kLockSlackSeconds`) the host is
+  continuous: the LFO runs free at the tempo's rate and its own error is pulled in with a
+  **150 ms time constant** (`kLockSeconds`) by a rate nudge bounded to **0.9 × the 4-cent
+  allowance of slope and to 25 % of the rate** (`kLockMaxRatio`). A tempo step, a ramp or
+  ±2 to ±16 samples of position jitter all fall inside this. **Beyond it** is a **jump**
+  (locate, a loop that is not a whole number of cycles, a note-value change, sync switched on), and
+  so is an own error above 0.25 cycle (`kLockLostCycles`); a jump is made by one tap crossfade. In
+  104 cases (1 BPM steps, 100 to 140 BPM ramps at blocks 64 / 512 / 4096, ±2 / 4 / 16 samples of
+  jitter at 1/32 to 1/1, every mode) there are 0 jumps, the wet is within 0.14 dB of the free
+  render, pitch at most the steady value + 1.0 cent and the LFO within 0.0058 cycle (CH24).
+- **Huge input.** An input sample beyond ±1e6, like a non-finite one, is processed as 0 and
+  written back as 0 (`ChorusFx::process`). Classic stays bit-identical below it: ±9e5 samples give 0
+  differing samples (CH28).
 - Stereo/mono: Wide and CE run one voice set per input channel (the right voices read the
   right input's line); Dimension and Tri feed their lines from the mono sum (L + R)/2. A
   1-channel block computes both outputs and writes their mean, except **Dimension: a mono
   instance plays line A alone** (the stereo left channel). The mean of its two antiphase
   lines would have no detune; line A alone keeps the 3.5 cents of the stereo instance.
 - LFO start after reset: master phase p = 0 (u = 0, shortest delay), offsets as listed.
-  `reset()` clears the lines (§4.5.2); the wet fades in as they refill, the dry is never
+  `reset()` clears the lines (§4.5.2) and Classic completely (line, oscillator, mixer: its output
+  afterwards is exactly the frozen chorus started fresh, CH29); the wet fades in as they refill, the dry is never
   interrupted.
 - **Mode switches do not use `fx::EngineSwitcher` (§2.4).** The outgoing mode keeps sounding
   while the incoming mode's line fills (until it has been written for its longest delay,
@@ -1874,8 +2215,10 @@ out_ch  =  dry * x_ch + wet * w'_ch
   (two cascaded one-poles of 4 ms, run for 10 ms before the fade starts:
   `kSwitchPowerSeconds`, `kSwitchMeasureSeconds`) so that the wet power moves straight from
   one mode's to the other's whatever their correlation (a chord gives −0.3 to +0.45 between
-  modes; a plain equal-power fade would dip or bump by up to 1.6 dB). Measured: 0.69 dB
-  level bump, click −102 dBFS.
+  modes; a plain equal-power fade would dip or bump by up to 1.6 dB). The switch to or from
+  Classic uses the same measured-power crossfade, no longer a linear one. Measured: 0.69 dB
+  level bump, click −102 dBFS (CH18); switching every 30 ms in random order through all five modes
+  stays within 1.70 dB of the modes' own levels (CH27).
 
 #### 4.5.5 Mode algorithms
 
@@ -1910,12 +2253,19 @@ out_ch  =  dry * x_ch + wet * w'_ch
 #### 4.5.6 Latency, CPU, fxbench
 
 Latency 0. CPU per instance: Classic as today; Wide ≤ 0.5 %; CE ≤ 0.25 %; Dimension ≤ 0.25 %;
-Tri ≤ 0.4 %; during a mode switch (two modes running) the two modes' budgets added (CH23).
+Tri ≤ 0.4 %; during a mode switch (two modes running) the two modes' budgets added; while a tap crossfade runs most of the time (a song-position jump every 50 ms, each fade about 40 ms) the mode's own budget, and two alternating modes with jumps on top the two added (CH23: Wide 0.198 %, Wide+Tri 0.334 % crossfading, commit baaaf1f, idle machine).
 fxbench keys: `mode rate depth mix width tone sync_phase on`; test hooks `reset` (any change
 of its value calls `reset()` at that block, as the processor does when the block comes back)
 and `solo=<voice>` routes one voice to both outputs at mix 1 (implemented as
 `ChorusFx::setDebugSolo (int)`, a no-op when −1; allowed because it costs one branch per
-block).
+block). A simulated play head, `host_bpm host_beats host_jitter host_play host_loop_len
+host_loop_end` (`tools/fxbench/README.md`), resolves `rate` and `sync_phase` from a tempo and
+a note value as the dispatcher does. `--trace` (while a voice is soloed) writes three channels
+per sample: the soloed voice's tap delay in samples, its outgoing tap's delay (equal to the first
+outside a tap crossfade) and the crossfade stage (0 none, 1 outgoing tap alone, 2 fading
+directly, 3 fading through the midpoint tap) (`ChorusFx::setDebugTrace`); `--meters` writes the
+song-position jumps and the tap crossfades started for knob changes since `prepare()`
+(`ChorusFx::getDebugCounts`).
 
 #### 4.5.7 Acceptance (`check_chorus.py`)
 
@@ -1944,7 +2294,7 @@ Model values in brackets are closed-form.
 | CH8-rates | Dimension detune at depth 1 | at each of 1, 2, 3, 5, 10, 16, 20 Hz at most the 0.5 Hz value + 0.2 cents |
 | CH4/8-width | Mono-sum remedy | Wide, CE, Dimension, Tri at mix 0.5, width 0.8 / 0.5 / 0: (L + R)/2 within 1 dB of one channel |
 | CH-mono | Mono instance | output equals the stereo mean for the same mono input within 1e-6 (Wide, CE, Tri), and the wet is above −20 dB of the input; **Dimension: equals the stereo left channel** within 1e-6 (the mean of two antiphase lines has no detune) |
-| CH15 | Transients: rate, depth, width, tone steps and ramps, 16 random steps 25 / 60 ms apart; 997.3 and 3301.7 Hz carriers, every soloed voice, blocks of 64 | where a voice is sounding its \|deviation\| stays within 5 cents of the largest steady peak of the settings involved; back inside the new settings' peak + 5 cents 250 ms after the change; dips reported (≤ 10 ms per side by design) |
+| CH15 | Transients: rate, depth, width, tone steps and ramps, 16 random steps 25 / 60 ms apart; 997.3 and 3301.7 Hz carriers, every soloed voice, blocks of 64; pitch judged **per tap** from the engine trace (the current tap outside its silent pre-roll, the outgoing tap through the whole crossfade, the midpoint tap on the midpoint path), the instantaneous frequency where no crossfade runs | the loudest-bending tap's \|deviation\| stays within 5 cents of the largest steady peak of the settings involved; back inside the new settings' peak + 5 cents 250 ms after the change; crossfades per case reported (worst +4.6 cents over, settle 73 ms) |
 | CH15-rates | CH15's hardest four cases at 22.05 and 192 kHz, blocks 1 / 512 / 4096, mono and stereo | same bar as CH15 |
 | CH16 | Sync jumps: transport start, locate, loop, note-value change | pitch bound and settle as CH15; LFO within 2 % of a cycle of the requested phase afterwards; 220 Hz −12 dBFS at mix 0.5 and 1: 2 kHz high-passed peak ≤ −60 dBFS |
 | CH17 | Bypass then `reset()` (block off 1 s, back on) | silent input: output ≤ −120 dBFS (no replay of the old lines); 220 Hz −12 dBFS at mix 0.35 and 0.5, mono and stereo: restart peak after 2 kHz high-pass ≤ −60 dBFS |
@@ -1953,9 +2303,17 @@ Model values in brackets are closed-form.
 | CH20 | Non-finite input (NaN, +Inf, −Inf sample, and a run of 100 NaNs), every mode, mono and stereo, blocks 37 and 512 | output bit-identical to the same input with zero samples; one 1e30 sample gives finite output back on the clean render 0.2 s later within −100 dB |
 | CH21 | Onset after `reset()` (sustained 220 Hz −12 dBFS) | 2 kHz high-passed peak ≤ −60 dBFS at mix 1, and at mix 0.5 under the dispatcher's 20 ms linear fade |
 | CH22 | `--rt-check` and `--reset-repeat` through switches, dips, sync jumps, bypass and reset, 22.05 – 192 kHz, blocks 1 / 37 / 512 / 4096, mono and stereo | exit 0, finite output |
-| CH23 | CPU while two modes alternate every 60 ms (Wide+Tri, CE+Dimension, Wide+CE, Dimension+Tri, Wide+Classic) | the two modes' §4.5.6 budgets added (Classic: 1.2 × the legacy figure) |
+| CH23 | CPU while two modes alternate every 60 ms (Wide+Tri, CE+Dimension, Wide+CE, Dimension+Tri, Wide+Classic); then every mode while a tap crossfade runs most of the time (a song-position jump every 50 ms, each fade about 40 ms); then Wide+Tri and CE+Dimension alternating with jumps on top | the two modes' §4.5.6 budgets added (Classic: 1.2 × the legacy figure); crossfading, the mode's own budget (Wide 0.5, CE 0.25, Dimension 0.25, Tri 0.4 %) |
+| CH24 | Sync under an imperfect host (`host_*` keys): tempo in 1 BPM steps at 1/32 and 1/4, 100 to 140 BPM ramps at blocks 64 / 512 / 4096, song position jittered by ±2 / 4 / 16 samples at 1/32 to 1/1; Wide, CE, Dimension, Tri at depth 0.6, mix 1 (26 timelines × 4 modes = 104 cases) | 0 song-position jumps (measured: 0 jumps and 0 crossfades); the wet within 0.5 dB of the same tempo course run free (power of four pink-noise takes, 2 ms frames over 10 ms; measured ≤ 0.14 dB); voice 0's pitch inside the steady bound + 5 cents (measured ≤ steady + 1.0 cent); the LFO within 0.01 cycle of the song after 1 s (measured ≤ 0.0058) |
+| CH25 | Large changes are tap crossfades: steps and 0.1 s ramps of rate, depth, width, tone and note-value steps under a play head, every mode, mix 0.35 / 0.5 / 1 (36 timelines) | the wet (out − dry gain × in) on pink noise and a guitar-like take never more than 1.5 dB under the lowest steady wet along the change (measured −1.10 dB); single held notes 82 / 196 / 331.7 / 880 Hz through every soloed voice: the envelope's worst dip against the lower of the levels before and after at most 6 dB (measured −0.55); a 220 Hz −12 dBFS sine: 2 kHz high-passed peak ≤ −70 dBFS (measured −74.0); every audible tap's delay slope inside the steady peak + 5 cents (measured +4.1) |
+| CH26 | Ordinary knob moves at each mode's starting point: depth +0.2, rate × 2, eight hand moves of each knob | no audible event: the output within 1 dB of the envelope of the steady outputs along the change (measured ≤ 0.26 dB), soloed notes dip at most 1 dB (measured −0.50), 2 kHz high-passed peak of a 220 Hz sine ≤ −70 dBFS, taps inside the steady peak + 5 cents; crossfades started are reported (Wide 1 / 1 / 4 / 12 for depth step / rate step / 8 rate moves / 8 depth moves, CE 0, Dimension 1 / 0 / 1 / 0, Tri 1 / 1 / 1 / 14) |
+| CH27 | Lag and rapid switching: the heard detune of voice 0, per tap, for steps and 0.5 / 2 s ramps; mode switches every 30 ms in random order through all five modes at mix 0.35 / 0.5 / 1 | back inside its own steady band (widened by 12 % or 0.5 cent) with no crossfade running at most 150 ms after the knob stops (measured 123 ms); during a ramp never further behind the knob's course than 150 ms (measured 80 ms); the level of eight pink-noise takes and eight white-noise takes within 2 dB of the envelope of the five modes' steady levels (measured 1.70 dB); 220 Hz −12 dBFS: 2 kHz high-passed peak ≤ −60 dBFS |
+| CH28 | Huge finite input: a +3e38 / −3e38 pair, a 1e7 sample and a run of 1e20, every mode, mono and stereo, blocks 37 and 512; Classic with samples of ±9e5 | the output equals, bit for bit, the render with those samples at 0; Classic 0 samples differ from the legacy chorus |
+| CH29 | Classic re-enable: a Classic engine that processed a loud signal, was not called for a second and then `reset()`, silent input, mono and stereo, blocks 64 and 512, mix 0.35 and 1 | ≤ −120 dBFS (measured −240) |
 
-Check script at commit `08da770`: 71 checks, 0 FAIL.
+Full run: 77 checks, 0 FAIL (71 at commit `08da770`); the table lists every row id
+`check_chorus.py` has, with the bar the script enforces. The sync rows' measured values are
+those of the run of this document.
 
 ### 4.6 Phaser — `PhaserFx` (`src/dsp/Phaser.h/.cpp`)
 
@@ -1996,9 +2354,9 @@ Existing: `mod_rate` (Hz, literal, both voicings: the Speed / Rate knob); `mod_d
 `mod_mix` are **ignored** by Phase 90 and Small Stone, which run at the stock depth and mix
 the fits were made at (prototype `depth = 0.5`, `mix = 0.5`, i.e. scale factors 1) — the UI
 dims both `[study: voicings.md:288-298, report R2]`. Classic reads rate, depth, mix as today.
-Default `mod_color = on` `[choice: both "on" positions are the better-validated fits —
-Phase 90 block 0.38–0.72 % rms trajectory error, Small Stone Color-on 1.1 % against 1.9 %
-off; the script Phase 90 has no measured reference, report.md:10]`.
+Default `mod_color = on` `[choice: the block logo is the Phase 90 voicing with a measured
+reference (0.41–0.70 % rms notch-trajectory error, P4; pitch and waveform null against Guitar
+Rig 6, P13 and P14); the script Phase 90 has no measured reference, report.md:10]`.
 
 Starting points (`Phaser.h`, `kPhaserRateDefault`): Classic 1.0 Hz; Phase 90 1.07 Hz
 (GR6 noon, 1.071); Small Stone 0.32 Hz (GR6 noon, 0.316) `[study: voicings.md]`.
@@ -2047,33 +2405,92 @@ Small Stone" line by line, matching `phaser_ref.py` (`phase90_break_hz`, `run_ph
   the sweep, are the same at every sample rate (§4.6.6 P9). Feedback loops are solved in
   closed form (no unit delay).
 - **LFO:** `rc_triangle` halves `s(w) = (1 − e^{−κw})/(1 − e^{−κ})`; phase 0 = sweep bottom
-  (output −1). Free-running phase accumulates `rate/fs` per sample in double; with
-  `syncPhase ≥ 0` the phase is set at block start. A song-position jump is still honoured,
-  but the sweep does not step: the difference between the old and the new sweep position
-  (above 1e-6, `kGlideThreshold`) is faded out over 10 ms (`kGlideSeconds`) with a raised
-  cosine, so the break frequency glides to the new phase's position. The first block after
-  `prepare()` or `reset()` sets its phase with no glide.
+  (output −1). Free-running phase accumulates `rate/fs` per sample in double. With
+  `syncPhase ≥ 0` (given every block while the song plays) the engine predicts this block's host
+  phase as `previous + rate × samples since / fs`; the host's phase minus the prediction, wrapped to
+  ±0.5 cycle, is the host's step.
+  - A step of **at least 0.01 cycle and at least 2 ms of LFO time** (`kJumpCycles`,
+    `kJumpLfoSeconds`) is a **jump** (transport start, locate, a loop that is not a whole
+    number of cycles, a note-value change, sync switched on). The phase is set to the host's, and the
+    sweep position glides from where it is (a glide still running included, so a second jump
+    retargets from the current position) to the new phase's position: the difference (above 1e-6,
+    `kGlideThreshold`) is faded out with a raised cosine over a **fixed length counted in samples**,
+    so it does not depend on the host block: **10 ms** (Phase 90 script and block, Small Stone
+    Color off) and **40 ms for Small Stone Color on** (`kGlideSeconds`). Color on sweeps its
+    resonance through up to five octaves on a half-cycle jump, and at 10 ms that zipped at
+    −31 dBFS once the host block was long enough for the glide really to last 10 ms.
+  - Any smaller step is **no jump**: the LFO runs at the tempo's rate and its error against the host
+    is pulled in by bending the rate, never by a glide, `nudge = (|e| − d)·sign(e) / τ`, τ = 0.15 s
+    (`kLockSeconds`), at most ±3 % of the rate (`kLockMaxNudge`), dead band
+    d = min (0.002 cycle, 0.5 ms of LFO time) (`kLockDeadCycles`, `kLockDeadLfoSeconds`), set once
+    per block. Host jitter of ±2 and ±8 samples, 1 BPM tempo steps and a 100 to 140 BPM ramp cause
+    no glide (P16).
+  - The first block after `prepare()` or `reset()` sets its phase with no glide.
 - **Phase 90** (`P90_*`): C = 47 nF, R_fix = 22 kΩ `[circuit]`; leg R(u) = (RS^m + R_ch^m)^{1/m},
   R_ch = R1·e^{−γu}, RS = 916.8 Ω, R1 = 1777.7 Ω, γ = 0.8952, m = 3.876 `[fit]`;
   fc = (1/R_fix + 1/R(u))/(2πC); κ = −0.007; gate one-pole 3.542 Hz on the LFO before the
   law, k = 1 − exp(−2π·3.542/fs), state starting at the first LFO value. Script: wet = A⁴.
   Block: β = 0.3957, lag one-pole 14746 Hz (analog) in the feedback path, the per-sample loop of
   voicings.md. Mix: out = M·(0.5·x + 0.5·wet), M the fixed make-up below.
-- **Small Stone** (`SS_*`): κ = 0.702; fc = √(f_lo f_hi)·(f_hi/f_lo)^{v/2}. Color off:
-  f_lo 347.7, f_hi 8931.5 Hz, no feedback, dry 0.75, wet 0.50. Color on: f_lo 99.4,
-  f_hi 3068.3 Hz, feedback c = 0.7548 around all four stages through F(s), wet input through
-  Ha(s), poles f_p1 49.8, f_p2 267.9 Hz, zeros f_zf 12.0, f_za 12.7, f_zb 862.1 Hz,
-  dry 0.1318, wet 0.4395; TPT discretisation of voicings.md (Ha and F as two first-order
-  sections each; the chain's p⁴ is now the product of the four per-stage factors
-  `p[0]·p[1]·p[2]·p[3]`, and `y4 = (p⁴(xs + c·bF) + K)/(1 − c·aF·p⁴)`, divisor ≥ 0.24).
-- **Make-up (fixed per voicing, `[choice]` in voicings.md, "Level"):** Phase 90 script
-  ×1.365 (+2.70 dB), block ×1.189 (+1.50 dB), Small Stone off ×1.059 (+0.50 dB), Small Stone on
-  ×1.0 (0 dB); `kP90ScriptMakeup`, `kP90BlockMakeup` and `StoneVoicing::makeup` in `Phaser.cpp`.
-  The Small Stone's dry and wet constants above are multiplied by it. Classic is unchanged.
-  Switching Classic to Phase 90 now gains about 1.5 dB (voicings.md).
+- **Small Stone** (`SS_*`): κ = 0.702; the sweep is exponential in the LFO position v in
+  [−1, 1], `ln fc = (ln f_lo + ln f_hi)/2 + ln (f_hi/f_lo)/2 · v + curve·(v² − 1)`.
+  **Color off** is **fitted on the complex response** (magnitude and phase of 277 snapshots,
+  `evidence/fit/snapshots.tsv`, not on magnitudes alone: `dry + wet·P⁴` and `wet + dry·P⁴` have the
+  same magnitude and opposite motion, and the first fit had picked the wrong one): f_lo 326.4 Hz,
+  f_hi 9086.3 Hz, curvature term `curve` = 0.0128 (rms of the break frequency 0.43 % → 0.18 %;
+  the pitch deviation at 1.78 Hz from +16 % to +13.6 % of Guitar Rig 6's), no feedback,
+  **dry 0.5003, wet 0.7500** (the wet path dominant; it was 0.75 / 0.50), and a **first-order
+  high-pass at 44.2 Hz on the wet input** before the stages (residual of the snapshot fit −46.7 dB
+  re |H| with it, −14.8 dB without). It moves notch 1 up near the sweep bottom (148.7 Hz at f_lo,
+  0.456·fc instead of tan(π/8) = 0.414) and takes the wet out at DC. **Color on:** f_lo 98.5 Hz,
+  f_hi 3105.4 Hz (refitted on the snapshots; curve 0, the fitted curvature 0.003 does nothing),
+  feedback c = 0.7548 around all four stages through F(s), wet input through Ha(s), poles
+  f_p1 49.8, f_p2 267.9 Hz, zeros f_zf 12.0, f_za 12.7, f_zb 862.1 Hz, dry 0.1318, wet 0.4395
+  (the snapshots give dry/wet 0.2980 against the prototype's 0.2999); TPT discretisation of
+  voicings.md (Ha and F as two first-order sections each; the chain's p⁴ is the product of the
+  four per-stage factors `p[0]·p[1]·p[2]·p[3]`, and `y4 = (p⁴(xs + c·bF) + K)/(1 − c·aF·p⁴)`,
+  divisor ≥ 0.24). Phase 90 block: weights and sign confirmed on the snapshots (dry/wet 0.997).
+- **Make-up (fixed per voicing, `[choice]` in voicings.md, "Level"): unity loudness against
+  bypass on guitar.** Each make-up is the negated mean, over three guitar-like takes (a mixed
+  take, a low riff 82 to 147 Hz, a high take 330 to 784 Hz, 12 s each), of the ungated ITU-R
+  BS.1770 K-weighted loudness of the output against the input at the voicing's starting rate,
+  rounded to 0.01 dB (P18, bar ±0.25 dB): Phase 90 script ×1.3152 (+2.38 dB), block ×1.3137
+  (+2.37 dB), Small Stone off ×1.0186 (+0.16 dB), Small Stone on ×0.9237 (−0.69 dB);
+  `kP90ScriptMakeup`, `kP90BlockMakeup` and `StoneVoicing::makeup` in `Phaser.cpp`. They were
+  +2.70 / +1.50 / +0.50 / 0 dB, whose register means were +0.32 / −0.87 / +0.32 / +0.68 dB. The
+  Small Stone's dry and wet constants above are multiplied by it. What one fixed gain cannot
+  remove is the register dependence, which is the voicing (Color on lifts a low riff by +2.16 dB and
+  leaves a high take −3.01 dB). Classic is unchanged.
+- **Headroom.** Nothing saturates and there is no limiter: a full-scale input can leave the
+  engine above 0 dBFS. Worst peak for a full-scale input (squares of 41.2, 82.4 and 110 Hz, sines
+  of 97 Hz to 3.3 kHz, a guitar-like take, at the starting rate and at 10 Hz; P18): Phase 90 script
+  +2.4 dB, block +5.9 dB, Small Stone off +5.7 dB, Small Stone on **+13.6 dB** (82.4 Hz square at
+  10 Hz). **The chain after the phaser needs up to 14 dB of headroom** (6 dB for every
+  voicing but Small Stone Color on). Guitar Rig 6 peaks the same way within 0.3 dB on a −6 dBFS
+  low square (voicings.md "Peaks on a low square wave"), so the peak is the voicing.
 - No oversampling, no saturation, no output filter `[study: voicings.md]`. One LFO for both
-  channels; per-channel stage states. Non-finite input samples are replaced by 0 before the
-  engine sees them (Classic included; finite input is untouched, so the Classic null holds).
+  channels; per-channel stage states. A sample that is not finite, or whose magnitude is 1e6 or
+  more, is replaced by 0 before the engine sees it (Classic included; everything below is
+  untouched, so the Classic null holds; a ±3e38 pair used to latch Classic's
+  `juce::dsp::Phaser` to NaN, P12).
+- **Model and Color switches** (§2.4; all five voicings, Classic included; no
+  `fx::EngineSwitcher`): the outgoing voicing keeps running on one copy of the input; the incoming one
+  is reset and runs on another copy, **unheard for 30 ms** (`kSwitchWarmSeconds`: its states and the
+  power estimates settle), then the two cross over in **40 ms** (`kSwitchFadeSeconds`) with a raised
+  cosine `s`: `out = g · ((1 − s) A + s B)`. `g` makes the power of the sum, predicted from the
+  short-term powers of A and B and their cross term (two cascaded one-poles of 2.5 ms each,
+  `kSwitchStatSeconds`), follow the straight line between the two powers:
+  `g² = P_t / (P_sum + 4s(1 − s)·P_t / 8²)`, `P_t = (1 − s) P_A + s P_B`,
+  `P_sum = (1 − s)² P_A + s² P_B + 2s(1 − s) P_AB`. On one held note two phasers can sit in
+  antiphase, where any crossfade passes a null; the bound term caps `g` at **+18 dB**
+  (`kSwitchMaxGain` 8) and vanishes at both ends of the fade, so the gains have no corner. A
+  request during a switch is taken when it ends. Classic's own output is untouched (the same code
+  path whenever no switch is in flight). The engine holds two Phase 90 / Small Stone instances
+  that share one set of coefficient tables. P17: every ordered pair of the five voicings, held
+  notes at 82 / 196 / 440 Hz at −12 dBFS and a guitar-like take: the level in 20 ms frames stays
+  within +0.95 dB of the higher and −2.88 dB of the lower of the two voicings' own levels, click
+  −93.8 dBFS above 2 kHz. The old switch faded through the dry input: +11.5 dB above and 20.3 dB
+  below both levels.
 
 **Decision — oversampling (Small Stone Color, and any voicing): not done.** Internal 2x
 needs up/down-sampling filters, i.e. latency, and D6 allows latency only for drive. The
@@ -2082,12 +2499,13 @@ notch-matched discretisation above removes what the 2x would have bought for the
 cannot fix is the magnitude response away from the notches: four first-order sections at
 44.1 or 48 kHz cannot follow an analog chain's phase near 10 kHz, so the frozen responses
 between 48 and 192 kHz differ on the slopes above 3 kHz (§4.6.6 P9, "frozen response",
-failing; §8 D-8). The Color-on resonance at the sweep top also sits +2.7 % high at 48 kHz
-(3288 against 3203 Hz analog) for the same reason [voicings.md]. The remaining gaps against
-Guitar Rig 6 (Small Stone Color off: notch-1 ends 2.2 to 3.1 % low, notch 2 at the bottom
-about 4.4 % high; Phase 90 block notch 2, not a target, 1.6 to 3.3 % high at the sweep top;
-Color on: notch-1 minimum +2.8 % at 1.78 Hz, inside the tracker's own +6.2 % bias) are small
-against the 0.41 to 1.25 % rms trajectory fits (`compare.txt`).
+failing; §8 D-8). The Color-on resonance at the sweep top also sits +2.6 % high at 48 kHz
+(3259 against 3176 Hz analog; peak height within 0.02 dB) for the same reason [voicings.md].
+The remaining gaps against Guitar Rig 6 (`compare.txt`: Small Stone Color off, notch-1 ends
+within 0.53 %; Phase 90 block notch 2, not a target, +0.28 to +0.80 % at the sweep bottom and
++1.57 to +3.34 % at the top; Color on, notch-1 minimum +2.84 % at 1.78 Hz) are small
+against the 0.41 to 0.70 % (block), 0.12 to 0.21 % (Color off) and 0.30 to 0.44 % (Color on) rms
+trajectory fits.
 
 #### 4.6.5 Latency, CPU, fxbench
 
@@ -2095,16 +2513,26 @@ Latency 0 (`getLatencySamples()` returns 0). CPU per instance: Classic as today;
 ≤ 0.4 %; Small Stone ≤ 0.5 % (`BUDGETS` in `check_phaser.py`; per sample one table
 interpolation of four or five coefficients plus up to eight one-poles, no `tan`; the four
 tables, 257 entries each, are built in `prepare()`, which
-takes under 10 ms [voicings.md]). fxbench keys:
-`model rate depth mix color sync_phase on reset_on_enable freeze_u`; the last two are test
-hooks (`freeze_u` calls `PhaserFx::freezeSweep`, a test hook that holds the sweep position in
-[−1, 1], −1 the bottom; NaN releases it).
+takes under 10 ms [voicings.md]). Measured at 48 kHz, block 64 (commit 8f8f197, idle machine):
+script 0.066 %, block 0.093 %, Small Stone off 0.064 %, on 0.135 %; switching model or Color
+every 50 ms 0.30 % (the switch row's bar is the Small Stone budget, 0.5 %). fxbench keys:
+`model rate depth mix color sync_phase on reset_on_enable freeze_u`, and a simulated host,
+`host_bpm host_note host_ppq host_jitter` (`tools/fxbench/README.md`). `reset_on_enable`, `freeze_u`
+and the `host_*` keys are test hooks. `freeze_u` calls `PhaserFx::freezeSweep`, which holds the
+sweep position in [−1, 1], −1 the bottom (NaN releases it). With `host_bpm` present the adapter
+resolves `rate` and `sync_phase` from the tempo, the note value (`host_note`, LFO cycles per beat)
+and the song position (`host_ppq` beats at the first block, the tempo integrated between blocks as
+a straight line); `host_jitter N` reports each block's position off by a whole number of samples
+drawn uniformly from −N..N. `--trace` writes three channels per block: the LFO phase in cycles at the
+block's last sample (`PhaserFx::getLfoPhase`), the song-position jumps glided so far
+(`getSyncJumpCount`), and the simulated host's exact (unjittered) phase; use `--block=1` for a
+per-sample trace.
 
 `reset()` clears every state: filters, feedback, the LFO (phase 0 = sweep bottom), the gate
-smoothing, the sync glide, the model switcher and the parameter smoothers, so the next block
+smoothing, the sync glide and lock, any model switch in flight and the parameter smoothers, so the next block
 is a fresh engine's. The processor calls it when a Phase 90 / Small Stone block is switched
-back on (§2.6, §6.5). Non-finite input samples are replaced by 0 at the
-top of `process()`, for every model.
+back on (§2.6, §6.5). Non-finite samples, and samples of 1e6 magnitude or more, are replaced
+by 0 at the top of `process()`, for every model.
 
 #### 4.6.6 Acceptance (`check_phaser.py`)
 
@@ -2113,18 +2541,25 @@ top of `process()`, for every model.
 | P1 | Classic null (§2.11) | 0 differing samples |
 | P2 | Parity with `phaser_ref.render()` (imported from the prototype): 4 s of pink noise −18 dBFS plus an impulse train, each voicing × color, rates 0.143, 1.071, 3.72, 9.76 Hz (Phase 90) and 0.1585, 0.316, 1.778 Hz (Small Stone), at 44.1, 48, 88.2, 96, 192 kHz (`--quick`: 48 kHz only) | rms(C++ − ref)/rms(ref) ≤ −80 dB; max abs difference ≤ 1e-4 (reported per voicing: Phase 90 script, Phase 90 block, Small Stone off, Small Stone on) |
 | P3 | Frozen-fc table: the engine at a fixed sweep position (adapter key `freeze_u` = −1 and +1, `PhaserFx::freezeSweep`) reproduces `evidence/fit/spec_check.txt` (notch 1/2 frequencies and levels, peak, DC at 44.1, 48, 88.2, 96, 192 kHz); the impulse response's last eighth holds under 1e-12 of its energy | frequencies ± 0.1 %, levels ± 0.05 dB (e.g. block 48 kHz: 419.4 / 1934 Hz, −29.18 / −15.27 dB at the bottom; 1589.9 / 7481 Hz, −25.27 / −18.46 dB at the top; the same notch frequencies at every rate) |
-| P4 | Trajectory against GR6 (`evidence/fit/trajectories.tsv`, `itrack.py`, 48 kHz), regression guard only (`--quick`: the noon rates) | Phase 90 block ≤ 0.8 % rms, ≤ 1.4 % max over the six rates; Small Stone off ≤ 2.0 % rms; on ≤ 1.2 % rms (current values `compare.txt`: block 0.41 to 0.70 % rms, max 1.18 %; off 1.24 to 1.25 % rms; on 0.80 to 0.85 % rms; the Small Stone rows have no max bar) |
+| P4 | Trajectory against GR6 (`evidence/fit/trajectories.tsv`, `itrack.py`, 48 kHz), regression guard only (`--quick`: the noon rates) | Phase 90 block ≤ 0.8 % rms, ≤ 1.4 % max over the six rates; Small Stone off ≤ 2.0 % rms; on ≤ 1.2 % rms (current values `compare.txt`: block 0.41 to 0.70 % rms, max 1.18 %; off 0.12 to 0.21 % rms, max 0.53 % (was 1.24 to 1.25 % rms); on 0.30 to 0.44 % rms, max 1.21 % (was 0.80 to 0.85 % rms); the Small Stone rows have no max bar) |
 | P5 | Rate: three rows. (a) "rate (audio)": the notch-1 period tracked from the P4 renders; (b) "rate (LFO)": the phase trace of Phase 90 and Small Stone at 0.01, 0.143, 1.071, 3.72, 9.76, 20 Hz, block 1, 48 kHz; (c) "sync (CH13)": 120 BPM, 1/4 note, song starting at beat 0.3, blocks 64 and 512, both models, Color on | (a), (b) period error < 0.01 %; (c) period 0.5 s ± 0.1 %, phase-0 timing error ≤ 1 ms |
 | P6 | Stability: Phase 90 block and Small Stone Color on, 30 s at 10 Hz of full-scale uniform noise, at 22.05, 48, 192 kHz | finite, \|out\| < 4 |
-| P7 | Model / color switch on a chord (five switches, at 48 kHz blocks 64 and 512, 44.1 kHz blocks 512 and 37, 96 kHz block 384), and Classic with a color toggle | no step > 3 dB within 1 ms; fade 40 ± 2 ms; the Classic color toggle bit-identical to no toggle |
+| P7 | Model / color switch on a chord (five switches, at 48 kHz blocks 64 and 512, 44.1 kHz blocks 512 and 37, 96 kHz block 384), and Classic with a color toggle. The fade is measured without a dry point: 30 ms unheard, then the crossfade | no step > 3 dB within 1 ms (measured ≤ 0.12 dB); fade 40 ± 2 ms (measured 39.7 to 39.9); the Classic color toggle bit-identical to no toggle |
 | P8 | depth/mix independence | Phase 90 and Small Stone output bit-identical for any `depth`/`mix` values (0/0, 1/1, 0.13/0.91, and ramps) |
-| P9 | Rate independence, against each voicing's own 48 kHz render at 44.1, 88.2, 96, 192 kHz (`--quick`: 44.1, 48, 96). Three rows per voicing: **trajectory** (notch 1 at the noon rate, tracked like P4), **frozen notches** (notches ≤ 10 kHz at sweep positions −1, −0.5, 0, 0.5, 1; same notch count) and **frozen response** (\|H\| from 20 Hz to 10 kHz where the 48 kHz response is within 20 dB of its peak) | trajectory ≤ 0.3 % rms; notches ≤ 0.2 %; response ≤ 1.8 dB. **Trajectory and notch rows are met** (voicings.md: 0.05 % Phase 90, 0.17 / 0.15 % Small Stone off / on rms; notches within 0.16 %). **The frozen-response bar is the structure's limit, not a target:** measured 1.06 to 1.69 dB; the first bar of 0.1 dB cannot be met by four first-order stages at 44.1 / 48 kHz (`evidence/fit/rate_limit.txt`; D-30) |
+| P9 | Rate independence, against each voicing's own 48 kHz render at 44.1, 88.2, 96, 192 kHz (`--quick`: 44.1, 48, 96). Three rows per voicing: **trajectory** (notch 1 at the noon rate, tracked like P4), **frozen notches** (notches ≤ 10 kHz at sweep positions −1, −0.5, 0, 0.5, 1; same notch count) and **frozen response** (\|H\| from 20 Hz to 10 kHz where the 48 kHz response is within 20 dB of its peak) | trajectory ≤ 0.3 % rms; notches ≤ 0.2 %; response ≤ 1.8 dB. **Trajectory and notch rows are met** (0.049 % Phase 90 script, 0.048 % block, 0.182 / 0.154 % Small Stone off / on rms; notches within 0.166 %). **The frozen-response bar is the structure's limit, not a target:** measured script 1.69 dB, block 1.40, Small Stone off 1.02, on 1.66 (1.02 to 1.69 dB); the first bar of 0.1 dB cannot be met by four first-order stages at 44.1 / 48 kHz (`evidence/fit/rate_limit.txt`; D-30). At 44.1 kHz against 192 kHz the script (2.05 dB) and Color on (2.00 dB) are over the 1.8 dB bar; the row compares every rate against 48 kHz only |
 | P10 | Sync jumps: a 220 Hz tone at −12 dBFS, rate 1 Hz, block 64, 48 kHz; a song-position jump at sweep phase 0, 0.25, 0.5, 0.75 of +0.05, +0.25, +0.5, −0.3 cycle, per voicing (16 jumps) | the largest tick above 2 kHz ≤ −60 dBFS (Kaiser FIR highpass residual) |
 | P11 | Re-enable, driven as the processor will drive it: a loud signal, no `process()` for 1 s (`on` 0), then `reset()` (adapter key `reset_on_enable=1`) and processing again; silent input and continuing signal, at 48 kHz block 64 and 44.1 kHz block 512 | silent input peaks ≤ −60 dBFS; a continuing signal differs from a fresh engine's output by ≤ −60 dBFS |
-| P12 | Non-finite input: NaN, +Inf, −Inf samples in either channel and a 64-sample NaN burst; Classic and the four voicings, blocks 64 and 512 | output finite and bit-identical to the render with zeros in place of the bad samples |
+| P12 | Non-finite input: NaN, +Inf, −Inf samples in either channel and a 64-sample NaN burst; Classic and the four voicings, blocks 64 and 512. And huge input: a +3e38 / −3e38 pair, 2e6 and −1.5e6 samples, the same cases | output finite and bit-identical to the render with zeros in place of the bad samples (nothing latched) |
+| P13 | Pitch of a held note against Guitar Rig 6: 196 Hz sine at −12 dBFS, instantaneous frequency of the output, p99 of \|cents\|, three rates per voicing (block 0.247 / 1.071 / 3.721 Hz; Small Stone 0.316 / 1.778 / 5.012 Hz), `evidence/fit/motion.tsv` | ours within 15 % of Guitar Rig 6's p99 at the worst rate. Measured: Phase 90 block 13.8 % (0.6 / 2.5 / 5.8 cents against 0.7 / 2.6 / 5.7), Small Stone off 13.6 % (12.7 / 65.9 / 165.7 against 12.4 / 57.9 / 158.5; it was −79 %), Small Stone on 1.9 % (25.0 / 136.8 / 372.6 against 24.9 / 134.9 / 379.9) |
+| P14 | Waveform null against Guitar Rig 6: the same 8 s guitar-like take through both (`evidence/fit/gr6_takes/`), our LFO started at the phase that nulls best, one least-squares gain; residual re Guitar Rig 6's output at the two rates | Phase 90 block ≤ −25.9 dB (measured −26.7 / −27.1 at 1.071 / 3.721 Hz), Small Stone off ≤ −24.0 dB (−40.8 / −37.3 at 0.316 / 1.778 Hz; was −11.6 / −11.0), Small Stone on ≤ −29.2 dB (−36.0 / −31.7). The dry signal alone nulls at −3 to −5 dB. Needs the six Guitar Rig 6 renders in the repository (§8 D-40) |
+| P15 | Sync jump: tones of 82 / 147 / 220 / 330 Hz at −12 dBFS, jumps of 0.1 / 0.25 / 0.5 cycle from sweep phases 0 / 0.25 / 0.5 / 0.75, blocks 16 to 4096 at 48 kHz and phases 0 and 0.5 at 44.1 / 96 / 192 kHz (252 renders per voicing); a second jump of +0.25 about 15 ms after a +0.5 one; settle time to within −40 dB of the voicing running at the new phase all along, for jumps from sweep phases 0 and 0.25, blocks 16 to 4096 at 48 and 192 kHz | the largest tick above 2 kHz ≤ −60 dBFS (measured worst: −140.5 script, −138.0 block, −83.8 Color off, −81.8 Color on; two jumps −75.8 at worst); the settle times over the block sizes spread by at most 20 % (measured 169.4 to 170.6 ms script, 145.6 to 147.6 block, 7.7 to 8.5 Color off, 40.6 to 41.2 Color on, for a half-cycle jump from phase 0: the block-size spread is 1.2 ms or less) |
+| P16 | Sync lock: song position jittered by ±2 and ±8 samples per block, tempo stepped 120 to 135 BPM in 1 BPM steps, ramped 100 to 140 BPM over 4 s, at 1/4 and 1/16 notes, 44.1 kHz block 64 and 4096, 96 kHz block 512, 192 kHz block 16 | 0 glides; the high-passed difference from an exact host (or from the free-running LFO at the same rates) ≤ −80 dBFS (measured worst −86.6); phase error after 1 s < 0.01 cycle (measured 0.0058 at worst) |
+| P17 | Switch level: every ordered pair of the five voicings (20), held notes at 82 / 196 / 440 Hz at −12 dBFS and a guitar-like take, switched at two times; 20 ms frames over the 90 ms from the switch | at most +1.5 dB above the higher and 3 dB below the lower of the two voicings' own levels (measured +0.95 and −2.88 dB); click above 2 kHz ≤ −60 dBFS (measured −93.8) |
+| P18 | Level against bypass: ungated K-weighted loudness over three guitar-like takes (mixed, a low riff, a high take), each voicing at its starting rate; and the worst peak for a full-scale input | the register mean within ±0.25 dB of unity (measured 0.00, −0.01, 0.00, 0.00 dB); the peaks are reported: Phase 90 script +2.4 dB, block +5.9, Small Stone off +5.7, on +13.6 (headroom, §4.6.4) |
+| switch rt safety | Model and Color switched every 50 ms, no allocation, reset-repeat identical at 48 kHz / 64, 44.1 kHz / 37, 96 kHz / 512, 192 kHz / 4096; CPU while switching | `--rt-check` clean, output identical after `reset()`, CPU ≤ 0.5 % (the Small Stone budget; measured 0.22 % in the run of this document) |
 | finite (bad keys) | `model` 7 and −3, `rate` 1e9, −4, NaN, +Inf, `sync_phase` NaN and 1e12, Classic with NaN depth/rate and −Inf mix | output finite, \|out\| < 1e3 |
 
-P9 to P12 are new with the sample-rate, sync-jump, re-enable and non-finite fixes. P11
+P9 to P12 are new with the sample-rate, sync-jump, re-enable and non-finite fixes; P13 to P18 and the switch row came with the second round (Small Stone refit on phase, sync lock, crossfaded switches, unity loudness). Full run: 133 checks, 0 FAIL (96 before the second round; P7 now measures the fade without a dry point, its bars unchanged). The table lists every row id `check_phaser.py` has, with its bar. P11
 depends on the processor calling `reset()` on re-enable, which it now does (§2.6); the adapter
 key stands in for it in fxbench.
 
@@ -2217,8 +2652,11 @@ From `Modulation` (`FxBlocks.cpp:364-405, 426-448`): `dryGain = sqrt(1 − mix)`
   stalls a few ulps short of its target, so depth 0 could never return to exact
   transparency. With the distance decaying to nothing, **depth automated to 0 is bit-exact**
   (X7; X3 for a fresh engine).
-- **Non-finite input** (`fx::sanitise`): a NaN or Inf sample is kept out of Bias's envelope
-  and Harmonic's filter state, so it spoils at most its own output sample (N1).
+- **Non-finite and huge input:** a NaN or Inf sample, and a finite sample beyond 1e6 in
+  magnitude, are silenced on the way in (voices 1-4 and Classic alike), so they cannot enter
+  Bias's envelope or Harmonic's filter state and spoil at most their own output sample (N1,
+  Y7). Everything below 1e6 passes untouched, so Classic stays bit-identical (Y7: 9.9e5 gives
+  0 samples differing from the legacy code).
 - **Stereo spread** `[study: R3; ver: V:51-53]`: right LFO phase `phR = frac(ph + spread/360)`,
   spread = 180°·width; loudness law `w' = w^(1 − spread/360)` applied to both channels'
   shape before the depth law. **Smooth only**: Optical's lamp is lit or dark, so the law
@@ -2229,14 +2667,38 @@ From `Modulation` (`FxBlocks.cpp:364-405, 426-448`): `dryGain = sqrt(1 − mix)`
   0.63 dB; at 90° the sum still swings 11.5 dB; and the exponent turns a 180° sine into a
   rectified half-sine whose smoothed floor is −38.7 dB, so "floor below −60 dB" holds only
   at spread 0.
-- **Sync:** rate from the dispatcher; with `syncPhase ≥ 0` the phase is set at block start
-  so the dip lands on the grid `[study: R4]`. Rate multiplier: none (§8 D-13). **A
-  song-position jump** (transport start, locate, loop: the new phase differs from the running
-  one by more than 1e-3 cycles, `kJumpCycles`) **crossfades the gain target from the old
-  phase's LFO to the new one's over 10 ms with a raised cosine** (`kJumpFadeSeconds`); the
-  120 Hz smoother alone left a slope step that clicked at −44 dBFS on a low note (S1). A jump
-  during a fade restarts the fade from the newer phase. Smaller corrections apply outright.
-- LFO start after reset: phase 0 (Smooth starts at the dip, as the prototype).
+- **Sync:** rate from the dispatcher; with `syncPhase ≥ 0` the LFO follows the host's song
+  position so the dip lands on the grid `[study: R4]`. Rate multiplier: none (§8 D-13). The
+  lock tells a host jump from the engine's own error. Each block the host phase is compared
+  with where the previous host phase, advanced by the previous block's rate, predicts.
+  - A difference above `max (0.01 cycle, 2 ms of LFO time)` (`kJumpCycles`, `kJumpSeconds`)
+    is a **jump** (transport start, locate, a loop that is not a whole number of cycles, a
+    note-value change, sync switched on). The LFO moves to the new phase once, and the
+    gain target crossfades from the old phase's LFO to the new one's over **10 ms of
+    samples** with a raised cosine (`kJumpFadeSeconds`), whatever the host block size. A second
+    jump inside the fade starts from the blend heard at that moment. The 120 Hz smoother alone
+    left a slope step that clicked at −44 dBFS on a low note (S1).
+  - Anything smaller is host jitter or the residue of a tempo change. The LFO runs free at the
+    tempo's rate and its own error against the host is pulled in by a **phase-locked rate
+    nudge**, error / 150 ms (`kLockSeconds`), at most 3 % of the rate (`kLockMaxNudge`).
+    Released (sync off), the LFO keeps its phase and its rate glides from the tempo's to
+    the knob's.
+  - Measured (Y1, Y2): click above 2 kHz for a 110 Hz note at −12 dBFS over host blocks 16 to
+    4096 at 44.1 to 192 kHz, before the rule → now: Smooth −46.1 → −114.4 dBFS, Harmonic
+    −48.9 → −100.7, Bias −59.0 → −129.2; Optical −58.9 against −58.8 at its own lamp edges.
+    Host jitter of ±2 and ±8 samples per block: 6301 / 21286 jumps before, 0 now, phase error
+    under 0.007 cycle; 1 BPM steps and a 100 to 140 BPM ramp: 0 jumps.
+- **Voice switch** (no `fx::EngineSwitcher`, §2.4). Both voices run on **one LFO** (the phase
+  is carried across, Classic included: Classic's dip is at phase 0.75, the others' at 0)
+  and their outputs crossfade over **40 ms** (`kVoiceFadeSeconds`). The incoming voice joins
+  its own steady trajectory: its gains are snapped to their targets, Optical's photocell is
+  set to its periodic state, Bias's detector is primed. Level outside both voices' own
+  trajectories: 10.06 dB before, 0.03 dB now over 160 switches (Y3).
+- **LFO start after `reset()`, sync off:** the LFO starts where the voice's gain is at its
+  **crest**, so the first note is heard at full level: Smooth at phase s (its skew), Bias at
+  0.5, Optical and Harmonic at 0. (The first version started at the dip: Smooth read −25.3 dB
+  re crest 20 ms after a re-enable, now −0.4 / −0.5 dB at depth 0.6 / 1, Y4.) With sync the
+  host's phase rules.
 - **`reset()`** clears every state; voices 1–4 start with their knobs at the last values sent
   and **every gain at unity**, so the first block glides from the input into the tremolo
   through the gain smoother instead of stepping to the dip (the reference starts at y0 = 1).
@@ -2257,6 +2719,13 @@ From `Modulation` (`FxBlocks.cpp:364-405, 426-448`): `dryGain = sqrt(1 − mix)`
   w     = wave <= 0.5 ? lerp(sine, tri, 2*wave) : lerp(tri, pulse, 2*wave - 1)
   gain  = onepole120( (floor + (1 - floor)*w') * 10^(3*depth/20) )
   ```
+  **Pulse edges are raised cosines** of 1 ms (`kPulseEdgeSeconds`), centred on the hard
+  edge, ahead of the 120 Hz smoother (the prototype's pulse is a hard step). A one-pole alone
+  starts every edge with a corner, which splattered above 2 kHz. The 10 to 90 % time is 2.96 ms
+  (a one-pole alone: 2.92); the energy above 2 kHz is 21.9 to 29.4 dB below a one-pole edge of
+  the same time over rates 1 to 20 Hz and duties 0.1 to 0.9 (Y5; the run of this document
+  prints a least improvement of 21.9 dB). An edge must fit inside the narrowest pulse
+  (`static_assert`, 20 Hz × 1 ms < 0.1).
 - **Optical (2)** `[study: R2, proto :193-203]`: lit = (ph ≥ 0.75) (lamp on a quarter of the
   cycle); target = 1 − 0.9·depth·lit (floor −20 dB at depth 1); gain follows target with a
   one-pole whose corner is 31.83 Hz (τ 5 ms) while falling and 7.96 Hz (τ 20 ms) while
@@ -2265,8 +2734,13 @@ From `Modulation` (`FxBlocks.cpp:364-405, 426-448`): `dryGain = sqrt(1 − mix)`
 - **Bias (3)** `[study: R5, proto :267-288]`: u = 0.5 + 0.5·cos(2π ph) (1 = dip);
   env = peak follower of the block's mono sum (attack 5 ms, release 150 ms);
   q = env/knee_lin, knee_lin = 10^((−24 + 24·shape)/20) (default −12 dBFS);
-  `gain = sqrt((1 − depth·u + q)/(1 + q))`, then the 120 Hz smoother. Clean gain, no
-  waveshaper (the amp supplies the distortion). The name rests on an inferred reading of
+  `gain = sqrt((1 − depth·u + q)/(1 + q))`, then the 120 Hz smoother. The detector input is
+  **AC-coupled at 10 Hz** (`kBiasDetectorHz`): a DC offset is a fault no AC-coupled amp lets
+  reach the bias, and DC 0.01 under a −40 dBFS tone used to lower the depth from 14.4 dB to
+  11.7 dB; now it stays 14.41 dB at DC +0.01 and ±0.1 (Y8). **The onset dip is the voice:** a note
+  that lands on the dip is cut by up to 4.7 dB for about 6.5 ms (depth 0.75, 196 Hz at
+  −6 dBFS) while the 5 ms follower catches up, as the study's envelope does (Y8 reports
+  −4.7 dB). Clean gain, no waveshaper (the amp supplies the distortion). The name rests on an inferred reading of
   Guitar Rig's AC30 (V:67).
 - **Harmonic (4)** `[study: R6, proto :315-331]`: L = TPT one-pole low-pass at f_x,
   H = x − L, f_x = 300·2^(2(tone − 0.5)) Hz; u = 0.5 − 0.5·cos(2π ph);
@@ -2277,9 +2751,22 @@ From `Modulation` (`FxBlocks.cpp:364-405, 426-448`): `dryGain = sqrt(1 − mix)`
 #### 4.7.6 Latency, CPU, fxbench
 
 Latency 0. CPU per instance: Classic as today; Smooth, Optical, Bias ≤ 0.10 %; Harmonic
-≤ 0.15 %. fxbench keys: `voice rate depth mix width tone shape wave sync_phase on`; on
-`on` going from 0 to 1 with a voice other than Classic the adapter calls `reset()` before the
-next block, as the processor will; `--trace=gain` writes the left (and right) gain.
+≤ 0.15 % (`BUDGETS`), at every Width (Y6: worst over widths 0 to 1, in the run of this
+document, Smooth 0.085, Optical 0.038, Bias 0.062, Harmonic 0.071 %; Smooth with a jump fade
+always on, 0.151 %, is printed and has no bar). The per-sample `std::pow` and `std::cos` are
+gone: the loudness law comes from a table once Width rests, the cosine is a series, settled
+knobs are held and not stepped, and one LFO evaluation serves a channel pair at spread 0.
+Smooth's worst over widths went from 0.134 % to 0.066 % on an idle machine (commit 26148a8).
+
+fxbench keys: `voice rate depth mix width tone shape wave sync_phase on`, and a scripted play
+head, `host_sync host_bpm host_beats host_play host_ppq host_jitter` (`tools/fxbench/README.md`).
+With `host_sync=1` the adapter stands in for the processor's dispatcher: `rate = host_bpm /
+(60 · host_beats)` and, while `host_play` is 1, `sync_phase = frac (ppq / host_beats)` at each
+block start, the song position advancing by the block's tempo. On `on` going from 0 to 1 with a
+voice other than Classic the adapter calls `reset()` before the next block, as the processor
+will. `--trace=gain` writes the left (and right) gain; `--meters` writes per block the engine's
+song-position jump count and its LFO phase at block start minus the true (unjittered) host
+phase.
 
 #### 4.7.7 Acceptance (`check_tremolo.py`)
 
@@ -2290,10 +2777,10 @@ edge 0.3 ms, depth 0.15 dB.
 | # | Check | Pass |
 |---|---|---|
 | T1 | Classic null (§2.11) | 0 differing samples |
-| T2 | Parity with `tremolo_proto.py` per voice (Smooth at wave 0/0.5/1 and shape 0.2/0.5/0.8; Optical; Bias; Harmonic), spread 0 and 180 | rms difference ≤ −80 dB re output |
+| T2 | Parity with `tremolo_proto.py` per voice (Smooth at wave 0/0.5/1 and shape 0.2/0.5/0.8; Optical; Bias; Harmonic), spread 0 and 180. The Smooth and Bias references start at the voice's crest (§4.7.4), Smooth's pulse has the raised-cosine edges, Bias's detector the 10 Hz AC coupling | rms difference ≤ −80 dB re output |
 | T3 | Smooth depth 1, wave 0 | crest +3.0 ± 0.2 dB; floor ≤ −60 dB (spread 0); loud half 0.50 ± 0.01 |
 | T4 | Smooth depth 0.5 | floor −12.0 ± 0.5 dB |
-| T5 | Smooth wave 1 (pulse) | 10–90 % edges 2.9 ± 0.5 ms; loud fraction = s ± 0.01 (shape 0.5 / 0.25 / 0.75); splatter 3–6 kHz around the carrier ≤ **−58 dBc at worst-case carrier phase** (8 carrier phases incl. cosine, carriers 997 / 1001.5 Hz, and a dense sweep of 64 phases at 1 kHz plus off-grid carriers) — the study's −64.8 dBc held only with the carrier at a zero crossing on every edge; worst case at 1 kHz is −59.1 dBc `[ver: V:32, V:44]`. **Splatter by carrier frequency** (worst of 16 carrier phases, the band is carrier + 2 … 5 kHz and for a low carrier also catches the edge's lower sideband, which adds coherently, +3.3 dB at 40 Hz; the incoherent mean is −61.6 dBc flat): carriers 40 / 48 / 64 / 84 / 112 / 148 / 196 / 248 / 332 / 440 / 660 / 1000 / 1320 / 2000 Hz must stay at or below −55.5 dBc from 40 Hz, −55.8 from 82 Hz, −56.4 from 200 Hz, −58.0 from 500 Hz |
+| T5 | Smooth wave 1 (pulse) | 10–90 % edges 2.9 ± 0.5 ms (measured 2.96); loud fraction = s ± 0.01 (shape 0.5 / 0.25 / 0.75); splatter 3–6 kHz around the carrier (the band is carrier + 2 … 5 kHz) ≤ **−88.8 dBc at worst-case carrier phase** (8 carrier phases incl. cosine, carriers 997 / 1001.5 Hz, and a dense sweep of 64 phases at 1 kHz plus off-grid carriers; measured worst −90.1 dBc at 1 kHz). The raised-cosine edges of §4.7.5 moved the bar from −58 dBc (the study's −64.8 dBc held only with the carrier at a zero crossing on every edge) `[ver: V:32, V:44; r2-mod N9]`. **Splatter by carrier frequency** (worst of 16 carrier phases; for a low carrier the band also catches the edge's lower sideband, which adds coherently): carriers 40 / 48 / 64 / 84 / 112 / 148 / 196 / 248 / 332 / 440 / 660 / 1000 / 1320 / 2000 Hz must stay at or below −84.8 dBc from 40 Hz, −86.0 from 82 Hz, −87.6 from 200 Hz, −89.1 from 500 Hz (the bars are the measured value plus 1 dB; measured −85.8 at 40 Hz to −90.6 at 2 kHz) |
 | T6 | Depth step 0 → 1 between blocks | largest per-sample gain step ≤ 0.005 [0.0014] |
 | T7 | Optical, 5 Hz, depth 1 | fall 11 ± 1.5 ms; rise 44 ± 5 ms; loud fraction 0.70 ± 0.03; floor −20 ± 1 dB; envelope identical within 0.1 dB from −36 to −6 dBFS |
 | T8 | Stereo, spread 0 | L and R identical (null) |
@@ -2316,8 +2803,19 @@ edge 0.3 ms, depth 0.15 dB.
 | S1 | Song-position jump (0.1 / 0.25 / 0.5 / 0.75 cycle, six points of the cycle, 82.4 and 220 Hz at −12 dBFS, each voice at its starting depth and at 1) | peak above 2 kHz from 5 ms before to 120 ms after the jump ≤ −60 dBFS, or what the voice puts there on its own without a jump (Optical's lamp edges), whichever is higher |
 | X7 | Depth automated to 0 (ramp 1.0–1.5 s, and Harmonic's step 1 → 0) | output equals the input bit for bit from 2.5 s on |
 | N1 | NaN / Inf bursts in the input, every voice, block 512 | no extra non-finite output samples (only the bad input samples' own); 0.5 s after the last bad sample the output equals the clean render's (≤ −100 dB rms) |
+| Y1 | Sync transitions: sync engaged and released, note value changed, locate, loop and transport start while a 110 Hz note plays, voices 1 to 4 at depth 1, host blocks 16 / 64 / 128 / 256 / 512 / 1024 / 4096 at 48 kHz and 64 / 512 / 4096 at 44.1, 96, 192 kHz, two event instants each; plus 0 dBFS takes (48 kHz, blocks 64 and 256) | peak above 2 kHz from 5 ms before the event to 250 ms after ≤ −70 dBFS at a −12 dBFS input (−58 at 0 dBFS), or what the voice puts there on its own in the same take outside the event, whichever is higher; for Optical also its steady lamp edges at the worst carrier phase |
+| Y2 | Sync under host jitter and tempo changes (`host_*` keys): song position jittered by ±2 and ±8 samples per block, tempo in 1 BPM steps, a 100 to 140 BPM ramp over 4 s, at 1/32 and 1/4, host blocks 16 to 4096, 22.05 to 192 kHz (104 takes) | 0 song-position jumps; from 1 s on the LFO within 0.01 cycle of the true (unjittered) host phase (measured worst 0.0068) |
+| Y3 | Voice switch against both voices' trajectories: every ordered pair of the five voices at depth 0.6 and 1, four switch instants (160 switches), synced at 240 BPM, 48 kHz, block 64; level from a quadrature probe in 5 ms frames floored at −40 dB, from 5 ms before the switch to 100 ms after | level within 1.0 dB of the span of the two voices' own levels (measured 0.03 dB outside it); click above 2 kHz of a 110 Hz note over the same window ≤ −62 dBFS or the two voices' own figure there, whichever is higher; Optical on either side adds its lamp edges (Optical to Classic −61.1 against its own −58.8) |
+| Y4 | Switch-on: gain 20 ms after a re-enable, voices 1 to 4 at depth 0.6 and 1 | ≥ −1.0 dB re crest (measured −0.5 to +0.0) |
+| Y5 | Pulse edges against a one-pole edge of the same 10–90 % time, rates 1 / 2 / 4 / 10 / 20 Hz, duty 0.1 to 0.9 | energy above 2 kHz at least 8 dB lower (measured 21.9 dB at the least) |
+| Y6 | CPU at widths 0 to 1, every voice (worst over the widths) | ≤ the voice's budget (0.10 / 0.10 / 0.10 / 0.15 %) |
+| Y7 | Huge finite samples in every voice: eight bursts of 3e38, of 3e38 and −3e38, and of 1e7 in pink noise; Classic with one sample of 9.9e5 | output finite and 0.5 s after the last burst equal to the clean render (≤ −100 dB rms; measured bit-identical); Classic: 0 samples differ from the legacy code |
+| Y8 | Bias depth with DC on the input (DC 0, +0.01, +0.1, −0.1 under a −40 dBFS tone) | each depth within 0.5 dB of the DC 0 depth (measured 14.41 dB in all four); the onset dip on the dip (−4.7 dB) is printed, not a bar |
+| Z1 | `--rt-check`, `--reset-repeat` and finite output during voice switches (32 runs) | 0 failing |
 
-Check script at commit `2b847b9`: 86 checks, 0 FAIL.
+Full run: 95 checks, 0 FAIL (86 before this round, all still passing). The table lists every
+row id `check_tremolo.py` has, with the bar the script enforces; the common checks of §2.11 run
+for every voice as well.
 
 ---
 
@@ -2838,18 +3336,24 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-21 | `mod_color` default on means a new Phase 90 starts as the block-logo (resonant) voicing. | Chosen because it is the validated fit; switch the default to off if the owner prefers the script sound. |
 | D-22 | The NAM resampler's reported latency is 1.9 (44.1 kHz) / 3.0 (96 kHz) samples short of its true delay (§4.1.7), so a deferred Tight/Smooth curve leads the audio by that much, and the host's delay compensation is off by the same amount. | Left as is: D uses the reported latency as specified, and the host figure is frozen by the golden renders. A measured group delay from `NamEngine` (probe at model load), used for D only, would close it for the gate. |
 | D-23 | `eq_tilt`, `eq_level` and the seven `eq_g*` read their default 0 back from the parameter as 8.9e-8 / 1.8e-7 dB on arm64 (exactly 0.1f × 120 − 12 with the product unrounded, as a fused multiply-add in JUCE's `snapToLegalValue` gives; visible in `tests/golden/params-v4.tsv`), so a fresh Parametric or Graphic block in the plugin runs its level/tilt/band stages instead of the exact 0 dB paths E4/E17 test on the engine. Measured through the processor: within −144 dBFS of the input at 44.1 kHz (−150 at 48, −162 at 96). | Left as is: the processor passes values raw and the layout is frozen. Closing it means the engine treating \|dB\| below 1e-5 as 0 (engine owner), never a processor-side rounding. Classic and the amp EQ are unaffected (their knobs read back exactly). Update: fixed in the engine (fe2fee6): a control within 1e-3 dB of neutral counts as neutral (host noise measured at 1.8e-7 dB; rows E22a, E22b), not 1e-5 as written above. |
-| D-24 | **Verification round, 2026-11-11 (seven `dsp:` commits after the integration).** The engines were fixed against the verification reports; this table keeps the earlier decisions above and adds what changed. | Gate (81fd404): the close rule depends on the fall from the recent peak; hold is the wait after a note stops (§4.1.5). Open: a pure 41.2 Hz tone now needs 15.4 dB over threshold to open (was 13.6), the price of the 4th-order 75 Hz sidechain filter. |
+| D-24 | **Verification round, 2026-11-11 (seven `dsp:` commits after the integration).** The engines were fixed against the verification reports; this table keeps the earlier decisions above and adds what changed. | Gate (81fd404): the close rule depends on the fall from the recent peak; hold is the wait after a note stops (§4.1.5). Open: a pure 41.2 Hz tone now needs 15.4 dB over threshold to open (was 13.6), the price of the 4th-order 75 Hz sidechain filter. Update (2df395d, second round): that rule is replaced by version 3 (§4.1.5, closes on how fast the level fell); the 15.4 dB was the figure for a tone that starts at a crest, a tone that rises needs 20.8 dB (row X20, rows F), and the costs are in D-35. |
 | D-25 | Compressor type switches (a27b550). | `fx::EngineSwitcher` dropped (§2.4, §4.2.6): switches among Clean, Squash, FET and Opto keep the gain state with no fade; to or from Classic both outputs crossfade over 40 ms (+0.01 dB bump). Total makeup is capped at 48 dB. |
 | D-26 | Drive limits left open (0af54cf). | Aliasing for input tones above 5 kHz (Fuzz worst −43.1 dBc, per the commit; 8x oversampling would double the CPU) and the Screamer's 0.84 dB droop at 10 kHz are known and not fixed. The Fuzz mid-knob row Y2 is a sustain row (output moves at most 3 dB for 18 dB of input) because D14 requires the Muff saturated at half sustain. |
 | D-27 | EQ block switched on under signal (fe2fee6). | Level, shelves and cuts still step. Open: needs a crossfade in the processor, not in the engine. Update (678c9c8): closed. `BypassFader` crossfades the block's input and the engine output over 10 ms in the processor for every non-Classic type (§2.6). |
 | D-28 | Chorus mode switches and mono Dimension (08da770). | A crossfade by measured power replaces `fx::EngineSwitcher`; a mono Dimension instance plays line A alone, so CH-mono compares with the stereo left channel, not the mean (the mean of two antiphase lines has no detune). |
 | D-29 | Tremolo (2b847b9). | A mono instance ignores Width in every voice; `reset()` starts gains at unity; a song-position jump crossfades over 10 ms; the stereo loudness law is Smooth only (the earlier text said it applied to Optical, Bias and Harmonic as well, which the code never did). |
-| D-30 | **Known limit: the phaser's level between notches depends on the sample rate above 3 kHz.** After the notch-matched discretisation (§4.6.4) the notches and trajectories are rate independent, but the frozen magnitude response at 48 kHz differs from 192 kHz by 1.06 to 1.69 dB (script 1.69, block 1.40, Small Stone off 1.06, on 1.61), inside the top 3 dB of the response at 3.4 to 5.5 kHz at the top of the sweep. The 48 kHz render is the one off the analog response (up to 1.80 dB; 192 kHz is within 0.11 dB): four first-order stages lag the analog cascade by 4.5 to 7.3° near 10 kHz (`docs/research/fx/phaser/evidence/fit/rate_limit.txt`). | Left as is; row P9 "frozen response" enforces 1.8 dB as the structure's limit, not 0.1 dB. Tried and measured: four free stage coefficients per position reach only 0.57 to 1.45 dB and give up exact notches. A minimum-phase correction on the wet output closes it (0.06 to 0.28 dB with a 3 dB rise above 10 kHz, 0.03 to 0.12 dB with 6 dB) but lifts the wet above 10 kHz at every rate, which neither the pedals nor the Guitar Rig models do. Owner's call to revisit: that correction, or 2x internal oversampling at 44.1 / 48 kHz (D-8). |
+| D-30 | **Known limit: the phaser's level between notches depends on the sample rate above 3 kHz.** After the notch-matched discretisation (§4.6.4) the notches and trajectories are rate independent, but the frozen magnitude response at 48 kHz differs from 192 kHz by 1.02 to 1.69 dB (script 1.69, block 1.40, Small Stone off 1.02, on 1.66; at 44.1 kHz 1.24 to 2.05 dB: script 2.05, block 1.70, off 1.24, on 2.00; `evidence/fit/d30.txt`), on the upper slopes of the response rather than inside its top 3 dB (the band where the difference is more than half its largest value runs from 1.8 or 6.0 kHz up to 10 kHz for the script, 1.8 or 4.4 kHz for the block, 1.0 to 10 kHz and 5.4 to 8.7 kHz for Color off, 2.7 to 4.6 kHz at the top for Color on; inside the top 3 dB it is 0.67 to 1.54 dB at 48 kHz and 0.83 to 1.93 dB at 44.1 kHz). The 48 kHz render is the one off the analog response (up to 1.80 dB; 192 kHz is within 0.11 dB): four first-order stages lag the analog cascade by 4.5 to 7.3° near 10 kHz (`docs/research/fx/phaser/evidence/fit/rate_limit.txt`). Row P9 compares every rate with 48 kHz, so it reads the 48 against 192 kHz figure; at 44.1 kHz the script (2.05 dB) and Color on (2.00 dB) exceed the 1.8 dB bar that P9 enforces at 48 kHz. | Left as is; row P9 "frozen response" enforces 1.8 dB as the structure's limit, not 0.1 dB. Tried and measured: four free stage coefficients per position reach only 0.57 to 1.45 dB and give up exact notches. A minimum-phase correction on the wet output closes it (0.06 to 0.28 dB with a 3 dB rise above 10 kHz, 0.03 to 0.12 dB with 6 dB) but lifts the wet above 10 kHz at every rate, which neither the pedals nor the Guitar Rig models do. Owner's call to revisit: that correction, or 2x internal oversampling at 44.1 / 48 kHz (D-8). |
 | D-31 | The processor side of the contract (closed, 678c9c8). | Delivered: (1) `processBlock` zeroes every non-finite sample of the plugin input on every channel before anything reads it; (2) an engine is reset when its block starts again and its type is or was non-Classic, and its input and output crossfade over 10 ms for gate, compressor, drive, EQ and modulation (worst switch-on −119.9 dBFS, was −7.2); Classic switches as before (§2.2, §2.6, §6.6). Not covered: the sanitiser guards the plugin INPUT only. A non-finite value produced inside the chain (a hosted plugin, the neural model) is not caught. |
-| D-32 | **Known open item: level moves at voicing switches inside one type.** The engines handle these switches (§6.5), and the level can leave both steady levels for a moment: a phaser model switch up to 9 dB, a switch into tremolo Smooth about 5 dB, a Classic chorus to CE or Dimension about 6 dB. | Left as is: no fix in the processor or the dispatcher. Closing it means a loudness-matched crossfade in each engine (engine owner). |
-| D-33 | At 192 kHz the processor smoke test reads −79.6 dBFS for a Classic EQ bass 5 to 10 step against its −80 dBFS bound; the processor equals the engine alone. 192 kHz was not in the proof set before (the proofs are 44.1, 48 and 96 kHz). | Open. Whether it predates this branch is being checked. |
+| D-32 | **Known open item: level moves at voicing switches inside one type.** The engines handle these switches (§6.5), and the level can leave both steady levels for a moment: a phaser model switch up to 9 dB, a switch into tremolo Smooth about 5 dB, a Classic chorus to CE or Dimension about 6 dB. | Left as is: no fix in the processor or the dispatcher. Closing it means a loudness-matched crossfade in each engine (engine owner). Update (second round): **resolved inside the engines for the phaser, the tremolo and the chorus**, by crossfades with gains from measured power (§2.4). Worst cases measured: phaser P17, +0.95 dB above the higher and −2.88 dB below the lower of the two voicings' own levels over 20 ordered pairs (the old switch: +11.5 and −20.3 dB); tremolo Y3, 0.03 dB outside both voices' trajectories over 160 switches (was 10.06 dB); chorus CH18 +0.69 dB from the span of the levels before and after, CH27 1.70 dB from the envelope of the modes' own levels when switching every 30 ms through all five modes (the old Classic switch was about 6 dB out). **Still open and not part of this round:** the `mod_type` switch between effects (chorus, phaser, tremolo) belongs to the dispatcher (§6.5) and is being fixed there. |
+| D-33 | At 192 kHz the processor smoke test reads −79.6 dBFS for a Classic EQ bass 5 to 10 step against its −80 dBFS bound; the processor equals the engine alone. 192 kHz was not in the proof set before (the proofs are 44.1, 48 and 96 kHz). | Open. Whether it predates this branch is being checked. Update (44e54af, second round): **resolved in the engine.** The Classic knob moves now glide in a double-precision filter (§4.4.3); row E26 covers 44.1, 48, 96 and 192 kHz at blocks 1 / 37 / 64 / 512 with a bar of −80 dBFS and reads −86.4 at worst (bass −86.7 at 192 kHz included). The processor smoke test at 192 kHz was not re-run for this document. |
 | D-34 | Not fixed in 678c9c8 (from its commit message). | `setLatencySamples` is called from two threads (audio and message); `setStateInformation` can run off the message thread; the CabSim flag race; the NAM latency 2 to 3 samples short (D-22); a NaN produced inside the chain (D-31). |
-
+| D-35 | **Gate, version 3 closing rule: stated costs** (2df395d). | Accepted, no parameter, default or API change. A natural decay (not a stop) closes up to 1 s after it passes the close level (version 2: 0.4 s). A stop on a chord whose partials beat fast waits up to 20 ms more. Fast, deep beat troughs dip partway, never to mute, and the crest reopens the gate (12 + 5 verifier cases, deepest about −36 dB; the trade-off table of §4.1.5 from row C: troughs of 12 dB at 4 and 8 Hz dip to −34 and −33 dB for 82 and 45 ms, troughs of 20 dB at 1 to 8 Hz to −30 to −38 dB for 46 to 119 ms). The 75 Hz 4th-order sidechain default reads a pure 41.2 Hz tone 20.8 dB under its level; for bass use the knob's minimum or about 40 Hz (rows F, §4.1.2). |
+| D-36 | **Two wider EQ overshoot bars** (0cc04e2). E25a (gain, Q, shelves, cuts, tilt, level, Graphic) is 1.0 dB; E25b (Parametric mid-frequency moves) is 3.0 dB and E25c (Stack) is 2.0 dB. | Accepted. The reason the script gives: E25b is a narrow cut swept off a held note, which rings as the resonator empties (measured +2.46 dB), and E25c is the passive circuit emptying its capacitors (+1.68 dB, the same at 192 kHz); both are the filters' own response to a 10 ms knob move, not the state mismatch E25a guards (worst +0.58 dB, was +11.62). Tightening them would need a different filter, not a fix. |
+| D-37 | **Squash keeps its feedback recovery above the threshold** (b4afe4b). | Kept: the release is the knob when the signal falls below the threshold and while the output stays above it, and a drop that leaves the input above the threshold but takes the output below it recovers sooner (down to a third of the knob at R 8, a quarter at R 20; the table of §4.2.5). That is what separates Squash from Clean. The second verification had read 41 to 93 ms at knob 150 as a defect (r2-dynamics C5); C26b holds the stated table within 10 % and Clean at the knob within 2 %. |
+| D-38 | **Auto makeup is a fixed gain calibrated for a steady −10 dBFS peak** (b4afe4b). | Law unchanged. It does not follow the playing: a steady −20 dBFS signal comes out 4 to 10 dB louder, a −3 dBFS one 3.5 to 7 dB quieter, a plucked chord peaking at −10 dBFS 2 to 12 dB louder in rms. The reference level is the study's guess (`kAutoMakeupReferenceDb`); a level-following makeup is not built. Total makeup stays capped at 48 dB. |
+| D-39 | **Phaser headroom**: nothing saturates and there is no limiter (8f8f197). | Small Stone Color on peaks +13.6 dB above a full-scale input (an 82.4 Hz square at 10 Hz); the other voicings +2.4 to +5.9 dB. Guitar Rig 6 peaks the same within 0.3 dB on a −6 dBFS low square, so it is the voicing. The chain after the phaser needs up to 14 dB of headroom (6 dB for every voicing but Color on); the processor's documentation should say so. Not limited in the engine. |
+| D-40 | **Six Guitar Rig 6 reference renders are committed**: `docs/research/fx/phaser/evidence/fit/gr6_takes/` (`p9_block_p050.wav`, `p9_block_p090.wav`, `ss_off_r050.wav`, `ss_off_r075.wav`, `ss_on_r050.wav`, `ss_on_r075.wav`; 4.4 MB in all) (8f8f197). | Rows P13 and P14 of `check_phaser.py` read them, so the acceptance run needs them in the repository. **Whether to keep vendor-plugin renders in the repository is the owner's decision**; without them P13 and P14 cannot run. |
+| D-41 | **Drive limits unchanged by the second round**: aliasing for input tones above 12 kHz and the Screamer's droop of 0.84 dB at 10 kHz. | Known and not fixed. Tones of 13 to 19.5 kHz at 44.1 kHz alias to −43.1 dBc (Fuzz), −47.2 (Screamer) and −69.0 (Distortion); an 8x factor would double the CPU. D-26 stated the aliasing limit as "above 5 kHz" from commit 0af54cf; the second verification measured it from 12 kHz (1 to 12 kHz: −68.3 dBc at worst). |
 ---
 
 ## Appendix A — parameter count

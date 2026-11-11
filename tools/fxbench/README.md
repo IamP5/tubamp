@@ -64,7 +64,14 @@ tubamp_fxbench <effect> <in.wav | gen:SPEC> <out.wav> [key=value ...] [options]
 
 Exit status: 0 ok, 1 a check failed, 2 usage or I/O error. `tubamp_fxbench --help` lists
 the effects the binary was built with and their keys. Output WAVs are 32-bit float.
-The sections' `--trace=gain` means "the gain trace"; the option's value is the WAV path.
+The sections' `--trace=gain` means "the gain trace"; the option's value is the WAV path. The
+check scripts (`fxcheck.invoke`) give `--trace` and `--meters` a temporary path when none is given.
+
+**Options have two dashes.** The sample rate and the block size are options, `--sr=<Hz>` and
+`--block=N`. `--sr` applies to `gen:` inputs only; a WAV input keeps its own rate. A token with no
+dashes is an engine key or timeline event (`key=value`, `key@T=value`), so **`sr=44100` is taken as an
+engine key**, which no adapter reads: it is ignored without a message and the render stays at
+48 kHz. An option that is not in the list above is refused (`unknown option`, exit 2).
 
 **Timeline.** Each block, the timeline is evaluated at the block's first sample
 (`start / sampleRate`); steps and ramps are therefore per block, exactly like host
@@ -79,9 +86,9 @@ absent, so the adapter's default applies. Keys are passed to the adapter as doub
 | comp | `type` | `threshold ratio attack release makeup knee mix sc_hpf auto_makeup on` |
 | drive | `type` | `gain tone level on` |
 | eq | `type` | `bass mid treble lowcut highcut mid_freq mid_q tilt level voice g100 g200 g400 g800 g1k6 g3k2 g6k4 on reenable` |
-| chorus | `mode` | `rate depth mix width tone sync_phase solo on reset` |
-| phaser | `model` | `rate depth mix color sync_phase on reset_on_enable freeze_u` |
-| tremolo | `voice` | `rate depth mix width tone shape wave sync_phase on` |
+| chorus | `mode` | `rate depth mix width tone sync_phase solo on reset host_bpm host_beats host_jitter host_play host_loop_len host_loop_end` |
+| phaser | `model` | `rate depth mix color sync_phase on reset_on_enable freeze_u host_bpm host_note host_ppq host_jitter` |
+| tremolo | `voice` | `rate depth mix width tone shape wave sync_phase on host_sync host_bpm host_beats host_play host_ppq host_jitter` |
 
 `on=0` is the processor's bypass: comp calls `skip()`, the others neither update nor run
 the block (gate: no measure, no apply). Gate `deferred=1` applies the curve to the
@@ -96,9 +103,41 @@ Keys that are not engine parameters (test hooks in the adapters):
 | gate | `prepare_block` | `N > 0` re-prepares the gate for blocks of at most N samples and calls `reset()` when the value changes; 0 (default) is the spec's own block size |
 | eq | `reenable` | default 1: when `on` goes from 0 to 1 and the type is not Classic, `reset()` is called, as the processor does (processor: in progress). 0 replays the frozen state, which is what the old processor did |
 | chorus | `reset` | a change of this value (any number, compared with the previous block's) calls `reset()` at that block; default 0 |
+| chorus | `solo` | routes one voice (its index) to both outputs at mix 1 (`ChorusFx::setDebugSolo`); `-1`, the default, is off. The `--trace` below is written only while a voice is soloed |
+| chorus | `host_bpm` | a simulated play head: when above 0 the adapter resolves `rate` and `sync_phase` from the tempo as the dispatcher does and runs a song position that advances by each block's tempo; 0 (default) is off and `rate` / `sync_phase` are the plain keys |
+| chorus | `host_beats` | beats per LFO cycle (the note value; 1 = 1/4, 0.25 = 1/16); default 1 |
+| chorus | `host_jitter` | N: each block's reported song position is off by up to N samples (uniform, not accumulated); default 0 |
+| chorus | `host_play` | 0 is a stopped transport (`sync_phase` is not sent, the LFO runs free); default 1 |
+| chorus | `host_loop_len`, `host_loop_end` | `host_loop_len > 0` wraps the song position back by that many beats once it reaches `host_loop_end` (beats); default 0 (no loop) |
 | phaser | `reset_on_enable` | 1: when `on` goes from 0 to 1, `reset()` is called; default 0 (frozen state replayed) |
 | phaser | `freeze_u` | test only: holds the sweep position at this value in [-1, 1] (-1 is the bottom; `PhaserFx::freezeSweep`), the frozen-response probe; absent means the LFO runs |
+| phaser | `host_bpm` | a simulated host: present means synced; the tempo in BPM (default 120 when the key is present), setting `rate` and `sync_phase` |
+| phaser | `host_note` | LFO cycles per beat (default 1); the phase is song position times this, so a change of `host_note` is a jump |
+| phaser | `host_ppq` | the song position of the first block, in beats (default 0); the tempo is integrated between block starts as a straight line, as a host ramping its tempo does |
+| phaser | `host_jitter` | N samples: from the second block on, each block's reported position is off by a whole number of samples drawn uniformly from -N..N (not accumulated); default 0 |
 | tremolo | (`on`) | no extra key: when `on` goes from 0 to 1 with `voice` other than 0 the adapter calls `reset()` before the next block, as the processor will |
+| tremolo | `host_sync` | 1: the adapter stands in for the processor's dispatcher: `rate = host_bpm / (60 * host_beats)` (limited to 0.01-20 Hz) and, while `host_play` is 1, `sync_phase = frac (ppq / host_beats)` at each block start; default 0 (the plain `rate` and `sync_phase` keys) |
+| tremolo | `host_bpm`, `host_beats` | tempo (default 120) and beats per LFO cycle (default 1) |
+| tremolo | `host_play` | 1 (default): the transport runs (the song position advances by each block's tempo) and `sync_phase` is sent; 0: the transport is stopped, `sync_phase` is not sent and the position does not advance |
+| tremolo | `host_ppq` | a change of this value moves the song position there (locate, loop, start position); default 0 |
+| tremolo | `host_jitter` | J: a pseudo-random whole number of samples in [-J, J] is added to each block's reported position; default 0 |
+
+What `--trace` and `--meters` write, per adapter:
+
+| effect | `--trace` | `--meters` (columns after the block start sample) |
+|---|---|---|
+| gate | the applied gain, linear, per sample | state (0 closed, 1 hold, 2 open), gain reduction in dB, detector level in dBFS |
+| comp | the gain reduction in dB per sample (before makeup, a positive number) | the block's gain reduction in dB |
+| chorus | three channels per sample, while a voice is soloed: the soloed voice's tap delay in samples, its outgoing tap's delay (equal to the first outside a tap crossfade), the crossfade stage (0 none, 1 outgoing tap alone, 2 fading directly, 3 fading through the midpoint tap) | song-position jumps taken, tap crossfades started for knob changes (both counted since `prepare()`) |
+| phaser | three channels per block, written to every sample of it: the LFO phase in cycles at the block's last sample, the song-position jumps glided so far, the simulated host's exact (unjittered) phase at the block's last sample; use `--block=1` for a per-sample trace | none |
+| tremolo | the left (and right) gain, voices 1-4 (Harmonic: the low band's) | song-position jumps crossfaded, and the engine's LFO phase at block start minus the true (unjittered) host phase, in cycles |
+| drive, eq | none | none |
+
+The check scripts' `--rows` and `--verbose`: `check_gate.py --rows=A,B,...` runs only the named
+closing-rule rows (A to G; `X` adds X10-X20 and the other verifier rows), for iterating (the full run
+is the acceptance); `check_gate.py --verbose` lists every dip that rows B and C classify. `check_comp.py`
+also takes `--rows=C3,C10,...` (and `--no-common`, `--no-tables`), `check_eq.py` takes `--only=E5,E12`
+and `--measure`, `check_drive.py` takes `--only-specific`.
 
 **`--classic-null`** forces the type key to 0 for both the engine and `makeLegacy()`, feeds
 both the same input and the same per-block Args, and compares the outputs **bitwise**
@@ -108,7 +147,11 @@ any difference.
 **`--rt-check`** replaces every global `operator new`/`delete` and, on macOS, installs
 libmalloc's `malloc_logger` hook, so it also sees `malloc`/`free` that never pass through
 `operator new` (`juce::HeapBlock`, hence `AudioBuffer::setSize`). Counting is armed only
-around `setParams()` and `process()`; the adapters must not allocate there either.
+around `setParams()` and `process()`, and **only on the thread that runs them**: the hooks see
+every thread, and a WAV input leaves reader threads freeing their buffers while the render runs
+(before this, 19 of 20 identical compressor runs with a WAV input failed with `malloc 0, free N`).
+The thread is compared by identity (`pthread_self`), not with a `thread_local`, which libmalloc would
+itself allocate inside the hook. The adapters must not allocate there either.
 Proven on a scratch copy: a `std::vector` growing in `process()` reported
 `operator new 11, delete 10; malloc 11, free 10`, an `AudioBuffer::setSize` reported
 `malloc 563, free 562`, both exit 1.
