@@ -126,11 +126,16 @@ private:
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTwoPi = 2.0 * kPi;
 
-constexpr double kVoltsPerFullScale = 1.0;    // V_REF [choice; study R1]
+// V_REF, the same for all three pedals since each takes the guitar straight at its input:
+// 0 dBFS = 1 V, so a full strum peaking at -12 dBFS is 0.25 V and quiet picking at -30 dBFS
+// is 32 mV, the few hundred millivolts a passive pickup delivers [choice; study R1].
+constexpr double kVoltsPerFullScale = 1.0;
 constexpr double kInputLimitVolts = 1000.0;   // [choice] keeps any finite input finite downstream
 constexpr double kInputHighPassHz = 15.9;     // [circuit: TS-808 input coupling, Yeh DAFx-07]
 constexpr float kParamSmoothSeconds = 0.02f;
-constexpr int kControlInterval = 32;          // base samples between coefficient updates
+// [choice] a glide ends within 1e-6 (1 + |target|) of its target: -120 dB of the knob's span.
+constexpr double kGlideTolerance = 1.0e-6;
+constexpr int kChunk = 32;                    // base samples per pass while the knobs are still
 constexpr int kMaxFactor = 8;
 constexpr int kHalleySteps = 3;               // see DiodeClipper::evaluateMagnitude
 
@@ -168,6 +173,12 @@ constexpr double kRatRail = 4.5;              // [circuit: 9 V supply, op-amp bi
 // 1 MHz, falling 6 dB/oct; "bandwidth and slew rate are proportional to 1/Cf"]
 constexpr double kRatGbw = 1.0e6;
 constexpr double kRatFilterFixed = 1.5e3, kRatFilterPot = 100.0e3, kRatFilterC = 3.3e-9;
+// [choice] The knob sets the stage's 1 kHz gain in dB linearly over the pot's whole range,
+// 0 dB (knob 0) to 62 dB (knob 36): Rd = Z (G^d - 1), Z = |Zg| at 1 kHz, G = 1 + 100k / Z.
+// Through the A taper half the knob was already 42 dB, so from a sixth of its travel up the
+// output moved 1.5 dB for 36 dB of input; now the middle is 31 dB, where -30 dBFS (32 mV)
+// sits at the diodes' knee and a full strum is clipped hard.
+constexpr double kRatKnobHz = 1000.0;
 
 // Big Muff Pi: J.L., "A case study: re-engineering the Big Muff Pi" (2014,
 // guitarscience.net/papers/bigmuff.pdf) Fig. 1 and eq. (14): every gain stage is
@@ -177,14 +188,41 @@ constexpr double kRatFilterFixed = 1.5e3, kRatFilterPot = 100.0e3, kRatFilterC =
 // CB2 1uF into RG2 and CO2 1uF into RG3 (15.9 Hz). The sustain pot ("SUSTAIN B100K",
 // docs.pedalpcb.com/project/MuffinFuzz-PedalPCB.pdf) is a divider whose wiper feeds RG2,
 // so its Thevenin resistance is part of Rs in eq. (14).
-constexpr double kMuffBoostGain = 470.0e3 / 39.0e3;
-constexpr double kMuffStageGain = 470.0e3 / 10.0e3;
 constexpr double kMuffFeedbackR = 470.0e3, kMuffFeedbackC = 470.0e-12;
+constexpr double kMuffBoostRg = 39.0e3, kMuffStageRg = 10.0e3;
 constexpr double kMuffCouplingHz = 1.0 / (kTwoPi * 1.0e-6 * 10.0e3);
-constexpr double kMuffSustainPot = 100.0e3, kMuffSustainLoad = 10.0e3;
-// The knob spans the sustain pot from where the divider is 36 dB down to full [choice: the
-// knob is 36 dB wide, and the bottom 1.9 % of travel only fades the pedal out to silence].
-constexpr double kMuffSustainMin = 0.018745;
+constexpr double kMuffSustainPot = 100.0e3;
+// The transistors, same paper: RC 47k, RE 100R, base divider RB 470k / 100k, 9 V, beta about
+// 200 (§2: "a current gain of around 200 is suitable"), VBE 0.65 V. Eq. (20) then puts every
+// collector at 4.00 V with IC = 99.8 uA, so rpi = beta VT / IC = 51.8 k and gm rpi = beta.
+constexpr double kMuffRc = 47.0e3, kMuffBeta = 200.0, kMuffIc = 99.8e-6, kMuffVt = 0.02585;
+constexpr double kMuffRpi = kMuffBeta * kMuffVt / kMuffIc;
+// Eq. (10) without the simplification to K: return ratio T = alpha / (1 + Z2 / RC), alpha =
+// beta / (1 + rpi / Rs), and eq. (9) A = K T / (1 + T). With Z2 = RB || CF this stays first
+// order: A(s) = alpha RB / Rs / ((1 + alpha + RB / RC) + (1 + alpha) s RB CF). The loading
+// takes 1.0 dB (booster) and 2.5 dB (clipping stages) off the ideal gains and lifts their
+// 720 Hz poles to 803 and 937 Hz.
+double muffAlpha (double rs) noexcept { return kMuffBeta / (1.0 + kMuffRpi / rs); }
+// Even harmonics. gm follows IC, and the collector current moves by -vc / RC for a collector
+// swing vc, so with the 4.69 V across RC the loop gain falls toward the supply (5.0 V of
+// headroom) and rises toward ground (3.8 V): dT / T = (rpi / Rs) / (1 + rpi / Rs) dIC / IC,
+// and the closed-loop gain moves by 1 / (1 + T) of that. Per volt of collector swing:
+// sigma = (rpi / Rs) / (1 + rpi / Rs) / ((1 + T) IC RC) = 0.0454 / V for a clipping stage
+// (Rs = 10k, T = 2.94). Integrated, dvc / du = 1 - sigma vc gives vc - sigma vc^2 / 2 to
+// second order; the diodes keep |vc| below a volt, where the next term is negligible.
+double muffSigma (double rs) noexcept
+{
+    const double x = kMuffRpi / rs, t = muffAlpha (rs) / (1.0 + kMuffFeedbackR / kMuffRc);
+    return x / (1.0 + x) / ((1.0 + t) * kMuffIc * kMuffRc);
+}
+// [choice] The knob sets the sustain divider in dB: floor (1 - d)^2, -78 dB at knob 0 to the
+// full pot at knob 36 (-44 / -19.5 / -4.9 dB at the quarters). Two clipping stages of 31 dB
+// each saturate on anything the first one passes, so the pedal follows the pick only where
+// the divider keeps a note below the second stage's knee, near -60 dB for -30 dBFS; the
+// floor puts a full strum there at knob 0. The middle has to stay fully saturated, where
+// acceptance D14 reads the tone stack's scoop through the clipped stages (THD > 70 % and the
+// 900 Hz dip, both at -18 dBFS), which leaves it under 1 dB of dynamics.
+constexpr double kMuffSustainFloorDb = -78.0, kMuffSustainCurve = 2.0;
 // Tone stack. The paper's values (RT 27k, CT 10nF, CB 4.7nF, RB 27k, 500k pot, its Fig. 14)
 // dip only 3.4 dB below the 220 Hz-5 kHz line at 900 Hz with the pot centred. Used here
 // instead [choice]: the 1975 "Ram's Head" stack, R8 39k, C8 10nF, C9 4nF, R5 22k (LP 408 Hz,
@@ -193,8 +231,10 @@ constexpr double kMuffSustainMin = 0.018745;
 constexpr double kMuffRt = 39.0e3, kMuffCt = 10.0e-9, kMuffCb = 4.0e-9, kMuffRb = 22.0e3;
 constexpr double kMuffTonePot = 100.0e3;
 constexpr double kMuffToneEnd = 0.005;        // [choice] pot end resistance, as the TS tone
-// The tone stack drives the output stage's bias divider, RB41 470k || RB42 100k (Fig. 1).
+// The tone stack drives the output stage's bias divider, RB41 470k || RB42 100k (Fig. 1),
+// through CB4 1 uF: a 1.9 Hz high-pass that takes away the DC the stages' asymmetry makes.
 constexpr double kMuffToneLoad = 470.0e3 * 100.0e3 / 570.0e3;
+constexpr double kMuffOutputHz = 1.0 / (kTwoPi * 1.0e-6 * kMuffToneLoad);
 
 /** Audio-taper pot: 10 % of the resistance at mid travel (the common A-taper law). */
 double audioTaper (double p) noexcept
@@ -238,6 +278,45 @@ void tidy (double& state) noexcept
         state = 0.0;
 }
 
+/** A parameter glide that arrives. Two one-poles of half the section default (§2.5) in
+    series: it rises like the 20 ms one-pole (63 % at 21 ms) without the corner a one-pole
+    puts at the start of every move, whose skirt reached -70 dBc above 3 kHz under a low note
+    (Screamer tone step, 40-800 Hz noise). Close enough to its target it lands on it and
+    reports settled, so the coefficients that follow it stop being recomputed: fx::Smoother in
+    float stalls about 3e-5 short for good, and the Treble shelf kept being redesigned (23 %
+    more CPU after a gain move). */
+class Glide
+{
+public:
+    void prepare (float seconds, double sampleRate, double initial) noexcept
+    {
+        a = 1.0 - std::exp (-1.0 / juce::jmax (1.0, 0.5 * (double) seconds * sampleRate));
+        current = middle = target = initial;
+    }
+
+    void setTarget (double value) noexcept { target = value; }
+    void snapToTarget() noexcept { current = middle = target; }
+    bool isSettled() const noexcept { return juce::exactlyEqual (current, target) && juce::exactlyEqual (middle, target); }
+
+    double next() noexcept
+    {
+        if (! isSettled())
+        {
+            middle += a * (target - middle);
+            current += a * (middle - current);
+            const double tolerance = kGlideTolerance * (1.0 + std::abs (target));
+
+            if (std::abs (target - middle) <= tolerance && std::abs (target - current) <= tolerance)
+                current = middle = target;
+        }
+
+        return current;
+    }
+
+private:
+    double a = 1.0, current = 0.0, middle = 0.0, target = 0.0;
+};
+
 //==============================================================================
 /** First-order section from (n0 + n1 s) / (d0 + d1 s) by the bilinear transform; TDF II,
     double, one state per channel. */
@@ -265,33 +344,66 @@ struct FirstOrder
     double z[2] {};
 };
 
-/** Second-order section from (n0 + n1 s + n2 s^2) / (d0 + d1 s + d2 s^2), bilinear. */
-struct SecondOrder
+/** Second-order section from (n0 + n1 s + n2 s^2) / (d0 + d1 s + d2 s^2), d2 > 0, bilinear,
+    built as a trapezoidal state-variable filter (V. Zavalishin, "The Art of VA Filter
+    Design", ch. 4): its states are the two integrators', so retuning it while it runs moves
+    the response smoothly. A direct form retuned every sample still throws a transient: a
+    Screamer tone step under a 98 Hz note left -54 dBc above 3 kHz. */
+struct Svf
 {
     void setAnalog (double n0, double n1, double n2, double d0, double d1, double d2, double c) noexcept
     {
-        const double cc = c * c;
-        const double inv = 1.0 / (d0 + d1 * c + d2 * cc);
-        b0 = (n0 + n1 * c + n2 * cc) * inv;
-        b1 = 2.0 * (n0 - n2 * cc) * inv;
-        b2 = (n0 - n1 * c + n2 * cc) * inv;
-        a1 = 2.0 * (d0 - d2 * cc) * inv;
-        a2 = (d0 - d1 * c + d2 * cc) * inv;
+        const double w0 = std::sqrt (d0 / d2), k = d1 / std::sqrt (d0 * d2), g = w0 / c;
+        a1 = 1.0 / (1.0 + g * (g + k));
+        a2 = g * a1;
+        a3 = g * a2;
+        // H = (n0 LP + n1 w0 BP + n2 w0^2 HP) / d0, with HP = x - k BP - LP.
+        const double hp = n2 * w0 * w0 / d0;
+        m0 = hp;
+        m1 = n1 * w0 / d0 - k * hp;
+        m2 = n0 / d0 - hp;
     }
 
     double process (int ch, double x) noexcept
     {
-        const double y = b0 * x + z1[ch];
-        z1[ch] = b1 * x - a1 * y + z2[ch];
-        z2[ch] = b2 * x - a2 * y;
+        const double v3 = x - s2[ch];
+        const double v1 = a1 * s1[ch] + a2 * v3;
+        const double v2 = s2[ch] + a2 * s1[ch] + a3 * v3;
+        s1[ch] = 2.0 * v1 - s1[ch];
+        s2[ch] = 2.0 * v2 - s2[ch];
+        return m0 * x + m1 * v1 + m2 * v2;
+    }
+
+    void reset() noexcept { s1[0] = s1[1] = s2[0] = s2[1] = 0.0; }
+    void tidyStates() noexcept { tidy (s1[0]); tidy (s1[1]); tidy (s2[0]); tidy (s2[1]); }
+
+    double a1 = 1.0, a2 = 0.0, a3 = 0.0, m0 = 1.0, m1 = 0.0, m2 = 0.0;
+    double s1[2] {}, s2[2] {};
+};
+
+/** One-pole low-pass as a trapezoidal integrator (same reference, ch. 3), the bilinear image
+    of 1 / (1 + s / w); the high-pass is the input minus it. Retunes as smoothly as Svf. */
+struct OnePole
+{
+    void setCutoff (double w, double c) noexcept
+    {
+        const double g = w / c;
+        gain = g / (1.0 + g);
+    }
+
+    double lowpass (int ch, double x) noexcept
+    {
+        const double v = (x - s[ch]) * gain;
+        const double y = v + s[ch];
+        s[ch] = y + v;
         return y;
     }
 
-    void reset() noexcept { z1[0] = z1[1] = z2[0] = z2[1] = 0.0; }
-    void tidyStates() noexcept { tidy (z1[0]); tidy (z1[1]); tidy (z2[0]); tidy (z2[1]); }
+    void reset() noexcept { s[0] = s[1] = 0.0; }
+    void tidyStates() noexcept { tidy (s[0]); tidy (s[1]); }
 
-    double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
-    double z1[2] {}, z2[2] {};
+    double gain = 0.5;
+    double s[2] {};
 };
 
 //==============================================================================
@@ -310,6 +422,40 @@ class DiodeClipper
 {
 public:
     struct Point { double u = 0.0, v = 0.0, f1 = 0.0, f2 = 0.0; };
+
+    /** v(u) of one fixed curve below `limit`, with its slope, as the start of the solve: a
+        cubic Hermite through 1024 intervals lands within about 1e-8 V of the root, from where
+        one Halley step reaches double precision instead of three from the bound. For a curve
+        that never changes only (the Distortion's 1 kOhm below its rail, where the solve was
+        most of the cost: 3.5 % at the low end of the knob, against a 3.5 % budget). */
+    struct Table
+    {
+        static constexpr int kIntervals = 1024;
+        double limit = 0.0, scale = 0.0;
+        double v[kIntervals + 1] {}, slope[kIntervals + 1] {};   // slope in volts per interval
+    };
+
+    /** Fills `table` for the current resistance (no rail) up to `limit`. Not real-time. */
+    void buildTable (Table& table, double limit) noexcept
+    {
+        const auto* kept = start;
+        start = nullptr;
+        table.limit = limit;
+        table.scale = Table::kIntervals / limit;
+
+        for (int i = 0; i <= Table::kIntervals; ++i)
+        {
+            Point p;
+            evaluateMagnitude (i / table.scale, p);
+            table.v[i] = p.v;
+            table.slope[i] = 1.0 / (table.scale * (1.0 + kOverA * std::cosh (p.v / kDiodeA)));
+        }
+
+        start = kept;
+    }
+
+    /** The table must have been built for the resistance this clipper has; nullptr to stop. */
+    void useTable (const Table* table) noexcept { start = table; }
 
     void setSeriesResistance (double ohms) noexcept
     {
@@ -405,11 +551,27 @@ private:
         here. expm1 keeps cosh - 1 and sinh exact for small v. */
     void evaluateMagnitude (double u, Point& p) const noexcept
     {
-        const double y = u / k;
-        double v = juce::jmin (u, kDiodeA * roughLog (y + std::sqrt (y * y + 1.0)));
+        double v;
+        int steps = kHalleySteps;
+
+        if (start != nullptr && u < start->limit)
+        {
+            const double x = u * start->scale;
+            const int i = juce::jmin ((int) x, Table::kIntervals - 1);
+            const double t = x - i, t2 = t * t, t3 = t2 * t;
+            v = (2.0 * t3 - 3.0 * t2 + 1.0) * start->v[i] + (t3 - 2.0 * t2 + t) * start->slope[i]
+              + (3.0 * t2 - 2.0 * t3) * start->v[i + 1] + (t3 - t2) * start->slope[i + 1];
+            steps = 1;
+        }
+        else
+        {
+            const double y = u / k;
+            v = juce::jmin (u, kDiodeA * roughLog (y + std::sqrt (y * y + 1.0)));
+        }
+
         double em = 0.0, step = 0.0;
 
-        for (int i = 0; i < kHalleySteps; ++i)
+        for (int i = 0; i < steps; ++i)
         {
             // f, f' and f'' all scaled by e = exp (v / a), which cancels in the Halley step
             // and saves the division for exp (-v / a).
@@ -463,6 +625,7 @@ private:
 
     double k = 1.0e-4, kOverA = 1.0e-4 / kDiodeA;
     double rail = 0.0;
+    const Table* start = nullptr;
     Point railPoint;
     State state[2];
 };
@@ -529,10 +692,19 @@ public:
 
         const double cIn = warpedC (kInputHighPassHz, sampleRate);
         inputHighPass.setAnalog (0.0, 1.0 / (kTwoPi * kInputHighPassHz), 1.0, 1.0 / (kTwoPi * kInputHighPassHz), cIn);
+        const double cOut = warpedC (kMuffOutputHz, sampleRate);
+        muffOutput.setAnalog (0.0, 1.0 / (kTwoPi * kMuffOutputHz), 1.0, 1.0 / (kTwoPi * kMuffOutputHz), cOut);
 
-        drive.prepare (kParamSmoothSeconds, (float) sampleRate, 0.0f);
-        tone.prepare (kParamSmoothSeconds, (float) sampleRate, 0.5f);
-        level.prepare (kParamSmoothSeconds, (float) sampleRate, 1.0f);
+        const std::complex<double> s (0.0, kTwoPi * kRatKnobHz);
+        ratKnobOhms = std::abs (1.0 / (s * kRatC1 / (1.0 + s * kRatR1 * kRatC1) + s * kRatC2 / (1.0 + s * kRatR2 * kRatC2)));
+
+        DiodeClipper ratDiodes;
+        ratDiodes.setSeriesResistance (kRatClipSeries);
+        ratDiodes.buildTable (ratTable, kRatRail);
+
+        drive.prepare (kParamSmoothSeconds, sampleRate, 0.0);
+        tone.prepare (kParamSmoothSeconds, sampleRate, 0.5);
+        level.prepare (kParamSmoothSeconds, sampleRate, 1.0);
 
         setType (DriveFx::Type::screamer);
         reset();
@@ -545,9 +717,11 @@ public:
         osRate = sampleRate * factor;
         oversampling = oversamplers[stagesFor (factor)].get();
 
+        clip1.useTable (nullptr);
         clip1.setRail (type == DriveFx::Type::distortion ? kRatRail : 0.0);
         clip1.setSeriesResistance (type == DriveFx::Type::fuzz ? kMuffFeedbackR
                                    : (type == DriveFx::Type::distortion ? kRatClipSeries : kTsR2Fixed));
+        clip1.useTable (type == DriveFx::Type::distortion ? &ratTable : nullptr);
         clip2.setSeriesResistance (kMuffFeedbackR);
 
         tsPreC = warpedC (kTsPreWarpHz, osRate);
@@ -556,14 +730,13 @@ public:
         // Fixed parts of Distortion and Fuzz.
         ratLeg1.setAnalog (0.0, kRatC1, 1.0, kRatR1 * kRatC1, bilinearOs);
         ratLeg2.setAnalog (0.0, kRatC2, 1.0, kRatR2 * kRatC2, bilinearOs);
-        const double muffLowPass = 1.0 / (kTwoPi * kMuffFeedbackR * kMuffFeedbackC);
-        const double cMuff = warpedC (muffLowPass, osRate);
-        muffBoost.setAnalog (kMuffBoostGain, 0.0, 1.0, kMuffFeedbackR * kMuffFeedbackC, cMuff);
-        muffStage1.setAnalog (kMuffStageGain, 0.0, 1.0, kMuffFeedbackR * kMuffFeedbackC, cMuff);
-        muffStage2 = muffStage1;
+        setMuffStage (muffBoost, kMuffBoostRg);
+        setMuffStage (muffStage2, kMuffStageRg);
+        sigma2Half = 0.5 * muffSigma (kMuffStageRg);
         const double cCouple = warpedC (kMuffCouplingHz, osRate);
         muffCouple1.setAnalog (0.0, 1.0 / (kTwoPi * kMuffCouplingHz), 1.0, 1.0 / (kTwoPi * kMuffCouplingHz), cCouple);
         muffCouple2 = muffCouple1;
+        stale = true;
     }
 
     void setTargets (float d, float t, float levelGain) noexcept
@@ -578,6 +751,7 @@ public:
         drive.snapToTarget();
         tone.snapToTarget();
         level.snapToTarget();
+        stale = true;
     }
 
     void reset() noexcept
@@ -598,11 +772,12 @@ public:
         muffStage2.reset();
         muffCouple1.reset();
         muffCouple2.reset();
-        toneFilter.reset();
+        muffOutput.reset();
+        ratFilter.reset();
+        toneStage.reset();
         clip1.reset();
         clip2.reset();
         cleanPrev[0] = cleanPrev[1] = 0.0;
-        phase = 0;
         snap();
     }
 
@@ -626,29 +801,32 @@ public:
         }
 
         auto up = oversampling->processSamplesUp (block);
-        const int start = phase;
 
         switch (type)
         {
-            case DriveFx::Type::distortion: runOversampled<DriveFx::Type::distortion> (up, n, channels, start); break;
-            case DriveFx::Type::fuzz:       runOversampled<DriveFx::Type::fuzz> (up, n, channels, start); break;
+            case DriveFx::Type::distortion: runOversampled<DriveFx::Type::distortion> (up, n, channels); break;
+            case DriveFx::Type::fuzz:       runOversampled<DriveFx::Type::fuzz> (up, n, channels); break;
             case DriveFx::Type::classic:
             case DriveFx::Type::screamer:
             case DriveFx::Type::boost:
-            case DriveFx::Type::treble:     runOversampled<DriveFx::Type::screamer> (up, n, channels, start); break;
+            case DriveFx::Type::treble:     runOversampled<DriveFx::Type::screamer> (up, n, channels); break;
         }
 
         oversampling->processSamplesDown (block);
 
+        const bool fuzz = type == DriveFx::Type::fuzz;
+
         for (int i = 0; i < n; ++i)
         {
-            const double gain = (double) level.next() / kVoltsPerFullScale;
+            const double gain = level.next() / kVoltsPerFullScale;
 
             for (int ch = 0; ch < channels; ++ch)
-                block.getChannelPointer ((size_t) ch)[i] = (float) (block.getChannelPointer ((size_t) ch)[i] * gain);
+            {
+                auto& sample = block.getChannelPointer ((size_t) ch)[i];
+                const double y = fuzz ? muffOutput.process (ch, (double) sample) : (double) sample;
+                sample = (float) (y * gain);
+            }
         }
-
-        phase = (start + n) & (kControlInterval - 1);
 
         inputHighPass.tidyStates();
         tsPre.tidyStates();
@@ -661,33 +839,30 @@ public:
         muffStage2.tidyStates();
         muffCouple1.tidyStates();
         muffCouple2.tidyStates();
-        toneFilter.tidyStates();
+        muffOutput.tidyStates();
+        ratFilter.tidyStates();
+        toneStage.tidyStates();
     }
 
 private:
-    /** Runs the oversampled circuit in chunks that never straddle a coefficient update,
-        each chunk in passes: the linear filters (cheap, sequential), then every clipper
-        solve of the chunk (independent of each other), then the ADAA quotients. The tone
-        stage runs here too, at N fs: at the base rate its bilinear warping would cost
-        1.2-1.4 dB at 10 kHz (48 kHz), against 0.5 dB allowed by acceptance D8. */
+    /** Runs the oversampled circuit in passes: the linear filters (cheap, sequential), then
+        every clipper solve of the pass (independent of each other), then the ADAA quotients.
+        While a knob glides the coefficients follow it every base sample, which is a pass of
+        one base sample; held for 32 samples they stepped audibly (-59 dBc under a 98 Hz note).
+        Once the glides have landed nothing is recomputed. The tone stage runs here too, at
+        N fs: at the base rate its bilinear warping would cost 1.2-1.4 dB at 10 kHz (48 kHz),
+        against 0.5 dB allowed by acceptance D8. */
     template <DriveFx::Type T>
-    void runOversampled (juce::dsp::AudioBlock<float>& up, int n, int channels, int start) noexcept
+    void runOversampled (juce::dsp::AudioBlock<float>& up, int n, int channels) noexcept
     {
         for (int i = 0; i < n;)
         {
-            const int pos = (start + i) & (kControlInterval - 1);
-            const int len = juce::jmin (n - i, kControlInterval - pos);
+            int len = juce::jmin (n - i, kChunk);
 
-            for (int j = 0; j < len; ++j)
+            if (stale || ! drive.isSettled() || ! tone.isSettled())
             {
-                const float d = drive.next();
-                const float t = tone.next();
-
-                if (j == 0 && pos == 0)
-                {
-                    updateDrive<T> ((double) d);
-                    updateTone ((double) t);
-                }
+                follow<T>();
+                len = 1;
             }
 
             for (int ch = 0; ch < channels; ++ch)
@@ -696,12 +871,32 @@ private:
                 const int count = len * factor;
                 circuit<T> (ch, data, count);
 
-                for (int m = 0; m < count; ++m)
-                    data[m] = (float) toneFilter.process (ch, (double) data[m]);
+                if constexpr (T == DriveFx::Type::distortion)
+                    for (int m = 0; m < count; ++m)
+                        data[m] = (float) ratFilter.process (ch, (double) data[m]);
+                else
+                    for (int m = 0; m < count; ++m)
+                        data[m] = (float) toneStage.process (ch, (double) data[m]);
             }
 
             i += len;
         }
+    }
+
+    template <DriveFx::Type T>
+    void follow() noexcept
+    {
+        const double d = drive.next(), t = tone.next();
+
+        if (stale || ! juce::exactlyEqual (d, driveNow))
+            updateDrive<T> (d);
+
+        if (stale || ! juce::exactlyEqual (t, toneNow))
+            updateTone (t);
+
+        driveNow = d;
+        toneNow = t;
+        stale = false;
     }
 
     template <DriveFx::Type T>
@@ -739,20 +934,36 @@ private:
         }
         else
         {
-            // Booster, sustain divider, CB2 into RG2, stage 1.
+            // Booster, sustain divider, CB2 into RG2, stage 1. The stages invert, so the model's
+            // v is minus the collector swing and vc - sigma vc^2 / 2 becomes v + sigma v^2 / 2.
             for (int m = 0; m < count; ++m)
                 scratchU[m] = muffStage1.process (ch, muffCouple2.process (ch, muffBoost.process (ch, (double) data[m]) * sustainGain));
 
             clip1.solve (scratchU, scratchP, count);
 
             for (int m = 0; m < count; ++m)
-                scratchU[m] = muffStage2.process (ch, muffCouple1.process (ch, clip1.finish (ch, scratchP[m])));
+            {
+                const double v = clip1.finish (ch, scratchP[m]);
+                scratchU[m] = muffStage2.process (ch, muffCouple1.process (ch, v * (1.0 + sigma1Half * v)));
+            }
 
             clip2.solve (scratchU, scratchP, count);
 
             for (int m = 0; m < count; ++m)
-                data[m] = (float) clip2.finish (ch, scratchP[m]);
+            {
+                const double v = clip2.finish (ch, scratchP[m]);
+                data[m] = (float) (v * (1.0 + sigma2Half * v));
+            }
         }
+    }
+
+    /** A Muff gain stage with its transistor's finite loop gain, eq. (9)-(10) (see muffAlpha),
+        fed through Rs. */
+    void setMuffStage (FirstOrder& stage, double rs) const noexcept
+    {
+        const double alpha = muffAlpha (rs);
+        const double d0 = 1.0 + alpha + kMuffFeedbackR / kMuffRc, d1 = (1.0 + alpha) * kMuffFeedbackR * kMuffFeedbackC;
+        stage.setAnalog (alpha * kMuffFeedbackR / rs, 0.0, d0, d1, warpedC (d0 / (kTwoPi * d1), osRate));
     }
 
     template <DriveFx::Type T>
@@ -772,7 +983,7 @@ private:
             // G(s) = 1 + Zf (Y1 + Y2): the legs and Zf share one bilinear constant, so the
             // sum of sections is exactly the bilinear image of G. Zf's pole, and the
             // op-amp's, are kept below Nyquist so neither cancels its zero at z = -1.
-            const double rd = kRatGainPot * audioTaper (d);
+            const double rd = ratKnobOhms * (std::pow (1.0 + kRatGainPot / ratKnobOhms, d) - 1.0);
             const double cornerLimit = 0.45 * osRate;
             const double feedbackTau = juce::jmax (rd * kRatCf, 1.0 / (kTwoPi * cornerLimit));
             ratFeedback.setAnalog (rd, 0.0, 1.0, feedbackTau, bilinearOs);
@@ -785,10 +996,13 @@ private:
         }
         else
         {
-            // Linear pot over the knob's span, Thevenin resistance p (1 - p) Rpot in series
-            // with RG2 into the virtual ground: eq. (14) with Rs = p (1 - p) Rpot.
-            const double p = kMuffSustainMin + (1.0 - kMuffSustainMin) * d;
-            sustainGain = p * kMuffSustainLoad / (kMuffSustainLoad + p * (1.0 - p) * kMuffSustainPot);
+            // The divider's wiper drives RG2 through its Thevenin resistance p (1 - p) Rpot,
+            // which is part of Rs in eq. (14) and in the loop gain.
+            const double p = std::pow (10.0, kMuffSustainFloorDb * std::pow (1.0 - d, kMuffSustainCurve) / 20.0);
+            const double rs = kMuffStageRg + p * (1.0 - p) * kMuffSustainPot;
+            sustainGain = p;
+            setMuffStage (muffStage1, rs);
+            sigma1Half = 0.5 * muffSigma (rs);
         }
     }
 
@@ -802,7 +1016,7 @@ private:
                 // linear) adds resistance clockwise, so its rotation is 1 - T: T = 1 is bright.
                 const double r = kRatFilterFixed + kRatFilterPot * audioTaper (1.0 - t);
                 const double hz = juce::jmin (1.0 / (kTwoPi * r * kRatFilterC), 0.45 * osRate);
-                toneFilter.setAnalog (1.0, 0.0, 0.0, 1.0, 1.0 / (kTwoPi * hz), 0.0, warpedC (hz, osRate));
+                ratFilter.setAnalog (1.0, 0.0, 1.0, 1.0 / (kTwoPi * hz), warpedC (hz, osRate));
                 break;
             }
 
@@ -817,7 +1031,7 @@ private:
                 const double sum = ga + gb + 1.0 / kMuffToneLoad;
                 const double m = ga * gb / sum;
                 const double p0 = gT + ga - ga * ga / sum, q0 = gB + gb - gb * gb / sum;
-                toneFilter.setAnalog (gT * (ga * q0 + gb * m), kMuffCb * (ga * gT + ga * m + gb * p0), gb * kMuffCt * kMuffCb,
+                toneStage.setAnalog (gT * (ga * q0 + gb * m), kMuffCb * (ga * gT + ga * m + gb * p0), gb * kMuffCt * kMuffCb,
                                       sum * (p0 * q0 - m * m), sum * (p0 * kMuffCb + q0 * kMuffCt), sum * kMuffCt * kMuffCb,
                                       bilinearOs);
                 break;
@@ -834,7 +1048,7 @@ private:
                 const double n0 = g / kTsRs, n1 = c * (g * kTsRz + 1.0 + kTsRf * gr) / kTsRs;
                 const double d0 = gs * g, d1 = gs * c * (g * kTsRz + 1.0) + kTsCs * g + gl * c;
                 const double d2 = kTsCs * c * (g * kTsRz + 1.0);
-                toneFilter.setAnalog (n0, n1, 0.0, d0, d1, d2, bilinearOs);
+                toneStage.setAnalog (n0, n1, 0.0, d0, d1, d2, bilinearOs);
                 break;
             }
         }
@@ -844,22 +1058,25 @@ private:
     juce::dsp::Oversampling<float>* oversampling = nullptr;
     DriveFx::Type type = DriveFx::Type::screamer;
     double sampleRate = 48000.0, osRate = 192000.0;
-    double tsPreC = 1.0, bilinearOs = 1.0;
-    double sustainGain = 0.0;
+    double tsPreC = 1.0, bilinearOs = 1.0, ratKnobOhms = 1.0;
+    double sustainGain = 0.0, sigma1Half = 0.0, sigma2Half = 0.0;
     double cleanPrev[2] {};
-    int factor = 4, phase = 0;
+    double driveNow = 0.0, toneNow = 0.0;
+    int factor = 4;
+    bool stale = true;
 
-    static constexpr int kScratch = kControlInterval * kMaxFactor;
+    static constexpr int kScratch = kChunk * kMaxFactor;
     double scratchU[kScratch];
     DiodeClipper::Point scratchP[kScratch];
 
     FirstOrder inputHighPass;
-    SecondOrder tsPre;
-    FirstOrder ratLeg1, ratLeg2, ratFeedback, ratBandwidth;
-    FirstOrder muffBoost, muffStage1, muffStage2, muffCouple1, muffCouple2;
-    SecondOrder toneFilter;
+    Svf tsPre;
+    FirstOrder ratLeg1, ratLeg2, ratFeedback, ratBandwidth, ratFilter;
+    FirstOrder muffBoost, muffStage1, muffStage2, muffCouple1, muffCouple2, muffOutput;
+    Svf toneStage;
     DiodeClipper clip1, clip2;
-    fx::Smoother drive, tone, level;
+    DiodeClipper::Table ratTable;
+    Glide drive, tone, level;
 };
 
 //==============================================================================
@@ -870,13 +1087,17 @@ public:
     void prepare (const juce::dsp::ProcessSpec& spec)
     {
         sampleRate = spec.sampleRate;
-        gain.prepare (kParamSmoothSeconds, (float) sampleRate, 1.0f);
-        toneHz.prepare (kParamSmoothSeconds, (float) sampleRate, 4000.0f);
-        level.prepare (kParamSmoothSeconds, (float) sampleRate, 1.0f);
+        gain.prepare (kParamSmoothSeconds, sampleRate, 1.0);
+        toneHz.prepare (kParamSmoothSeconds, sampleRate, 4000.0);
+        level.prepare (kParamSmoothSeconds, sampleRate, 1.0);
         reset();
     }
 
-    void setType (DriveFx::Type newType) noexcept { type = newType; }
+    void setType (DriveFx::Type newType) noexcept
+    {
+        type = newType;
+        stale = true;
+    }
 
     void setTargets (float gainLinear, float hz, float levelGain) noexcept
     {
@@ -890,12 +1111,12 @@ public:
         gain.snapToTarget();
         toneHz.snapToTarget();
         level.snapToTarget();
+        stale = true;
     }
 
     void reset() noexcept
     {
         filter.reset();
-        phase = 0;
         snap();
     }
 
@@ -904,59 +1125,59 @@ public:
         const int n = (int) block.getNumSamples();
         const int channels = juce::jmin (2, (int) block.getNumChannels());
         const bool boost = type == DriveFx::Type::boost;
-        const int start = phase;
 
         for (int i = 0; i < n; ++i)
         {
-            const double g = (double) gain.next();
-            const double hz = (double) toneHz.next();
-            const double out = (double) level.next() * (boost ? g : 1.0);
+            // While a knob glides the filter follows it every sample (a 32-sample staircase
+            // zippers at -77 dBc under a 98 Hz note); once it has landed nothing is redesigned.
+            if (stale || ! gain.isSettled() || ! toneHz.isSettled())
+                follow (boost);
 
-            const bool tick = ((start + i) & (kControlInterval - 1)) == 0;
-
-            if (tick)
-                setTone (hz, boost);
-
-            // The shelf's gain lives in its coefficients: while the gain is still gliding they
-            // follow it every sample, since a 32-sample staircase on a 36 dB move clicks.
-            if (! boost && (tick || std::abs (g - (double) gain.getTarget()) > 1.0e-6 * g))
-                setShelf (g);
+            const double out = level.next();
 
             for (int ch = 0; ch < channels; ++ch)
             {
                 auto* data = block.getChannelPointer ((size_t) ch);
-                data[i] = (float) (filter.process (ch, (double) data[i]) * out);
+                const double x = juce::jlimit (-kInputLimitVolts, kInputLimitVolts, (double) data[i]);
+                const double low = filter.lowpass (ch, x);
+                // Treble: (1 + s / wz) / (1 + s / wp) = 1 + (G - 1) HP(wp), with the gain
+                // outside the filter so a gain move is a smooth multiply.
+                data[i] = (float) ((boost ? gainNow * low : x + (gainNow - 1.0) * (x - low)) * out);
             }
         }
 
-        phase = (start + n) & (kControlInterval - 1);
         filter.tidyStates();
     }
 
 private:
-    void setTone (double hz, bool boost) noexcept
+    void follow (bool boost) noexcept
     {
-        const double fc = juce::jlimit (1.0, 0.49 * sampleRate, hz);
-        wc = kTwoPi * fc;
-        c = warpedC (fc, sampleRate);
+        const double g = gain.next(), hz = toneHz.next();
+        const bool newTone = stale || ! juce::exactlyEqual (hz, hzNow);
 
-        if (boost)
-            filter.setAnalog (1.0, 0.0, 1.0, 1.0 / wc, c);
-    }
+        if (newTone)
+        {
+            const double fc = juce::jlimit (1.0, 0.49 * sampleRate, hz);
+            wc = kTwoPi * fc;
+            c = warpedC (fc, sampleRate);
+        }
 
-    void setShelf (double g) noexcept
-    {
-        // (1 + s / wz) / (1 + s / wp), wz = wc / sqrt G, wp = wc sqrt G: 0 dB below, G above,
-        // geometric centre at the knob, bilinear prewarped there (docs/FX-ENGINES.md §4.3.5).
-        const double root = std::sqrt (g);
-        filter.setAnalog (1.0, root / wc, 1.0, 1.0 / (wc * root), c);
+        // Treble: wz = wc / sqrt G, wp = wc sqrt G: 0 dB below, G above, geometric centre at
+        // the knob, bilinear prewarped there (docs/FX-ENGINES.md §4.3.5).
+        if (boost ? newTone : (newTone || ! juce::exactlyEqual (g, gainNow)))
+            filter.setCutoff (boost ? wc : wc * std::sqrt (g), c);
+
+        gainNow = g;
+        hzNow = hz;
+        stale = false;
     }
 
     DriveFx::Type type = DriveFx::Type::boost;
     double sampleRate = 48000.0, wc = 1.0, c = 1.0;
-    int phase = 0;
-    FirstOrder filter;
-    fx::Smoother gain, toneHz, level;
+    double gainNow = 1.0, hzNow = 0.0;
+    bool stale = true;
+    OnePole filter;
+    Glide gain, toneHz, level;
 };
 
 bool isPedal (int type) noexcept
@@ -968,6 +1189,35 @@ bool isPedal (int type) noexcept
 float finiteOr (float value, float fallback) noexcept
 {
     return std::isfinite (value) ? value : fallback;
+}
+
+/** Replaces every NaN and infinity in the block with 0 and leaves every finite sample
+    untouched; true if it found one. The scan is a sum of x * 0, which only a non-finite
+    sample makes non-zero, so the clean case is one vectorisable pass. */
+bool clearNonFinite (juce::dsp::AudioBlock<float> block) noexcept
+{
+    bool found = false;
+
+    for (size_t ch = 0; ch < block.getNumChannels(); ++ch)
+    {
+        auto* data = block.getChannelPointer (ch);
+        const auto n = block.getNumSamples();
+        float probe = 0.0f;
+
+        for (size_t i = 0; i < n; ++i)
+            probe += data[i] * 0.0f;
+
+        if (juce::exactlyEqual (probe, 0.0f))
+            continue;
+
+        found = true;
+
+        for (size_t i = 0; i < n; ++i)
+            if (! std::isfinite (data[i]))
+                data[i] = 0.0f;
+    }
+
+    return found;
 }
 } // namespace
 
@@ -995,7 +1245,15 @@ struct DriveFx::Impl
     void run (int type, juce::dsp::AudioBlock<float> block)
     {
         if (type == (int) Type::classic)
+        {
+            // The frozen code has no guard of its own: a finite input near FLT_MAX overflows
+            // its float half-bands and the infinity would live in them for good. Where its
+            // output is finite it is passed on exactly as it is.
             classic.process (block);
+
+            if (clearNonFinite (block))
+                classic.reset();
+        }
         else if (isPedal (type))
             pedal.process (block);
         else
@@ -1065,6 +1323,10 @@ void DriveFx::process (juce::dsp::AudioBlock<float> block)
 {
     auto& s = *impl;
     const auto total = block.getNumSamples();
+
+    // Before the switcher keeps its dry copy, so a NaN cannot reach the output that way
+    // either. Finite samples are not touched: Classic stays bit-identical.
+    clearNonFinite (block);
 
     // A block larger than prepare() promised is run in pieces: the oversamplers and the
     // switcher's dry copy are sized for maximumBlockSize.

@@ -57,13 +57,14 @@ private:
 // default, which is the default type's entry; the editor applies the others when the user
 // picks a type (docs/FX-ENGINES.md §2.7.4). Classic's entries equal the frozen defaults.
 
-/** Gain in dB (Screamer, Distortion: d = gain / 36 is the pot position; Fuzz: d spans the
-    sustain pot from 36 dB of attenuation to full, see Drive.cpp). */
+/** Gain in dB, d = gain / 36 (Screamer: the Drive pot's position, audio taper; Distortion: the
+    stage's 1 kHz gain from 0 to 62 dB, linear in d; Fuzz: the sustain divider from -78 dB to
+    full, -78 (1 - d)^2 dB; see Drive.cpp). */
 inline constexpr float kDriveGainDefault[DriveFx::numTypes]  { 12.0f, 12.0f, 18.0f, 18.0f, 12.0f, 12.0f };
 /** Tone in Hz (Screamer, Distortion, Fuzz: T = ln (tone / 500) / ln 24 is the pot position). */
 inline constexpr float kDriveToneDefault[DriveFx::numTypes]  { 4000.0f, 4000.0f, 2449.0f, 2449.0f, 12000.0f, 3000.0f };
 /** Level in dB. Distortion and Fuzz (L2, L3) are measured: the level at which a -18 dBFS
     1 kHz sine at that row's gain and tone leaves at -12 dBFS peak (tools/fxbench/check_drive.py
     prints it; D16 checks it). */
-inline constexpr float kDriveLevelDefault[DriveFx::numTypes] { 0.0f, 0.0f, -8.2f, 4.6f, 0.0f, 0.0f };
+inline constexpr float kDriveLevelDefault[DriveFx::numTypes] { 0.0f, 0.0f, -8.2f, 5.0f, 0.0f, 0.0f };
 } // namespace tubamp
