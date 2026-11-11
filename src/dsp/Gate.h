@@ -13,9 +13,8 @@
 //
 // The closing rule (Tight and Smooth). What closes the gate is how fast the level fell through
 // the hysteresis band, not how far it fell, because the noise floor decides how far it can fall.
-// The level is the 12 ms windowed peak of the lower of two readings: the 4th-order sidechain
-// filter and a one-pole twin raised by its largest shortfall, so the filter's ringing after a
-// loud low note holds nothing open. A fall from the open level to the close level within 50 ms
+// The level is the lower of two 12 ms windowed peaks, the 4th-order sidechain filter's and the
+// unfiltered signal's, so the filter's ringing after a loud low note holds nothing open. A fall from the open level to the close level within 50 ms
 // is a stop, at any floor depth (a hand stop takes 1 to 44 ms): the gate waits the hold, plus
 // the length of any fast dip the level came back from with the gate open in the last moments
 // (a chord's beating partials, which the window cannot fill; at most 20 ms), then releases at the
