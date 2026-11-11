@@ -848,7 +848,8 @@ struct LegacyModCrossfade
             incoming.tremVoice = 0;
             incoming.depth = depth;
             crossfade.start (tubamp::Modulation::crossfadeHoldSamples (incoming, sampleRate), fadeLength,
-                             tubamp::Modulation::crossfadeWaitSamples (sampleRate));
+                             tubamp::Modulation::crossfadeWaitSamples (sampleRate),
+                             tubamp::Modulation::crossfadeLongestWaitSamples (sampleRate));
             spans.push_back ({ start, -1 });
         }
 

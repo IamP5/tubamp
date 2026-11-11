@@ -36,6 +36,8 @@ constexpr double kChorusSettleSeconds = 0.05;
 // The longest a mod_type fade waits for the two engines to stop cancelling [choice: a quarter of
 // the 1 s LFO cycle mod_rate starts at].
 constexpr double kModCrossfadeWaitSeconds = 0.25;
+// ...and while they are still in antiphase after that, at most this long in all.
+constexpr double kModCrossfadeLongestWaitSeconds = 0.4;
 // Classic chorus: after its wet steps in, ChorusFx's 10 ms fade-in time of the other modes.
 constexpr double kClassicChorusWetSettleSeconds = 0.01;
 // PhaserFx and TremoloFx: Phaser.cpp warms an incoming voicing for 30 ms before it fades.
@@ -49,6 +51,9 @@ constexpr double kBypassFadeSeconds = 0.01;
 // effects on one note can sit near antiphase for the whole fade, where the drive's two types
 // of one pedal hardly do.
 constexpr double kPowerSeconds = 0.004;
+// The two bands PowerCrossfade corrects apart meet here [choice: below it a held note's
+// fundamental, above it the attack and the upper harmonics].
+constexpr double kSplitHz = 1000.0;
 constexpr double kPowerSlack = 1.0 / (7.943 * 7.943 - 1.0);
 constexpr double kPowerFloor = 1.0e-12;
 } // namespace
@@ -69,21 +74,30 @@ void DelayGlide::prepare (double sampleRate) noexcept
 void PowerCrossfade::prepare (double sampleRate) noexcept
 {
     coefficient = 1.0 - std::exp (-1.0 / (kPowerSeconds * sampleRate));
-    start (0, 1, 0);
+    splitCoefficient = 1.0 - std::exp (-2.0 * juce::MathConstants<double>::pi * kSplitHz / sampleRate);
+    start (0, 1, 0, 0);
 }
 
-void PowerCrossfade::start (int holdSamples, int lengthSamples, int maxWaitSamples) noexcept
+void PowerCrossfade::start (int holdSamples, int lengthSamples, int maxWaitSamples, int longestWaitSamples) noexcept
 {
     std::fill (&power[0][0], &power[0][0] + 6, 0.0);
+    std::fill (&bandPower[0][0][0], &bandPower[0][0][0] + 12, 0.0);
+    std::fill (std::begin (lowOut), std::end (lowOut), 0.0);
+    std::fill (std::begin (lowIn), std::end (lowIn), 0.0);
+    correlationLag = 1.0;
     hold = juce::jmax (0, holdSamples);
     length = juce::jmax (1, lengthSamples);
     maxWait = juce::jmax (0, maxWaitSamples);
+    longestWait = juce::jmax (maxWait, longestWaitSamples);
     elapsed = advanced = waited = 0;
 }
 
 bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChannels, int i) noexcept
 {
+    numChannels = juce::jmin (numChannels, kMaxChannels);
     double a = 0.0, b = 0.0, ab = 0.0;
+    double band[2][3] {};
+    double xl[kMaxChannels] {}, yl[kMaxChannels] {};
 
     for (int ch = 0; ch < numChannels; ++ch)
     {
@@ -91,6 +105,20 @@ bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChan
         a += x * x;
         b += y * y;
         ab += x * y;
+
+        // Complementary bands, low = one-pole low-pass and high = the rest, so they sum back to
+        // the signal exactly.
+        lowOut[ch] += splitCoefficient * (x - lowOut[ch]);
+        lowIn[ch] += splitCoefficient * (y - lowIn[ch]);
+        xl[ch] = lowOut[ch];
+        yl[ch] = lowIn[ch];
+        const double xh = x - xl[ch], yh = y - yl[ch];
+        band[0][0] += xl[ch] * xl[ch];
+        band[0][1] += yl[ch] * yl[ch];
+        band[0][2] += xl[ch] * yl[ch];
+        band[1][0] += xh * xh;
+        band[1][1] += yh * yh;
+        band[1][2] += xh * yh;
     }
 
     const double raw[3] { a, b, ab };
@@ -99,21 +127,38 @@ bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChan
     {
         power[0][k] += coefficient * (raw[k] - power[0][k]);
         power[1][k] += coefficient * (power[0][k] - power[1][k]);
+
+        for (int n = 0; n < 2; ++n)
+        {
+            bandPower[n][0][k] += coefficient * (band[n][k] - bandPower[n][0][k]);
+            bandPower[n][1][k] += coefficient * (bandPower[n][0][k] - bandPower[n][1][k]);
+        }
     }
 
     const int position = elapsed++;
     const double powerOut = power[1][0], powerIn = power[1][1], cross = power[1][2];
+    const double both = std::sqrt (powerOut * powerIn);
+    const double correlation = both < kPowerFloor ? 1.0 : cross / both;
+
+    // The correlation's trend: the difference from its own copy lagged by one more 4 ms one-pole
+    // is its slope times that time constant.
+    correlationLag += coefficient * (correlation - correlationLag);
 
     if (position < hold)
         return false;
 
     // Two outputs in antiphase cancel where their gained amplitudes meet, and no gain undoes a
-    // null: the ramp starts on a moment where they correlate well enough (or after maxWait).
+    // null. Two LFOs move the correlation through the fade, so the ramp starts where it is good
+    // enough now and is not heading below that before the fade would be over; after maxWait it
+    // takes the first moment that is good enough now, and after longestWait any.
     if (advanced == 0)
     {
-        const double both = std::sqrt (powerOut * powerIn);
+        const double ahead = correlation + (correlation - correlationLag) * coefficient * length;
+        const bool goodNow = correlation >= kMinCorrelation;
+        const bool heading = correlation >= correlationLag || ahead >= 0.0;
+        const bool starts = (goodNow && (heading || waited >= maxWait)) || waited >= longestWait;
 
-        if (both >= kPowerFloor && cross < kMinCorrelation * both && waited < maxWait)
+        if (! starts)
         {
             ++waited;
             return false;
@@ -135,13 +180,26 @@ bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChan
     const double r = ramp * ramp * (3.0 - 2.0 * ramp);
     const double gOut = std::cos (0.5 * juce::MathConstants<double>::pi * r);
     const double gIn = std::sin (0.5 * juce::MathConstants<double>::pi * r);
-    const double want = std::exp ((1.0 - r) * std::log (powerOut + kPowerFloor) + r * std::log (powerIn + kPowerFloor));
-    const double got = gOut * gOut * powerOut + gIn * gIn * powerIn + 2.0 * gOut * gIn * cross;
-    const double slack = kPowerSlack * want + 1.0e-30;
-    const double scale = std::sqrt ((want + slack) / (juce::jmax (0.0, got) + slack));
+
+    // Each band corrected on its own figures: two effects' lows can cancel while their highs (a
+    // pick's attack) add, and one broadband gain would lift the attack by the lows' correction.
+    double scale[2];
+
+    for (int n = 0; n < 2; ++n)
+    {
+        const double pOut = bandPower[n][1][0], pIn = bandPower[n][1][1], pCross = bandPower[n][1][2];
+        const double want = std::exp ((1.0 - r) * std::log (pOut + kPowerFloor) + r * std::log (pIn + kPowerFloor));
+        const double got = gOut * gOut * pOut + gIn * gIn * pIn + 2.0 * gOut * gIn * pCross;
+        const double slack = kPowerSlack * want + 1.0e-30;
+        scale[n] = std::sqrt ((want + slack) / (juce::jmax (0.0, got) + slack));
+    }
 
     for (int ch = 0; ch < numChannels; ++ch)
-        out[ch][i] = (float) (scale * (gOut * out[ch][i] + gIn * in[ch][i]));
+    {
+        const double low = gOut * xl[ch] + gIn * yl[ch];
+        const double all = gOut * out[ch][i] + gIn * in[ch][i];
+        out[ch][i] = (float) (scale[0] * low + scale[1] * (all - low));
+    }
 
     return false;
 }
@@ -247,6 +305,11 @@ int Modulation::crossfadeSamples (double sampleRate) noexcept
 int Modulation::crossfadeWaitSamples (double sampleRate) noexcept
 {
     return (int) std::lround (kModCrossfadeWaitSeconds * sampleRate);
+}
+
+int Modulation::crossfadeLongestWaitSamples (double sampleRate) noexcept
+{
+    return (int) std::lround (kModCrossfadeLongestWaitSeconds * sampleRate);
 }
 
 int Modulation::crossfadeHoldSamples (const ModParams& p, double sampleRate) noexcept
@@ -390,7 +453,8 @@ void Modulation::process (juce::dsp::AudioBlock<float> block)
         outgoing = active;
         active = requested;
         resetEngine (active);
-        crossfade.start (crossfadeHoldSamples (params, sampleRate), fadeLength, crossfadeWaitSamples (sampleRate));
+        crossfade.start (crossfadeHoldSamples (params, sampleRate), fadeLength, crossfadeWaitSamples (sampleRate),
+                         crossfadeLongestWaitSamples (sampleRate));
     }
 
     // Without room for the outgoing engine's copy (a block larger than prepare() promised)

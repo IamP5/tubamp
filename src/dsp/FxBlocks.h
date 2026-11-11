@@ -238,11 +238,13 @@ private:
 /** A crossfade between two outputs that keeps their sum's short-term power on the straight line
     in dB between the two (Drive.cpp's type switch, the chorus's mode switch): equal-power gains
     on a cornerless ramp, scaled by the measured powers and correlation of the two (two cascaded
-    4 ms one-poles each), the correction bounded at +18 dB where they nearly cancel. The
+    4 ms one-poles each), in two bands split at 1 kHz with a gain each, the correction bounded
+    at +18 dB where they nearly cancel. The
     outgoing output is heard alone for a hold first. Two outputs in antiphase (two effects on one
     held note sweep through it) cancel where their gained amplitudes meet, and no gain undoes a
-    null, so the ramp starts on a moment where they correlate no worse than kMinCorrelation, or
-    after maxWait samples regardless. The powers are measured from start() on, so the fade starts
+    null, so the ramp starts on a moment where they correlate no worse than kMinCorrelation and,
+    by the correlation's trend, will not fall below it before the fade is over; after maxWait
+    samples on the first moment that is good enough now, after longestWait on any. The powers are measured from start() on, so the fade starts
     on settled figures. Allocation-free. */
 class PowerCrossfade
 {
@@ -251,8 +253,9 @@ public:
 
     void prepare (double sampleRate) noexcept;
     /** A fade starts: `hold` samples of the outgoing output alone, then a ramp of `length`
-        samples, which waits up to `maxWait` samples for the two to stop cancelling. */
-    void start (int hold, int length, int maxWait) noexcept;
+        samples, which waits after the hold for a moment the two will not cancel through (up to
+        `maxWait` samples), or at least do not now (up to `longestWait`). */
+    void start (int hold, int length, int maxWait, int longestWait) noexcept;
     /** Sample i of both channels' outputs: `out` (heard now) and `in` (coming in) give one
         result in `out`. True when the fade is over with this sample: from the next one on, `in`
         alone is the output. */
@@ -261,9 +264,14 @@ public:
     int span() const noexcept { return elapsed; }
 
 private:
-    double coefficient = 1.0;
+    static constexpr int kMaxChannels = 8;
+
+    double coefficient = 1.0, splitCoefficient = 1.0;
     double power[2][3] {};   // two smoothing stages of: outgoing power, incoming power, their product
-    int hold = 0, length = 1, maxWait = 0, elapsed = 0, advanced = 0, waited = 0;
+    double bandPower[2][2][3] {};   // the same per band (low, high)
+    double lowOut[kMaxChannels] {}, lowIn[kMaxChannels] {};
+    double correlationLag = 1.0;
+    int hold = 0, length = 1, maxWait = 0, longestWait = 0, elapsed = 0, advanced = 0, waited = 0;
 };
 
 /** Note values for mod_sync in quarter-note beats per LFO cycle; index 0 is "Off". The
@@ -342,6 +350,8 @@ public:
     /** The longest a mod_type crossfade waits after its hold for the two engines to correlate
         well enough to fade (PowerCrossfade), in samples. */
     static int crossfadeWaitSamples (double sampleRate) noexcept;
+    /** ...and the longest it waits in all while they are still in antiphase. */
+    static int crossfadeLongestWaitSamples (double sampleRate) noexcept;
     /** How long a mod_type crossfade holds the outgoing engine alone before it starts, in
         samples, for the incoming type and voicing in `params`: the time the incoming engine
         needs from its reset to its steady output. A Classic chorus starts from an empty delay

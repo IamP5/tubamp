@@ -4980,7 +4980,8 @@ bool runModEngineTests (double sampleRate, int blockSize)
                 if (blockStart == switchBlock)
                 {
                     alone.reset (s.toType);
-                    crossfade.start (hold, fade, tubamp::Modulation::crossfadeWaitSamples (sampleRate));
+                    crossfade.start (hold, fade, tubamp::Modulation::crossfadeWaitSamples (sampleRate),
+                                     tubamp::Modulation::crossfadeLongestWaitSamples (sampleRate));
                     fading = true;
                 }
 
