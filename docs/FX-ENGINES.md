@@ -178,6 +178,13 @@ inline constexpr float kCompReleaseDefault[CompFx::numTypes] { 120.0f, 120.0f, 1
   outside the documented range: `setParameters` clamps), output is finite. Recursive
   states pass through `fx::sanitise()` once per block (cheap) so a bad sample cannot
   live in a loop.
+- **Non-finite input.** A NaN or infinite input sample must not latch any state or poison
+  the rest of the block. The gate reads it as silence (X17), the compressor, drive and EQ
+  replace it with 0 (§4.2.6, §4.3.3, §4.4.3 Addition 3, row E21), the chorus and phaser
+  process it as 0 (CH20, P12), and the tremolo keeps it out of Bias's envelope and the
+  Harmonic filters, so only the bad sample's own output is non-finite (N1). Classic paths
+  are left as they were except where their section says so. The processor sanitises the
+  input of every block it runs as well (processor: in progress).
 - **No shared statics.** No mutable static or global state; two instances never
   interact.
 
@@ -229,8 +236,8 @@ single shared helper the Classic path uses.
 
 ### 2.4 Type switches without clicks
 
-- Every engine owns one `fx::EngineSwitcher` (from `FxPrimitives.h`, used read-only)
-  exactly as `DelayFx` does (`src/dsp/Delay.cpp:508-576`): on a type change the effect
+- Drive, EQ, phaser and tremolo own one `fx::EngineSwitcher` (from `FxPrimitives.h`, used
+  read-only) exactly as `DelayFx` does (`src/dsp/Delay.cpp:508-576`): on a type change the effect
   fades to the untouched input over 20 ms, the incoming type is reset while silent, and
   fades back in over 20 ms. While steady the switcher costs one comparison and does not
   touch the audio, which is what keeps static Classic renders bit-identical.
@@ -239,6 +246,12 @@ single shared helper the Classic path uses.
   it had always been on it.
 - Engines with a second choice inside a type (EQ `eq_voice` in Stack; the mod engines
   have one choice each) key the switcher on `type * 16 + subChoice`.
+- **Exceptions — compressor and chorus.** The compressor does not use the switcher: a
+  switch among Clean, Squash, FET and Opto hands the gain state over with no fade, and a
+  switch to or from Classic crossfades both outputs over 40 ms (§4.2.6). The chorus keeps
+  the outgoing mode sounding while the incoming line fills, then crossfades by measured
+  power (§4.5.4). The tremolo and phaser use the switcher (their sync jumps are separate
+  10 ms glides, §4.7.4 and §4.6.4).
 - **Exception — gate.** A gate fading to "dry" would open for 40 ms. `GateFx` instead
   runs all detectors continuously and crossfades the two gain curves linearly over 20 ms
   (§4.1.8); while not switching, the active curve is used directly (no multiply by 1).
@@ -280,6 +293,16 @@ Inside the engines, never in the processor. Rules for every new type:
   buffer to fixed values. No random seeds from time or addresses. Check:
   `--reset-repeat` renders input, resets, renders again; the two outputs are identical.
 - LFO start phases after reset are specified per engine.
+- **Reset on switch-on.** The processor calls `reset()` on a non-Classic engine when its
+  block is switched back on (and when it re-enters the chain, through `pendingReset`), so
+  a block never replays what it held when it left (processor: in progress). Each engine's
+  `reset()` leaves nothing to replay: lines and filters cleared, gains started at unity or
+  closed as the section says, and the wet path faded in where a section says so (chorus
+  §4.5.4, tremolo §4.7.4, phaser §4.6.4). The fxbench keys that drive this are in
+  `tools/fxbench/README.md` (EQ `reenable`, chorus `reset`, phaser `reset_on_enable`; the
+  tremolo adapter does it itself).
+- **Known step at switch-on.** The EQ's level, shelves and cuts still step when the block
+  is switched on under signal; closing it needs a crossfade in the processor (§8).
 
 ### 2.7 Parameters
 
@@ -512,7 +535,7 @@ Study: `docs/research/fx/gate/report.md` (R1–R5), corrected by its Verificatio
 | index | name | what |
 |---|---|---|
 | 0 | Classic | today's AudioDSPTools gate, bit-for-bit |
-| 1 | Tight | hard gate: windowed-peak detector, 6 dB hysteresis, hold, dB-linear release to `range` |
+| 1 | Tight | hard gate: windowed-peak detector, 6 dB hysteresis, hold after a note stops (a dip or fade is ridden for up to 0.4 s), 0.2 ms linear opening, dB-linear release to `range` |
 | 2 | Smooth | Tight's detector and state machine; when closed, a 3:1 downward expander instead of a jump to `range` |
 
 Default for new blocks: **Tight**. Legacy pin: `gate_mode` → 0 (§2.7.5). The gate is a singleton.
@@ -526,25 +549,30 @@ hint 1). New (hint 4):
 |---|---|---|---|---|---|---|---|
 | `gate_mode` | Gate Mode | Classic, Tight, Smooth | — | — | 1 (Tight) | — | all |
 | `gate_release` | Gate Release | 5 – 500 | 0.1 | log | 30 (`kGateReleaseDefault[Tight]`) | ms (time for 60 dB) | Tight, Smooth |
-| `gate_hold` | Gate Hold | 0 – 250 | 0.1 | linear | 6 (`kGateHoldDefault[Tight]`) | ms | Tight, Smooth |
+| `gate_hold` | Gate Hold | 0 – 250 | 0.1 | linear | 6 (`kGateHoldDefault[Tight]`) | ms (the wait after a note stops, §4.1.5) | Tight, Smooth |
 | `gate_range` | Gate Range | −90 – 0 | 0.1 | linear | −90 | dB (≤ −89.95 = mute) | Tight, Smooth |
-| `gate_sc_hpf` | Gate SC HPF | 20 – 300 | 1 | log | 90 | Hz (≤ 20.5 = off) | Tight, Smooth |
+| `gate_sc_hpf` | Gate SC HPF | 20 – 300 | 1 | log | 75 (`kGateScHpfDefault[Tight]`) | Hz, 4th-order Butterworth, 24 dB per octave (≤ 20.5 = off) | Tight, Smooth |
 
 `gate_threshold` means, in Tight/Smooth, the **peak level of the filtered sidechain in
 dBFS**; in Classic it keeps AudioDSPTools' mean-square reading (≈ 3 dB lower for a sine).
 `[study: gate/report.md R1 "Threshold semantics"]`
 
 Per-mode starting points (`Gate.h`): `kGateReleaseDefault[3] { 30, 30, 80 }` ms
-`[study: R1 table, 30 ms Tight / 80 ms Smooth]`; `kGateHoldDefault[3] { 6, 6, 10 }` ms
-(Classic's entries are unused). Hold was 10 ms for every mode in the first draft; the
-engine measured 6 ms as the shortest hold that rides a 41 Hz decay without chattering
-while muting 50 ms palm-mute gaps to −38 dB, and the coordinator accepted it for Tight.
+`[study: R1 table, 30 ms Tight / 80 ms Smooth]`; `kGateHoldDefault[3] { 6, 6, 10 }` ms;
+`kGateScHpfDefault[3] { 75, 75, 75 }` Hz (Classic's entries are unused). Hold was 10 ms
+for every mode in the first draft; the engine measured 6 ms as the shortest hold that
+rides a 41 Hz decay without chattering while muting 50 ms palm-mute gaps to −38 dB, and
+the coordinator accepted it for Tight. With the adaptive wait of §4.1.5, hold means the
+wait after a note stops, and 40 / 50 ms palm-mute gaps reach −31 / −51 dB (`Gate.h`).
 
-Fixed (not parameters): attack 0.5 ms for 60 dB `[study: R1]`; hysteresis H = 6 dB
-`[study: R1, inside the 4.8–9.5 dB the references use]`; detector window 12 ms
-`[study: R1 Nwin, half period of 42 Hz]`; expander slope S = 3 `[study: R1]`.
-Sidechain HPF default 90 Hz `[choice: every Tight/Smooth figure in the study was measured
-with 90 Hz, ver: gate/verification.md V:31; 100 Hz would read low E 5 dB low, V:42]`.
+Fixed (not parameters): opening is a linear rise from mute to full gain in 0.2 ms
+(`kOpenSeconds`; it replaced the study's 0.5 ms for 60 dB dB-ramp, `[study: R1]`, with no
+more splatter, check X16); hysteresis H = 6 dB `[study: R1, inside the 4.8–9.5 dB the
+references use]`; detector window 12 ms `[study: R1 Nwin, half period of 42 Hz]`;
+expander slope S = 3 `[study: R1]`.
+Sidechain HPF default 75 Hz, 4th-order Butterworth `[choice, check_gate X20, G15: a low E
+opens 1.7 dB over threshold (the 2nd-order 90 Hz filter: 3.9 dB) and 50 Hz hum is cut
+14.3 dB; the study's figures were measured with 90 Hz, ver: gate/verification.md V:31]`.
 
 ```cpp
 struct GateParams
@@ -554,7 +582,7 @@ struct GateParams
     float releaseMs = 30.0f;    // [5, 500] time for 60 dB of gain change
     float holdMs = 6.0f;        // [0, 250] (kGateHoldDefault[Tight])
     float rangeDb = -90.0f;     // [-90, 0]; <= -89.95 means mute (gain exactly 0)
-    float scHpfHz = 90.0f;      // [20, 300]; <= 20.5 means off
+    float scHpfHz = 75.0f;      // [20, 300], 4th-order Butterworth; <= 20.5 means off (kGateScHpfDefault[Tight])
 };
 ```
 
@@ -566,7 +594,8 @@ class GateFx
 public:
     enum class Mode { classic = 0, tight = 1, smooth = 2 };
     static constexpr int numModes = 3;
-    static constexpr int kMaxCurveDelaySamples = 8192;
+    /** The processor's lane rings hold 65 536 samples, so no span it can align is longer. */
+    static constexpr int kMaxCurveDelaySamples = 65535;
 
     void prepare (const juce::dsp::ProcessSpec& spec);  // sizes curve ring = maxBlock + kMaxCurveDelaySamples
     void reset();
@@ -575,7 +604,9 @@ public:
         onto the amp output). Clamped to [0, kMaxCurveDelaySamples]. Classic ignores it. */
     void setCurveDelay (int samples) noexcept;
     /** Analyses `block` (mean of its channels) and computes this block's gain curve.
-        Does not touch the audio. Blocks larger than maxBlockSize: no curve (pass ungated). */
+        Does not touch the audio. Blocks larger than maxBlockSize: no curve (pass ungated); the
+        detector and the meters still follow them (Classic reads open, 0 dB). Non-finite input
+        samples are read as silence in every mode. */
     void measure (const juce::dsp::AudioBlock<float>& block, int numSamples);
     void apply (juce::dsp::AudioBlock<float> block, int numSamples); // every channel
     void apply (float* mono, int numSamples);                        // one buffer
@@ -601,32 +632,61 @@ else 1; level = 20·log10(max |mono| in block), floor −120.
 
 #### 4.1.5 Tight and Smooth — algorithm
 
-Per sample, on the mono mean `s` of the block's channels (`fs` = sample rate):
+Per sample, on the mono mean `s` of the block's channels (`fs` = sample rate). A
+non-finite `s` is read as 0 (a sample that is finite but huge is clamped to ±1e6, so it
+still opens the gate):
 
 ```
-sc   = HP2(s)  if scHpfHz > 20.5 else s     // TPT SVF high-pass, Butterworth k = sqrt(2),
-                                            // g = tan(pi*fc/fs), a1 = 1/(1+g(g+k)), a2 = g*a1, a3 = g*a2,
+sc   = HP4(s)  if scHpfHz > 20.5 else s     // two TPT SVF high-pass sections in series, a 4th-order
+                                            // Butterworth, k = 2cos(pi/8) = 1.84776 and 2cos(3pi/8) = 0.76537,
+                                            // g = tan(pi*min(fc, 0.49 fs)/fs), a1 = 1/(1+g(g+k)), a2 = g*a1, a3 = g*a2,
                                             // v3 = x-ic2; v1 = a1*ic1+a2*v3; v2 = ic2+a2*ic1+a3*v3;
                                             // ic1 = 2v1-ic1; ic2 = 2v2-ic2; y = x - k*v1 - v2
                                             // [study: gate/evidence/bb/proto.py:16-22], state in double
 a    = |sc|
-pk   = max of a over the last Nwin samples  // exact sliding-window maximum (monotonic deque),
+pk   = max of a over the last Nwin samples  // exact sliding-window maximum (van Herk / Gil-Werman),
                                             // Nwin = round(0.012 * fs)
+raw  = same windowed max of |s|             // two more 12 ms windows, for the stop detector:
+stp  = same windowed max of |s - LP1(s)|    // LP1 = one-pole low-pass at 2 * scHpfHz (when the filter is on)
 open  = 10^(T/20);  close = open * 10^(-6/20)
-if pk >= open:              state = OPEN;  h = Nhold          // Nhold = round(hold * fs)
-elif state == OPEN:
-    if pk >= close:         h = Nhold                         // inside the hysteresis band
-    elif h > 0:             h -= 1
-    else:                   state = CLOSED
+ref  = max(pk, ref * 10^(-20 dB/s / fs), 1e-9)          // the recent peak: forgets 20 dB per second
+stopped(w) = (w < close and w <= ref * 10^(-26/20))      // a fall of 26 dB or more from the recent peak
+if stopped(raw) or stopped(stp):                          // the note has stopped
+    if state == OPEN and ++c > Nhold:  state = CLOSED     // c counts samples; Nhold = round(hold * fs)
+else:
+    c = 0
+    if pk >= open:          state = OPEN;  wait = 0
+    elif state == OPEN:
+        if pk >= close:     wait = 0                      // inside the hysteresis band
+        else:               wait += 1 / (W + 1);  if wait >= 1: state = CLOSED
+W = Nhold                      if pk <= ref * 10^(-26/20)   // deep fall
+  = kRideSeconds * fs          if pk >= ref * 10^(-16/20)   // shallow fall, kRideSeconds = 0.4
+  = log-linear between the two, in the fall in dB          // a dip or fade is ridden
 target_dB = 0                                                 if OPEN
           = R                                                 if CLOSED and Tight
-          = clamp(2 * 20*log10(max(pk,1e-9)/close), R, 0)     if CLOSED and Smooth   (S-1 = 2)
-gr_dB += clamp(target_dB - gr_dB, -60/(release*fs), +60/(0.0005*fs))   // dB-linear slew limiter
+          = clamp(2 * (F - 20*log10(close)), R, 0)            if CLOSED and Smooth   (S-1 = 2)
+          // F = floor estimate, dB of min(pk, raw) while closed (below)
+gr_dB: closing    gr_dB -= min(gr_dB - target_dB, 60/(release*fs))              // dB-linear release
+       opening    gain rises linearly by 1/(0.0002*fs) per sample to the target  // 0.2 ms, mute to full gain
 gain  = (R <= -89.95 and gr_dB <= -89.95) ? 0 : 10^(gr_dB/20)
 ```
-`R` = `rangeDb`. The slew limiter **is** the smoothing for every gate parameter
-(threshold, range and hold changes cannot click because `gr_dB` can only move at the
-attack/release rate) `[study: R1 dB-linear ramp]`.
+`R` = `rangeDb`. Smooth's floor estimate F is the dB peak level averaged with a time
+constant of half the time since the gate closed (or since the level jumped by more than
+6 dB, or since the gate was last open), up to 0.2 s: it lands on a new floor at once and
+then holds still on hiss and hum (largest 10 ms gain move 0.33 dB, check X14). The
+slew limiter **is** the smoothing for every gate parameter (threshold, range and hold
+changes cannot click because `gr_dB` can only move at the release rate and the 0.2 ms
+opening rate) `[study: R1 dB-linear ramp]`.
+
+**Why the closing rule depends on the fall.** A wait that was a fixed hold made Tight
+chatter on decaying chords and beating notes (49 of 328 verifier cases). Now a note that
+stops (palm mute, a choked chord) falls 26 dB or more from its recent peak and closes
+after the hold; a dip or fade of 16 dB or less is ridden for up to 0.4 s (a 1 Hz beat
+with a 15 dB swing); between 16 and 26 dB the wait is interpolated. The stop detector
+reads the unfiltered signal and a signal through a one-pole that keeps hum out, so the
+sidechain filter's ringing (up to 10 ms after a loud low note) does not delay a stopped
+note; neither reads more than 4.9 dB under the main filter, inside the 6 dB hysteresis,
+so it never closes on a level that could reopen the gate (`Gate.cpp`, check X10 to X13).
 
 **Detector change against the study (load-bearing):** the prototype held the peak for
 12 ms and then let it fall with a 3 ms exponential; that fall costs 0.35 ms per dB of
@@ -634,17 +694,18 @@ level above threshold and up to 12 ms of jitter, which is why it closed in 30–
 −40 dB and 38–47 ms at −60 dB, missing its own 35 ms target `[ver: gate/verification.md
 V:31, V:37]`. This spec uses an exact sliding-window maximum instead: after the last
 crest leaves the window the detector reads the true current level at once, so the close
-time no longer grows with level (only the sidechain filter's ringing still adds a few ms,
-see the acceptance table) `[choice, sim: §4.1.10 numbers]`. Nwin = 12 ms still covers the
+time no longer grows with level (the stop detector above keeps the sidechain filter's
+ringing from adding to it) `[choice, sim: §4.1.10 numbers]`. Nwin = 12 ms still covers the
 half period of 42 Hz so the held value cannot droop between half-cycles of a low note.
 
 `state` for the meter: 2 if OPEN and pk ≥ open; 1 if OPEN and pk < open (hysteresis band
 or holding); 0 if CLOSED. GR meter = max over the block of −gr_dB, clamped to [0, 90]
 (90 when muted); level meter = max over the block of 20·log10(pk), floor −120.
 
-**Start state after `reset()`:** CLOSED, `gr_dB = R`, h = 0, window empty, filter state 0,
-curve ring filled with the corresponding floor gain (0 if mute). A gate that re-enters the
-chain starts closed and opens on the first note in 0.75 ms.
+**Start state after `reset()`:** CLOSED, `gr_dB = R`, the wait and stop counters 0, all
+three windows empty, filter state 0, the floor estimate restarted, curve ring filled with
+the corresponding floor gain (0 if mute). A gate that re-enters the chain starts closed
+and opens on the first note within 1 ms (G8; the rise itself takes 0.2 ms).
 
 #### 4.1.6 Lookahead
 
@@ -694,8 +755,10 @@ measured on the **per-sample gain trace** (`--trace=gain`), from the end of the 
 first sample with gain ≤ −20 dB — not on windowed RMS, whose 24 ms window at 82 Hz adds up
 to 12 ms (V:37). Each cell is the max over 8 start phases × 4 burst lengths
 (0.3 s + {0, 0.37, 1.13, 2.9} ms). Defaults unless stated (Tight, release 30, hold 6
-(Smooth: release 80, hold 10), range −90, HPF 90). The bounds were set from a numpy model of §4.1.5 at 48 kHz
-`[sim]`; the model's values are in brackets.
+(Smooth: release 80, hold 10), range −90, HPF 75, 4th order). The G bounds were set from
+a numpy model of the first §4.1.5 at 48 kHz `[sim]`; the model's values are in brackets
+(they predate the adaptive wait and the 4th-order filter; the bars are what the script
+enforces). The rows X1 to X20 below the table are the verifier-driven proofs.
 
 | # | Check | Pass |
 |---|---|---|
@@ -713,13 +776,39 @@ to 12 ms (V:37). Each cell is the max over 8 start phases × 4 burst lengths
 | G12 | Step-down from −20 dBFS to L, thr −40 | open (0 dB) 0.8 s later for L = −45, −45.5; closed (≤ −89 dB) for L = −46.5, −47 [same] |
 | G13 | Smooth static: steady 1 kHz at −50/−55/−60 dBFS, thr −40 | −8.0 / −18.0 / −28.0 dB ± 0.5 [exact] |
 | G14 | Range: Tight, range −20, closed | gain −20.0 ± 0.1 dB; range −90 → exactly 0 |
-| G15 | SC HPF: 50 Hz hum −44 dBFS + chug, thr −50 | HPF 90: median gap ≤ −30 dB; HPF off: gate stays open (documents the benefit, V:42) |
+| G15 | SC HPF: 50 Hz hum −44 dBFS + chug, thr −40 (as written, thr −50 cannot be met by any gate: the chug's own noise peaks at −55 dBFS, over the −56 dBFS close level; that run is reported, not enforced) | HPF 75: median gap ≤ −30 dB; HPF off: gate stays open, median gap ≥ −1 dB (documents the benefit, V:42) |
 | G16 | Deferred alignment (processor test, §6.1): 1 kHz burst through gate → amp on a model forced to resample (session 44.1 kHz) | gain edge and audio edge coincide within 1 sample. **As integrated:** the curve is delayed by exactly the reported latency (checked to the sample); against the audio it lands within 4 samples (measured 1.9 at 44.1 kHz, 3.0 at 96 kHz), the reported latency's own error (§4.1.7) |
-| G17 | Rates | G2, G5, G9 also at 44.1 and 96 kHz, same bounds + 1 ms |
+| G17 | Rates | G2, G5, G9 also at 44.1 and 96 kHz, same bounds + 1 ms (36 ms and 51 ms) |
 | G18 | Meter: thr −40, silence after a note | state 0 within 100 ms of the note end; 2 on the first sample above threshold; GR reads 90 when closed with range −90 |
+| X1 | Smooth close: release 80, all 20 cells | after a note Smooth closes at most 1 ms later than Tight plus (hold difference + 20 ms × (80 − 30) / 60), i.e. the expander law never holds the gain up |
+| X2 | Palm-mute gaps, Tight chug thr −40, 75 ms notes, gaps 50 / 75 / 100 ms | median gap gain ≤ −30 dB each |
+| X3 | Decay not chopped: −6 dBFS exponential decays, 82.41 Hz and 1 kHz, tau 0.4 / 1.5 s, Tight and Smooth, thr −40 | gain ≥ −0.1 dB while the 4th-order-filtered envelope is at least 0.5 dB over the close level |
+| X4 | No chatter: white noise −62…−46 dBFS RMS, thr −40 | at most 2 open/close changes in 5.5 s |
+| X5 | Pick attack: first 5 ms of each chug note and of an abrupt 1 kHz onset (8 phases) | level lost ≤ 1 dB |
+| X6 | Mode switches: all 6 transitions, 3 steady inputs, blocks 64 / 512 | added gain step per sample ≤ 1.5 × a full-scale 20 ms linear fade |
+| X7 | Rates 22.05 and 192 kHz | G2 and G5 cells, bounds 36 ms and 51 ms |
+| X9 | Low-note decay: 41.2 / 46.25 / 82.41 Hz with harmonics, tau 0.7 / 1.5 / 3 s, thr −40 / −55 | at most 2 open/close changes (one open, one close) |
+| X10 | Chord decay: 14 verifier chords × thr −30…−65 step 5; the 4 hardest chords also at 22.05 / 44.1 / 96 / 192 kHz (`--quick`: 44.1 and 96 kHz) | at most one open and one close in every cell |
+| X11 | Beating: AM notes (82.41 and 110 Hz, depth 0.2 / 0.33 / 0.5 / 0.7 = 3.5 to 15 dB, rate 1 / 3 / 7 / 15 / 30 Hz, thr −40); two strings a few hertz apart, thr −30…−60 | at most one open and one close |
+| X12 | Single decays: 41.2…330 Hz × tau 0.15…2.5 s × thr −20…−70 | at most one open and one close |
+| X13 | Palm-mute gaps by gain energy over the last 10 ms of each gap, Tight thr −40 | 50 ms gaps: median ≤ −36 dB, worst ≤ −30 dB; 40 ms gaps: median ≤ −20 dB. Also reported, not enforced: the 30 / 40 / 50 / 75 / 100 ms table and the gaps over 50 Hz hum |
+| X14 | Smooth floor: noise, hum and buzz under thr −40, 44.1 / 48 / 96 kHz | largest gain move in 10 ms ≤ 0.5 dB, largest one-sample step ≤ 0.1 dB |
+| X15 | Pick attack: picked notes 12 / 20 / 34 dB over thr −40, 82.41 / 196 / 1000 Hz | energy lost in the first millisecond ≤ 3 dB |
+| X16 | Opening click: Tight, splatter at 82.41 / 200 / 1000 Hz | no more than the old 0.5 ms / 60 dB dB-ramp's |
+| X17 | Non-finite input: NaN / ±Inf bursts in every mode and across switches, blocks 1 / 37 / 512, mono and stereo | gain equals the zero-substituted render bit for bit; meters finite |
+| X18 | Oversized blocks: block 512 on a 256-sample prepare | audio unchanged; meters those of the same input in normal blocks (Classic: open, 0 dB) |
+| X19 | Long curve delay: deferred, D = 8193 / 30000 / 65535 | bit-exact against the undelayed render, D samples later |
+| X20 | Low-note threshold (reported, not enforced): steady sine needed to open at thr −40 | 41.2 / 73.42 / 82.41 / 110 Hz; a pure 41.2 Hz tone needs 15.4 dB over threshold (was 13.6), a low E 1.7 dB (was 3.9) |
 
-fxbench keys: `mode threshold release hold range sc_hpf delay` (`delay` = curve delay,
-applied with `apply` after `measure` as the processor does).
+check_gate.py ran 79 checks, 0 FAIL, at the commit that added X10 to X20 (`81fd404`). G16 in
+the script is a proxy (`lag = delay`: the output must be the undelayed render, D samples
+later, bit for bit, at D = 1 / 37 / 512 / 3000, blocks 64 / 512); the processor test is the
+integrator's.
+
+fxbench keys: `mode threshold release hold range sc_hpf delay deferred on lag prepare_block`
+(`delay` = curve delay, applied with `apply` after `measure` as the processor does; `lag`
+delays the deferred audio as the amp would; `prepare_block=N` re-prepares for N-sample
+blocks, for X18).
 
 ### 4.2 Compressor — `CompFx` (`src/dsp/Compressor.h/.cpp`)
 
@@ -758,7 +847,11 @@ New (hint 4), instance 1 shown; instances 2 and 3 are `comp2_*` / `comp3_*`, hos
 | `comp_auto_makeup` | Comp Auto Makeup | off/on | — | — | off | — | Clean, Squash, FET, Opto |
 
 Existing knobs in new types are read **literally** (threshold dB, ratio, attack ms,
-release ms, makeup dB). Classic reads only the six existing parameters.
+release ms, makeup dB). Classic reads only the six existing parameters. In the new types
+the makeup knob follows the knob while the block runs (+12.00 dB for a 12 dB move), and
+the **total makeup, manual plus auto, is capped at 48 dB** (`kMaxTotalMakeupDb`: auto
+makeup alone reaches 47.5 dB at T −60, R 20, and manual adds up to 24, which would let an
+unattacked onset pass 71.5 dB of gain).
 
 Per-type starting points (`Compressor.h`, already in §2.1):
 
@@ -794,7 +887,9 @@ GR = max over the block and channels of −20·log10(gain). The audio path never
 
 #### 4.2.4 Shared detector and gain computer (types 1–4)
 
-Per sample:
+Per sample. Non-finite input samples are zeroed before anything else (in every type, and
+Classic's finite input stays bit for bit), and the detector and the gain see the input
+clamped to ±1e6 (`kInputLimit`, +120 dBFS):
 
 ```
 xd[ch] = HP1(x[ch])  if scHpf > 20.5 else x[ch]   // TPT one-pole high-pass on the detector only
@@ -834,8 +929,11 @@ g  = (gc < g) ? aA*g + (1-aA)*gc : aR*g + (1-aR)*gc
 ```
 `tauR_eff` subtracts the window so that the release t63 measured from the end of a note
 equals the knob (the window adds W of hold first) `[choice: keeps "release = knob", the
-defect the study set out to fix; W ≤ τR/4 so τR_eff ≥ 0.75 τR]`. Time constants are the
-knob values (no 2π) `[study: R1]`.
+defect the study set out to fix; W ≤ τR/4 so τR_eff ≥ 0.75 τR]`. FET and Opto subtract only
+half of W (`kHoldCompensationTwoStage`): the R5 fits were made on a detector that already
+held for 8 ms, and with all of W removed the curves land at 58 / 84 ms (FET t50 / t63) and
+78 / 126 ms (Opto), below both reference bands (C14, C15). Time constants are the knob
+values (no 2π) `[study: R1]`.
 
 Threshold and slope `s` are ramped **linearly over 20 ms** per sample `[study: R6, Guitar
 Rig ramps]`; knee and mix use 20 ms one-poles; makeup uses the shared
@@ -844,7 +942,8 @@ Rig ramps]`; knee and mix use 20 ms one-poles; makeup uses the shared
 Output:
 
 ```
-gainDb = g + makeupDb + (autoMakeup ? M : 0)      M = -gc(-10 - T_eff), recomputed every 16 samples
+gainDb = g + makeupDb + (autoMakeup ? M : 0)      M = -gc(-10 - T_eff), recomputed every 16 samples,
+                                                  limited so that makeupDb + M <= 48 (kMaxTotalMakeupDb)
 wet    = x * 10^(gainDb/20)
 y      = mix * wet + (1 - mix) * x               mix = comp_mix/100; when mix == 1 exactly, y = wet
 ```
@@ -856,13 +955,19 @@ the amount M through a 20 ms one-pole (no step).
 
 - **Clean (1).** §4.2.4 as written, one smoothing stage.
 - **Squash (2) — log-domain feedback.** The gain computer is evaluated on the **output**
-  level estimate `Lo = L + g` (input level plus the current gain):
-  `gc = (1 − R)·o_fb` with `o_fb = L + g − T` and the same knee shape on `o_fb`;
-  open-loop attack τ = attack knob × R, release τ = release knob (with the window
-  compensation). Steady state: g = (1/R − 1)(L − T), i.e. the static curve is exactly
-  ratio R; attack runs ≈ R times faster than open loop, so the knob is the closed-loop
-  time; release below threshold is open loop. Loop pole p = 1 − (1 − aA)·R > 0 for any
-  knob ≥ 0.1 ms, so it is monotonic and cannot oscillate.
+  level estimate `Lo = L + g` (input level plus the current gain), `o_fb = L + g − T`.
+  `feedbackGain (o_fb, s, Wk)` returns the gain and the loop gain `lg = 1 − dgain/do_fb`:
+  0 dB and `lg = 1` for `o_fb ≤ −Wk/2`; `gc = s·R·o_fb` and `lg = R` for `o_fb ≥ Wk/(2R)`;
+  between, the knee solved so that the loop's steady state is exactly the textbook curve
+  of the other types on the **input** level (the knee spans Wk, centred on the threshold;
+  with `a = s/(2Wk)`, `c = o_fb + Wk/2`, `u = 2c / (1 + sqrt (1 + 4ac))`: `gc = c − u`,
+  `lg = 1 / (1 + 2au)`). **Attack and release are both divided by the loop gain**,
+  `g += (gc < g ? kA : kR) / lg · (gc − g)` (release with the window compensation), so
+  the closed loop moves at the knobs' time constants at any ratio and never overshoots
+  (the release used to run R times fast above the threshold; C10+, C26, C27). Steady
+  state: g = (1/R − 1)(L − T) above the knee, i.e. the static curve is exactly ratio R.
+  What stays feedback: after a drop the output falls under the threshold, where the loop
+  is open and the gain heads for 0 dB, so a partial drop recovers sooner (printed in C26).
   **Change against the study:** the study fed the detector with the previous output
   sample (`|y[n−1]|`); with any detector lag that loop undershoots — its own prototype
   dipped to −53 dB before settling at −24.6 dB (`comp/evidence/bb/proto/squash_fb.tbA.tsv`
@@ -874,21 +979,38 @@ the amount M through a 20 ms one-pole (no step).
   dropped (guess; V:81).
 - **FET (3).** Clean's detector and gain computer with T_eff; two smoothing stages sharing
   the attack: `g1` with τR1 = release knob, `g2` with τR2 = 6.4·τR1, output
-  `g = 0.7·g1 + 0.3·g2` (both τ reduced by W as above) `[fit: R5, 1176 Rev A
-  t_a100_r100: 66/98/395 ms against 61/96/399]`.
-- **Opto (4).** As FET with τR2 = 8.3·τR1 and `g = 0.6·g1 + 0.4·g2`, no threshold offset
-  `[fit: R5, LA-2A Gray t_comp_pr50: 88/142/696 against 78/133/720–732]`. Ratio is the
-  full knob (R5's 2–10 limit dropped: knobs mean what they say).
+  `g = g1 + w·(g2 − g1)` with the slow stage's share `w = 0.43·m²` (both τ reduced by W/2
+  as above) `[fit: R5, 1176 Rev A t_a100_r100: t63 95 / 123 ms after 0.5 / 5 s]`.
+- **Opto (4).** As FET with τR2 = 8.3·τR1 and `w = 0.46·m`, no threshold offset
+  `[fit: R5, LA-2A Gray t_comp_pr50: 157 → 184 ms, ×1.17]`. Ratio is the full knob (R5's
+  2–10 limit dropped: knobs mean what they say).
 
-Programme-dependent release (release depending on burst length) is **not** delivered by
-FET/Opto: the fit matches one burst length (V:81). §8 D-18.
+**Programme-dependent release (FET and Opto), delivered.** A memory `m` in [0, 1] charges
+toward the depth of the gain reduction (`min (1, GR dB / 6)`) with a time constant of
+0.28 s (FET) or 0.25 s (Opto) and discharges with 4 s; the slow stage's share `w` grows
+with it. Steady compression is unchanged (both stages sit on the target); only the release
+after it gets longer the longer and deeper it was. Measured: FET t63 66 / 97 / 122 ms
+after 0.1 / 0.5 / 5 s bursts (the unit: 56 / 95 / 123 ms); Opto 141 → 162 ms from 0.5 to
+5 s, ×1.15 (the unit: ×1.17) (`Compressor.cpp`, check C28). §8 D-18.
 
 #### 4.2.6 Makeup, bypass, reset
 
 One makeup smoother per instance, shared by all types. `skip(n)` (block off or absent)
 advances it exactly as Classic; for new types it also snaps the threshold/slope ramps,
-knee, mix to their targets. `reset()` clears detector window, HPF, g/g1/g2 (to 0 dB),
-the shadow ballistics and `juce::dsp::Compressor`, not the makeup smoother.
+knee, mix to their targets. `reset()` clears detector window, HPF, g/g1/g2 and the
+programme memory (to 0 dB and 0), the shadow ballistics and `juce::dsp::Compressor`, and
+starts on the requested type; it does not touch the makeup smoother.
+
+**Type switches (the compressor does not use `fx::EngineSwitcher`, §2.4).** Clean,
+Squash, FET and Opto share the detector and the gain state, so a switch among them hands
+the current gain reduction over with no fade and the new type moves from it with its own
+ballistics (the uncompressed signal never passes: the old switch let +15 dB through for
+40 ms). A switch to or from Classic crossfades both outputs over 40 ms
+(`kCrossfadeSeconds`): the incoming new type is seeded at the reduction Classic was
+applying and held while the detector window fills; an incoming Classic runs unheard until
+its envelope has risen (four attack time constants, knob / 2π, plus 2 ms). A request
+during a fade hands over within the incoming side, or reverses the fade from where it is.
+While bypassed (`skip`), a switch completes without a fade.
 
 #### 4.2.7 Meter, latency, CPU
 
@@ -898,8 +1020,8 @@ and one `exp2` per sample, deque amortised O(1)).
 
 #### 4.2.8 fxbench keys
 
-`type threshold ratio attack release makeup knee mix sc_hpf auto_makeup`; `--trace=gain`
-writes the per-sample gain in dB (−g, before makeup).
+`type threshold ratio attack release makeup knee mix sc_hpf auto_makeup on` (`on=0` calls
+`skip()`); `--trace=gain` writes the per-sample gain in dB (−g, before makeup).
 
 #### 4.2.9 Acceptance (`check_comp.py`)
 
@@ -910,7 +1032,8 @@ the fundamental and DC over the last 1 s of a 2.5 s steady tone, −10 dBFS, at 
 **not** harmonic THD, which ignores the inharmonic sidebands the study's hold produced
 (V:77). Acceptance frequencies are deliberately not divisors of the sample rate:
 41.2, 82.4, 98 Hz (and 100 Hz for comparison with the study). Settings T −20, R 4 unless
-stated. Model values in brackets `[sim]`.
+stated. Model values in brackets `[sim]`. Rows below C20 (C3b onward, C21 to C28 and K) are
+the verifier-driven proofs; the table lists every row id `check_comp.py` has, with its bar.
 
 | # | Check | Pass |
 |---|---|---|
@@ -934,9 +1057,31 @@ stated. Model values in brackets `[sim]`.
 | C18 | Mix 50 % | output = mean(dry, wet render) within −80 dB |
 | C19 | SC HPF 100 Hz, `fsteps` 40 Hz vs 1 kHz | GR at 40 Hz ≥ 5 dB less than at 1 kHz (one-pole estimate 6.3 dB, V:79) |
 | C20 | Auto makeup, −10 dBFS sine, R ∈ {2, 4, 8, 20}, knee 6, every new type | output level within 0.5 dB of input |
-| C21 | Smoothing: threshold square-wave −40 ↔ −10 dB at 10 Hz on a 1 kHz sine | no spectral line above −70 dBc at multiples of fs/blockSize |
-| C22 | Type switch during a sustained note | no output step > 3 dB within 1 ms; fade completes in 40 ± 2 ms |
-| C23 | Rates | C3–C6, C10 at 44.1 and 96 kHz, same bounds |
+| C21 | Automation (replaces the old line-at-k·fs/block test, which counted the modulation's own sidebands): each of 9 controls (threshold −40 ↔ −10, ratio 1 ↔ 20, attack 0.1 ↔ 100, release 10 ↔ 1000, knee 0 ↔ 24, mix 0 ↔ 100, makeup 0 ↔ 24, sc_hpf 20 ↔ 300, auto makeup off ↔ on) as a 10 Hz square wave per block, 4 new types, blocks 512 / 64 / 37, T −25 and each type's starting point. (a) 1 kHz tone: the loudest 21 ms frame of energy more than 3 kHz above the carrier | (a) ≤ −70 dBc |
+| C21 | (b) 82.4 Hz bass note (row "C21 automation zipper"), where the fastest settings legitimately move the gain in a millisecond | the block render adds ≤ 3 dB to the same automation rendered at block 1 |
+| C21b | Zipper isolated: threshold steps on block boundaries (2560-sample half period), blocks 512 / 64 against block 1, 4 new types | lines at k·fs/block in the difference ≤ −70 dBc |
+| C22 | Type switch steps: every ordered pair of the 5 types (20), block 512, sustained −10 dBFS note | no 1 ms output level change > 3 dB |
+| C22 | Classic → Clean crossfade (Clean at mix 0 makes the fade visible as a 15 dB rise), blocks 64 / 512 / 37 | ends 40 ± 2 ms after the switch |
+| C22 | Switch level: 20 pairs × blocks 64 / 512 / 37, 1 kHz −10 dBFS, T −30, R 4 (15 dB of reduction) | level ≤ 1 dB over the larger of the pre-switch level and the new type's own settled level |
+| C22 | Switch settles: same cells | 0.5 to 1 s later within 0.5 dB of a render that was always the new type |
+| C22 | Switch click: same cells, 50 ms before to 0.5 s after | no frame's energy above carrier + 3 kHz over −70 dBc, unless one of the two types makes as much alone, in which case the switch adds ≤ 3 dB |
+| C23 | Rates | C3, C4, C5, C6, C10 at 44.1, 96, 22.05 and 192 kHz, same bounds |
+| C3b | Linked stereo: L −10 / R −30 dBFS, each new type | \|GR left − GR right\| ≤ 0.01 dB |
+| C3c | GR meter: −10 dBFS, T −20, R 4, each new type | \|meter − 7.5\| ≤ 0.3 dB |
+| C10+ | Squash stability: R 1 … 20 (10 values) × attack 0.1 … 100 (7) × knee 0 / 6 / 24, a −40 → 0 dBFS step and back to −20, at 22.05 kHz and 192 kHz | the gain moves monotonically each way: overshoot past the settled gain ≤ 0.05 dB |
+| C24 | NaN / infinity: 8 NaN, 8 +inf, 8 −inf samples on the left channel (and the only channel), each type, sc_hpf off and 100, mono and stereo, blocks 512 / 37 | output and gain trace finite from one detector window (12.5 ms) after the first bad sample; level 1.5 s on within 0.1 dB of a clean render |
+| C25 | Output bound: a fuzz case (makeup 24, auto makeup, T −60, R 17.4, bypass, type changes), a full-scale 41 Hz onset at attack 100 with maximum makeup and auto makeup in each new type, a note through a bypass with a type change for every type pair | \|out\| < 1000 for every case |
+| C26 | Squash release: (a) 45 bursts to silence (levels −16 / −10 / 0 dBFS × R 2…20 × knee 0 / 6 / 24); (b) drops that leave the output above the threshold and beyond the knee (−4 → −6 / −8 / −10 / −16 dBFS) | t63 within 20 % of the 150 ms knob. Printed, not enforced: drops that take the output under the threshold recover sooner |
+| C27 | Squash knee: R 4 / 8 / 20 / 1.5 with knees 6 / 6 / 24 / 12, GR of a steady tone at T − k/2, T, T + k/2, T + 10 | within 20 % of the textbook curve (0.1 dB where the curve is under 0.5 dB) |
+| C28 | Programme release: FET (T −24, R 6, knee 4, attack 0.3, release 55) and Opto (T −24, R 4, knee 12, attack 2, release 60): t63 after 0.1 / 0.5 / 5 s bursts | t63 grows ≥ 5 % per step; the 5 s / 0.5 s ratio (and 0.1 s / 0.5 s for FET) within 20 % of the unit's (FET 123/95 and 56/95, Opto 184/157); a −20 dBFS burst releases faster than a −10 dBFS one; a 0.5 s burst 12 s after a 5 s one releases within 5 % of a fresh one |
+| K | Per-control rows, 45: for each type, each control the type reads is moved while the block runs. Classic: threshold, ratio, attack, release, makeup; knee, mix, sc_hpf and auto_makeup (not read) must leave its output bit for bit unchanged. Each new type: threshold, ratio, attack, release, makeup, knee, mix, sc_hpf, auto_makeup | output level change in the right direction and within max (0.25 dB, 20 %) of what the type's curve predicts (the predicted change is at least 1 dB); for makeup, mix and auto makeup the GR change must also match (0 dB for makeup, within max (0.1 dB, 20 %)); attack and release: t63 ratio within 25 % of the knob ratio (1 → 20 ms, 50 → 400 ms). The row that exposed makeup doing nothing in four types |
+
+Also printed, not pass/fail: the low-frequency residual split into harmonic distortion and
+inharmonic sidebands for every type at its starting point and at the fastest settings
+(41.2 / 82.4 / 98 / 110 Hz at 44.1 and 48 kHz), attack and release per type, and the
+Classic crossfade timing at 44.1 kHz. `check_comp.py` ran 145 checks, 0 FAIL, at the commit
+that added the K rows (`a27b550`). C1 in the script is two nulls: ramps and `skip`
+sequences (blocks 512 / 37 / 1) and a mono `skip`-first sequence.
 
 ### 4.3 Drive — `DriveFx` (`src/dsp/Drive.h/.cpp`)
 
@@ -974,8 +1119,8 @@ T = ln(`drive_tone`/500)/ln 24 ∈ [0,1]) `[study: R1]`:
 |---|---|---|---|
 | Classic | dB into `tanh` | LPF Hz | dB |
 | Screamer | d → Drive pot | T → Tone pot | dB |
-| Distortion | d → Distortion pot | T → Filter pot (1 = bright) | dB |
-| Fuzz | d → Sustain pot | T → Tone pot (0 = bass, 1 = treble) | dB |
+| Distortion | d → the stage's 1 kHz gain, 0 to 62 dB linear in d (§4.3.5) | T → Filter pot (1 = bright) | dB |
+| Fuzz | d → Sustain divider, −78 (1 − d)² dB (§4.3.5) | T → Tone pot (0 = bass, 1 = treble) | dB |
 | Boost | gain dB, literal | high-cut Hz, literal | dB |
 | Treble | shelf gain dB, literal | shelf centre Hz, literal | dB |
 
@@ -988,14 +1133,16 @@ Per-type starting points (`Drive.h`, `kDriveGainDefault`, `kDriveToneDefault`,
 |---|---|---|---|---|
 | Classic | 12 | 4000 | 0 | frozen defaults |
 | Screamer | 12 | 4000 | 0 | = frozen defaults (§2.7.4): d = 0.33, T = 0.65 |
-| Distortion | 18 | 2449 | L₂ | d = T = 0.5 |
-| Fuzz | 18 | 2449 | L₃ | d = T = 0.5 |
+| Distortion | 18 | 2449 | −8.2 (L₂) | d = T = 0.5 |
+| Fuzz | 18 | 2449 | 5.0 (L₃) | d = T = 0.5 |
 | Boost | 12 | 12000 | 0 | |
 | Treble | 12 | 3000 | 0 | centre near the Rangemaster's input corner and GR6's 3.6 kHz peak `[study: R7]` |
 
 L₂, L₃ are set by the drive engineer by measurement: the level at which a −18 dBFS 1 kHz
 sine at that row's gain and tone leaves at −12 dBFS peak ± 0.5 dB `[choice: a 6 dB push,
-how a pedal sits in front of an amp]`; record them in `Drive.h` and tell the UI engineer.
+how a pedal sits in front of an amp]`; recorded in `Drive.h` (`kDriveLevelDefault`): L₂ = −8.2
+dB and L₃ = 5.0 dB (L₃ was 4.6 dB before the Fuzz sustain law changed; `check_drive.py` prints
+the level it needs and D16 checks it).
 
 ```cpp
 struct DriveParams
@@ -1018,23 +1165,37 @@ block; level `SmoothedValue`. **New:** `getLatencySamples()` returns
 samples, `[ver: drive/verification.md V:28, V:109]`). The audio is unchanged; the residual
 0.137 sample is a comb null near 175 kHz, far out of band.
 
+Non-finite input: `DriveFx::process` replaces every NaN and infinity in the block with 0
+before any type (or the switcher's dry copy) sees it; finite samples are untouched, so the
+Classic null still holds. A finite input near `FLT_MAX` can overflow Classic's float
+half-bands: if Classic's output holds a non-finite sample, those samples become 0 and Classic
+is reset (`clearNonFinite`, `Impl::run`). Where its output is finite it is passed on exactly.
+
 #### 4.3.4 Shared engine for Screamer, Distortion, Fuzz
 
 ```
 x  = in * V_REF                          // V_REF = 1 V per digital full scale [choice; study R1]
-x  = HP1(x, 15.9 Hz)                     // DC block, TPT one-pole, base rate [study: R3, Yeh input coupling]
+x  = clamp(x, ±1000 V)                   // a NaN fails the comparison and becomes 0 [choice: keeps any finite input finite]
+x  = HP1(x, 15.9 Hz)                     // DC block, bilinear one-pole in double, base rate [study: R3, Yeh input coupling]
 x↑ = upsample_N(x)                       // N from the rate table below
-y↑ = TYPE(x↑)                            // all linear voicing, clipping and the clean path at N·fs
+y↑ = TYPE(x↑)                            // all linear voicing, clipping, the clean path AND the tone stage at N·fs
 y  = downsample_N(y↑)
-y  = TONE_type(y)                        // base rate, coefficients every 32 samples from smoothed T
+y  = HP(y, 1.9 Hz)                       // Fuzz only: CB4 into the output bias divider (see Fuzz)
 out = y * level / V_REF
 ```
 
+The tone stage runs at N·fs, not at the base rate: at the base rate its bilinear warping
+cost 1.2 to 1.4 dB at 10 kHz (48 kHz) against the 0.5 dB D8 allows (comment in
+`Drive.cpp`, `runOversampled`).
+
 - **Oversampling factor** by session rate `[choice: keeps the internal rate ≥ 176.4 kHz,
   which is what puts 4x at 48 kHz below the alias limit]`: N = 4 for fs < 80 kHz,
-  N = 2 for 80 ≤ fs < 160 kHz, N = 1 for fs ≥ 160 kHz. `juce::dsp::Oversampling<float>`,
+  N = 2 for 80 ≤ fs < 160 kHz, N = 1 for fs ≥ 160 kHz. **Distortion runs at twice that**
+  (N = 8, 4, 2): its 67 dB op-amp stage into a rail makes the edge a near-ideal step, and
+  at 4x even the second-order kernel leaves −67 dB of images for a 7.5 kHz tone
+  (`Drive.cpp`, `factorFor`). `juce::dsp::Oversampling<float>`,
   `filterHalfBandPolyphaseIIR`, max quality, `useIntegerLatency = false`, one object per
-  oversampled type's stage count, created in `prepare()`.
+  stage count (0 to 3), created in `prepare()`.
 - **Why the linear voicing runs at N·fs:** the TS sums the clean signal with the clipped
   excess; doing both after the same upsampler keeps them aligned to the sample (the
   study's sketch added an undelayed base-rate `x` to a signal 4.4 samples late, which
@@ -1043,27 +1204,58 @@ out = y * level / V_REF
   `u = g(v) = v + k·sinh(v/a)`, k = 2·Is·R. Solve for v per oversampled sample in double:
   ```
   v = sign(u) * min(|u|, a*asinh(|u|/k))            // upper bound start
-  repeat 4: v -= (v + k*sinh(v/a) - u) / (1 + (k/a)*cosh(v/a))
-  F(u) = u*v - v*v/2 - k*a*(cosh(v/a) - 1)           // exact antiderivative of v(u)
-  y = (F(u[n]) - F(u[n-1])) / (u[n] - u[n-1])  if |u[n]-u[n-1]| > 1e-6 V
-    = v((u[n] + u[n-1]) / 2)                   otherwise
+  repeat 3: Halley step on f(v) = v + k*sinh(v/a) - u   // reaches double precision from 1e-6 to 1e5 V
+  F1(u) = u*v - G(v),            G(v) = v*v/2 + k*a*(cosh(v/a) - 1)
+  F2(u) = u*u*v/2 - u*G(v) + B(v)                      // B' = g^2/2, written so an error e in v moves F1, F2 by O(e^2)
+  D(a, b) = (F2(a) - F2(b)) / (a - b)                  // mean of F1 over [b, a]
+  y = 2 (D(u, u1) - D(u1, u2)) / (u - u2)              // u1, u2 the two previous inputs
   ```
-  First-order ADAA at N·fs (half-sample delay at N·fs). 4 iterations leave < 1e-6 V
-  error over ±120 V `[ver: V:89, measured 7.8e-7]`.
+  **Second-order ADAA** at N·fs (one oversampled sample of delay), not the first-order
+  scheme this spec first had: at full gain the diodes are driven so hard that the edge is a
+  step within a fraction of a sample, and a first-order kernel at 4x left images at −46 dB
+  (Distortion, 7.5 kHz) to −57 dB (1.2 kHz) below 20 kHz (`Drive.cpp`, `DiodeClipper`). Where
+  the divided differences are ill-conditioned (spans below 1e-5 (1 + mean |u|) V) the limits
+  are used: an end-corrected trapezoid for D, and the previous v for y. Distortion's 1 kΩ
+  curve below its rail is a fixed function, so a 1024-interval cubic Hermite table of v(u)
+  gives the Halley start and one step replaces three.
 - **Diode constants (all three types):** Is = 2.52 nA, n = 1.752, a = n·V_T =
   1.752 × 25.85 mV = 45.3 mV `[circuit: the standard SPICE model of the 1N4148/1N914
   (D1N4148: IS=2.52n N=1.752), which the TS-808 (1S1588/1N914), RAT (1N914) and Big Muff
   (1N914) use; this re-sources the study's decompiled values as V:126 asked]`.
-- **Latency:** `std::lround (os.getLatencyInSamples() + 0.5 / N)` → 5 at 44.1/48 kHz
-  (4.433 + 0.125 `[ver: V:76]`), 3 at 88.2/96 kHz, 1 at 176.4/192 kHz. Constant per
-  (type, rate).
-- **Smoothing:** d, T, level through 20 ms one-poles; PRE coefficients recomputed every
-  32 base samples (128 at 4x) from smoothed d; TONE coefficients every 32 samples from
-  smoothed T; level per sample.
-- **Pot taper** for Drive, Distortion and Sustain: `A(p) = (81^p − 1)/80` (10 % of the
-  resistance at mid travel) `[circuit: all three are audio-taper ("A") pots; 81 is the
-  common 10 %-at-half A-taper convention. The study's d² was fitted to harness-only gain
-  steps (V:97), so it is not used]`.
+- **Latency:** `lround (halfBandLatency(N) + clippers / N)`, `latencyFor` in `Drive.cpp`:
+  the half-band cascade's low-frequency delay in base samples (0 / 3.1373 / 4.4327 / 4.9514
+  for 0 to 3 stages) plus one oversampled sample per clipper (Screamer and Distortion 1, Fuzz 2,
+  each divided by N). Per type and rate, from that formula:
+
+  | rate | Screamer (N) | Distortion (N) | Fuzz (N) |
+  |---|---|---|---|
+  | 44.1 / 48 kHz | 5 (4) | 5 (8) | 5 (4) |
+  | 88.2 / 96 kHz | 4 (2) | 5 (4) | 4 (2) |
+  | 176.4 / 192 kHz | 1 (1) | 4 (2) | 2 (1) |
+
+  Constant per (type, rate). (This spec first had 3 at 88.2/96 kHz and 1 at 176.4/192 kHz
+  for every oversampled type: it predates the second-order clipper, the second Fuzz clipper
+  and Distortion's doubled factor.)
+- **Smoothing:** d, T and level each go through a `Glide`: two one-poles in series, each half
+  the 20 ms section default (10 ms each, so 63 % at about 21 ms like the single 20 ms pole),
+  without the corner a single pole puts at the start of a move; within 1e-6 (1 + |target|)
+  of its target it lands on the target and reports settled `[choice: fx::Smoother in float
+  stalled about 3e-5 short for good]`. While a glide runs, the coefficients **follow every
+  base sample** (a pass of one base sample); once all glides have landed, work goes in
+  passes of 32 base samples and nothing is recomputed. Held for 32 samples the coefficients
+  stepped audibly (−59 dBc under a 98 Hz note). The second-order filters (Screamer PRE,
+  tone stages) are **trapezoidal state-variable filters** (Zavalishin), the one-poles
+  trapezoidal integrators: their states are the integrators', so retuning them while they
+  run moves the response smoothly (a direct form retuned every sample left −54 dBc above
+  3 kHz after a tone step under a 98 Hz note). Worst zipper over all knobs now −84.2 dBc
+  (row Z). A change of series resistance re-evaluates the clipper's stored previous
+  inputs on the new curve (`refresh`) so it does not put a step into the next difference.
+- **Pot taper** for the Screamer's Drive pot and the Distortion's Filter pot:
+  `A(p) = (81^p − 1)/80` (10 % of the resistance at mid travel) `[circuit: both are
+  audio-taper ("A") pots; 81 is the common 10 %-at-half A-taper convention]`. The Distortion
+  gain and the Fuzz sustain are not pot tapers: they are laws in dB (§4.3.5).
+- **Non-finite input:** `DriveFx::process` zeroes NaN and infinity before the switcher; the
+  pedal types also clamp to ±1000 V, and states outside 1e−15…1e12 are cleared once per block.
 
 #### 4.3.5 Type algorithms
 
@@ -1079,7 +1271,8 @@ pedals", DAFx-07; study: R3]`:
   is 587 Hz at its default Bass setting and moves with that knob `[ver: V:64]`; our type
   models the pedal, not that plugin, and its acceptance is against the circuit.)
 - Clip: `u = PRE(x↑)`, v from the clipper with k = 2·Is·R2 (diodes across R2).
-- Clean path: `y↑ = x↑ + v` `[circuit: non-inverting stage, output = input + feedback-network voltage]`.
+- Clean path: `y↑ = x↑[n−1] + v[n]` `[circuit: non-inverting stage, output = input + feedback-network voltage]`;
+  the input is delayed by the one oversampled sample the ADAA adds, so the two stay aligned.
 - TONE (base rate), the TS tone/volume stage `[circuit: TS-808 via Yeh: Rs 1 kΩ, Cs 0.22 µF,
   Ri 10 kΩ, Rf 1 kΩ, tone pot 20 kΩ linear, Rz 220 Ω, Cz2 0.22 µF]`, derived here (the
   study's expression left `Rr` undefined): with T' = clamp(T, 0.005, 0.995)
@@ -1092,7 +1285,9 @@ pedals", DAFx-07; study: R3]`:
   D2 = Cs C (G Rz + 1)
   ```
   (Op-amp node: Vout = Va·(1 + Rf·Gr·Yw/(G + Yw)), Yw = sC/(1 + s Rz C); input node loaded by
-  Gl·Yw/(G + Yw).) T' → 1 is bright (+14.8 dB shelf), T' → 0 dark. Bilinear, c = 2·fs.
+  Gl·Yw/(G + Yw).) T' → 1 is bright (+14.8 dB shelf), T' → 0 dark. Bilinear, c = 2·N·fs
+  (the tone stage runs at the oversampled rate, §4.3.4), as a trapezoidal state-variable filter.
+  Known limit, not fixed: the Screamer droops 0.84 dB at 10 kHz (commit `0af54cf`).
 
 **Distortion (2)** — `[circuit: ProCo RAT; values confirmed in the ElectroSmash RAT analysis
 (electrosmash.com/proco-rat: 47 Ω/2.2 µF → 1539 Hz, 560 Ω/4.7 µF → 60 Hz, 100 kΩ pots,
@@ -1100,52 +1295,86 @@ pedals", DAFx-07; study: R3]`:
 (LM308, ~67 dB, filter 32 kHz → 475 Hz)]`:
 
 - Gain stage: `G(s) = 1 + Zf/Zg`, Zg = (47 + 1/sC1) ‖ (560 + 1/sC2), C1 = 2.2 µF, C2 = 4.7 µF;
-  Zf = Rd ‖ (1/sCf), Rd = 100 kΩ·A(d), Cf = 100 pF `[circuit: the RAT's 100 pF across the
-  Distortion pot — not stated by the two pages above; confirm against a schematic and cite
-  it in Drive.cpp]`.
-- Op-amp bandwidth: one-pole low-pass at f_gbw = GBW/|G(j·2π·1 kHz)|, recomputed with d,
-  GBW = 2.3 MHz `[fit: study R5, AT5 RAT small-signal response falling 6 dB/oct from 1 kHz
-  at full gain (drive/evidence/fr_all.tsv); harness-only evidence, V:97 — revisit by ear]`.
-  LM308 slew limiting is not modelled `[choice]`.
+  Zf = Rd ‖ (1/sCf), Cf = 100 pF `[circuit: madbeanpedals "Runt2020" schematic and BOM,
+  a RAT clone: R4 47R + C6 2u2, R5 560R + C5 4u7, GAIN 100kA with C4 100pF across it, R6 1k,
+  D1/D2 1n914, CUT 100kA in series with R7 1k5 into C8 3n3, LM308 with C3 30pF; cited in
+  Drive.cpp]`. **The Distortion knob is a law in dB, not the pot's A taper:** the stage's
+  1 kHz gain runs linearly in d from 0 dB (knob 0) to 62 dB (knob 36),
+  `Rd = Z (G^d − 1)`, Z = |Zg(j·2π·1 kHz)|, G = 1 + 100 kΩ/Z `[choice]`. Through the A taper
+  half the knob was already 42 dB and from a sixth of its travel up the output moved
+  1.5 dB for 36 dB of input; now the middle is 31 dB (7.0 dB of output for 18 dB of input
+  at the middle, was 2.6, commit `0af54cf`). Zf's pole is kept below 0.45·N·fs.
+- Op-amp bandwidth: one-pole low-pass at f_gbw = min(GBW/|G(j·2π·1 kHz)|, 0.45·N·fs),
+  recomputed with d, GBW = 1 MHz `[circuit: LM308 data sheet (Dec 1994), "Open Loop
+  Frequency Response": with 30 pF compensation the gain crosses unity near 1 MHz, falling
+  6 dB/oct]` (the study's 2.3 MHz was a fit to harness-only evidence, V:97, and is no
+  longer used). LM308 slew limiting is not modelled `[choice]`.
 - Rail: `u_r = clamp(u, −4.5 V, +4.5 V)` `[circuit: 9 V supply, op-amp biased at 4.5 V]`,
-  folded into the clipper's ADAA: for |u| > 4.5 the composite function is v(4.5·sign u)
-  and its antiderivative continues linearly, `F(u) = F(4.5) + v(4.5)·(|u| − 4.5)`.
+  folded into the clipper's ADAA: for |u| > 4.5 the composite function is v(4.5·sign u),
+  `F1(u) = F1(4.5) + v(4.5)·(|u| − 4.5)` and F2 continues as its integral.
 - Clipper: series 1 kΩ into the diode pair to ground, k = 2·Is·1 kΩ `[circuit: RAT 1 kΩ
-  series resistor — confirm, as above]`. No clean path.
-- TONE (base rate): one-pole low-pass, R = 1.5 kΩ + 100 kΩ·(1 − T) (linear pot),
-  C = 3.3 nF → 32.2 kHz (T = 1) … 475 Hz (T = 0); TPT one-pole, clamped to 0.45·fs.
+  series resistor, same schematic]`. No clean path.
+- TONE (at N·fs): one-pole low-pass, R = 1.5 kΩ + 100 kΩ·A(1 − T) (the CUT pot is an audio
+  taper in the schematic; the spec assumed linear, the ends are the same),
+  C = 3.3 nF → 32.2 kHz (T = 1) … 475 Hz (T = 0), clamped to 0.45·N·fs.
 
 **Fuzz (3)** — `[circuit: Big Muff π early-version values, guitarscience.net "bigmuff.pdf"
 Fig. 1 and §4 (tone network, notch at 900 Hz)]`:
 
 - Booster: inverting, gain RB/RG1 = 470 k/39 k = 12.05 with CF1 = 470 pF across RB →
   low-pass 720.5 Hz.
-- Sustain: attenuation A(d) between booster and stage 1 `[circuit: sustain pot as a divider;
-  A taper assumed]`.
+- Sustain: a divider between booster and stage 1 `[circuit: "SUSTAIN B100K", PedalPCB
+  MuffinFuzz]`. **The knob sets it in dB:** gain p = 10^(−78 (1 − d)² / 20), i.e. −78 dB at
+  knob 0 to the full pot at knob 36 (−44 / −19.5 / −4.9 dB at the quarters) `[choice]`. Two
+  clipping stages of 31 dB each saturate on anything the first passes, so the pedal follows
+  the pick only where the divider keeps a note below the second stage's knee, near −60 dB
+  for a −30 dBFS note; the floor puts a full strum there at knob 0. The middle stays fully
+  saturated because D14 reads the tone stack through the clipped stages, which leaves it
+  under 1 dB of dynamics (row Y2). The wiper's Thevenin resistance p (1 − p)·100 kΩ is added
+  to the stage-1 source resistance Rs (10 kΩ) in the loop gain below.
 - Two clipping stages, each: gain RB/RG = 470 k/10 k = 47 with CF = 470 pF across RB
   (low-pass 720.5 Hz) → clipper with diodes across RB, k = 2·Is·470 kΩ → coupling high-pass
-  1 µF into 10 kΩ = 15.9 Hz. (The study's 1.3 kHz / 100 Hz / d^3.3 were fits; replaced by
-  the circuit.) Small-signal gain at full sustain is above the references' 46–51 dB because
-  transistor loading is not modelled; it is fully saturated in normal use either way.
-- TONE (base rate), passive network: Vin feeds RT = 27 kΩ to node A with CT = 10 nF to
-  ground (low-pass, 589 Hz) and CB = 4.7 nF to node B with RB = 27 kΩ to ground (high-pass,
-  1254 Hz); the tone pot Rm = 100 kΩ linear joins A and B, wiper = output (unloaded,
-  buffered after). With T = wiper position from A (bass) to B (treble):
+  1 µF into 10 kΩ = 15.9 Hz (the booster is followed by the same coupling into stage 1).
+  (The study's 1.3 kHz / 100 Hz / d^3.3 were fits; replaced by the circuit.)
+- **Transistor loading** (guitarscience.net "bigmuff.pdf" eq. 9, 10, 14; RC 47 kΩ, RE 100 Ω,
+  base divider 470 k/100 k, 9 V, β = 200, V_BE 0.65 V, I_C = 99.8 µA, r_π = β V_T / I_C =
+  51.8 kΩ): each stage is `A(s) = α RB/Rs / ((1 + α + RB/RC) + (1 + α) s RB CF)`,
+  α = β/(1 + r_π/Rs), still first order. The loading takes 1.0 dB (booster) and 2.5 dB
+  (clipping stages) off the ideal gains and lifts the 720 Hz poles to 803 and 937 Hz.
+- **Even harmonics:** each clipping stage's output is `v (1 + σ v / 2)` with
+  σ = (r_π/Rs)/(1 + r_π/Rs) / ((1 + Tr) I_C RC) (0.0454 per volt for a clipping stage,
+  Tr = α/(1 + RB/RC) the return ratio), from the collector current's dependence on its swing;
+  the diodes keep |v| below a volt, where the next term is negligible. The asymmetry is derived
+  from the bias, not set by hand (row A1).
+- TONE (at N·fs), passive network `[choice: the 1975 "Ram's Head" stack, coda-effects.com
+  "big-muff-tonestack-dealing-with-mids", 100 kΩ linear tone pot from muzique.com/lab/dtone.htm;
+  the paper's 27 k/10 nF/4.7 nF/27 k stack dipped only 3.4 dB at 900 Hz, this one 6.1 dB]`:
+  Vin feeds RT = 39 kΩ to node A with CT = 10 nF to ground (low-pass, 408 Hz) and CB = 4 nF to
+  node B with RB = 22 kΩ to ground (high-pass, 1809 Hz); the tone pot Rm = 100 kΩ linear
+  joins A and B through the wiper W, with 0.5 % end resistance, and the wiper is loaded by
+  RL = 470 kΩ ‖ 100 kΩ (the output stage's bias divider, so the stack is no longer unloaded).
+  With T = wiper position from A (bass) to B (treble), Gm_a = 1/(T Rm), Gm_b = 1/((1 − T) Rm):
   ```
-  (Vin - VA)/RT = VA s CT + (VA - VB)/Rm
-  (Vin - VB) s CB = VB/RB + (VB - VA)/Rm
-  Vout = (1 - T) VA + T VB
+  (Vin - VA)/RT = VA s CT + (VA - VW) Gm_a
+  (Vin - VB) s CB = VB/RB + (VB - VW) Gm_b
+  VW (Gm_a + Gm_b + 1/RL) = VA Gm_a + VB Gm_b
+  Vout = VW
   ```
-  Solve symbolically for a second-order H(s), bilinear, c = 2·fs. Rm is not legible in the
-  cited figure `[circuit: 100 kΩ is the usual value — confirm]`.
-- Output stage gain is folded into `drive_level`.
+  Node W is eliminated, then A and B, giving a second-order H(s) (`updateTone`), bilinear,
+  c = 2·N·fs, as a trapezoidal state-variable filter.
+- **Output stage:** after the down-sampler, a 1.9 Hz high-pass (CB4 1 µF into RB41 470 k ‖
+  RB42 100 k) takes away the DC the asymmetry makes; the rest of the output stage's gain is
+  folded into `drive_level`.
 
 **Boost (4):** `y = x · 10^(gain/20)`, then TPT one-pole low-pass at `drive_tone` Hz, level.
 Linear, no oversampling, latency 0. `[study: R7, GR6 GainBoost flat, gain 30 dB × knob]`
 
 **Treble (5):** first-order high shelf, 0 dB below, `drive_gain` dB above, geometric centre
 f_c = `drive_tone`: `H(s) = (1 + s/ωz)/(1 + s/ωp)`, ωz = ωc/√G, ωp = ωc·√G,
-G = 10^(gain/20); bilinear prewarped at ωc; level. Linear, latency 0. `[choice; study: R7
+G = 10^(gain/20); bilinear prewarped at ωc; level. Linear, latency 0. Built as
+`x + (G − 1)(x − LP(x))` with the one-pole LP at ωp, so a gain move is a smooth multiply; gain,
+tone and level glide as in §4.3.4 and the filter follows them every sample (a 32-sample staircase
+zippered at −77 dBc). `[choice; study: R7
 "first-order high-pass shelf"; GR6 treble booster +37 dB at 3.6 kHz vs +12 dB at 110 Hz]`
 
 Not built (study "not recommended"): asymmetric SD-1 clipping, neural fuzz, capacitor
@@ -1160,13 +1389,18 @@ reported latency (the host re-aligns at its next opportunity); the fade hides th
 
 Latency as the type table, exposed twice: `int getLatencySamples() const noexcept` (current
 type, prepared rate) and `static int latencyFor (int type, double sampleRate) noexcept`, a pure
-function the processor's latency rule can call from the message thread (§6.3). CPU per instance (the factor adapts to the rate, so budgets
-hold at every rate): Classic ≤ 0.35 %; Screamer, Distortion ≤ 2.0 %; Fuzz (two clippers)
-≤ 3.0 %; Boost, Treble ≤ 0.05 %.
+function the processor's latency rule can call from the message thread (§6.3). The type table
+gives 48 kHz; the figures at every rate are in §4.3.4 (Classic 3 at every rate; Screamer 5 / 4 / 1,
+Distortion 5 / 5 / 4, Fuzz 5 / 4 / 2 at 44.1–48 / 88.2–96 / 176.4–192 kHz; Boost, Treble 0).
+CPU per instance (the factor adapts to the rate, so budgets
+hold at every rate), as `BUDGETS` in `check_drive.py`: Classic ≤ 0.35 %; Screamer ≤ 2.0 %;
+Distortion ≤ 3.5 % and Fuzz ≤ 4.0 % (raised from 2.0 / 3.0 % by the coordinator for
+the anti-aliasing scheme, per the script's comment); Boost, Treble ≤ 0.05 %. After a knob move the CPU must return to
+the settled figure (row C).
 
 #### 4.3.8 fxbench keys
 
-`type gain tone level`; `--latency` prints the reported latency.
+`type gain tone level on`; `--latency` prints the reported latency.
 
 #### 4.3.9 Acceptance (`check_drive.py`)
 
@@ -1181,7 +1415,8 @@ of them `[study: R2 metric; ver: V:77 "worst below 20 kHz", not "below f0"]`.
 |---|---|---|
 | D1 | Classic null (§2.11) | 0 differing samples |
 | D2 | Classic reported latency at 44.1/48/96/192 kHz | 3; measured phase delay at 1 kHz 3.14 ± 0.05 samples |
-| D3 | New-type reported latency | equals `lround` of measured group delay at 1 kHz (Screamer d = 0, −60 dBFS) at every rate; 5 at 48 kHz |
+| D3 | Screamer reported latency | equals `lround` of the measured group delay at 1 kHz (gain 0, −60 dBFS, circuit phase divided out) at 22.05, 44.1, 48, 96, 192 kHz; 5 at 48 kHz |
+| L | Distortion and Fuzz reported latency (the script's "L latency" rows) | same rule as D3 (Distortion gain 0 at −60 dBFS; Fuzz gain 18 at −120 dBFS); 5 at 48 kHz |
 | D4 | Alias, Screamer, f0 ∈ {3830, 5000, 6100, 7919} Hz | worst ≤ −50 dB, sum ≤ −45 dB (today −21.4 / −20.8; tanh model of this scheme −53.8…−58.5, V:85) |
 | D5 | Alias, Distortion and Fuzz, same f0 | worst ≤ −45 dB, sum ≤ −40 dB (hard-knee clipping; tanh hard-clip model −51.6 sum, study alias_schemes.tsv) |
 | D6 | Alias at 1244 Hz, −6 dBFS, d = 1, all three | sum ≤ −80 dB `[study: R2 proof]` |
@@ -1197,6 +1432,26 @@ of them `[study: R2 metric; ver: V:77 "worst below 20 kHz", not "below f0"]`.
 | D16 | Level | Distortion and Fuzz at their starting points: −18 dBFS 1 kHz in → −12 ± 1 dBFS peak out (Screamer's start is the frozen defaults and is exempt) |
 | D17 | Tone sweep zipper: T 0 → 1 over 0.5 s, Screamer d = 0, −40 dBFS 1 kHz | non-harmonic content above 4 kHz ≤ −80 dBc |
 | D18 | Split-lane alignment (processor test, §6.3): Classic drive at gain 0, −40 dBFS, lane A; lane B empty; summed | flat within 0.5 dB to 10 kHz, the tone filter's own response divided out (today: comb null near 7.38 kHz). Restated from 16 kHz: Classic's frozen 2x IIR delay rises from 3.14 samples at low frequency to 3.84 at 16 kHz, so a 3-sample wait cannot hold 0.5 dB there at 44.1/48 kHz (measured through the processor: −0.38 / −0.25 dB worst to 10 kHz, −8.2 / −3.9 dB at 16 kHz; 96 kHz −0.02 dB) |
+| D18n | The same split-lane test for Screamer (gain 0, −60 dBFS), Distortion (gain 0, −60 dBFS) and Fuzz (gain 0, −120 dBFS), with the lag taken from `--latency`, at 44.1 and 48 kHz | flat within 0.5 dB to 10 kHz (16 kHz reported) |
+| X1 | DC: Screamer, Distortion, Fuzz, Boost, Treble at gain 36, tone 12 kHz, 100 Hz −6 dBFS, 2 s | mean ≤ −80 dBFS |
+| X2 | Gain step 0 → 36 dB at 1 s under a 1 kHz −18 dBFS sine, every new type | largest sample step at the move ≤ 1.1 × the largest step the steady signal makes at any gain in 0, 3 … 36 dB |
+| X3 | Type switches 0-1-2-3-4-5-1 under a 220 Hz −12 dBFS sine at gain 24, tone 4000 | largest step in a switch ≤ 1.1 × the larger neighbouring steady step |
+| Z | Knob zipper, every knob (gain, tone, level) of every new type: steps and 50 ms ramps both ways at block 64, under a 98 Hz note and 40–800 Hz noise at a level that keeps the circuit linear (Screamer −65, Distortion −70, Fuzz −110, Boost and Treble −12 dBFS) | worst frame's power above 3 kHz during the move ≤ −80 dBc re the settled output (worst now −84.2 dBc); the rest floor is reported |
+| C | CPU one second after a move of all three knobs (30 s pink noise, `--bench`, min of 3) | ≤ 1.05 × the CPU of the settled values (the Treble shelf used to cost 23 % more after a gain move) |
+| Y1 | Dynamics, guitar-like 110 Hz stack −30 → −12 dBFS peak, gain 0, Screamer, Distortion, Fuzz | output moves ≥ 12 dB for the 18 dB |
+| Y2 | The same at gain 18: Screamer and Distortion | output moves ≥ 5 dB |
+| Y2 (Fuzz, "sustain mid") | The same at gain 18, Fuzz | output moves ≤ 3 dB for the 18 dB: a Big Muff is a sustainer and D14 requires it saturated at half sustain, so it follows the pick only over the first part of the knob (0.7 dB measured, commit `0af54cf`) |
+| Y3 | The same at gain 36, all three | output moves ≤ 6 dB |
+| N1 | NaN and ±Inf runs in a 220 Hz sine, every type, blocks 1, 37, 512 | finite output, bit-identical to the render with the bad samples zeroed |
+| N2 | One 3e38 sample, every type | finite output; from 0.9 s on (0.5 s after the sample) within 1e-3 of the clean render |
+| A1 | Fuzz even harmonics | H2 at 1 kHz −18 dBFS (gain 18, tone 2449) between −60 and −30 dB; DC ≤ −80 dB re peak at gain 36, tone 500, 100 Hz −6 dBFS |
+| A2 | Distortion symmetry | H2 at 1 kHz −18 dBFS, gain 0 / 18 / 36 ≤ −60 dB |
+
+The script also prints, without a bar: the latency table, the alias table (also at 1, 2.5,
+3.137, 5, 7.5 kHz, 44.1 and 48 kHz), harmonics, level against gain, pre-clip emphasis and level
+curves. **Known limits, not fixed** (commit `0af54cf`): aliasing for input tones above 5 kHz
+(Fuzz −43.1 dBc worst; an 8x factor would double the CPU) and the Screamer's 0.84 dB droop at
+10 kHz. The D4 to D7 bars hold at the tones they name.
 
 ### 4.4 EQ — `EqFx` (`src/dsp/Eq.h/.cpp`)
 
@@ -1283,6 +1538,11 @@ block is processed in 16-sample sub-blocks with `coeffs = design(s2)` at each su
 start; when |v_t − s2| ≤ 1e-4 the band snaps `s1 = s2 = v_t`, designs `design(v_t)` once
 and stops moving. First `setParameters` after `prepare/reset`: snap (no ramp). **A static
 block is processed in a single call**, as today (on Intel `snapToZero` acts per call).
+**A smoothing segment snaps only if its target has not moved:** when a ramp's last 16-sample
+segment ends, the smoother snaps onto the value the coefficients now hold only if the knob's
+target still equals it; if the knob was moved again meanwhile it keeps smoothing toward the new
+target. (Before, it snapped to the new target while the filter held the old design and then
+jumped: −8.2 dBFS of high-frequency content on a treble move under a low note, now −70 dBFS, row E24.)
 
 Addition 2 — **exact flat** (D2 a) `[study: R2/§8; ver: V:20 cause = arm64 FMA]`: when all
 three knob targets are exactly 5.0f and no band is moving, `process` returns without
@@ -1290,6 +1550,17 @@ touching the audio. On entering that state the three filters are `reset()` (thei
 flat is ≈ 0, so nothing audible is lost); on leaving it they start from zero state with
 `design(s2)`. Any setting other than exactly 5.0/5.0/5.0 runs the filters exactly as
 today (non-flat static renders stay bit-identical; the flat render becomes the input).
+
+Addition 3 — **non-finite input** (all types): `EqFx::process` replaces every NaN and infinity
+with 0 before any type or the switcher sees it (finite samples are untouched, so Classic stays
+bit-identical). A finite sample near `FLT_MAX` can still overflow Classic's float biquads: if
+the block's last output sample is non-finite, the three filters are `reset()` and the non-finite
+samples become 0 (`guardOverflow`). The new types read their input through
+`sanitisedInput`: |x| ≥ 1e6 or NaN is 0 (§2.2's `fx::sanitise` bound), and every recursive
+double state outside 1e−15 … 1e12 (or non-finite) is zeroed once per block. Row E21.
+
+`reset()` clears all four engines and makes the next block start on the requested type
+outright (no switch in flight, nothing left to replay; row E23).
 
 The amp block uses the same Classic path (smoothing + exact flat), called on the mono
 buffer at `PluginProcessor.cpp:1263-1268`.
@@ -1321,13 +1592,23 @@ constants equal Classic's so Parametric at 10/10/10 matches Classic's boost resp
 - **Tilt** (first order, pivot 700 Hz `[study: R2, own constant]`): T = 10^(tilt/20),
   gp = tan(π·700/fs), `y = ((T + gp) x + (gp − T) x1 − (T gp − 1) y1)/(1 + T gp)`; −tilt dB
   at DC, +tilt dB at Nyquist, 0 dB at 700 Hz `[study: design.py:325-335]`.
-- **Mid bell decramping above 2 kHz** `[study: R3; formula = Vicanek eq. 17 at Nyquist,
-  ver: V:31]`: for f ≥ 2.5 kHz the bell uses the Orfanidis prescribed-Nyquist-gain design
-  expressed as SVF parameters, exactly as `design.py:126-139`
-  (G = 10^(dB/20), GB = √G, w0 = 2πf/fs, Dw = w0/Q, **with the guard Dw ← min(Dw, 0.98π)**
-  and **(1, 0, 0) when |dB| < 1e-6**; g = √W2, k = A/g, m0 = G1, m1 = (B − G1 A)/g,
-  m2 = 1 − G1). Below 1.5 kHz the plain bell; between 1.5 and 2.5 kHz the two parameter sets
-  (g, k, m0, m1, m2) are crossfaded linearly in f `[study: blend width tagged guess]`.
+- **Mid bell: Vicanek-matched at every frequency** (`matchedBell`; replaces the study's
+  Orfanidis decramping above 2.5 kHz with a crossfade from 1.5 kHz, which was 1.9 dB off at
+  44.1 kHz for wide bells and 13.8 dB at 22.05 kHz, row E20). The analog prototype is
+  `(s² + (A/Q) s + 1)/(s² + s/(A Q) + 1)`, A = 10^(|dB|/40), matched after Vicanek, "Matched
+  Second Order Digital Filters" (2016), peaking EQ: the poles are the analog poles by impulse
+  invariance (ζ = 1/(2AQ), a1, a2 from e^(−ζ w0)); the numerator is the minimum-phase one whose
+  magnitude equals the analog curve at DC, at f0 and at a third frequency fm. Vicanek's own
+  third conditions (zero slope at f0, or the gain at Nyquist) leave 1.1 and 1.6 dB at Q 0.5 and
+  22.05 kHz, so fm sits a fraction c of the way from f0 to Nyquist: c = 0.75 up to f0 = 0.45
+  Nyquist, falling to 0.02 at 0.74 Nyquist (slope 2.5 per unit of f0/Nyquist), fm never above
+  20 kHz `[own fit: minimax error against the analog bell over Q 0.5–8, 22.05–192 kHz]`. A cut
+  is the boost turned upside down (exact for this prototype). The result is converted to SVF
+  parameters (`fromBiquad`: g = √(d0/d2), k = d1/(d2 g), m0 = n2/d2, m1 = n1/(d2 g) − m0 k,
+  m2 = n0/d0 − m0). **Exactly 0 dB gives m = (1, 0, 0)** with the design's own g, k, so a gain
+  ramp away from 0 dB starts from the same poles; a non-finite or degenerate design falls back
+  to the plain bell. Worst error 0.27 dB at 44.1 kHz for Q 0.5 to 4 (commit `fe2fee6`; the bar
+  is E20). The same bell serves every Graphic band (§4.4.6).
 - **Smoothing** `[study: R1/R2]`: every control (bass, mid, treble knob units; mid freq and
   cut frequencies in log2 Hz; mid Q in log2; tilt and level dB) through the two cascaded
   5 ms one-poles; every 16 samples compute the target (g, k, m0, m1, m2) for each section
@@ -1336,10 +1617,20 @@ constants equal Classic's so Parametric at 10/10/10 matches Classic's boost resp
   −67 dBFS zipper because the output mix applies gain directly `[study: ours_zipper.tsv]`.
 - **Exact flat and skipping:** bells and shelves at 0 dB give m = (1, 0, 0) — an exact
   pass-through while running, so they are never skipped. Low cut at ≤ 20.5 Hz, high cut at
-  ≥ 19999 Hz, tilt at exactly 0 dB and level at exactly 0 dB are **skipped** once settled,
+  ≥ 19999 Hz, tilt at 0 dB and level at 0 dB are **skipped** once settled,
   and their state is zeroed on entering the skip (re-engagement starts from zero state,
   ramping from neutral) `[choice: V:37 — the study left re-engagement unspecified]`.
   Parametric at its defaults is therefore a bit-exact pass-through.
+- **A control within 1e-3 dB of neutral counts as neutral** (`kNeutralDb`): the host hands a
+  stepped range's default back with float noise (`eq_level` and the graphic bands read
+  1.79e-7 dB, `eq_tilt` 8.94e-8 dB; measured host noise 1.8e-7 dB), which used to run the level
+  and tilt stages and make a fresh block a near, not an exact, pass-through (risk D-23, now
+  fixed in the engine). 1e-3 dB sits a thousand times above that noise and a hundred times
+  below the smallest deliberate move, one 0.1 dB step `[choice]`. It applies to level, tilt,
+  every graphic band, and the Parametric bass/mid/treble knobs (a knob whose gain
+  4/3/2 dB per unit × (knob − 5) is under 1e-3 dB reads as exactly 5), in Parametric, Graphic
+  and Stack level. Classic is exempt (its knobs read back exactly). Rows E22a, E22b.
+- **Non-finite input** is silence for every type (§4.4.3, Addition 3).
 
 #### 4.4.5 Stack (type 2)
 
@@ -1368,10 +1659,10 @@ form `[study: report:426, untested]`. Voice changes go through the switcher (key
 #### 4.4.6 Graphic (type 3)
 
 Seven bells in series at 100, 200, 400, 800, 1600, 3200, 6400 Hz, ±12 dB, constant Q = √2
-(half-gain bandwidth one octave) `[study: R5; Q is the study's own]`, SVF bell of §4.4.4;
-1600 Hz falls in the decramp blend (weight 0.1), 3200 and 6400 Hz use Orfanidis. Smoothing
-as Parametric. Bands at 0 dB are exact (m = (1, 0, 0)); level skipped at 0 dB. No ripple
-correction `[study: R5]`.
+(half-gain bandwidth one octave) `[study: R5; Q is the study's own]`; every band is the SVF
+bell of §4.4.4, Vicanek-matched (`matchedBell`). Smoothing
+as Parametric. Bands within 1e-3 dB of 0 are exact (m = (1, 0, 0)); level skipped at 0 dB. No
+ripple correction `[study: R5]`.
 
 #### 4.4.7 Latency, CPU
 
@@ -1381,7 +1672,10 @@ Latency 0. CPU per instance: Classic as today (≤ 0.1 %, ≤ 0.15 % while movin
 #### 4.4.8 fxbench keys
 
 `type bass mid treble lowcut highcut mid_freq mid_q tilt level voice g100 g200 g400 g800
-g1k6 g3k2 g6k4`; ramps with the timeline syntax (§5.3.2), e.g. `bass@0.5..1.0=5..10`.
+g1k6 g3k2 g6k4 on reenable`; ramps with the timeline syntax (§5.3.2), e.g. `bass@0.5..1.0=5..10`.
+`on=0` skips the block as the processor does; `reenable` (default 1) makes the adapter call
+`reset()` when `on` returns to 1 on a non-Classic type, as the processor does (§2, §6: processor:
+in progress); `reenable=0` replays the frozen state the old processor left (row E23).
 
 #### 4.4.9 Acceptance (`check_eq.py`)
 
@@ -1395,20 +1689,26 @@ Zipper metric (study `ours zip` + `zip_an.py`): bass knob swept 5 → 10 in 0.5 
 | E3 | Classic zipper (100 Hz case) | ≤ −88 dBFS (today −62.5; two-pole biquad model −93.4) |
 | E4 | Parametric at defaults vs input, 44.1/96/192 kHz | 0 differing samples |
 | E5 | Parametric residual at bass 10, 82.4 Hz −20 dBFS, 192 kHz (vs ideal analog shelf) | ≤ −120 dBc (Classic −69.6) |
-| E6 | Parametric at bass/mid/treble 10 vs the installed-AU response points | +19.5 dB @50 Hz, +10.1 @150 Hz, +15.0 @425 Hz, +5.0 @1.8 kHz, +10.0 @10 kHz, each ± 0.05 dB `[study: tubamp_fr.tsv]` |
+| E6 | Parametric at bass/mid/treble 10 vs the installed-AU response points (single band at 10; 44.1, 48, 96, 192 kHz) | +19.5 dB @50 Hz, **+10.0** @150 Hz, +15.0 @425 Hz, +5.0 @1.8 kHz, +10.0 @10 kHz, each ± 0.05 dB `[study: tubamp_fr.tsv]`. Restated: the study's +10.1 at 150 Hz was a misreading of the installed-AU table; a +20 dB shelf with its corner at 150 Hz gives half its gain there, and the legacy Classic reads +10.00 too |
 | E7 | Parametric zipper (bass and mid-freq sweeps) | ≤ −90 dBFS (model −93.9) |
-| E8 | Decramp: mid 8 kHz, Q 1, +12 dB, 44.1 kHz | error vs analog ≤ 0.5 dB 20 Hz–20 kHz (cookbook 2.58); gain at Nyquist ≥ +1.5 dB (model 2.11) |
-| E9 | Decramp blend continuity: mid freq swept 1.4 → 2.6 kHz at +12 dB, Q 1.4 | response at the bell centre changes monotonically; max step between 10-Hz-apart designs ≤ 0.05 dB |
+| E8 | Bell at high frequency (matched bell): mid 8 kHz, Q 1, +12 dB, 44.1 kHz | error vs analog ≤ 0.5 dB 20 Hz–20 kHz (cookbook 2.58); gain at Nyquist ≥ +1.5 dB (model 2.11) |
+| E9 | Bell continuity (the 1.5–2.5 kHz blend no longer exists): mid freq swept 1.4 → 2.6 kHz at +12 dB, Q 1.4, 44.1 and 48 kHz | max step of the gain at the bell centre between 10-Hz-apart designs ≤ 0.05 dB; peak frequency strictly rising; Nyquist gain monotonic |
 | E10 | Low/high cut | 12 dB/oct Butterworth: −3.0 ± 0.1 dB at the set frequency; at end stops bit-exact pass-through |
 | E11 | Tilt ±6 dB | −tilt ± 0.1 dB at 20 Hz, +tilt ± 0.2 dB at 20 kHz (48 kHz), 0 ± 0.05 dB at 700 Hz |
 | E12 | Stack vs `design.py` digital reference (same bilinear), 5×5×5 knob grid, every voice | ≤ 0.01 dB 20 Hz–20 kHz |
-| E13 | Stack vs analog `yeh_H` | ≤ 1.6 dB to 10 kHz at 44.1 kHz; ≤ 0.3 dB at 96 kHz (above 10 kHz at 44.1 kHz up to 13.5 dB is expected, report gate valid to 10 kHz only) |
+| E13 | Stack vs analog `yeh_H` | ≤ **1.7** dB to 10 kHz at 44.1 kHz; ≤ **0.35** dB at 96 kHz (above 10 kHz at 44.1 kHz up to 13.5 dB is expected, report gate valid to 10 kHz only). Restated from 1.6 / 0.3: E12 requires the engine to be `design.py`'s own bilinear transform, and that reference is itself 1.65 dB (44.1 kHz) and 0.31 dB (96 kHz) off the analog curve to 10 kHz on this grid, so the old bars sat below what E12 allows |
 | E14 | Stack interaction: British, mid 0 → 10 | dip moves 852 → 603 Hz ± 3 % |
 | E15 | Stack zipper (bass sweep) | ≤ −85 dBFS |
 | E16 | Graphic single band +12 dB (each band) | peak 12.0 ± 0.1 dB at the centre; half-gain width 1.0 ± 0.05 octave; 6.4 kHz band error vs analog at 10/15/20 kHz ≤ 0.3 dB (44.1 kHz) |
 | E17 | Graphic all bands 0 | bit-exact pass-through |
 | E18 | Type and voice switch on a sustained chord | no step > 3 dB within 1 ms; fade 40 ± 2 ms |
 | E19 | Rates | E2, E4, E6, E7 at 44.1, 96, 192 kHz |
+| E20 | Parametric bell vs the analog prototype over Q ∈ {0.5, 0.7, 1, 1.4, 2, 3, 4, 8}, f0 100 Hz – 8 kHz (13 values), gains +15 (mid knob 10), −15 (knob 0), +6 (knob 7), −3 (knob 4) dB, 22.05, 44.1, 48, 96, 192 kHz, 20 Hz to min(20 kHz, 0.45 fs) | at each rate: worst error for Q 0.5 to 4 < 1 dB; for Q 8 no worse than the old design (0.415 / 0.067 / 0.055 / 0.013 / 0.003 dB at 22.05 / 44.1 / 48 / 96 / 192 kHz). Verification had found 1.91 dB at Q 0.5, 8 kHz, 44.1 kHz, and 13.5 dB at 22.05 kHz |
+| E21 | Non-finite input: a 10-sample run of NaN, +Inf or −Inf in a 220 Hz sine, and one finite 3e38 sample; Classic 10/5/7 and flat, Parametric all sections and defaults, Graphic and Graphic flat, Stack in four voices; blocks 1, 37, 512; 1 and 2 channels | never a non-finite output sample; NaN and Inf renders equal, bit for bit, the render with zeros in their place; after 3e38, within 1e-4 of the clean render 100 ms later. (One NaN had latched Classic, Parametric, Stack and non-flat Graphic for good) |
+| E22a | Neutral controls plus host float noise (tilt 8.94e-8, level ±1.79e-7, bass 5.00000048, mid 4.99999952, treble 5.00000048, lowcut 20.0000019 Hz, highcut 19999.998 Hz, every graphic band 1.79e-7; fresh, and after moving away and back), at 44.1, 96, 192 kHz, 1 and 2 channels; Stack level at noise against level 0 | output equals input bit for bit; Stack level 1.79e-7 equals level 0 bit for bit |
+| E22b | Smallest step: 0.1 dB on level, tilt, each graphic band; 0.1 knob on bass; 48 kHz | each within 0.005 dB of the step (level ±0.1, band ±0.1 at its centre, tilt ∓0.1 at 20 Hz, bass 5.1 gives +0.4 dB at 20 Hz) |
+| E23 | Re-enable after bypass: process, 1 s not called, `reset()`, process (fxbench `on=0` then `on=1`), +12 dB low boosts under a 98 Hz −12 dBFS note; blocks 1, 37, 512 | silent input at the return gives silence (the frozen state used to replay); held note: first sample within 0.1 of the dry sample (re peak), no step larger than the settled output's own, no overshoot above +0.5 dB in the first 100 ms |
+| E24 | Classic retarget: a knob moved again in a ramp's last segment (treble and mid, blocks 1, 37, 77, 100) | click at the retarget ≤ the click of the same move from rest + 3 dB |
 
 ### 4.5 Chorus — `ChorusFx` (`src/dsp/Chorus.h/.cpp`)
 
@@ -1482,8 +1782,12 @@ struct ChorusParams
 };
 ```
 When `syncPhase ≥ 0` the engine sets its master LFO phase to it at block start (voices keep
-their offsets). Classic ignores rate sync and `syncPhase` (the dispatcher passes
-`mod_rate` to Classic, §6.5).
+their offsets) **through a dip** (§4.5.4 "Transitions"), not by sliding. Classic ignores
+rate sync and `syncPhase` (the dispatcher passes `mod_rate` to Classic, §6.5).
+`process()` treats a non-finite input sample as 0 and writes the 0 back (all modes).
+`reset()` clears every line, starts every smoother at its target, and in modes 1–4 passes
+the dry at once and fades the wet in as the lines refill; the processor calls it when a
+bypassed Wide/CE/Dimension/Tri block is switched back on (processor: in progress).
 
 #### 4.5.3 Classic — exact definition
 
@@ -1522,14 +1826,35 @@ out_ch  =  dry * x_ch + wet * w'_ch
   8 ms held only above 1.09 Hz), at depth 0.5 (7.5 cents) down to 0.11 Hz; below, the
   detune is 1200·log2(1 + 2 f D_max). Line length: d0 + D_max + 4 samples ≥ 34 ms at the
   prepared rate.
-- Smoothing: rate, depth, mix, width, tone through 20 ms one-poles per sample; D recomputed
-  every 16 samples from the smoothed values (linear in between); filters' coefficients every
-  16 samples (TPT is modulation-safe).
+- Smoothing: rate, depth, mix, width, tone through 20 ms one-poles per sample (`kSmoothSeconds`);
+  D recomputed every 16 samples from the smoothed values (linear in between); filters'
+  coefficients every 16 samples (TPT is modulation-safe).
+- **Transitions keep the pitch** (`Chorus.cpp`: `kPitchAllowance`, `kDipSeconds`,
+  `kSettleSeconds`, `kQuietSeconds`, `kSyncSlackCycles`). A voice's pitch is the slope of its
+  delay, so while settings move every voice delay is **slope-limited to the largest steady
+  peak slope of the settings involved plus 4 cents** (`2^(4/1200) − 1`). A change that this
+  limit cannot finish within 200 ms (`kSettleSeconds`) of the knob stopping is a step: the
+  wet fades out over 10 ms, every delay moves to its new law in the silence, and the wet fades
+  back in over 10 ms (`kDipSeconds` per side). A knob counts as stopped after 80 ms without
+  a move (`kQuietSeconds`), so a ramp is followed, not dipped. A sync phase that differs from
+  the running LFO by more than 1e-3 cycles (`kSyncSlackCycles`: transport start, locate,
+  loop, note-value change) is honoured through the same dip, never by a slide.
 - Stereo/mono: Wide and CE run one voice set per input channel (the right voices read the
   right input's line); Dimension and Tri feed their lines from the mono sum (L + R)/2. A
-  1-channel block computes both outputs and writes their mean.
+  1-channel block computes both outputs and writes their mean, except **Dimension: a mono
+  instance plays line A alone** (the stereo left channel). The mean of its two antiphase
+  lines would have no detune; line A alone keeps the 3.5 cents of the stereo instance.
 - LFO start after reset: master phase p = 0 (u = 0, shortest delay), offsets as listed.
-- Mode switches through the switcher (§2.4), which also clears the lines of the incoming mode.
+  `reset()` clears the lines (§4.5.2); the wet fades in as they refill, the dry is never
+  interrupted.
+- **Mode switches do not use `fx::EngineSwitcher` (§2.4).** The outgoing mode keeps sounding
+  while the incoming mode's line fills (until it has been written for its longest delay,
+  `reachSamples`, plus 4 samples). The two wets are then crossfaded over 20 ms (`kSwitchSeconds`), scaled by their measured short-term powers
+  (two cascaded one-poles of 4 ms, run for 10 ms before the fade starts:
+  `kSwitchPowerSeconds`, `kSwitchMeasureSeconds`) so that the wet power moves straight from
+  one mode's to the other's whatever their correlation (a chord gives −0.3 to +0.45 between
+  modes; a plain equal-power fade would dip or bump by up to 1.6 dB). Measured: 0.69 dB
+  level bump, click −102 dBFS.
 
 #### 4.5.5 Mode algorithms
 
@@ -1548,7 +1873,7 @@ out_ch  =  dry * x_ch + wet * w'_ch
   91 cents at 10 Hz `[ver: V:46; choice of fix: keeps the knob live to 10 Hz]`. Wet filter:
   first-order HP 130 Hz; two-pole LP 4.6 kHz plus one-pole LP 9 kHz (tone scales both LP
   corners) `[fit: study R2 to brigade_fr.tsv; ~3 dB thin at 45 Hz, V:47]`.
-- **Dimension (3)** `[study: R3; ver: V:53]`: lines A and B from the mono sum; one triangle,
+- **Dimension (3)** `[study: R3; ver: V:53]` (mono instance: line A alone, §4.5.4): lines A and B from the mono sum; one triangle,
   `uB = 1 − uA` (antiphase, measured in Choral's Dimension mode, R − L = 179.9°);
   `d = 8.5 ms + 2.5 ms·depth·(2u − 1)`; wL = A, wR = B. HP 80 Hz `[study: Anwander SDD-320]`,
   LP 10 kHz `[study: tagged guess]`. The literature's ±2.0/±2.5/±1.5 ms at 0.25/0.25/0.5 Hz
@@ -1564,8 +1889,10 @@ out_ch  =  dry * x_ch + wet * w'_ch
 #### 4.5.6 Latency, CPU, fxbench
 
 Latency 0. CPU per instance: Classic as today; Wide ≤ 0.5 %; CE ≤ 0.25 %; Dimension ≤ 0.25 %;
-Tri ≤ 0.4 %. fxbench keys: `mode rate depth mix width tone sync_phase`; test hook
-`solo=<voice>` routes one voice to both outputs at mix 1 (implemented as
+Tri ≤ 0.4 %; during a mode switch (two modes running) the two modes' budgets added (CH23).
+fxbench keys: `mode rate depth mix width tone sync_phase on`; test hooks `reset` (any change
+of its value calls `reset()` at that block, as the processor does when the block comes back)
+and `solo=<voice>` routes one voice to both outputs at mix 1 (implemented as
 `ChorusFx::setDebugSolo (int)`, a no-op when −1; allowed because it costs one branch per
 block).
 
@@ -1582,17 +1909,32 @@ Model values in brackets are closed-form.
 | CH1 | Classic null (§2.11) | 0 differing samples |
 | CH2 | Wide pitch, depth 0.5, rates 0.25 / 1 / 3 Hz (pair 1) | 7.5 ± 1.5 cents each [7.5 / 7.5 / 7.5] |
 | CH3 | Wide pitch, depth 1 | 30 ± 2 cents at 0.5, 1, 3 Hz; at 0.25 Hz 17.2 ± 1.5 cents [1200·log2(1 + 2·0.25·0.020)] — the documented low-rate limit |
-| CH4 | Wide stereo | R − L LFO phase 90 ± 10°; band-noise correlation < 0.93 at width 1, 1.000 at width 0; mono sum (L + R)/2 within 1 dB of one channel |
+| CH4 | Wide stereo | R − L LFO phase 90 ± 10°; band-noise correlation < 0.93 at width 1, ≥ 0.9995 at width 0; mono-sum loss ((L + R)/2 against one channel) not above the decorrelated-wet prediction, at mix 0.5 and 0.35 |
 | CH5 | CE sweep, depth 1, rate ≤ 2.86 Hz | 1.6 – 4.3 ms ± 0.15 ms; delay crest 1.6 – 1.8 |
 | CH6 | CE pitch | 4 – 6 cents at 0.43 Hz [4.4]; 25 – 31 cents at 2.86 Hz [29.2]; ≤ 31 cents at every rate up to 20 Hz [≤ 29.2] |
 | CH7 | CE wet response vs `brigade_fr.tsv` after level alignment | within 2 dB, 100 Hz – 8 kHz |
-| CH8 | Dimension | R − L 180 ± 10°; 3.0 – 4.0 cents at 0.25 Hz / depth 0.8 [3.46]; 4.7 – 5.7 cents at 0.5 Hz / depth 0.6 [5.19]; mono sum within 1 dB |
+| CH8 | Dimension | R − L 180 ± 10°; 3.0 – 4.0 cents at 0.25 Hz / depth 0.8 [3.46]; 4.7 – 5.7 cents at 0.5 Hz / depth 0.6 [5.19]; mono-sum loss not above the prediction |
 | CH9 | Tri | three wet taps visible in the impulse cross-correlation; slow components 120 ± 15° apart; a 6 Hz component of 2 – 4 cents |
 | CH10 | Tone | wet −3 dB point moves one octave down at tone 0 and up at tone 1 (± 0.1 octave) |
 | CH11 | Clicks | mode switch, rate and depth steps during a 220 Hz −12 dBFS sine: after a 2 kHz high-pass the output never exceeds −60 dBFS `[study: R6]` |
 | CH12 | Interpolation | 10 kHz sine through Wide at depth 0.3, tone 1: amplitude ripple ≤ 0.7 dB (Catmull-Rom predicts 0.53, linear 2.0) |
 | CH13 | Sync | `sync_phase` given per block at 120 BPM, 1/4: LFO period 0.5 s ± 0.1 %, phase 0 lands on the beat ± 1 ms |
 | CH14 | Rates | CH2, CH5, CH6, CH8 at 44.1 and 96 kHz |
+| CH8-rates | Dimension detune at depth 1 | at each of 1, 2, 3, 5, 10, 16, 20 Hz at most the 0.5 Hz value + 0.2 cents |
+| CH4/8-width | Mono-sum remedy | Wide, CE, Dimension, Tri at mix 0.5, width 0.8 / 0.5 / 0: (L + R)/2 within 1 dB of one channel |
+| CH-mono | Mono instance | output equals the stereo mean for the same mono input within 1e-6 (Wide, CE, Tri), and the wet is above −20 dB of the input; **Dimension: equals the stereo left channel** within 1e-6 (the mean of two antiphase lines has no detune) |
+| CH15 | Transients: rate, depth, width, tone steps and ramps, 16 random steps 25 / 60 ms apart; 997.3 and 3301.7 Hz carriers, every soloed voice, blocks of 64 | where a voice is sounding its \|deviation\| stays within 5 cents of the largest steady peak of the settings involved; back inside the new settings' peak + 5 cents 250 ms after the change; dips reported (≤ 10 ms per side by design) |
+| CH15-rates | CH15's hardest four cases at 22.05 and 192 kHz, blocks 1 / 512 / 4096, mono and stereo | same bar as CH15 |
+| CH16 | Sync jumps: transport start, locate, loop, note-value change | pitch bound and settle as CH15; LFO within 2 % of a cycle of the requested phase afterwards; 220 Hz −12 dBFS at mix 0.5 and 1: 2 kHz high-passed peak ≤ −60 dBFS |
+| CH17 | Bypass then `reset()` (block off 1 s, back on) | silent input: output ≤ −120 dBFS (no replay of the old lines); 220 Hz −12 dBFS at mix 0.35 and 0.5, mono and stereo: restart peak after 2 kHz high-pass ≤ −60 dBFS |
+| CH18 | Mode switch between Wide, CE, Dimension, Tri (every pair, mix 0.35 / 0.5 / 1) | under a chord, the 20 ms level averaged over six switches each way stays within 1.5 dB of the span between the levels before and after; a 220 Hz sine shows no click (2 kHz high-pass ≤ −60 dBFS) |
+| CH19 | Mono instance is still a chorus | pitch deviation (\|IF\| p95, mix 1; 220.5, 997.3, 3301.7 Hz) at least half the stereo left channel's, and the comb swing on pink noise at least half as deep |
+| CH20 | Non-finite input (NaN, +Inf, −Inf sample, and a run of 100 NaNs), every mode, mono and stereo, blocks 37 and 512 | output bit-identical to the same input with zero samples; one 1e30 sample gives finite output back on the clean render 0.2 s later within −100 dB |
+| CH21 | Onset after `reset()` (sustained 220 Hz −12 dBFS) | 2 kHz high-passed peak ≤ −60 dBFS at mix 1, and at mix 0.5 under the dispatcher's 20 ms linear fade |
+| CH22 | `--rt-check` and `--reset-repeat` through switches, dips, sync jumps, bypass and reset, 22.05 – 192 kHz, blocks 1 / 37 / 512 / 4096, mono and stereo | exit 0, finite output |
+| CH23 | CPU while two modes alternate every 60 ms (Wide+Tri, CE+Dimension, Wide+CE, Dimension+Tri, Wide+Classic) | the two modes' §4.5.6 budgets added (Classic: 1.2 × the legacy figure) |
+
+Check script at commit `08da770`: 71 checks, 0 FAIL.
 
 ### 4.6 Phaser — `PhaserFx` (`src/dsp/Phaser.h/.cpp`)
 
@@ -1666,57 +2008,104 @@ Small Stone" line by line, matching `phaser_ref.py` (`phase90_break_hz`, `run_ph
 (all from the prototype, tags as there):
 
 - **Stage:** TPT one-pole, g = tan(π fc/fs), G = g/(1 + g), lp = v + s with v = (x − s)G,
-  s ← lp + v; allpass P = 2·lp − x; Phase 90 op-amp stage A = −P. All four stages share one
-  g, **recomputed every sample** (`tan` per sample, in double). fc and the feedback-lag
-  frequency are clamped to 0.49·fs before `tan`. Feedback loops are solved in closed form
-  (no unit delay).
+  s ← lp + v; allpass P = 2·lp − x; Phase 90 op-amp stage A = −P. The voicings are analog
+  transfer functions (Laplace variable s, one-pole breaks in Hz) and the fits are to the analog
+  response. **The four stage coefficients are not one shared `tan` per sample.** `prepare()`
+  solves, at 257 sweep positions (`kTableN` = 256 intervals, the position w from −1 to +1), the
+  TPT coefficients whose digital notches land on the analog ones, and stores them in four
+  tables (Phase 90 script, Phase 90 block, Small Stone off, Small Stone on; five columns, the
+  fifth the Phase 90 lag). The audio thread only interpolates linearly in the table
+  (`lookup`); there is no `tan` in `process()`. The solve (prototype `stage_g`):
+  `pairCoefficients` gives two coefficients g_a < g_b, used for stages (a, b, a, b), whose
+  chain has the analog phase at two matched frequencies (closed form; the higher one capped at
+  0.25·fs, `kMatchCap`). Script and Small Stone off: pair at tan(π/8)·fc and fc/tan(π/8).
+  Small Stone on: the same pair times one factor that puts notch 1 of the whole loop on the
+  analog notch (Newton, `kNotchEps` = 1e-4). Phase 90 block: stage 2 and the lag at the
+  analog notch 1, stages 3 and 4 a pair matched at notches 1 and 2, then three unknowns
+  solved by Newton so notch 1, notch 2 and notch-1 depth match. Result: the notches, and so
+  the sweep, are the same at every sample rate (§4.6.6 P9). Feedback loops are solved in
+  closed form (no unit delay).
 - **LFO:** `rc_triangle` halves `s(w) = (1 − e^{−κw})/(1 − e^{−κ})`; phase 0 = sweep bottom
   (output −1). Free-running phase accumulates `rate/fs` per sample in double; with
-  `syncPhase ≥ 0` the phase is set at block start.
+  `syncPhase ≥ 0` the phase is set at block start. A song-position jump is still honoured,
+  but the sweep does not step: the difference between the old and the new sweep position
+  (above 1e-6, `kGlideThreshold`) is faded out over 10 ms (`kGlideSeconds`) with a raised
+  cosine, so the break frequency glides to the new phase's position. The first block after
+  `prepare()` or `reset()` sets its phase with no glide.
 - **Phase 90** (`P90_*`): C = 47 nF, R_fix = 22 kΩ `[circuit]`; leg R(u) = (RS^m + R_ch^m)^{1/m},
-  R_ch = R1·e^{−γu}, RS = 933.7 Ω, R1 = 1786.1 Ω, γ = 0.8915, m = 3.892 `[fit]`;
-  fc = (1/R_fix + 1/R(u))/(2πC); κ = −0.002; gate one-pole 3.535 Hz on the LFO before the
-  law, k = 1 − exp(−2π·3.535/fs), state starting at the first LFO value. Script: wet = A⁴.
-  Block: β = 0.3957, lag one-pole 11736 Hz in the feedback path, the per-sample loop of
-  voicings.md:185-195. Mix: out = 0.5·x + 0.5·wet.
-- **Small Stone** (`SS_*`): κ = 0.70; fc = √(f_lo f_hi)·(f_hi/f_lo)^{v/2}. Color off:
-  f_lo 355.0, f_hi 8300.0 Hz, no feedback, dry 0.75, wet 0.50. Color on: f_lo 99.0,
-  f_hi 3133.5 Hz, feedback c = 0.7553 around all four stages through F(s), wet input through
-  Ha(s), poles f_p1 53.0, f_p2 266.0 Hz, zeros f_zf 18.3, f_za 16.5, f_zb 885.2 Hz,
-  dry 0.1266, wet 0.4289; TPT discretisation of voicings.md (Ha and F as two first-order
-  sections each; `y4 = (p⁴(xs + c·bF) + K)/(1 − c·aF·p⁴)`, divisor ≥ 0.24).
-- Output unity (no make-up), no oversampling, no saturation, no output filter
-  `[study: voicings.md:178-181]`. One LFO for both channels; per-channel stage states.
+  R_ch = R1·e^{−γu}, RS = 916.8 Ω, R1 = 1777.7 Ω, γ = 0.8952, m = 3.876 `[fit]`;
+  fc = (1/R_fix + 1/R(u))/(2πC); κ = −0.007; gate one-pole 3.542 Hz on the LFO before the
+  law, k = 1 − exp(−2π·3.542/fs), state starting at the first LFO value. Script: wet = A⁴.
+  Block: β = 0.3957, lag one-pole 14746 Hz (analog) in the feedback path, the per-sample loop of
+  voicings.md. Mix: out = M·(0.5·x + 0.5·wet), M the fixed make-up below.
+- **Small Stone** (`SS_*`): κ = 0.702; fc = √(f_lo f_hi)·(f_hi/f_lo)^{v/2}. Color off:
+  f_lo 347.7, f_hi 8931.5 Hz, no feedback, dry 0.75, wet 0.50. Color on: f_lo 99.4,
+  f_hi 3068.3 Hz, feedback c = 0.7548 around all four stages through F(s), wet input through
+  Ha(s), poles f_p1 49.8, f_p2 267.9 Hz, zeros f_zf 12.0, f_za 12.7, f_zb 862.1 Hz,
+  dry 0.1318, wet 0.4395; TPT discretisation of voicings.md (Ha and F as two first-order
+  sections each; the chain's p⁴ is now the product of the four per-stage factors
+  `p[0]·p[1]·p[2]·p[3]`, and `y4 = (p⁴(xs + c·bF) + K)/(1 − c·aF·p⁴)`, divisor ≥ 0.24).
+- **Make-up (fixed per voicing, `[choice]` in voicings.md, "Level"):** Phase 90 script
+  ×1.365 (+2.70 dB), block ×1.189 (+1.50 dB), Small Stone off ×1.059 (+0.50 dB), Small Stone on
+  ×1.0 (0 dB); `kP90ScriptMakeup`, `kP90BlockMakeup` and `StoneVoicing::makeup` in `Phaser.cpp`.
+  The Small Stone's dry and wet constants above are multiplied by it. Classic is unchanged.
+  Switching Classic to Phase 90 now gains about 1.5 dB (voicings.md).
+- No oversampling, no saturation, no output filter `[study: voicings.md]`. One LFO for both
+  channels; per-channel stage states. Non-finite input samples are replaced by 0 before the
+  engine sees them (Classic included; finite input is untouched, so the Classic null holds).
 
-**Decision — Small Stone Color at 2x: not done.** voicings.md:89-97 shows our structure
-would fit Guitar Rig's static frames better at 96 kHz (0.01 dB rms vs 0.05–0.25 dB at 48 kHz)
-and close part of the Color-on notch-2 gap (−3.0 % at the sweep top). Rejected for v1
-because (1) internal 2x needs up/down-sampling filters, i.e. latency, and D6 allows latency
-only for drive; (2) that improvement was computed by evaluating the frozen equations at
-fs = 96 kHz, never by an oversampled render, and `f_hi` would have to be refitted and
-re-verified against GR6; (3) the known gaps (Color-off notch 2 +6.5 % at the bottom, one
-+4.2 % Color-on reading at 1.78 Hz that sits inside the tracker's own +6.2 % bias) are small
-against the 0.7–1.9 % rms trajectory fits. Revisit only with a GR6 render at 44.1/96 kHz
-(§8 D-8).
+**Decision — oversampling (Small Stone Color, and any voicing): not done.** Internal 2x
+needs up/down-sampling filters, i.e. latency, and D6 allows latency only for drive. The
+notch-matched discretisation above removes what the 2x would have bought for the notches
+(the fits are to the analog response and the notches land on it at 44.1 to 192 kHz). What it
+cannot fix is the magnitude response away from the notches: four first-order sections at
+44.1 or 48 kHz cannot follow an analog chain's phase near 10 kHz, so the frozen responses
+between 48 and 192 kHz differ on the slopes above 3 kHz (§4.6.6 P9, "frozen response",
+failing; §8 D-8). The Color-on resonance at the sweep top also sits +2.7 % high at 48 kHz
+(3288 against 3203 Hz analog) for the same reason [voicings.md]. The remaining gaps against
+Guitar Rig 6 (Small Stone Color off: notch-1 ends 2.2 to 3.1 % low, notch 2 at the bottom
+about 4.4 % high; Phase 90 block notch 2, not a target, 1.6 to 3.3 % high at the sweep top;
+Color on: notch-1 minimum +2.8 % at 1.78 Hz, inside the tracker's own +6.2 % bias) are small
+against the 0.41 to 1.25 % rms trajectory fits (`compare.txt`).
 
 #### 4.6.5 Latency, CPU, fxbench
 
-Latency 0. CPU per instance: Classic as today; Phase 90 ≤ 0.4 %; Small Stone Color on
-≤ 0.5 % (one `tan` per sample in double plus up to eight one-poles). fxbench keys:
-`model rate depth mix color sync_phase`.
+Latency 0 (`getLatencySamples()` returns 0). CPU per instance: Classic as today; Phase 90
+≤ 0.4 %; Small Stone ≤ 0.5 % (`BUDGETS` in `check_phaser.py`; per sample one table
+interpolation of four or five coefficients plus up to eight one-poles, no `tan`; the four
+tables, 257 entries each, are built in `prepare()`, which
+takes under 10 ms [voicings.md]). fxbench keys:
+`model rate depth mix color sync_phase on reset_on_enable freeze_u`; the last two are test
+hooks (`freeze_u` calls `PhaserFx::freezeSweep`, a test hook that holds the sweep position in
+[−1, 1], −1 the bottom; NaN releases it).
+
+`reset()` clears every state: filters, feedback, the LFO (phase 0 = sweep bottom), the gate
+smoothing, the sync glide, the model switcher and the parameter smoothers, so the next block
+is a fresh engine's. The processor calls it when a Phase 90 / Small Stone block is switched
+back on (§2.6, §6.5; processor: in progress). Non-finite input samples are replaced by 0 at the
+top of `process()`, for every model.
 
 #### 4.6.6 Acceptance (`check_phaser.py`)
 
 | # | Check | Pass |
 |---|---|---|
 | P1 | Classic null (§2.11) | 0 differing samples |
-| P2 | Parity with `phaser_ref.render()` (imported from the prototype): 4 s of pink noise −18 dBFS plus an impulse train, each voicing × color, rates 0.143, 1.071, 3.72, 9.76 Hz (Phase 90) and 0.1585, 0.316, 1.778 Hz (Small Stone), at 44.1, 48, 96 kHz | rms(C++ − ref)/rms(ref) ≤ −80 dB; max abs difference ≤ 1e-4 |
-| P3 | Frozen-fc table: the engine at fixed fc (`--freeze-u=−1/+1` debug key) reproduces `evidence/fit/spec_check.txt` (notch 1/2 frequencies and levels, peak, DC at 44.1/48/96 kHz) | frequencies ± 0.1 %, levels ± 0.05 dB (e.g. block 48 kHz: 419.5 / 1924 Hz, −30.69 dB at the bottom; 1589.6 / 6977 Hz, −26.77 dB at the top) |
-| P4 | Trajectory against GR6 (`evidence/fit/trajectories.tsv`, `itrack.py`, 48 kHz), regression guard only | Phase 90 block ≤ 0.8 % rms, ≤ 1.4 % max over the six rates; Small Stone off ≤ 2.0 % rms; on ≤ 1.2 % rms (round-3 values 0.72 / 1.27 / 1.90 / 1.12) |
-| P5 | Rate | LFO period error < 0.01 % at every rate; sync per CH13 |
-| P6 | Stability | 30 s at 10 Hz, Color on, full-scale noise: finite, |out| < 4 |
-| P7 | Model / color switch on a chord | no step > 3 dB within 1 ms; fade 40 ± 2 ms |
-| P8 | depth/mix independence | Phase 90 and Small Stone output bit-identical for any `depth`/`mix` values |
+| P2 | Parity with `phaser_ref.render()` (imported from the prototype): 4 s of pink noise −18 dBFS plus an impulse train, each voicing × color, rates 0.143, 1.071, 3.72, 9.76 Hz (Phase 90) and 0.1585, 0.316, 1.778 Hz (Small Stone), at 44.1, 48, 88.2, 96, 192 kHz (`--quick`: 48 kHz only) | rms(C++ − ref)/rms(ref) ≤ −80 dB; max abs difference ≤ 1e-4 (reported per voicing: Phase 90 script, Phase 90 block, Small Stone off, Small Stone on) |
+| P3 | Frozen-fc table: the engine at a fixed sweep position (adapter key `freeze_u` = −1 and +1, `PhaserFx::freezeSweep`) reproduces `evidence/fit/spec_check.txt` (notch 1/2 frequencies and levels, peak, DC at 44.1, 48, 88.2, 96, 192 kHz); the impulse response's last eighth holds under 1e-12 of its energy | frequencies ± 0.1 %, levels ± 0.05 dB (e.g. block 48 kHz: 419.4 / 1934 Hz, −29.18 / −15.27 dB at the bottom; 1589.9 / 7481 Hz, −25.27 / −18.46 dB at the top; the same notch frequencies at every rate) |
+| P4 | Trajectory against GR6 (`evidence/fit/trajectories.tsv`, `itrack.py`, 48 kHz), regression guard only (`--quick`: the noon rates) | Phase 90 block ≤ 0.8 % rms, ≤ 1.4 % max over the six rates; Small Stone off ≤ 2.0 % rms; on ≤ 1.2 % rms (current values `compare.txt`: block 0.41 to 0.70 % rms, max 1.18 %; off 1.24 to 1.25 % rms; on 0.80 to 0.85 % rms; the Small Stone rows have no max bar) |
+| P5 | Rate: three rows. (a) "rate (audio)": the notch-1 period tracked from the P4 renders; (b) "rate (LFO)": the phase trace of Phase 90 and Small Stone at 0.01, 0.143, 1.071, 3.72, 9.76, 20 Hz, block 1, 48 kHz; (c) "sync (CH13)": 120 BPM, 1/4 note, song starting at beat 0.3, blocks 64 and 512, both models, Color on | (a), (b) period error < 0.01 %; (c) period 0.5 s ± 0.1 %, phase-0 timing error ≤ 1 ms |
+| P6 | Stability: Phase 90 block and Small Stone Color on, 30 s at 10 Hz of full-scale uniform noise, at 22.05, 48, 192 kHz | finite, \|out\| < 4 |
+| P7 | Model / color switch on a chord (five switches, at 48 kHz blocks 64 and 512, 44.1 kHz blocks 512 and 37, 96 kHz block 384), and Classic with a color toggle | no step > 3 dB within 1 ms; fade 40 ± 2 ms; the Classic color toggle bit-identical to no toggle |
+| P8 | depth/mix independence | Phase 90 and Small Stone output bit-identical for any `depth`/`mix` values (0/0, 1/1, 0.13/0.91, and ramps) |
+| P9 | Rate independence, against each voicing's own 48 kHz render at 44.1, 88.2, 96, 192 kHz (`--quick`: 44.1, 48, 96). Three rows per voicing: **trajectory** (notch 1 at the noon rate, tracked like P4), **frozen notches** (notches ≤ 10 kHz at sweep positions −1, −0.5, 0, 0.5, 1; same notch count) and **frozen response** (\|H\| from 20 Hz to 10 kHz where the 48 kHz response is within 20 dB of its peak) | trajectory ≤ 0.3 % rms; notches ≤ 0.2 %; response ≤ 0.1 dB. **Trajectory and notch rows are met** (voicings.md: 0.05 % Phase 90, 0.17 / 0.15 % Small Stone off / on rms; notches within 0.16 %). **The frozen-response row currently FAILS: 1.06 to 1.69 dB against 0.1 dB, an open item (a follow-up is in progress; §8), not met** |
+| P10 | Sync jumps: a 220 Hz tone at −12 dBFS, rate 1 Hz, block 64, 48 kHz; a song-position jump at sweep phase 0, 0.25, 0.5, 0.75 of +0.05, +0.25, +0.5, −0.3 cycle, per voicing (16 jumps) | the largest tick above 2 kHz ≤ −60 dBFS (Kaiser FIR highpass residual) |
+| P11 | Re-enable, driven as the processor will drive it: a loud signal, no `process()` for 1 s (`on` 0), then `reset()` (adapter key `reset_on_enable=1`) and processing again; silent input and continuing signal, at 48 kHz block 64 and 44.1 kHz block 512 | silent input peaks ≤ −60 dBFS; a continuing signal differs from a fresh engine's output by ≤ −60 dBFS |
+| P12 | Non-finite input: NaN, +Inf, −Inf samples in either channel and a 64-sample NaN burst; Classic and the four voicings, blocks 64 and 512 | output finite and bit-identical to the render with zeros in place of the bad samples |
+| finite (bad keys) | `model` 7 and −3, `rate` 1e9, −4, NaN, +Inf, `sync_phase` NaN and 1e12, Classic with NaN depth/rate and −Inf mix | output finite, \|out\| < 1e3 |
+
+P9 to P12 are new with the sample-rate, sync-jump, re-enable and non-finite fixes. P11
+depends on the processor calling `reset()` on re-enable (processor: in progress); the adapter
+key stands in for it until then.
 
 ### 4.7 Tremolo — `TremoloFx` (`src/dsp/Tremolo.h/.cpp`)
 
@@ -1746,7 +2135,7 @@ The shared mod table (identical to §4.5.2):
 | `mod_phaser_model` | Mod Phaser Model | Classic, Phase 90, Small Stone | — | 1 | no |
 | `mod_trem_voice` | Mod Trem Voice | Classic, Smooth, Optical, Bias, Harmonic | — | 1 (Smooth) | yes |
 | `mod_sync` | Mod Sync | Off, 1/32, 1/16T, 1/16, 1/8T, 1/16., 1/8, 1/4T, 1/8., 1/4, 1/2T, 1/4., 1/2, 1/2., 1/1, 2/1, 4/1 | — | 0 | voices 1–4 |
-| `mod_width` | Mod Width | 0 – 1 | 0.001 | 1.0 | voices 1–4: stereo spread = 180° × width |
+| `mod_width` | Mod Width | 0 – 1 | 0.001 | 1.0 | voices 1–4: stereo spread = 180° × width; **a mono instance ignores it** (runs as width 0) |
 | `mod_tone` | Mod Tone | 0 – 1 | 0.001 | 0.5 | Harmonic: crossover = 300 Hz · 2^(2(tone − 0.5)) (150 – 600 Hz) |
 | `mod_shape` | Mod Shape | 0 – 1 | 0.001 | 0.5 | Smooth: skew/duty s = 0.1 + 0.8·shape; Bias: knee = −24 + 24·shape dBFS |
 | `mod_wave` | Mod Wave | 0 – 1 | 0.001 | 0.0 | Smooth: 0 sine, 0.5 triangle, 1 pulse |
@@ -1803,18 +2192,38 @@ From `Modulation` (`FxBlocks.cpp:364-405, 426-448`): `dryGain = sqrt(1 − mix)`
   (τ 1.3 ms, 10–90 % edge 2.9 ms) `[study: R1, choice]`; Optical uses its own lag instead.
 - Depth ramped by a 20 ms one-pole before the law; rate, width, tone, shape, wave by 20 ms
   one-poles.
+- **Gains are held as their distance from unity** (`smoothToward`): near 1 a float one-pole
+  stalls a few ulps short of its target, so depth 0 could never return to exact
+  transparency. With the distance decaying to nothing, **depth automated to 0 is bit-exact**
+  (X7; X3 for a fresh engine).
+- **Non-finite input** (`fx::sanitise`): a NaN or Inf sample is kept out of Bias's envelope
+  and Harmonic's filter state, so it spoils at most its own output sample (N1).
 - **Stereo spread** `[study: R3; ver: V:51-53]`: right LFO phase `phR = frac(ph + spread/360)`,
   spread = 180°·width; loudness law `w' = w^(1 − spread/360)` applied to both channels'
-  shape before the depth law (for Optical, Bias, Harmonic: to the LFO shape u that drives
-  them). What is guaranteed — and nothing more — is listed in the acceptance table: at
+  shape before the depth law. **Smooth only**: Optical's lamp is lit or dark, so the law
+  leaves it unchanged, and Bias and Harmonic take no loudness exponent (coordinator
+  decision, `Tremolo.cpp`, `check_tremolo.py` header), so their summed power is constant at
+  spread 180° (X5, bar 0.2 dB). What is guaranteed — and nothing more — is listed in the acceptance table: at
   spread 180° and depth 1 the summed power is constant; at lower depths it ripples up to
   0.63 dB; at 90° the sum still swings 11.5 dB; and the exponent turns a 180° sine into a
   rectified half-sine whose smoothed floor is −38.7 dB, so "floor below −60 dB" holds only
   at spread 0.
 - **Sync:** rate from the dispatcher; with `syncPhase ≥ 0` the phase is set at block start
-  so the dip lands on the grid `[study: R4]`. Rate multiplier: none (§8 D-13).
+  so the dip lands on the grid `[study: R4]`. Rate multiplier: none (§8 D-13). **A
+  song-position jump** (transport start, locate, loop: the new phase differs from the running
+  one by more than 1e-3 cycles, `kJumpCycles`) **crossfades the gain target from the old
+  phase's LFO to the new one's over 10 ms with a raised cosine** (`kJumpFadeSeconds`); the
+  120 Hz smoother alone left a slope step that clicked at −44 dBFS on a low note (S1). A jump
+  during a fade restarts the fade from the newer phase. Smaller corrections apply outright.
 - LFO start after reset: phase 0 (Smooth starts at the dip, as the prototype).
-- Mono blocks: left-channel LFO only.
+- **`reset()`** clears every state; voices 1–4 start with their knobs at the last values sent
+  and **every gain at unity**, so the first block glides from the input into the tremolo
+  through the gain smoother instead of stepping to the dip (the reference starts at y0 = 1).
+  Every `setParameters()` until the next `process()` snaps the knobs. The processor calls it
+  on a non-Classic voice when the block is switched back on (processor: in progress;
+  R1 checks that the output then equals a freshly prepared engine's, bit for bit).
+- **Mono blocks ignore Width in every voice** (`updateWidth (w, stereo)`): the left-channel
+  LFO only, as at width 0 (M1).
 
 #### 4.7.5 Voice algorithms (constants as `tremolo_proto.py`)
 
@@ -1847,8 +2256,9 @@ From `Modulation` (`FxBlocks.cpp:364-405, 426-448`): `dryGain = sqrt(1 − mix)`
 #### 4.7.6 Latency, CPU, fxbench
 
 Latency 0. CPU per instance: Classic as today; Smooth, Optical, Bias ≤ 0.10 %; Harmonic
-≤ 0.15 %. fxbench keys: `voice rate depth mix width tone shape wave sync_phase`;
-`--trace=gain` writes the left (and right) gain.
+≤ 0.15 %. fxbench keys: `voice rate depth mix width tone shape wave sync_phase on`; on
+`on` going from 0 to 1 with a voice other than Classic the adapter calls `reset()` before the
+next block, as the processor will; `--trace=gain` writes the left (and right) gain.
 
 #### 4.7.7 Acceptance (`check_tremolo.py`)
 
@@ -1862,7 +2272,7 @@ edge 0.3 ms, depth 0.15 dB.
 | T2 | Parity with `tremolo_proto.py` per voice (Smooth at wave 0/0.5/1 and shape 0.2/0.5/0.8; Optical; Bias; Harmonic), spread 0 and 180 | rms difference ≤ −80 dB re output |
 | T3 | Smooth depth 1, wave 0 | crest +3.0 ± 0.2 dB; floor ≤ −60 dB (spread 0); loud half 0.50 ± 0.01 |
 | T4 | Smooth depth 0.5 | floor −12.0 ± 0.5 dB |
-| T5 | Smooth wave 1 (pulse) | 10–90 % edges 2.9 ± 0.5 ms; loud fraction = s ± 0.01; splatter 3–6 kHz around the carrier ≤ **−58 dBc at worst-case carrier phase** (8 carrier phases incl. cosine, and carriers 997 / 1001.5 Hz) — the study's −64.8 dBc held only with the carrier at a zero crossing on every edge; worst case is −59.1 dBc `[ver: V:32, V:44]` |
+| T5 | Smooth wave 1 (pulse) | 10–90 % edges 2.9 ± 0.5 ms; loud fraction = s ± 0.01 (shape 0.5 / 0.25 / 0.75); splatter 3–6 kHz around the carrier ≤ **−58 dBc at worst-case carrier phase** (8 carrier phases incl. cosine, carriers 997 / 1001.5 Hz, and a dense sweep of 64 phases at 1 kHz plus off-grid carriers) — the study's −64.8 dBc held only with the carrier at a zero crossing on every edge; worst case at 1 kHz is −59.1 dBc `[ver: V:32, V:44]`. **Splatter by carrier frequency** (worst of 16 carrier phases, the band is carrier + 2 … 5 kHz and for a low carrier also catches the edge's lower sideband, which adds coherently, +3.3 dB at 40 Hz; the incoherent mean is −61.6 dBc flat): carriers 40 / 48 / 64 / 84 / 112 / 148 / 196 / 248 / 332 / 440 / 660 / 1000 / 1320 / 2000 Hz must stay at or below −55.5 dBc from 40 Hz, −55.8 from 82 Hz, −56.4 from 200 Hz, −58.0 from 500 Hz |
 | T6 | Depth step 0 → 1 between blocks | largest per-sample gain step ≤ 0.005 [0.0014] |
 | T7 | Optical, 5 Hz, depth 1 | fall 11 ± 1.5 ms; rise 44 ± 5 ms; loud fraction 0.70 ± 0.03; floor −20 ± 1 dB; envelope identical within 0.1 dB from −36 to −6 dBFS |
 | T8 | Stereo, spread 0 | L and R identical (null) |
@@ -1875,6 +2285,18 @@ edge 0.3 ms, depth 0.15 dB.
 | T15 | Harmonic | depth 0: null against dry ≤ −100 dB; depth 1: 82 Hz and 2 kHz sines each swing ≥ 10 dB with envelope correlation < −0.9; pink-noise rms ripple ≤ 3.5 dB |
 | T16 | Voice switch mid-note | no step > 3 dB within 1 ms; fade 40 ± 2 ms |
 | T17 | Rates | T3, T5, T7, T13 at 44.1 and 96 kHz |
+| X1 | Rate accuracy, Smooth, 0.1 / 0.5 / 2 / 4 / 10 / 20 Hz | within 0.1 % |
+| X2 | Depth law across the knob (0.1 … 0.97) against `tremolo_proto.voice_smooth` | floor and crest within 0.15 dB |
+| X3 | Depth 0 on music, voices 1–4 | transparent to ≤ −100 dB (a fresh engine; X7 is after automation) |
+| X4 | Zipper under block-rate automation of depth, rate, wave, shape (each voice's own knobs) | residue lines at k·fs/512 ≤ −60 dBc |
+| X5 | Stereo summed power: Smooth table (T9/T10 bars); Bias at spread 180 (−40 / −18 / −6 dBFS, depth 0.5 / 0.75 / 1); Harmonic at spread 180 (1 kHz and 100 Hz + 2 kHz, depth 0.5 / 0.8 / 1) | Smooth as T9/T10; Bias and Harmonic ripple ≤ 0.2 dB |
+| M1 | Mono instance: width 0 / 0.37 / 1, every voice | bit-identical (max \|diff\| 0); Smooth at depth 1 and width 1 reaches the same floor as stereo width 0 (≤ −60 dB, equal within 0.01 dB) |
+| R1 | Re-enable after bypass (`on` 0 then 1, `reset()` between), voices 1–4 | (a) nothing of an old note returns: ≤ −140 dBFS; (b) with the input still playing and knobs moved while bypassed, output from the re-enable sample on equals a freshly prepared engine's, 0 samples differ; (c) the gain step across the re-entry ≤ 1 − exp(−2π·120/fs) per sample |
+| S1 | Song-position jump (0.1 / 0.25 / 0.5 / 0.75 cycle, six points of the cycle, 82.4 and 220 Hz at −12 dBFS, each voice at its starting depth and at 1) | peak above 2 kHz from 5 ms before to 120 ms after the jump ≤ −60 dBFS, or what the voice puts there on its own without a jump (Optical's lamp edges), whichever is higher |
+| X7 | Depth automated to 0 (ramp 1.0–1.5 s, and Harmonic's step 1 → 0) | output equals the input bit for bit from 2.5 s on |
+| N1 | NaN / Inf bursts in the input, every voice, block 512 | no extra non-finite output samples (only the bad input samples' own); 0.5 s after the last bad sample the output equals the clean render's (≤ −100 dB rms) |
+
+Check script at commit `2b847b9`: 86 checks, 0 FAIL.
 
 ---
 
@@ -2237,7 +2659,9 @@ public:
   `prepareToPlay` (`:808-821`); blocks larger than promised still run (lanes run flat,
   gate passes ungated).
 - Re-entry reset through `pendingReset`, at most two per callback; a pending block
-  processes as bypassed (`:1067-1092`).
+  processes as bypassed (`:1067-1092`). A non-Classic engine is `reset()` when its block is
+  switched back on, and the input of every running block is sanitised against NaN and
+  infinity before the engine sees it (§2.6, §2.2) (processor: in progress).
 - `applyStateVar` publishes the chain order before any synchronous model/IR loading;
   `setStateInformation` publishes immediately and defers `adoptChainOrder` (`:2127-2170`).
   The legacy pin must not reorder these.
@@ -2299,15 +2723,16 @@ mapped onto instances by the existing `KNOB_SPECS` mechanism, `:113-123`).
 ### 7.3 Starting points (`typeDefaults.ts`, mirrors the engine headers)
 
 ```ts
-/** Classic, Tight, Smooth. */           export const GATE_STARTING_POINTS  = { release: [30, 30, 80] };
+/** Classic, Tight, Smooth. */           export const GATE_STARTING_POINTS  = { release: [30, 30, 80], hold: [6, 6, 10], sc_hpf: [75, 75, 75] };
 /** Classic, Clean, Squash, FET, Opto. */ export const COMP_STARTING_POINTS  = { knee: [6, 6, 6, 4, 12], attack: [5, 5, 2.5, 0.8, 10], release: [120, 120, 150, 55, 60] };
-/** Classic … Treble. */                  export const DRIVE_STARTING_POINTS = { gain: [12, 12, 18, 18, 12, 12], tone: [4000, 4000, 2449, 2449, 12000, 3000], level: [0, 0, L2, L3, 0, 0] };
+/** Classic … Treble. */                  export const DRIVE_STARTING_POINTS = { gain: [12, 12, 18, 18, 12, 12], tone: [4000, 4000, 2449, 2449, 12000, 3000], level: [0, 0, -8.2, 5.0, 0, 0] };
 /** Classic, Wide, CE, Dimension, Tri. */ export const CHORUS_STARTING_POINTS = { rate: [1, 1, 0.8, 0.25, 0.6], depth: [0.4, 0.4, 0.7, 0.8, 0.5], mix: [0.35, 0.35, 0.5, 0.5, 0.5] };
 /** Classic, Phase 90, Small Stone. */    export const PHASER_STARTING_POINTS = { rate: [1, 1.07, 0.32] };
 /** Classic, Smooth, Optical, Bias, Harmonic. */
 export const TREM_STARTING_POINTS = { rate: [1, 4, 5, 5, 4], depth: [0.4, 0.6, 0.7, 0.75, 0.8], width: [1, 0, 0, 0, 0] };
 ```
-(L2, L3 from `Drive.h` once the drive engineer has measured them.) Picking a voicing applies
+(L2 = −8.2 and L3 = 5.0 dB are in `Drive.h`; `typeDefaults.ts` matches every `k…Default[…]`
+table in the engine headers exactly.) Picking a voicing applies
 that voicing's entries; picking a `mod_type` applies the entries of that type's currently
 selected voicing. Reverb/delay entries are untouched (F1).
 
@@ -2337,24 +2762,32 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-3 | Gate deferred-curve alignment (study R4) would change Classic renders whenever the NAM model resamples. | Alignment for Tight/Smooth only; Classic stays unaligned (strict D2). |
 | D-4 | D7 asks for knob smoothing in every EQ type incl. Classic and the amp EQ. | Done; static Classic renders stay bit-identical, automated ones change (the click fix). Not listed as a D2 exception because static bit-identity holds. |
 | D-5 | `mod_type` switches today reset and jump instantly. | The dispatcher crossfades over 20 ms from the outgoing type to the incoming one, which is reset where the old block reset it (§6.5, not through the switcher); static renders, and everything after a fade, are unchanged. |
-| D-6 | Drive latency: JUCE's integer-latency mode would add a fractional delay and change Classic audio. | Report `lround` (Classic 3, oversampled types 5 at 48 kHz, 3 at 96, 1 at 192; Boost/Treble 0) and leave the audio alone; residual ≤ 0.44 sample. |
+| D-6 | Drive latency: JUCE's integer-latency mode would add a fractional delay and change Classic audio. | Report `lround` (Classic 3; Boost/Treble 0; Screamer and Fuzz 5 at 48 kHz, 4 at 96, then 1 and 2 at 192; Distortion 5, 5 and 4; `latencyFor` in `Drive.cpp`) and leave the audio alone; residual ≤ 0.44 sample (measured for the first design, not re-measured). The first version of this row said 3 at 96 kHz and 1 at 192 for every oversampled type; that was the first-order, single-clipper design. |
 | D-7 | Drive latency counted only while `drive_on`, like the amp; automating `drive_on` or `drive_type` moves the reported latency mid-playback. | Follow the amp precedent (D2 "like the amp"). Alternative: the FX-slot rule (count while bypassed and delay the bypassed signal) — not chosen because it would delay a bypassed Classic drive. |
-| D-8 | Small Stone Color at 2x internal rate. | Not done (latency forbidden by D6; never rendered, needs a refit). Revisit with GR6 renders at 44.1/96 kHz. |
+| D-8 | Small Stone Color at 2x internal rate. | Not done (latency forbidden by D6; never rendered, needs a refit). Revisit with GR6 renders at 44.1/96 kHz. Update: still not done, and no longer needed for the notch positions: the stage coefficients are solved per sweep position and tabulated in `prepare()`, so the notches land on the analog ones at every rate (§4.6.4). |
 | D-9 | Study's Squash (sample-delayed feedback) undershoots by 30–60 dB at fast attack. | Replaced by log-domain feedback (§4.2.5): same static curve and feedback timing, no undershoot. |
 | D-10 | Study's 8 ms detector hold is unsupported (V:48-68). | Exact sliding-window maximum, W = clamp(τR/4, 1, 12.5 ms), release compensated so t63 = knob. Model residual 0.000 % at 41.2/82.4/98 Hz at defaults. |
 | D-11 | Tight gate missed 35 ms at −60 dB (V:31). | Sliding-window detector; acceptance written per threshold × level cell (§4.1.10). The sidechain HPF's ringing still adds up to ~8 ms at −60/−70 dB thresholds with −6 dBFS notes; turning the HPF off removes it. |
 | D-12 | Chorus gaps (V:42/46/53). | Wide D_max 20 ms with the low-rate limit written down; CE swing ∝ 1/f above 2.86 Hz and bend 0.1 (fitted); Dimension acceptance on triangle values. |
 | D-13 | Tremolo rate multiplier (study R4). | Not added: keeps the shared set small; `mod_sync` reaches 16 Hz at 120 BPM (1/32) and the free knob 10 Hz. |
-| D-14 | RAT 100 pF feedback cap, 1 kΩ clipper resistor and pot tapers; Big Muff tone pot value — not confirmed by an opened source. | Values used are the widely published ones; the drive engineer confirms each against a schematic and cites it in `Drive.cpp`, or tags it `[choice]`. RAT GBW 2.3 MHz is a fit on harness-only data — revisit by ear. |
+| D-14 | RAT 100 pF feedback cap, 1 kΩ clipper resistor and pot tapers; Big Muff tone pot value — not confirmed by an opened source. | Values used are the widely published ones; the drive engineer confirms each against a schematic and cites it in `Drive.cpp`, or tags it `[choice]`. RAT GBW 2.3 MHz is a fit on harness-only data — revisit by ear. Update: `Drive.cpp` now uses 1 MHz (`kRatGbw`, LM308 data sheet, §4.3.5); the 2.3 MHz fit is dropped. |
 | D-15 | Phaser `mod_depth`/`mod_mix` ignored by Phase 90 / Small Stone (stock-only). | Kept stock (fits are only valid there); UI dims them. The prototype's depth/mix scaling exists if the owner wants them live later. |
 | D-16 | EQ adds 45 parameters (Graphic alone 21). | Kept: the study recommends Graphic; dropping it would save 21 ids and one UI layout. |
 | D-17 | Gate threshold means peak dBFS in Tight/Smooth but mean-square in Classic (≈ 3 dB apart for a sine); old sessions pinned to Classic are unaffected. | Documented in the UI as the meter's level bar uses the active mode's units. |
-| D-18 | FET/Opto give one release shape regardless of burst length (V:81); no program dependence. | Accepted for v1; a burst-length-dependent τ2 is future work. |
+| D-18 | FET/Opto give one release shape regardless of burst length (V:81); no program dependence. | Accepted for v1; a burst-length-dependent τ2 is future work. Update: delivered (a27b550): FET and Opto releases lengthen with programme length (§4.2.5, check C28). |
 | D-19 | Tremolo depth law, 120 Hz smoother, Optical constants, Bias fit and Harmonic voice have no installed reference (report.md:12, :386). | Built as specified; parity with the prototype is enforced; Harmonic and Bias need a listening pass before release. |
 | D-20 | Golden hashes depend on arch and build type. | Capture and verify on the development Mac, arm64, Release. |
 | D-21 | `mod_color` default on means a new Phase 90 starts as the block-logo (resonant) voicing. | Chosen because it is the validated fit; switch the default to off if the owner prefers the script sound. |
 | D-22 | The NAM resampler's reported latency is 1.9 (44.1 kHz) / 3.0 (96 kHz) samples short of its true delay (§4.1.7), so a deferred Tight/Smooth curve leads the audio by that much, and the host's delay compensation is off by the same amount. | Left as is: D uses the reported latency as specified, and the host figure is frozen by the golden renders. A measured group delay from `NamEngine` (probe at model load), used for D only, would close it for the gate. |
-| D-23 | `eq_tilt`, `eq_level` and the seven `eq_g*` read their default 0 back from the parameter as 8.9e-8 / 1.8e-7 dB on arm64 (exactly 0.1f × 120 − 12 with the product unrounded, as a fused multiply-add in JUCE's `snapToLegalValue` gives; visible in `tests/golden/params-v4.tsv`), so a fresh Parametric or Graphic block in the plugin runs its level/tilt/band stages instead of the exact 0 dB paths E4/E17 test on the engine. Measured through the processor: within −144 dBFS of the input at 44.1 kHz (−150 at 48, −162 at 96). | Left as is: the processor passes values raw and the layout is frozen. Closing it means the engine treating \|dB\| below 1e-5 as 0 (engine owner), never a processor-side rounding. Classic and the amp EQ are unaffected (their knobs read back exactly). |
+| D-23 | `eq_tilt`, `eq_level` and the seven `eq_g*` read their default 0 back from the parameter as 8.9e-8 / 1.8e-7 dB on arm64 (exactly 0.1f × 120 − 12 with the product unrounded, as a fused multiply-add in JUCE's `snapToLegalValue` gives; visible in `tests/golden/params-v4.tsv`), so a fresh Parametric or Graphic block in the plugin runs its level/tilt/band stages instead of the exact 0 dB paths E4/E17 test on the engine. Measured through the processor: within −144 dBFS of the input at 44.1 kHz (−150 at 48, −162 at 96). | Left as is: the processor passes values raw and the layout is frozen. Closing it means the engine treating \|dB\| below 1e-5 as 0 (engine owner), never a processor-side rounding. Classic and the amp EQ are unaffected (their knobs read back exactly). Update: fixed in the engine (fe2fee6): a control within 1e-3 dB of neutral counts as neutral (host noise measured at 1.8e-7 dB; rows E22a, E22b), not 1e-5 as written above. |
+| D-24 | **Verification round, 2026-11-11 (seven `dsp:` commits after the integration).** The engines were fixed against the verification reports; this table keeps the earlier decisions above and adds what changed. | Gate (81fd404): the close rule depends on the fall from the recent peak; hold is the wait after a note stops (§4.1.5). Open: a pure 41.2 Hz tone now needs 15.4 dB over threshold to open (was 13.6), the price of the 4th-order 75 Hz sidechain filter. |
+| D-25 | Compressor type switches (a27b550). | `fx::EngineSwitcher` dropped (§2.4, §4.2.6): switches among Clean, Squash, FET and Opto keep the gain state with no fade; to or from Classic both outputs crossfade over 40 ms (+0.01 dB bump). Total makeup is capped at 48 dB. |
+| D-26 | Drive limits left open (0af54cf). | Aliasing for input tones above 5 kHz (Fuzz worst −43.1 dBc, per the commit; 8x oversampling would double the CPU) and the Screamer's 0.84 dB droop at 10 kHz are known and not fixed. The Fuzz mid-knob row Y2 is a sustain row (output moves at most 3 dB for 18 dB of input) because D14 requires the Muff saturated at half sustain. |
+| D-27 | EQ block switched on under signal (fe2fee6). | Level, shelves and cuts still step. Open: needs a crossfade in the processor, not in the engine. |
+| D-28 | Chorus mode switches and mono Dimension (08da770). | A crossfade by measured power replaces `fx::EngineSwitcher`; a mono Dimension instance plays line A alone, so CH-mono compares with the stereo left channel, not the mean (the mean of two antiphase lines has no detune). |
+| D-29 | Tremolo (2b847b9). | A mono instance ignores Width in every voice; `reset()` starts gains at unity; a song-position jump crossfades over 10 ms; the stereo loudness law is Smooth only (the earlier text said it applied to Optical, Bias and Harmonic as well, which the code never did). |
+| D-30 | **OPEN: phaser P9 "frozen response" fails.** After the notch-matched discretisation (§4.6.4) the notches and trajectories are rate independent, but the frozen magnitude response between 48 and 44.1 / 88.2 / 96 / 192 kHz differs by 1.06 to 1.69 dB against the 0.1 dB bar, on the slopes above 3 kHz. | A follow-up is in progress. Not claimed as met anywhere in this document. The round-3 numbers are kept in `docs/research/fx/phaser/evidence/fit/compare_before_rate_fix.txt`. |
+| D-31 | The processor side of the contract is being implemented. | Calls `reset()` on a non-Classic engine when its block is switched back on, and sanitises non-finite input (§2.2, §2.6, §6.6), each marked "(processor: in progress)" for the coordinator to clear. |
 
 ---
 

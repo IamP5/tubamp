@@ -75,18 +75,30 @@ absent, so the adapter's default applies. Keys are passed to the adapter as doub
 
 | effect | type key | keys |
 |---|---|---|
-| gate | `mode` | `threshold release hold range sc_hpf delay deferred on` |
+| gate | `mode` | `threshold release hold range sc_hpf delay deferred on lag prepare_block` |
 | comp | `type` | `threshold ratio attack release makeup knee mix sc_hpf auto_makeup on` |
 | drive | `type` | `gain tone level on` |
-| eq | `type` | `bass mid treble lowcut highcut mid_freq mid_q tilt level voice g100 g200 g400 g800 g1k6 g3k2 g6k4 on` |
-| chorus | `mode` | `rate depth mix width tone sync_phase solo on` |
-| phaser | `model` | `rate depth mix color sync_phase on` |
+| eq | `type` | `bass mid treble lowcut highcut mid_freq mid_q tilt level voice g100 g200 g400 g800 g1k6 g3k2 g6k4 on reenable` |
+| chorus | `mode` | `rate depth mix width tone sync_phase solo on reset` |
+| phaser | `model` | `rate depth mix color sync_phase on reset_on_enable freeze_u` |
 | tremolo | `voice` | `rate depth mix width tone shape wave sync_phase on` |
 
 `on=0` is the processor's bypass: comp calls `skip()`, the others neither update nor run
 the block (gate: no measure, no apply). Gate `deferred=1` applies the curve to the
 channels' mono mean and copies it back, which is what the processor does when the amp
 follows the gate; `delay=N` is `setCurveDelay`.
+
+Keys that are not engine parameters (test hooks in the adapters):
+
+| effect | key | meaning |
+|---|---|---|
+| gate | `lag` | with `deferred=1`, the mono signal the curve is applied to is delayed by this many samples (clamped to `0..GateFx::kMaxCurveDelaySamples`); default 0 |
+| gate | `prepare_block` | `N > 0` re-prepares the gate for blocks of at most N samples and calls `reset()` when the value changes; 0 (default) is the spec's own block size |
+| eq | `reenable` | default 1: when `on` goes from 0 to 1 and the type is not Classic, `reset()` is called, as the processor does (processor: in progress). 0 replays the frozen state, which is what the old processor did |
+| chorus | `reset` | a change of this value (any number, compared with the previous block's) calls `reset()` at that block; default 0 |
+| phaser | `reset_on_enable` | 1: when `on` goes from 0 to 1, `reset()` is called; default 0 (frozen state replayed) |
+| phaser | `freeze_u` | test only: holds the sweep position at this value in [-1, 1] (-1 is the bottom; `PhaserFx::freezeSweep`), the frozen-response probe; absent means the LFO runs |
+| tremolo | (`on`) | no extra key: when `on` goes from 0 to 1 with `voice` other than 0 the adapter calls `reset()` before the next block, as the processor will |
 
 **`--classic-null`** forces the type key to 0 for both the engine and `makeLegacy()`, feeds
 both the same input and the same per-block Args, and compares the outputs **bitwise**
