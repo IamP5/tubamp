@@ -9,7 +9,7 @@
 //   Classic    juce::dsp::Chorus, one sine voice shared by both channels, as before (mode 0, frozen).
 //   Wide       four voices in two quadrature pairs, triangle LFO, depth in cents.
 //   CE         one bucket-brigade-style voice per channel, fixed 2.7 ms sweep, bent triangle.
-//   Dimension  two antiphase lines fed from the mono sum, slow triangle.
+//   Dimension  two antiphase lines fed from the mono sum, slow triangle (mono: line A alone).
 //   Tri        three lines at 120 degrees, slow sine + fixed 6 Hz shimmer.
 namespace tubamp
 {
@@ -38,9 +38,13 @@ public:
     ~ChorusFx();
 
     void prepare (const juce::dsp::ProcessSpec& spec);
+    /** Clears every line and starts every smoother at its target; modes 1-4 then pass the
+        dry at once and fade the wet in as the lines refill. Call it when a bypassed block
+        comes back, or the lines replay what they held when it was switched off. */
     void reset();
     /** Audio thread, once per block before process(). */
     void setParameters (const ChorusParams& params);
+    /** A non-finite input sample is processed as 0 (and written back as 0). */
     void process (juce::dsp::AudioBlock<float> block);
 
     int getLatencySamples() const noexcept { return 0; }

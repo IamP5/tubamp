@@ -463,17 +463,511 @@ def ch14():
 
 def ch_mono():
     """A mono instance: its output equals the mean of the stereo outputs for the same mono
-    input, and it still carries the moving wet."""
+    input, and it still carries the moving wet. Dimension is the exception: its two lines
+    move in antiphase, so their mean has no detune (CH19), and a mono instance plays line A
+    alone, which is the stereo left channel."""
     rows, ok = [], True
     x = band_noise(4.0, SR)
     for mode in (WIDE, CE, DIM, TRI):
         keys = dict(START[mode], mode=mode)
         st = run(keys, fx.stereo(x), SR)
         mo = fx.mono(run(keys, x[None, :], SR, ch=1))
-        err = float(np.max(np.abs(mo - 0.5 * (st[0] + st[1]))))
+        want, name = (st[0], "left") if mode == DIM else (0.5 * (st[0] + st[1]), "mid")
+        err = float(np.max(np.abs(mo - want)))
         wet = float(fx.db(np.sqrt(np.mean((mo - x) ** 2)) / np.sqrt(np.mean(x ** 2))))
         ok &= err <= 1e-6 and wet > -20.0
-        rows.append(f"{TYPES[mode]} |mono-mid| {err:.1e}, wet {wet:+.1f} dB")
+        rows.append(f"{TYPES[mode]} |mono-{name}| {err:.1e}, wet {wet:+.1f} dB")
+    return ok, "; ".join(rows)
+
+
+# ---------------------------------------------------------------------------- transitions
+# A voice's pitch is the slope of its delay, so any transition is judged on the
+# instantaneous frequency of a steady sine through one soloed voice: at every moment where
+# the voice is sounding (analytic amplitude >= half its steady value; inside a dip the
+# frequency of a silent path is undefined, and the dip is reported), |deviation| may not
+# exceed the largest steady-state peak of the settings involved by more than 5 cents, and
+# it must be back inside the new settings' own peak + 5 cents 250 ms after the change.
+
+TR_CARRIERS = (997.3, 3301.7)
+TR_TOL, TR_SETTLE = 5.0, 0.25
+TR_BLOCK = 64
+VOICES = {WIDE: (0, 2), CE: (0,), DIM: (0,), TRI: (0,)}
+TRI_FAST = 2 ** (3 / 1200) - 1
+
+
+def voice_slope(mode, voice, rate, depth):
+    """Peak delay slope (s/s) of a voice in steady state at (rate, depth) (§4.5.5)."""
+    rate = min(max(rate, 0.01), 20.0)
+    if mode == WIDE:
+        f = rate * (np.sqrt(2.0) if voice in (2, 3) else 1.0)
+        return min(2 ** (30 * depth * depth / 1200) - 1, 2 * f * D_MAX)
+    if mode == CE:
+        return 2 * (1 + CE_BEND) * rate * CE_SWEEP * depth * min(1.0, CE_TOP / rate)
+    if mode == DIM:
+        return 2 * rate * DIM_SWING_PP * depth * min(1.0, DIM_TOP / rate)
+    return min(2 ** (20 * depth * depth / 1200) - 1, np.pi * rate * D_MAX) + TRI_FAST
+
+
+def slope_cents(s):
+    """The larger side of a delay slope s: a rising delay bends down by -1200 log2(1 - s)."""
+    return float(-1200.0 * np.log2(1.0 - s))
+
+
+def if_cents(y, sr, f0, smooth_ms=2.0):
+    """-> (cents per sample, analytic amplitude, valid mask). Valid: amplitude >= half the
+    median, kept clear of the 2 ms average's reach into an amplitude null."""
+    z = fx.analytic(y)
+    amp_ = np.abs(z)
+    inst = np.diff(np.unwrap(np.angle(z))) * sr / (2 * np.pi)
+    k = max(1, int(smooth_ms * 1e-3 * sr))
+    inst = np.convolve(inst, np.ones(k) / k, "same")
+    cents_ = 1200.0 * np.log2(np.maximum(inst, 1e-3) / f0)
+    low = amp_[1:] < 0.5 * np.median(amp_)
+    guard = np.convolve(low.astype(float), np.ones(2 * k + 1), "same") > 0
+    return cents_, amp_[1:], ~guard
+
+
+def transition(mode, voice, f0, keys, events, secs, sr=SR, ch=2, block=TR_BLOCK):
+    """One soloed voice through a timeline; -> (output, cents, valid, index of the first
+    analysed sample)."""
+    tokens = [f"{k}={v}" for k, v in dict(keys, mode=mode, mix=1, solo=voice).items()] + list(events)
+    y = fx.mono(run(tokens, f"gen:sine:{f0}:-12", sr, secs, ch, block))
+    c, _, valid = if_cents(y, sr, f0)
+    a, b = int(0.4 * sr), len(c) - int(0.2 * sr)
+    return y, c[a:b], valid[a:b], a
+
+
+_STEADY = {}
+
+
+def steady_peak(mode, voice, f0, rate, depth, sr):
+    """Largest |deviation| of 2.5 s of steady state (the interpolation adds up to a cent
+    to the closed form at 22.05 kHz and 3.3 kHz)."""
+    key = (mode, voice, f0, round(rate, 6), round(depth, 6), sr)
+    if key not in _STEADY:
+        y = fx.mono(run([f"mode={mode}", f"rate={rate}", f"depth={depth}", "mix=1", f"solo={voice}"],
+                        f"gen:sine:{f0}:-12", sr, 2.9, 2, 512))
+        c, _, valid = if_cents(y, sr, f0)
+        a, b = int(0.4 * sr), len(c) - int(0.2 * sr)
+        _STEADY[key] = float(np.max(np.abs(c[a:b][valid[a:b]])))
+    return _STEADY[key]
+
+
+def tr_case(mode, start, events, t0, t_end, secs, path, sr=SR, ch=2, block=TR_BLOCK):
+    """Runs a transition at every carrier and solo voice; path = the (rate, depth) settings
+    the change passes through. The steady-state peak of those settings is the larger of the
+    closed form and a measurement of the first, last and steepest of them. -> (ok, worst
+    excess over that peak, settle s, dip ms, max). Times are moved to the block start where
+    the timeline takes effect."""
+    worst_excess, worst_settle, dip_ms, worst_abs = -1e9, 0.0, 0.0, 0.0
+    ok = True
+    t_end = np.ceil(t_end * sr / block - 1e-9) * block / sr
+    for voice in VOICES[mode]:
+        model = [slope_cents(voice_slope(mode, voice, r, d)) for r, d in path]
+        steep = path[int(np.argmax(model))]
+        for f0 in TR_CARRIERS:
+            measured = {p: steady_peak(mode, voice, f0, p[0], p[1], sr) for p in {path[0], path[-1], steep}}
+            bound = max(max(model), max(measured.values())) + TR_TOL
+            after = max(model[-1], measured[path[-1]]) + TR_TOL
+            _, c, valid, a = transition(mode, voice, f0, start, events, secs, sr, ch, block)
+            t = (np.arange(len(c)) + a) / sr
+            seg = (t >= t0 - 0.002) & valid
+            dev = np.abs(c[seg])
+            peak = float(dev.max()) if len(dev) else 0.0
+            worst_abs = max(worst_abs, peak)
+            worst_excess = max(worst_excess, peak - (bound - TR_TOL))
+            over = np.nonzero((np.abs(c) > after) & valid & (t >= t_end))[0]
+            settle = float(t[over[-1]] - t_end) if len(over) else 0.0
+            worst_settle = max(worst_settle, settle)
+            dip_ms = max(dip_ms, 1e3 * float(np.sum(~valid & (t >= t0 - 0.002))) / sr)
+            ok &= peak <= bound and settle <= TR_SETTLE
+    return ok, worst_excess, worst_settle, dip_ms, worst_abs
+
+
+def tr_scenarios():
+    """(label, start keys, timeline, t0, t_end, path of (rate, depth))."""
+    T = 1.0
+    out = []
+    for r0, r1, d in ((0.05, 10.0, 1.0), (10.0, 0.05, 1.0), (0.05, 20.0, 1.0), (20.0, 0.05, 1.0),
+                      (1.0, 10.0, 1.0), (0.25, 5.0, 0.4), (10.0, 1.0, 0.4)):
+        out.append((f"rate {r0:g}->{r1:g} d{d:g}", dict(rate=r0, depth=d), [f"rate@{T}={r1}"], T, T, [(r0, d), (r1, d)]))
+    for r, d0, d1 in ((0.25, 0.0, 1.0), (0.25, 1.0, 0.0), (1.0, 0.4, 1.0), (10.0, 0.0, 1.0)):
+        out.append((f"depth {d0:g}->{d1:g} r{r:g}", dict(rate=r, depth=d0), [f"depth@{T}={d1}"], T, T, [(r, d0), (r, d1)]))
+    out.append(("width 1->0, tone 0->1", dict(rate=1.0, depth=1.0, width=1.0, tone=0.0),
+                [f"width@{T}=0", f"tone@{T + 0.3}=1"], T, T + 0.3, [(1.0, 1.0)]))
+    out.append(("rate ramp 0.05->10 in 0.25 s", dict(rate=0.05, depth=1.0), [f"rate@{T}..{T + 0.25}=0.05..10"],
+                T, T + 0.25, [(0.05, 1.0), (10.0, 1.0)]))
+    out.append(("rate ramp 10->0.05 in 1 s", dict(rate=10.0, depth=1.0), [f"rate@{T}..{T + 1.0}=10..0.05"],
+                T, T + 1.0, [(10.0, 1.0), (0.05, 1.0)]))
+    out.append(("depth ramp 0->1 in 0.2 s r0.5", dict(rate=0.5, depth=0.0), [f"depth@{T}..{T + 0.2}=0..1"],
+                T, T + 0.2, [(0.5, 0.0), (0.5, 1.0)]))
+    rng = np.random.default_rng(5)
+    for gap in (0.025, 0.06):
+        rates = np.exp(rng.uniform(np.log(0.05), np.log(10.0), 16))
+        depths = rng.uniform(0.2, 1.0, 16)
+        ev = []
+        for i, (r, d) in enumerate(zip(rates, depths)):
+            ev += [f"rate@{T + i * gap:.4f}={r:.4f}", f"depth@{T + i * gap:.4f}={d:.4f}"]
+        path = [(1.0, 0.6)] + list(zip(rates, depths))
+        out.append((f"16 random rate+depth steps {1e3 * gap:g} ms apart", dict(rate=1.0, depth=0.6), ev,
+                    T, T + 15 * gap, path))
+    return out
+
+
+def ch15():
+    rows, ok = [], True
+    for mode in (WIDE, CE, DIM, TRI):
+        worst = (-1e9, "")
+        settle = (0.0, "")
+        dip = 0.0
+        for label, start, events, t0, t_end, path in tr_scenarios():
+            good, excess, st, dip_ms, _ = tr_case(mode, start, events, t0, t_end, t_end + 0.8, path)
+            ok &= good
+            if excess > worst[0]:
+                worst = (excess, label)
+            if st > settle[0]:
+                settle = (st, label)
+            dip = max(dip, dip_ms)
+            if not good:
+                rows.append(f"{TYPES[mode]} FAIL {label}: {excess:+.1f} c over, settle {1e3 * st:.0f} ms")
+        rows.append(f"{TYPES[mode]} worst {worst[0]:+.1f} c over the settings' peak ({worst[1]}), "
+                    f"settle {1e3 * settle[0]:.0f} ms ({settle[1]}), dip <= {dip:.0f} ms")
+    return ok, "; ".join(rows)
+
+
+def ch15_rates():
+    """CH15's hardest steps at 22.05 and 192 kHz, blocks 1, 512 and 4096, mono and stereo."""
+    pick = ("rate 0.05->10 d1", "rate 20->0.05 d1", "depth 0->1 r0.25", "16 random rate+depth steps 25 ms apart")
+    cases = [c for c in tr_scenarios() if c[0] in pick]
+    fails, worst, settle = [], -1e9, 0.0
+    for sr in (22050, 192000):
+        for block in (1, 512, 4096):
+            for ch in (1, 2):
+                for mode in (WIDE, CE, DIM, TRI):
+                    for label, start, events, t0, t_end, path in cases:
+                        good, excess, st, _, _ = tr_case(mode, start, events, t0, t_end, t_end + 0.9, path, sr, ch, block)
+                        worst, settle = max(worst, excess), max(settle, st)
+                        if not good:
+                            fails.append(f"{TYPES[mode]} {label} {sr}/{block}/{ch}ch: {excess:+.1f} c, {1e3 * st:.0f} ms")
+    detail = f"worst {worst:+.1f} c over the settings' peak, settle {1e3 * settle:.0f} ms"
+    return not fails, detail + ("" if not fails else "; FAIL " + "; ".join(fails[:4]))
+
+
+SYNC_CASES = {WIDE: (2.0, 1.0), CE: (1.0, 0.7), DIM: (0.5, 0.8), TRI: (1.0, 0.5)}
+
+
+def sync_events(f, kind, T=1.3, secs=3.2):
+    """Timeline tokens of a synced LFO at f Hz with one discontinuity at T."""
+    if kind == "start":       # free-running until play at T, from bar start
+        return [f"sync_phase@{T}..{secs}={0.0}..{f * (secs - T)}"], [(f,)]
+    if kind == "locate":      # +0.5 cycle
+        return [f"sync_phase@0..{T}=0..{f * T}", f"sync_phase@{T}..{secs}={f * T + 0.5}..{f * secs + 0.5}"], [(f,)]
+    if kind == "loop":        # back 0.37 cycle
+        return [f"sync_phase@0..{T}=0..{f * T}", f"sync_phase@{T}..{secs}={f * T - 0.37}..{f * secs - 0.37}"], [(f,)]
+    # note value x4: the dispatcher's phase is song position times cycles per beat
+    g = 4.0 * f
+    return ([f"rate@{T}={g}", f"sync_phase@0..{T}=0..{f * T}", f"sync_phase@{T}..{secs}={g * T}..{g * secs}"],
+            [(f,), (g,)])
+
+
+def ch16():
+    """Transport start, locate, loop and note-value jumps of a synced LFO: pitch bound and
+    settle as CH15, the LFO on the new phase afterwards (within 2 % of a cycle), and no
+    click (220 Hz -12 dBFS, mix 0.5 and 1, 2 kHz HP <= -60 dBFS)."""
+    rows, ok = [], True
+    T = 1.3
+    for mode in (WIDE, CE, DIM, TRI):
+        f, depth = SYNC_CASES[mode]
+        secs = T + 0.55 + max(2.0 / f, 1.0)
+        worst, settle, click, lock = -1e9, 0.0, -300.0, 0.0
+        for kind in ("start", "locate", "loop", "note"):
+            events, rates = sync_events(f, kind, T, secs)
+            start = dict(rate=f, depth=depth)
+            path = [(r[0], depth) for r in rates]
+            good, excess, st, _, _ = tr_case(mode, start, events, T, T, secs, path)
+            ok &= good
+            worst, settle = max(worst, excess), max(settle, st)
+            if not good:
+                rows.append(f"{TYPES[mode]} FAIL {kind}: {excess:+.1f} c over, settle {1e3 * st:.0f} ms")
+            # The LFO sits on the requested phase afterwards (voice 0's delay fundamental).
+            g = rates[-1][0]
+            y = fx.mono(run([f"mode={mode}", f"rate={f}", f"depth={depth}", "mix=1", "solo=0"] + events,
+                            f"gen:sine:{PROBE_HZ}:-12", SR, secs, 2, TR_BLOCK))
+            t, d = delay_track(y, SR)
+            m = (t >= T + 0.3) & (t <= secs - 0.25)
+            phi = fund_phase_deg(t[m], d[m], g)
+            want = sync_phase_at(events, t[m][0]) * 360.0
+            # fund_phase_deg reads phase at t = 0 of its own window: refer it to the window start.
+            err = wrap_deg(phi + 360.0 * g * t[m][0] - want) / 360.0
+            lock = max(lock, abs(err))
+            ok &= abs(err) <= 0.02
+            for mix in (0.5, 1.0):
+                out = run([f"mode={mode}", f"rate={f}", f"depth={depth}", f"mix={mix}"] + events,
+                          "gen:sine:220:-12", SR, secs, 2, TR_BLOCK)
+                for chan in out:
+                    r = hp_residual(chan, SR)[int(0.5 * SR):int((secs - 0.2) * SR)]
+                    click = max(click, float(fx.db(np.max(np.abs(r)))))
+        ok &= click <= -60.0
+        rows.append(f"{TYPES[mode]} worst {worst:+.1f} c over, settle {1e3 * settle:.0f} ms, "
+                    f"phase error {100 * lock:.2f} % of a cycle, click {click:.1f} dBFS")
+    return ok, "; ".join(rows)
+
+
+def sync_phase_at(events, t):
+    """The sync phase a timeline asks for at time t (linear ramps only)."""
+    value = None
+    for e in events:
+        key, rest = e.split("@", 1)
+        if key != "sync_phase":
+            continue
+        span, vals = rest.split("=")
+        t0, t1 = (float(v) for v in span.split(".."))
+        v0, v1 = (float(v) for v in vals.split(".."))
+        if t0 <= t <= t1:
+            value = v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+    return value
+
+
+def loud_then_silence(sr, secs, ch):
+    n = int(secs * sr)
+    t = np.arange(n) / sr
+    x = fx.amp(-6.0) * np.sin(2 * np.pi * 110.0 * t) + fx.pink(secs, -20.0, sr, seed=31)[:n]
+    x[int(1.2 * sr):] = 0.0
+    return np.vstack([x] * ch)
+
+
+def ch17():
+    """The processor's bypass: process a loud signal, stop calling for a second, reset(),
+    process again. With silent input nothing may come out (no replay); under a sustained
+    220 Hz -12 dBFS sine the dry stays continuous across the restart and the wet fades in
+    (2 kHz HP <= -60 dBFS), mix 0.35 and 0.5, mono and stereo."""
+    rows, ok = [], True
+    secs = 3.5
+    for mode in (WIDE, CE, DIM, TRI):
+        replay, click = -300.0, -300.0
+        for ch in (1, 2):
+            keys = [f"mode={mode}", "mix=1", "on@1.0=0", "on@2.2=1", "reset@2.2=1"]
+            out = run(keys, loud_then_silence(SR, secs, ch), SR, None, ch, TR_BLOCK)
+            tail = out[:, int(2.2 * SR):]
+            replay = max(replay, float(fx.db(max(np.max(np.abs(tail)), 1e-30))))
+            for mix in (0.35, 0.5):
+                keys = [f"mode={mode}", f"mix={mix}", "on@1.0=0", "on@2.0=1", "reset@2.0=1"]
+                out = run(keys, "gen:sine:220:-12", SR, secs, ch, TR_BLOCK)
+                for chan in out:
+                    # From well after the switch-off, which is the processor's hard bypass.
+                    r = hp_residual(chan, SR)[int(1.5 * SR):int((secs - 0.2) * SR)]
+                    click = max(click, float(fx.db(np.max(np.abs(r)))))
+        ok &= replay <= -120.0 and click <= -60.0
+        rows.append(f"{TYPES[mode]} replay {replay:.1f} dBFS, restart {click:.1f} dBFS")
+    return ok, "; ".join(rows)
+
+
+def ch21():
+    """What a type switch into chorus fades in: the engine's own output from reset() on
+    (zeros before it), a sustained 220 Hz -12 dBFS sine, 2 kHz HP <= -60 dBFS: at mix 1 as
+    is, at mix 0.5 under the dispatcher's 20 ms linear fade (the dry starts at once)."""
+    rows, ok = [], True
+    T, secs = 1.0, 2.0
+    for mode in (WIDE, CE, DIM, TRI):
+        worst = -300.0
+        for ch in (1, 2):
+            for mix in (1.0, 0.5):
+                out = run([f"mode={mode}", f"mix={mix}", f"reset@{T}=1"], "gen:sine:220:-12", SR, secs, ch, TR_BLOCK)
+                y = out.copy()
+                y[:, :int(T * SR)] = 0.0
+                if mix < 1.0:
+                    ramp = np.clip((np.arange(y.shape[1]) - T * SR) / (0.02 * SR), 0.0, 1.0)
+                    y *= ramp
+                for chan in y:
+                    r = hp_residual(chan, SR)[int(0.5 * SR):int((secs - 0.2) * SR)]
+                    worst = max(worst, float(fx.db(np.max(np.abs(r)))))
+        ok &= worst <= -60.0
+        rows.append(f"{TYPES[mode]} {worst:.1f} dBFS")
+    return ok, "onset after reset, 2 kHz HP peak: " + ", ".join(rows)
+
+
+def chord(secs, sr, level_db=-12.0, seed=11):
+    """A sustained E major guitar chord, six notes with six harmonics each."""
+    t = np.arange(int(secs * sr)) / sr
+    rng = np.random.default_rng(seed)
+    x = np.zeros_like(t)
+    for f in (82.41, 123.47, 164.81, 207.65, 246.94, 329.63):
+        for h in range(1, 7):
+            x += np.sin(2 * np.pi * f * h * t + rng.uniform(0, 2 * np.pi)) / h
+    return x / np.max(np.abs(x)) * fx.amp(level_db)
+
+
+def frame_db(y, sr, win=0.02, hop=0.005):
+    n, h = int(win * sr), int(hop * sr)
+    starts = np.arange(0, y.shape[-1] - n, h)
+    p = np.array([np.mean(y[..., s:s + n] ** 2) for s in starts])
+    return (starts + n / 2) / sr, 10 * np.log10(np.maximum(p, 1e-30))
+
+
+def ch18():
+    """Mode switches between the new modes hold the level. Under a sustained chord the
+    20 ms level, averaged over six switches each way (at different LFO phases: one switch
+    alone mostly shows where the comb happens to sit, up to 4 dB on this chord), stays
+    within 1.5 dB of the span between the levels before and after, every ordered pair, mix
+    0.35 / 0.5 / 1; a 220 Hz -12 dBFS sine through the same switches shows no click (2 kHz
+    HP <= -60 dBFS). Rate and depth are the outgoing mode's starting point."""
+    gap, count = 0.6, 12
+    secs = 1.0 + gap * count + 0.4
+    x = fx.stereo(chord(secs, SR))
+    worst_lv, worst_click, where = -9.0, -300.0, ""
+    ok = True
+    for mix in (0.35, 0.5, 1.0):
+        for a, b in ((WIDE, CE), (WIDE, DIM), (WIDE, TRI), (CE, DIM), (CE, TRI), (DIM, TRI)):
+            times = [1.0 + gap * k for k in range(count)]
+            keys = ([f"mode={a}", f"mix={mix}"] + [f"{k}={v}" for k, v in START[a].items() if k != "mix"]
+                    + [f"mode@{t:.3f}={b if k % 2 == 0 else a}" for k, t in enumerate(times)])
+            t, lv = frame_db(run(keys, x, SR, None, 2, TR_BLOCK), SR)
+            for first, (frm, to) in enumerate(((a, b), (b, a))):
+                rel = np.arange(-0.1, 0.3, 0.005)
+                power = np.zeros_like(rel)
+                for t0 in times[first::2]:
+                    power += np.interp(t0 + rel, t, 10 ** (lv / 10))
+                trace = 10 * np.log10(power / len(times[first::2]))
+                before = 10 * np.log10(np.mean(10 ** (trace[rel < -0.03] / 10)))
+                after = 10 * np.log10(np.mean(10 ** (trace[rel > 0.2] / 10)))
+                lo, hi = min(before, after) - 1.5, max(before, after) + 1.5
+                excess = float(max(np.max(trace - hi), np.max(lo - trace))) + 1.5
+                if excess > worst_lv:
+                    worst_lv, where = excess, f"{TYPES[frm]}->{TYPES[to]} mix {mix:g}"
+                ok &= excess <= 1.5
+            out = run(keys, "gen:sine:220:-12", SR, secs, 2, TR_BLOCK)
+            for chan in out:
+                r = hp_residual(chan, SR)[int(0.5 * SR):int((secs - 0.2) * SR)]
+                worst_click = max(worst_click, float(fx.db(np.max(np.abs(r)))))
+    ok &= worst_click <= -60.0
+    return ok, (f"largest distance from the before/after span: {worst_lv:+.2f} dB ({where}); "
+                f"click {worst_click:.1f} dBFS")
+
+
+def ifp95(y, sr, f0):
+    """|IF| p95 in cents where the (possibly multi-voice) wet is not in an amplitude null."""
+    c, amp_, _ = if_cents(y, sr, f0, smooth_ms=3.0)
+    lo, hi = int(1.0 * sr), len(c) - int(0.3 * sr)
+    a = amp_[lo:hi]
+    keep = a > 0.2 * np.median(a)
+    return float(np.percentile(np.abs(c[lo:hi])[keep], 95))
+
+
+def comb_swing(y, x, sr, nfft=4096):
+    """Median over third-octave bands 200 Hz - 5 kHz of how far each band's level against
+    the input moves over time (95th - 5th percentile, dB, 85 ms frames)."""
+    edges = 200 * 2 ** (np.arange(0, 15) / 3.0)
+    f = np.fft.rfftfreq(nfft, 1 / sr)
+    win = np.hanning(nfft)
+    starts = range(int(1.0 * sr), len(y) - nfft, nfft // 2)
+    S = np.array([np.abs(np.fft.rfft(y[s:s + nfft] * win)) ** 2 for s in starts])
+    X = np.array([np.abs(np.fft.rfft(x[s:s + nfft] * win)) ** 2 for s in starts])
+    out = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        m = (f >= lo) & (f < hi)
+        r = 10 * np.log10(S[:, m].sum(1) / X[:, m].sum(1))
+        out.append(np.percentile(r, 95) - np.percentile(r, 5))
+    return float(np.median(out))
+
+
+def ch19():
+    """A mono instance is still a chorus: pitch deviation (|IF| p95 at mix 1, 220 / 997 /
+    3302 Hz) at least half the stereo instance's left channel, and a moving comb (pink
+    noise at the mode's starting mix) at least half as deep."""
+    rows, ok = [], True
+    for mode in (WIDE, CE, DIM, TRI):
+        st = START[mode]
+        secs = 1.3 + max(2.0 / st["rate"], 3.0)
+        ratios = []
+        for f0 in (220.5, 997.3, 3301.7):
+            keys = dict(mode=mode, rate=st["rate"], depth=st["depth"], mix=1)
+            x = fx.sine(f0, -12, secs, SR)
+            s = ifp95(run(keys, fx.stereo(x), SR)[0], SR, f0)
+            m = ifp95(run(keys, x[None, :], SR, ch=1)[0], SR, f0)
+            ratios.append((m, s))
+        x = fx.pink(10.0, -18.0, SR, seed=6)
+        keys = dict(START[mode], mode=mode)
+        cs = comb_swing(run(keys, fx.stereo(x), SR)[0], x, SR)
+        cm = comb_swing(run(keys, x[None, :], SR, ch=1)[0], x, SR)
+        good = all(m >= 0.5 * s for m, s in ratios) and cm >= 0.5 * cs
+        ok &= good
+        rows.append(f"{TYPES[mode]} detune mono/stereo " + " ".join(f"{m:.2f}/{s:.2f}" for m, s in ratios)
+                    + f" c, comb {cm:.1f}/{cs:.1f} dB")
+    return ok, "; ".join(rows)
+
+
+def ch20():
+    """Non-finite input: one NaN, +Inf or -Inf sample (and a run of 100 NaNs) behaves exactly
+    like a zero sample, bit for bit, in every mode, mono and stereo, blocks 37 and 512; one
+    1e30 sample gives finite output that is back on the clean render 0.2 s later."""
+    rows, ok = [], True
+    n = int(1.5 * SR)
+    base = np.vstack([fx.pink(1.5, -18.0, SR, seed=21)[:n], fx.pink(1.5, -18.0, SR, seed=22)[:n]])
+    for mode in TYPES:
+        bad_runs, huge = 0, -300.0
+        for ch in (1, 2):
+            for bs in (37, 512):
+                keys = [f"mode={mode}"] + ([f"{k}={v}" for k, v in START[mode].items()] if mode else [])
+                opts = dict(sr=SR, secs=None, ch=ch, block=bs)
+                clean = base[:ch].copy()
+                zeroed = clean.copy()
+                zeroed[0, SR // 2] = 0.0
+                zeroed[0, SR // 2 + 1000:SR // 2 + 1100] = 0.0
+                ref = run(keys, zeroed, **opts)
+                for bad in (np.nan, np.inf, -np.inf):
+                    x = clean.copy()
+                    x[0, SR // 2] = bad
+                    x[0, SR // 2 + 1000:SR // 2 + 1100] = np.nan
+                    y = run(keys, x, **opts)
+                    if not np.all(np.isfinite(y)) or not np.array_equal(y, ref):
+                        bad_runs += 1
+                x = clean.copy()
+                x[0, SR // 2] = 1e30
+                y = run(keys, x, **opts)
+                c = run(keys, clean, **opts)
+                tail = slice(int(0.7 * SR), None)
+                if not np.all(np.isfinite(y)):
+                    bad_runs += 1
+                else:
+                    huge = max(huge, float(fx.db(np.max(np.abs(y[:, tail] - c[:, tail])) + 1e-30)))
+        good = bad_runs == 0 and huge <= -100.0
+        ok &= good
+        rows.append(f"{TYPES[mode]} {bad_runs} bad, 1e30 residue {huge:.0f} dB")
+    return ok, "; ".join(rows)
+
+
+TORTURE = ["rate@0.3=10", "depth@0.35=0.1", "mode@0.4=3", "rate@0.45=0.05", "mode@0.47=2", "mode@0.5=0",
+           "sync_phase@0.6..1.0=0.3..2.3", "rate@0.6=5", "sync_phase@1.0..1.4=0.9..2.9", "mode@0.8=4", "on@1.1=0",
+           "on@1.2=1", "reset@1.2=1", "mode@1.25=1", "depth@1.3=1", "mode@1.32=4", "mode@1.35=1", "rate@1.4=20"]
+
+
+def ch22():
+    """--rt-check and --reset-repeat through switches, dips, sync jumps, bypass and reset,
+    22.05-192 kHz, blocks 1 / 37 / 512 / 4096, mono and stereo; output finite."""
+    fails = []
+    for sr in fx.RATES:
+        for ch in (1, 2):
+            for bs in (1, 37, 512, 4096):
+                for opt in ("--rt-check", "--reset-repeat"):
+                    r = fx.invoke(EFFECT, "gen:music", ["mode=1"] + TORTURE,
+                                  [f"--block={bs}", f"--channels={ch}", "--seconds=2", opt], sr)
+                    if r.code != 0 or not np.all(np.isfinite(r.out)):
+                        fails.append(f"{sr}/{ch}ch/{bs} {opt}")
+    return not fails, "all clean" if not fails else "; ".join(fails[:6])
+
+
+def ch23():
+    """CPU while a switch runs two modes: modes alternating every 60 ms, so one is always
+    filling or fading; budget = the two modes' budgets added."""
+    rows, ok = [], True
+    classic = 1.2 * fx.invoke(EFFECT, "gen:noise:pink:-18", ["mode=0"], ["--bench", "--legacy"],
+                              48000).number(r"([0-9.]+) % of real time")
+    for a, b in ((WIDE, TRI), (CE, DIM), (WIDE, CE), (DIM, TRI), (WIDE, 0)):
+        tokens = [f"mode={a}"] + [f"mode@{0.06 * i:.2f}={(b if i % 2 else a)}" for i in range(1, 167)]
+        pct = fx.invoke(EFFECT, "gen:noise:pink:-18", tokens, ["--bench"], 48000).number(r"([0-9.]+) % of real time")
+        budget = BUDGETS[a] + (BUDGETS[b] if BUDGETS[b] is not None else classic)
+        ok &= pct <= budget
+        rows.append(f"{TYPES[a]}+{TYPES[b]} {pct:.3f} % (budget {budget:.3g})")
     return ok, "; ".join(rows)
 
 
@@ -494,7 +988,13 @@ def specific_checks(report, args):
             ("CH4/8-width", "mono-sum remedy, width <= 0.8", ch_width_remedy, WIDE), ("CH9", "Tri", ch9, TRI),
             ("CH10", "Tone corner shift", ch10, WIDE), ("CH11", "Clicks (mode, rate, depth)", ch11, WIDE),
             ("CH12", "Interpolation ripple", ch12, WIDE), ("CH13", "Sync 120 BPM 1/4", ch13, WIDE),
-            ("CH-mono", "mono instance", ch_mono, WIDE)]
+            ("CH-mono", "mono instance", ch_mono, WIDE),
+            ("CH15", "transients: rate, depth, width, tone", ch15, WIDE),
+            ("CH15-rates", "CH15 at 22.05/192 kHz, blocks, mono", ch15_rates, WIDE),
+            ("CH16", "sync: start, locate, loop, note", ch16, WIDE), ("CH17", "bypass, reset: replay, restart", ch17, WIDE),
+            ("CH18", "mode switch: level, click", ch18, WIDE), ("CH19", "mono: detune and comb", ch19, WIDE),
+            ("CH20", "non-finite input", ch20, WIDE), ("CH21", "onset after reset", ch21, WIDE),
+            ("CH22", "rt-check, reset-repeat under switches", ch22, WIDE), ("CH23", "cpu during a switch", ch23, WIDE)]
     for name, scope, fn, mode in rows:
         if want(mode):
             ok, detail = fn()

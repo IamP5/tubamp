@@ -1,6 +1,7 @@
 // fxbench adapter for the chorus voicings of the mod block (docs/FX-ENGINES.md §4.5).
-// Keys: mode rate depth mix width tone sync_phase solo on (0 skips process()). The legacy reference is the old
-// Modulation block running its chorus.
+// Keys: mode rate depth mix width tone sync_phase solo on (0 skips process()) reset (a change of value calls
+// reset() before that block's parameters, as the processor does when a bypassed block comes back). The legacy
+// reference is the old Modulation block running its chorus.
 #include "FxBench.h"
 #include "legacy/LegacyFx.h"
 
@@ -53,7 +54,11 @@ public:
         chorus.prepare ({ sampleRate, (juce::uint32) maxBlock, (juce::uint32) numChannels });
     }
 
-    void reset() override { chorus.reset(); }
+    void reset() override
+    {
+        chorus.reset();
+        lastReset = 0.0;
+    }
 
     void setParams (const fxbench::Args& a) override
     {
@@ -62,6 +67,14 @@ public:
 
         if (! on)
             return;
+
+        const double resetKey = a.get ("reset", 0.0);
+
+        if (! juce::exactlyEqual (resetKey, lastReset))
+        {
+            lastReset = resetKey;
+            chorus.reset();
+        }
 
         tubamp::ChorusParams p;
         p.mode = (int) a.get ("mode", p.mode);
@@ -85,9 +98,11 @@ public:
 
 private:
     tubamp::ChorusFx chorus;
+    double lastReset = 0.0;
     bool on = true;
 };
 
 FXBENCH_REGISTER ("chorus", ChorusBench,
-                  "mode(0 Classic,1 Wide,2 CE,3 Dimension,4 Tri) rate depth mix width tone sync_phase solo(-1 = off) on(0/1)");
+                  "mode(0 Classic,1 Wide,2 CE,3 Dimension,4 Tri) rate depth mix width tone sync_phase solo(-1 = off) on(0/1) "
+                  "reset(a change calls reset())");
 } // namespace
