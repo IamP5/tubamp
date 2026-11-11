@@ -219,14 +219,37 @@ and the prototype build the same table; the prototype's `--depth` widens the tab
 like P4, 0.05 % (Phase 90) and 0.17 % / 0.15 % (Small Stone off / on) rms at worst, where the
 old structure was 0.7 % and 2.4 % rms (closed form); frozen notches below 10 kHz at five sweep
 positions within 0.16 % (old: up to 7.7 %). The frozen magnitude response does not hold to
-0.1 dB: four first-order sections at 44.1 or 48 kHz cannot follow an analog chain's phase near
-10 kHz (the best four free real coefficients still miss it by 4 to 6° at 10 kHz), so the
-responses differ by 1.1 dB (Small Stone off) to 1.7 dB (Phase 90 script) at the top of the sweep,
-on the slopes above 3 kHz, between 48 and 192 kHz (old structure: 1.3 to 42 dB on the same
+0.1 dB: the responses differ by 1.06 dB (Small Stone off) to 1.69 dB (Phase 90 script), at the
+top half of the sweep, between 48 and 192 kHz (old structure: 1.3 to 42 dB on the same
 measure). The same limit moves the Color-on resonance at the sweep top by +2.7 % at 48 kHz
 (3288 against 3203 Hz analog; peak height within 0.01 dB), where the old rule, exact at fc, did
 not; matching at fc instead would put notch 2 1 % off at mid-sweep. Notch positions were chosen.
-Closing the rest needs oversampling, which `docs/FX-ENGINES.md` §4.6.4 rules out (latency).
+
+Where that error comes from, and what would close it [computed: `evidence/fit/rate_limit.py`,
+`rate_limit.txt`; closed form, it reproduces the bench row to the third decimal]:
+
+- **It is the four stages.** Against the analog response the 48 kHz render is off by up to
+  1.80 dB (script), 1.46 (block), 1.13 (Color off) and 1.72 (Color on), and 192 kHz by 0.11 dB
+  at most, so the row is in effect the 48 kHz error. With the lag and the Color network made
+  analog the stages alone give the same or more (block 1.85 dB at the sweep top: the lag's own
+  0.46 dB partly cancels it). The Color network's TPT poles add 0.07 dB at most.
+- **The 48 kHz chain lags.** At 9.94 kHz, sweep top, the digital wet path lags the analog one by
+  5.5° (script), 7.3° (block) and 4.5° (Color on) at 48 kHz, 5.5 to 8.8° at 44.1 kHz. Color off
+  leads instead (+8°), because there notch 2 is above the band and its matching point with it.
+- **No coefficient choice fixes it.** Four free stage coefficients (and the lag) per sweep
+  position and rate, fitted to the analog |H|, bring the row only to 1.45 dB (script), 1.01
+  (block), 0.57 (Color off) and 0.69 (Color on), and give up exact notches to do so. Nor does a
+  higher-order or complex-pole allpass: a stable allpass section only adds lag, and lag is
+  what the chain has too much of.
+- **A minimum-phase correction does, at a price.** Phase lead with a flat in-band magnitude needs
+  a gain rise above the band (the gain-phase relation of a minimum-phase filter). The four stages
+  refitted together with one second-order section on the wet output, outside every loop, whose
+  gain above 10 kHz is held to L: L = 0 dB gives 0.18 to 0.94 dB, L = 1 dB 0.22 to 0.52, L = 3 dB
+  0.06 to 0.28, L = 6 dB 0.03 to 0.12 (worst per voicing in `rate_limit.txt`). So
+  0.1 dB costs a wet-path rise of about 6 dB between 10 kHz and Nyquist, an output filter that
+  `docs/FX-ENGINES.md` §4.6.4 excludes, plus a joint eight- or nine-unknown solve per table entry
+  in `prepare()`. Not done [choice: a change to the sound above 10 kHz and to the spec, left to a
+  decision; oversampling, which would also close it, is ruled out by §4.6.4 for its latency].
 
 Each stage is affine in its input for the current sample (`P(x) = (2G−1)·x + 2(1−G)·s`), so
 a feedback loop around any number of stages is solved in closed form, with no unit delay.

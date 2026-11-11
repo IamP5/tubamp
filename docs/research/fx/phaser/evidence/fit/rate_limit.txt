@@ -1,0 +1,61 @@
+# rate_limit.py: the P9 frozen-response row from the prototype's equations (see the docstring).
+# dB figures are worst |dB| differences; 'metric' = against the 48 kHz render, the bench row's measure.
+
+## 1  the metric for the prototype's tables
+Phase 90 script	metric 1.694 dB	44.1k 0.355  88.2k 1.287  96k 1.368  192k 1.694
+Phase 90 block	metric 1.403 dB	44.1k 0.272  88.2k 1.046  96k 1.116  192k 1.403
+Small Stone off	metric 1.061 dB	44.1k 0.228  88.2k 0.810  96k 0.860  192k 1.061
+Small Stone on	metric 1.613 dB	44.1k 0.334  88.2k 1.224  96k 1.301  192k 1.613
+
+## 2  against the analog response, in the P9 mask of the analog response: all / stages only / lag or Color only
+voicing	fs	w -1.0	w -0.5	w +0.0	w +0.5	w +1.0
+Phase 90 script	44100	0.191 / 0.191 / 0.000	0.402 / 0.402 / 0.000	0.844 / 0.844 / 0.000	1.562 / 1.562 / 0.000	2.156 / 2.156 / 0.000
+Phase 90 script	48000	0.162 / 0.162 / 0.000	0.341 / 0.341 / 0.000	0.714 / 0.714 / 0.000	1.312 / 1.312 / 0.000	1.801 / 1.801 / 0.000
+Phase 90 script	88200	0.049 / 0.049 / 0.000	0.103 / 0.103 / 0.000	0.212 / 0.212 / 0.000	0.381 / 0.381 / 0.000	0.514 / 0.514 / 0.000
+Phase 90 script	96000	0.042 / 0.042 / 0.000	0.087 / 0.087 / 0.000	0.179 / 0.179 / 0.000	0.321 / 0.321 / 0.000	0.433 / 0.433 / 0.000
+Phase 90 script	192000	0.010 / 0.010 / 0.000	0.022 / 0.022 / 0.000	0.045 / 0.045 / 0.000	0.080 / 0.080 / 0.000	0.107 / 0.107 / 0.000
+Phase 90 block	44100	0.257 / 0.188 / 0.059	0.399 / 0.356 / 0.036	0.697 / 0.706 / 0.115	1.220 / 1.441 / 0.319	1.735 / 2.183 / 0.556
+Phase 90 block	48000	0.213 / 0.159 / 0.047	0.333 / 0.302 / 0.030	0.585 / 0.598 / 0.096	1.028 / 1.221 / 0.265	1.463 / 1.851 / 0.459
+Phase 90 block	88200	0.059 / 0.048 / 0.011	0.095 / 0.091 / 0.009	0.171 / 0.179 / 0.028	0.302 / 0.367 / 0.074	0.439 / 0.559 / 0.125
+Phase 90 block	96000	0.050 / 0.040 / 0.009	0.080 / 0.077 / 0.007	0.144 / 0.151 / 0.023	0.255 / 0.310 / 0.063	0.371 / 0.472 / 0.105
+Phase 90 block	192000	0.012 / 0.010 / 0.002	0.020 / 0.019 / 0.002	0.036 / 0.038 / 0.006	0.064 / 0.078 / 0.015	0.093 / 0.119 / 0.026
+Small Stone off	44100	0.027 / 0.027 / 0.000	0.130 / 0.130 / 0.000	0.612 / 0.612 / 0.000	1.353 / 1.353 / 0.000	0.444 / 0.444 / 0.000
+Small Stone off	48000	0.022 / 0.022 / 0.000	0.110 / 0.110 / 0.000	0.518 / 0.518 / 0.000	1.127 / 1.127 / 0.000	0.472 / 0.472 / 0.000
+Small Stone off	88200	0.007 / 0.007 / 0.000	0.033 / 0.033 / 0.000	0.155 / 0.155 / 0.000	0.318 / 0.318 / 0.000	0.557 / 0.557 / 0.000
+Small Stone off	96000	0.006 / 0.006 / 0.000	0.028 / 0.028 / 0.000	0.131 / 0.131 / 0.000	0.267 / 0.267 / 0.000	0.465 / 0.465 / 0.000
+Small Stone off	192000	0.001 / 0.001 / 0.000	0.007 / 0.007 / 0.000	0.033 / 0.033 / 0.000	0.066 / 0.066 / 0.000	0.111 / 0.111 / 0.000
+Small Stone on	44100	0.178 / 0.137 / 0.045	0.539 / 0.476 / 0.066	1.139 / 1.081 / 0.050	1.476 / 1.465 / 0.033	2.043 / 2.075 / 0.032
+Small Stone on	48000	0.151 / 0.116 / 0.038	0.454 / 0.401 / 0.055	0.949 / 0.902 / 0.042	1.221 / 1.214 / 0.028	1.715 / 1.743 / 0.027
+Small Stone on	88200	0.046 / 0.035 / 0.011	0.134 / 0.118 / 0.016	0.268 / 0.256 / 0.012	0.337 / 0.337 / 0.008	0.496 / 0.504 / 0.008
+Small Stone on	96000	0.038 / 0.029 / 0.009	0.113 / 0.100 / 0.013	0.226 / 0.215 / 0.010	0.283 / 0.283 / 0.007	0.418 / 0.425 / 0.007
+Small Stone on	192000	0.010 / 0.007 / 0.002	0.028 / 0.025 / 0.003	0.056 / 0.053 / 0.003	0.070 / 0.070 / 0.002	0.104 / 0.105 / 0.002
+
+## 3  wet-path phase, digital minus analog, at 9.94 kHz, sweep top (negative: the digital chain lags)
+Phase 90 script	44.1k -6.72 deg  48k -5.49 deg  88.2k -1.44 deg  96k -1.21 deg  192k -0.29 deg
+Phase 90 block	44.1k -8.81 deg  48k -7.29 deg  88.2k -2.01 deg  96k -1.69 deg  192k -0.41 deg
+Small Stone off	44.1k +4.85 deg  48k +8.01 deg  88.2k +18.08 deg  96k +15.09 deg  192k +3.60 deg
+Small Stone on	44.1k -5.50 deg  48k -4.51 deg  88.2k -1.20 deg  96k -1.01 deg  192k -0.25 deg
+
+## 4  stage coefficients (and lag) free per position and rate, fitted to the analog |H|
+Phase 90 script	metric 1.447 dB	44.1k 0.284  88.2k 1.080  96k 1.152  192k 1.447	against analog: 44.1k 1.831  48k 1.547  88.2k 0.467  96k 0.395  192k 0.100
+Phase 90 block	metric 1.006 dB	44.1k 0.227  88.2k 0.778  96k 0.824  192k 1.006	against analog: 44.1k 1.281  48k 1.054  88.2k 0.276  96k 0.229  192k 0.048
+Small Stone off	metric 0.572 dB	44.1k 0.117  88.2k 0.435  96k 0.463  192k 0.572	against analog: 44.1k 0.724  48k 0.607  88.2k 0.171  96k 0.144  192k 0.035
+Small Stone on	metric 0.691 dB	44.1k 0.142  88.2k 0.520  96k 0.553  192k 0.691	against analog: 44.1k 0.880  48k 0.738  88.2k 0.218  96k 0.186  192k 0.048
+
+## 5  stages refitted with a correction section C(z) on the wet output, |C| <= L dB above 10 kHz
+L 0 dB	Phase 90 script	metric 0.938 dB	44.1k 0.938  88.2k 0.768  96k 0.710  192k 0.647	|C| above 10 kHz up to: 44.1k +0.2  48k +0.1  88.2k +0.1  96k +0.1  192k +0.0
+L 0 dB	Phase 90 block	metric 0.822 dB	44.1k 0.822  88.2k 0.528  96k 0.433  192k 0.505	|C| above 10 kHz up to: 44.1k +0.1  48k +0.1  88.2k +0.0  96k +0.0  192k +0.0
+L 0 dB	Small Stone off	metric 0.431 dB	44.1k 0.091  88.2k 0.431  96k 0.413  192k 0.403	|C| above 10 kHz up to: 44.1k +0.1  48k +0.1  88.2k +0.0  96k +0.0  192k +0.0
+L 0 dB	Small Stone on	metric 0.183 dB	44.1k 0.026  88.2k 0.183  96k 0.171  192k 0.121	|C| above 10 kHz up to: 44.1k +0.0  48k +0.0  88.2k +0.0  96k +0.0  192k +0.0
+L 1 dB	Phase 90 script	metric 0.515 dB	44.1k 0.189  88.2k 0.497  96k 0.503  192k 0.515	|C| above 10 kHz up to: 44.1k +1.2  48k +1.1  88.2k +1.0  96k +1.0  192k +1.0
+L 1 dB	Phase 90 block	metric 0.392 dB	44.1k 0.130  88.2k 0.360  96k 0.379  192k 0.392	|C| above 10 kHz up to: 44.1k +1.1  48k +1.1  88.2k +1.0  96k +1.0  192k +1.0
+L 1 dB	Small Stone off	metric 0.234 dB	44.1k 0.067  88.2k 0.228  96k 0.231  192k 0.234	|C| above 10 kHz up to: 44.1k +1.1  48k +1.1  88.2k +1.0  96k +1.0  192k +1.0
+L 1 dB	Small Stone on	metric 0.220 dB	44.1k 0.039  88.2k 0.180  96k 0.194  192k 0.220	|C| above 10 kHz up to: 44.1k +1.1  48k +1.1  88.2k +1.0  96k +1.0  192k +0.6
+L 3 dB	Phase 90 script	metric 0.102 dB	44.1k 0.102  88.2k 0.094  96k 0.095  192k 0.095	|C| above 10 kHz up to: 44.1k +3.0  48k +3.0  88.2k +3.0  96k +3.0  192k +3.0
+L 3 dB	Phase 90 block	metric 0.277 dB	44.1k 0.277  88.2k 0.230  96k 0.231  192k 0.233	|C| above 10 kHz up to: 44.1k +3.1  48k +3.1  88.2k +3.0  96k +3.0  192k +3.0
+L 3 dB	Small Stone off	metric 0.064 dB	44.1k 0.062  88.2k 0.057  96k 0.059  192k 0.064	|C| above 10 kHz up to: 44.1k +3.0  48k +3.0  88.2k +3.0  96k +3.0  192k +3.0
+L 3 dB	Small Stone on	metric 0.175 dB	44.1k 0.053  88.2k 0.175  96k 0.175  192k 0.158	|C| above 10 kHz up to: 44.1k +3.1  48k +3.0  88.2k +3.0  96k +3.0  192k +3.0
+L 6 dB	Phase 90 script	metric 0.041 dB	44.1k 0.041  88.2k 0.032  96k 0.032  192k 0.032	|C| above 10 kHz up to: 44.1k +6.0  48k +6.0  88.2k +6.0  96k +6.0  192k +6.0
+L 6 dB	Phase 90 block	metric 0.027 dB	44.1k 0.021  88.2k 0.025  96k 0.025  192k 0.027	|C| above 10 kHz up to: 44.1k +6.0  48k +6.0  88.2k +6.0  96k +6.0  192k +5.7
+L 6 dB	Small Stone off	metric 0.049 dB	44.1k 0.015  88.2k 0.045  96k 0.047  192k 0.049	|C| above 10 kHz up to: 44.1k +6.0  48k +6.0  88.2k +6.0  96k +6.0  192k +6.0
+L 6 dB	Small Stone on	metric 0.120 dB	44.1k 0.030  88.2k 0.119  96k 0.120  192k 0.113	|C| above 10 kHz up to: 44.1k +6.0  48k +6.0  88.2k +6.0  96k +6.0  192k +3.8
