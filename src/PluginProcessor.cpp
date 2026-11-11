@@ -1013,13 +1013,21 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     auto* const playHead = getPlayHead();
 
-    // One tempo for the whole callback, shared by every delay instance.
-    double hostBpm = 120.0;
+    // One transport reading for the whole callback, shared by every delay and mod instance.
+    HostTransport transport;
 
     if (playHead != nullptr)
         if (const auto position = playHead->getPosition())
+        {
             if (const auto bpm = position->getBpm(); bpm.hasValue() && *bpm > 0.0)
-                hostBpm = *bpm;
+                transport.bpm = *bpm;
+
+            if (const auto ppq = position->getPpqPosition(); ppq.hasValue() && position->getIsPlaying())
+            {
+                transport.ppqPosition = *ppq;
+                transport.playing = true;
+            }
+        }
 
     if (numSamples <= 0 || numOutputChannels <= 0)
         return;
@@ -1199,7 +1207,7 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     {
         processChainBlock (order[(size_t) index], target, targetBlock, numSamples,
                            monoScratchData, gateRuns, deferGateToAmp, ampOn, amp2On, playHead,
-                           hostBpm);
+                           transport);
     };
 
     if (! lanes)
@@ -1338,6 +1346,29 @@ CompParams TubampAudioProcessor::compParams (int instance) const noexcept
     return cp;
 }
 
+ModParams TubampAudioProcessor::modParams (int instance, const HostTransport& transport) const noexcept
+{
+    const auto k = (size_t) instance;
+    ModParams mp;
+    mp.type        = (int) valueOf (pp.modType[k]);
+    mp.chorusMode  = (int) valueOf (pp.modChorusMode[k], (float) ChorusFx::Mode::wide);
+    mp.phaserModel = (int) valueOf (pp.modPhaserModel[k], (float) PhaserFx::Model::phase90);
+    mp.tremVoice   = (int) valueOf (pp.modTremVoice[k], (float) TremoloFx::Voice::smooth);
+    mp.rateHz      = valueOf (pp.modRate[k], 1.0f);
+    mp.depth       = valueOf (pp.modDepth[k], 0.4f);
+    mp.mix         = valueOf (pp.modMix[k], 0.35f);
+    mp.sync        = (int) valueOf (pp.modSync[k]);
+    mp.width       = valueOf (pp.modWidth[k], 1.0f);
+    mp.tone        = valueOf (pp.modTone[k], 0.5f);
+    mp.shape       = valueOf (pp.modShape[k], 0.5f);
+    mp.wave        = valueOf (pp.modWave[k]);
+    mp.color       = valueOf (pp.modColor[k], 1.0f) > 0.5f;
+    mp.bpm         = transport.bpm;
+    mp.ppqPosition = transport.ppqPosition;
+    mp.playing     = transport.playing;
+    return mp;
+}
+
 void TubampAudioProcessor::processAmpMono (NamEngine& engine, juce::dsp::AudioBlock<float> block,
                                            int numSamples, float* monoScratchData,
                                            juce::SmoothedValue<float>& inGain,
@@ -1422,7 +1453,7 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
                                               float* monoScratchData, bool gateOn,
                                               bool deferGateToAmp, bool ampOn, bool amp2On,
                                               juce::AudioPlayHead* playHead,
-                                              double hostBpm) noexcept
+                                              const HostTransport& transport) noexcept
 {
     const auto k = (size_t) chain::instanceOf (id);
 
@@ -1562,9 +1593,7 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         {
             if (isOn (pp.modOn[k]) && ! pendingReset[(size_t) id])
             {
-                const auto type = (Modulation::Type) juce::jlimit (0, 2, (int) valueOf (pp.modType[k]));
-                modulation[k].setParameters (type, valueOf (pp.modRate[k], 1.0f),
-                                             valueOf (pp.modDepth[k], 0.4f), valueOf (pp.modMix[k], 0.35f));
+                modulation[k].setParameters (modParams ((int) k, transport));
                 modulation[k].process (block);
             }
 
@@ -1587,7 +1616,7 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
                 dp.width     = valueOf (pp.delayWidth[k], 1.0f);
                 dp.type      = (int) valueOf (pp.delayType[k], (float) DelayFx::Type::digital);
                 dp.sync      = (int) valueOf (pp.delaySync[k]);
-                dp.bpm       = hostBpm;
+                dp.bpm       = transport.bpm;
                 dp.lowCutHz  = valueOf (pp.delayLowCut[k], 80.0f);
                 dp.highCutHz = valueOf (pp.delayHighCut[k], kDelayHighCutDefault[(int) DelayFx::Type::digital]);
                 dp.mod       = valueOf (pp.delayModAmt[k], 0.2f);

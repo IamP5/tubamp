@@ -4186,6 +4186,871 @@ bool runEqDriveRtTests (tubamp::TubampAudioProcessor& proc, double sampleRate, i
 
     return ok;
 }
+
+//==============================================================================
+// The mod block (docs/FX-ENGINES.md §6.5): Modulation dispatches mod_type to ChorusFx,
+// PhaserFx and TremoloFx and resolves tempo sync. Classic's bit-identity with the old
+// block, mod_type changes included, is tubamp_golden --legacy-check's job.
+
+/** A play head with a tempo and, while playing, a song position the test moves on. */
+class TransportPlayHead final : public juce::AudioPlayHead
+{
+public:
+    juce::Optional<PositionInfo> getPosition() const override
+    {
+        PositionInfo info;
+        info.setBpm (bpm);
+        info.setIsPlaying (playing);
+        info.setPpqPosition (ppq);
+        return info;
+    }
+
+    void advance (int numSamples, double sampleRate) noexcept
+    {
+        if (playing)
+            ppq += numSamples * bpm / (60.0 * sampleRate);
+    }
+
+    double bpm = 120.0, ppq = 0.0;
+    bool playing = true;
+};
+
+/** The three mod engines alone, fed instance k's parameters raw with the rate and
+    song-position phase the caller resolves; `type` overrides mod_type when >= 0. */
+struct ModEnginesAlone
+{
+    ModEnginesAlone (double sampleRate, int blockSize)
+    {
+        const juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) blockSize, 2 };
+        chorus.prepare (spec);
+        phaser.prepare (spec);
+        tremolo.prepare (spec);
+    }
+
+    void run (tubamp::TubampAudioProcessor& proc, int k, juce::dsp::AudioBlock<float> block, float rateHz,
+              double syncPhase, int type = -1)
+    {
+        const auto v = [&proc, k] (const char* const* ids) { return rawValue (proc, ids[k]); };
+
+        switch (type >= 0 ? type : (int) v (params::modTypeIds))
+        {
+            case 0:
+                chorus.setParameters ({ (int) v (params::modChorusModeIds), rateHz, v (params::modDepthIds), v (params::modMixIds),
+                                        v (params::modWidthIds), v (params::modToneIds), syncPhase });
+                chorus.process (block);
+                break;
+
+            case 1:
+                phaser.setParameters ({ (int) v (params::modPhaserModelIds), rateHz, v (params::modDepthIds),
+                                        v (params::modMixIds), v (params::modColorIds) > 0.5f, syncPhase });
+                phaser.process (block);
+                break;
+
+            default:
+                tremolo.setParameters ({ (int) v (params::modTremVoiceIds), rateHz, v (params::modDepthIds), v (params::modMixIds),
+                                         v (params::modWidthIds), v (params::modToneIds), v (params::modShapeIds),
+                                         v (params::modWaveIds), syncPhase });
+                tremolo.process (block);
+                break;
+        }
+    }
+
+    /** What every voicing runs at with sync Off: mod_rate, free-running. */
+    void runFree (tubamp::TubampAudioProcessor& proc, int k, juce::dsp::AudioBlock<float> block, int type = -1)
+    {
+        run (proc, k, block, rawValue (proc, params::modRateIds[k]), -1.0, type);
+    }
+
+    void reset (int type)
+    {
+        if (type == 0)      chorus.reset();
+        else if (type == 1) phaser.reset();
+        else                tremolo.reset();
+    }
+
+    tubamp::ChorusFx chorus;
+    tubamp::PhaserFx phaser;
+    tubamp::TremoloFx tremolo;
+};
+
+/** One channel of a Lockstep render (which stores each block's left, then right, samples). */
+std::vector<float> lockstepChannel (const std::vector<float>& x, int blockSize, int channel)
+{
+    std::vector<float> out;
+    out.reserve (x.size() / 2);
+
+    for (size_t start = 0; start < x.size();)
+    {
+        const size_t n = std::min ((size_t) blockSize, (x.size() - start) / 2);
+        out.insert (out.end(), x.begin() + (long) (start + (size_t) channel * n), x.begin() + (long) (start + (size_t) (channel + 1) * n));
+        start += 2 * n;
+    }
+
+    return out;
+}
+
+/** A sine with exactly `period` samples per cycle. */
+std::vector<float> periodicSine (int period, float amplitude, int numSamples)
+{
+    std::vector<float> x ((size_t) numSamples);
+
+    for (int i = 0; i < numSamples; ++i)
+        x[(size_t) i] = amplitude * (float) std::sin (2.0 * juce::MathConstants<double>::pi * (double) (i % period) / period);
+
+    return x;
+}
+
+/** check_phaser.py P7's chord: a 3:4:5 triad on one period per n = round(fs / 1000) samples,
+    two harmonics each, -12 dBFS peak, so every n-sample window of the steady chord has the
+    same level and a level step between adjacent windows shows at full size. */
+std::vector<float> p7Chord (double sampleRate, double seconds, int& n)
+{
+    n = (int) std::lround (sampleRate / 1000.0);
+    std::vector<double> x ((size_t) std::lround (seconds * sampleRate), 0.0);
+    double peak = 0.0;
+
+    for (size_t i = 0; i < x.size(); ++i)
+    {
+        for (int k = 3; k <= 5; ++k)
+            for (int h = 1; h <= 2; ++h)
+                x[i] += std::sin (2.0 * juce::MathConstants<double>::pi * k * h * (double) (i % (size_t) n) / n) / h;
+
+        peak = std::max (peak, std::abs (x[i]));
+    }
+
+    std::vector<float> out (x.size());
+
+    for (size_t i = 0; i < x.size(); ++i)
+        out[i] = (float) (x[i] * juce::Decibels::decibelsToGain (-12.0) / peak);
+
+    return out;
+}
+
+/** P7's metric: the largest level change (dB) between an n-sample window and the next, for
+    windows starting in [from, to). */
+double largestLevelStepDb (const std::vector<float>& y, int from, int to, int n)
+{
+    std::vector<double> sum (y.size() + 1, 0.0);
+
+    for (size_t i = 0; i < y.size(); ++i)
+        sum[i + 1] = sum[i] + (double) y[i] * y[i];
+
+    const auto level = [&sum, n] (int i) { return 10.0 * std::log10 (std::max ((sum[(size_t) (i + n)] - sum[(size_t) i]) / n, 1.0e-20)); };
+    double worst = 0.0;
+
+    for (int i = std::max (0, from); i < std::min (to, (int) y.size() - 2 * n); ++i)
+        worst = std::max (worst, std::abs (level (i + n) - level (i)));
+
+    return worst;
+}
+
+/** Every voicing through the processor is the engine alone; tempo sync lands on the note
+    and follows the host; instances are their own; switches stay inside the engines' bounds. */
+bool runModEngineTests (double sampleRate, int blockSize)
+{
+    std::printf ("mod engines:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+    char what[300];
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const auto stepsAt = [&at] (std::vector<std::pair<double, std::function<void()>>> steps)
+    {
+        auto next = std::make_shared<size_t> (0);
+        return [steps, next, at] (int start)
+        {
+            while (*next < steps.size() && start >= at (steps[*next].first))
+                steps[(*next)++].second();
+        };
+    };
+
+    // --- every new voicing, with knob steps and voicing switches inside the engine, through
+    // the processor is what the engine alone makes of the same input, bit for bit.
+    {
+        const auto input = chordSignal (sampleRate, 1.0);
+        const auto modCase = [&] (const char* label, std::function<void (tubamp::TubampAudioProcessor&)> setup,
+                                  std::vector<std::pair<double, std::function<void()>>> steps,
+                                  tubamp::TubampAudioProcessor& fresh)
+        {
+            setup (fresh);
+            fresh.setChainOrder ({ BlockId::mod }, {});
+            fresh.prepareToPlay (sampleRate, blockSize);
+
+            ModEnginesAlone alone (sampleRate, blockSize);
+            const auto r = renderLockstep (fresh, input, sampleRate, blockSize, stepsAt (std::move (steps)),
+                                           [&] (juce::dsp::AudioBlock<float> block) { alone.runFree (fresh, 0, block); });
+
+            std::snprintf (what, sizeof (what), "mod %s through the processor equals the engine alone", label);
+            ok &= expectIdentical (r.processor, r.engine, what);
+            ok &= expect (firstDifference (r.processor, input) >= 0, "...and it changes the signal (control)");
+        };
+
+        for (int mode = 1; mode < tubamp::ChorusFx::numModes; ++mode)
+        {
+            tubamp::TubampAudioProcessor fresh;
+            char label[120];
+            std::snprintf (label, sizeof (label), "chorus %s (rate, depth, width and tone steps)", params::modChorusModeNames[mode]);
+            modCase (label, [mode] (tubamp::TubampAudioProcessor& p)
+            {
+                setFloatParam (p, params::modType, 0.0f);
+                setFloatParam (p, params::modChorusMode, (float) mode);
+                setFloatParam (p, params::modRate, 0.7f);
+                setFloatParam (p, params::modDepth, 0.6f);
+                setFloatParam (p, params::modMix, 0.5f);
+                setFloatParam (p, params::modWidth, 0.6f);
+                setFloatParam (p, params::modTone, 0.3f);
+            },
+            { { 0.3, [&fresh] { setFloatParam (fresh, params::modRate, 2.5f); } },
+              { 0.5, [&fresh] { setFloatParam (fresh, params::modDepth, 0.9f); } },
+              { 0.7, [&fresh] { setFloatParam (fresh, params::modWidth, 1.0f); setFloatParam (fresh, params::modTone, 0.8f); } } },
+            fresh);
+        }
+
+        {
+            tubamp::TubampAudioProcessor fresh;
+            modCase ("chorus mode switches Wide -> CE -> Tri -> Dimension", [] (tubamp::TubampAudioProcessor& p)
+            {
+                setFloatParam (p, params::modType, 0.0f);
+                setFloatParam (p, params::modChorusMode, 1.0f);
+            },
+            { { 0.25, [&fresh] { setFloatParam (fresh, params::modChorusMode, 2.0f); } },
+              { 0.5, [&fresh] { setFloatParam (fresh, params::modChorusMode, 4.0f); } },
+              { 0.75, [&fresh] { setFloatParam (fresh, params::modChorusMode, 3.0f); } } }, fresh);
+        }
+
+        for (int model = 1; model < tubamp::PhaserFx::numModels; ++model)
+        {
+            for (const bool color : { false, true })
+            {
+                tubamp::TubampAudioProcessor fresh;
+                char label[120];
+                std::snprintf (label, sizeof (label), "phaser %s color %s (rate step; depth and mix moves ignored)",
+                               params::modPhaserModelNames[model], color ? "on" : "off");
+                modCase (label, [model, color] (tubamp::TubampAudioProcessor& p)
+                {
+                    setFloatParam (p, params::modType, 1.0f);
+                    setFloatParam (p, params::modPhaserModel, (float) model);
+                    setBoolParam (p, params::modColor, color);
+                    setFloatParam (p, params::modRate, 0.5f);
+                },
+                { { 0.4, [&fresh] { setFloatParam (fresh, params::modRate, 3.0f); } },
+                  { 0.6, [&fresh] { setFloatParam (fresh, params::modDepth, 0.9f); setFloatParam (fresh, params::modMix, 0.9f); } } },
+                fresh);
+            }
+        }
+
+        {
+            tubamp::TubampAudioProcessor fresh;
+            modCase ("phaser switches Phase 90 script -> block -> Small Stone on -> off", [] (tubamp::TubampAudioProcessor& p)
+            {
+                setFloatParam (p, params::modType, 1.0f);
+                setFloatParam (p, params::modPhaserModel, 1.0f);
+                setBoolParam (p, params::modColor, false);
+            },
+            { { 0.3, [&fresh] { setBoolParam (fresh, params::modColor, true); } },
+              { 0.55, [&fresh] { setFloatParam (fresh, params::modPhaserModel, 2.0f); } },
+              { 0.8, [&fresh] { setBoolParam (fresh, params::modColor, false); } } }, fresh);
+        }
+
+        for (int voice = 1; voice < tubamp::TremoloFx::numVoices; ++voice)
+        {
+            tubamp::TubampAudioProcessor fresh;
+            char label[120];
+            std::snprintf (label, sizeof (label), "tremolo %s (depth, wave, shape, width and tone steps)",
+                           params::modTremVoiceNames[voice]);
+            modCase (label, [voice] (tubamp::TubampAudioProcessor& p)
+            {
+                setFloatParam (p, params::modType, 2.0f);
+                setFloatParam (p, params::modTremVoice, (float) voice);
+                setFloatParam (p, params::modRate, 4.0f);
+                setFloatParam (p, params::modDepth, 0.7f);
+                setFloatParam (p, params::modWidth, 0.5f);
+                setFloatParam (p, params::modShape, 0.3f);
+                setFloatParam (p, params::modWave, 0.4f);
+                setFloatParam (p, params::modTone, 0.6f);
+            },
+            { { 0.3, [&fresh] { setFloatParam (fresh, params::modDepth, 1.0f); } },
+              { 0.5, [&fresh] { setFloatParam (fresh, params::modWave, 0.9f); setFloatParam (fresh, params::modShape, 0.7f); } },
+              { 0.7, [&fresh] { setFloatParam (fresh, params::modWidth, 0.0f); setFloatParam (fresh, params::modTone, 0.2f); } } },
+            fresh);
+        }
+
+        {
+            tubamp::TubampAudioProcessor fresh;
+            modCase ("tremolo voice switches Smooth -> Optical -> Bias -> Harmonic", [] (tubamp::TubampAudioProcessor& p)
+            {
+                setFloatParam (p, params::modType, 2.0f);
+                setFloatParam (p, params::modTremVoice, 1.0f);
+                setFloatParam (p, params::modRate, 4.0f);
+            },
+            { { 0.3, [&fresh] { setFloatParam (fresh, params::modTremVoice, 2.0f); } },
+              { 0.55, [&fresh] { setFloatParam (fresh, params::modTremVoice, 3.0f); } },
+              { 0.8, [&fresh] { setFloatParam (fresh, params::modTremVoice, 4.0f); } } }, fresh);
+        }
+    }
+
+    // --- tempo sync. Through the processor each voicing equals the engine alone given the
+    // note's rate and, while the host plays, the song position's phase frac(ppq / beats):
+    // the engines' own checks (CH13, P5, T13) bound what an engine does with those. On top,
+    // measured from the audio: the output repeats every 250 ms, and the tremolo's dips sit on
+    // the eighth-note grid within T13's 2 ms.
+    {
+        const int eighth = 6;
+        ok &= expect (juce::String (params::modSyncNames[eighth]) == "1/8" && tubamp::kModSyncBeats[eighth] == 0.5,
+                      "mod_sync choice 6 is 1/8, half a beat per LFO cycle");
+
+        const auto gcd = [] (int a, int b) { while (b != 0) { const int t = a % b; a = b; b = t; } return a; };
+        const int p250 = at (0.25), p200 = at (0.2);
+        // A carrier that repeats exactly within 250 and 200 ms, near 500 Hz.
+        const int g = gcd (p250, p200);
+        int carrier = g;
+
+        for (int d = 1; d <= g; ++d)
+            if (g % d == 0 && g / d <= 110)
+            {
+                carrier = g / d;
+                break;
+            }
+
+        const auto input = periodicSine (carrier, 0.25f, at (3.0));
+
+        struct GridLine { int sample; double bpm; };
+
+        struct SyncRun
+        {
+            Lockstep r;
+            std::vector<GridLine> grid;   // where the song position crosses each 1/8 note
+        };
+
+        const auto syncRun = [&] (tubamp::TubampAudioProcessor& fresh, TransportPlayHead* playHead, int syncIndex,
+                                  std::vector<std::pair<double, double>> tempoSteps)
+        {
+            const double beats = tubamp::kModSyncBeats[syncIndex];
+            fresh.setPlayHead (playHead);
+            fresh.setChainOrder ({ BlockId::mod }, {});
+            setFloatParam (fresh, params::modSync, (float) syncIndex);
+            fresh.prepareToPlay (sampleRate, blockSize);
+
+            ModEnginesAlone alone (sampleRate, blockSize);
+            SyncRun run;
+            int lastStart = 0;
+            size_t nextTempo = 0;
+
+            run.r = renderLockstep (fresh, input, sampleRate, blockSize, [&] (int start)
+            {
+                if (playHead == nullptr)
+                    return;
+
+                playHead->advance (start - lastStart, sampleRate);
+                lastStart = start;
+
+                while (nextTempo < tempoSteps.size() && start >= at (tempoSteps[nextTempo].first))
+                    playHead->bpm = tempoSteps[nextTempo++].second;
+
+                if (playHead->playing)
+                {
+                    const double perSample = playHead->bpm / (60.0 * sampleRate);
+                    const double end = playHead->ppq + blockSize * perSample;
+
+                    for (double line = std::ceil (playHead->ppq / beats) * beats; line < end; line += beats)
+                        run.grid.push_back ({ start + (int) std::lround ((line - playHead->ppq) / perSample), playHead->bpm });
+                }
+            },
+            [&] (juce::dsp::AudioBlock<float> block)
+            {
+                const double bpm = playHead != nullptr ? playHead->bpm : 120.0;
+                const bool playing = playHead != nullptr && playHead->playing;
+                const double cycles = playing ? playHead->ppq / beats : 0.0;
+                alone.run (fresh, 0, block, (float) (bpm / (60.0 * beats)), playing ? cycles - std::floor (cycles) : -1.0);
+            });
+
+            fresh.setPlayHead (nullptr);
+            return run;
+        };
+
+        /** rms (y[i] - y[i - lag]) re rms (y), over [1, 2.5] s, in dB. */
+        const auto repeatResidualDb = [&] (const std::vector<float>& y, int lag)
+        {
+            double diff = 0.0, level = 0.0;
+
+            for (int i = at (1.0); i < at (2.5); ++i)
+            {
+                diff += std::pow ((double) y[(size_t) i] - y[(size_t) (i - lag)], 2.0);
+                level += (double) y[(size_t) i] * y[(size_t) i];
+            }
+
+            return 10.0 * std::log10 (std::max (diff, 1.0e-30) / std::max (level, 1.0e-30));
+        };
+
+        /** The tremolo's gain dips: the quietest one-carrier-period window around each guess. */
+        const auto dipNear = [&] (const std::vector<float>& y, int guess, int halfSpan)
+        {
+            int best = guess;
+            double quietest = 1.0e30;
+
+            for (int i = std::max (carrier, guess - halfSpan); i < std::min ((int) y.size() - carrier, guess + halfSpan); ++i)
+            {
+                double e = 0.0;
+
+                for (int j = i - carrier / 2; j < i - carrier / 2 + carrier; ++j)
+                    e += (double) y[(size_t) j] * y[(size_t) j];
+
+                if (e < quietest)
+                {
+                    quietest = e;
+                    best = i;
+                }
+            }
+
+            return best;
+        };
+
+        struct SyncVoicing { const char* label; int type; const char* voicingId; int voicing; };
+        static constexpr SyncVoicing voicings[] { { "chorus CE", 0, params::modChorusMode, 2 },
+                                                  { "phaser Phase 90 block", 1, params::modPhaserModel, 1 },
+                                                  { "tremolo Smooth", 2, params::modTremVoice, 1 } };
+
+        for (const auto& v : voicings)
+        {
+            for (const bool playing : { true, false })
+            {
+                tubamp::TubampAudioProcessor fresh;
+                setFloatParam (fresh, params::modType, (float) v.type);
+                setFloatParam (fresh, v.voicingId, (float) v.voicing);
+                setFloatParam (fresh, params::modRate, 0.3f);   // must be ignored while synced
+                setFloatParam (fresh, params::modDepth, 0.8f);
+                setFloatParam (fresh, params::modMix, 1.0f);
+                setFloatParam (fresh, params::modWidth, 0.0f);
+                setBoolParam (fresh, params::modColor, true);
+
+                TransportPlayHead playHead;
+                playHead.playing = playing;
+                playHead.ppq = 7.3;   // starts 0.6 of a cycle in
+                const auto run = syncRun (fresh, &playHead, eighth, {});
+
+                std::snprintf (what, sizeof (what), "%s, sync 1/8 at 120 BPM, host %s: the processor equals the engine alone at "
+                               "4 Hz with %s", v.label, playing ? "playing" : "stopped",
+                               playing ? "the song position's phase" : "a free-running LFO");
+                ok &= expectIdentical (run.r.processor, run.r.engine, what);
+
+                // Control: 0.1 % faster, the 250 ms repeat no longer holds.
+                TransportPlayHead offHead;
+                offHead.playing = playing;
+                offHead.ppq = 7.3;
+                offHead.bpm = 120.12;
+                const auto off = syncRun (fresh, &offHead, eighth, {});
+
+                const auto left = lockstepChannel (run.r.processor, blockSize, 0);
+                const double residual = repeatResidualDb (left, p250);
+                const double offResidual = repeatResidualDb (lockstepChannel (off.r.processor, blockSize, 0), p250);
+                std::snprintf (what, sizeof (what), "...the output repeats every 250 ms: residual %.1f dB (bound -60; %.1f dB at "
+                               "120.12 BPM, 0.1 %% off, control)", residual, offResidual);
+                ok &= expect (residual <= -60.0 && offResidual > -60.0, what);
+
+                if (v.type == 2)
+                {
+                    double worst = 0.0;
+                    std::vector<int> dips;
+
+                    if (playing)
+                    {
+                        for (const auto& line : run.grid)
+                            if (line.sample >= at (0.5) && line.sample < at (2.8))
+                            {
+                                dips.push_back (dipNear (left, line.sample, at (0.1)));
+                                worst = std::max (worst, std::abs (dips.back() - line.sample) / sampleRate);
+                            }
+                    }
+                    else
+                    {
+                        for (int guess = at (0.5); guess < at (2.8); guess += p250)
+                            dips.push_back (dipNear (left, guess, at (0.1)));
+                    }
+
+                    const double period = dips.size() > 1 ? (dips.back() - dips.front()) / sampleRate / (double) (dips.size() - 1) : 0.0;
+                    std::snprintf (what, sizeof (what), "...%zu tremolo dips %.4f ms apart (250 +- 0.1 %%)%s", dips.size(), 1e3 * period,
+                                   playing ? juce::String::formatted (", each within %.2f ms of its eighth note (bound 2)", 1e3 * worst).toRawUTF8() : "");
+                    ok &= expect (dips.size() >= 8 && std::abs (period - 0.25) <= 0.25e-3 && worst <= 0.002, what);
+                }
+            }
+        }
+
+        // A tempo change is followed: 120 -> 150 BPM at 1 s, the 1/8 note becomes 200 ms.
+        for (const bool playing : { true, false })
+        {
+            tubamp::TubampAudioProcessor fresh;
+            setFloatParam (fresh, params::modType, 2.0f);
+            setFloatParam (fresh, params::modTremVoice, 1.0f);
+            setFloatParam (fresh, params::modDepth, 0.8f);
+            setFloatParam (fresh, params::modWidth, 0.0f);
+
+            TransportPlayHead playHead;
+            playHead.playing = playing;
+            playHead.ppq = 3.1;
+            const auto run = syncRun (fresh, &playHead, eighth, { { 1.0, 150.0 } });
+
+            std::snprintf (what, sizeof (what), "tremolo Smooth, sync 1/8, host %s, 120 -> 150 BPM at 1 s: the processor equals the "
+                           "engine alone at 4 then 5 Hz", playing ? "playing" : "stopped");
+            ok &= expectIdentical (run.r.processor, run.r.engine, what);
+
+            const auto left = lockstepChannel (run.r.processor, blockSize, 0);
+            std::vector<int> dips;
+            double worst = 0.0;
+
+            if (playing)
+            {
+                for (const auto& line : run.grid)
+                    if (line.bpm == 150.0 && line.sample >= at (1.3) && line.sample < at (2.8))
+                    {
+                        dips.push_back (dipNear (left, line.sample, at (0.08)));
+                        worst = std::max (worst, std::abs (dips.back() - line.sample) / sampleRate);
+                    }
+            }
+            else
+            {
+                const int first = dipNear (left, at (1.4), p200 / 2);
+
+                for (int guess = first; guess < at (2.8); guess += p200)
+                    dips.push_back (dipNear (left, guess, at (0.08)));
+            }
+
+            const double period = dips.size() > 1 ? (dips.back() - dips.front()) / sampleRate / (double) (dips.size() - 1) : 0.0;
+            std::snprintf (what, sizeof (what), "...after the change %zu dips %.4f ms apart (200 +- 0.1 %%)%s", dips.size(), 1e3 * period,
+                           playing ? juce::String::formatted (", each within %.2f ms of the new grid (bound 2)", 1e3 * worst).toRawUTF8() : "");
+            ok &= expect (dips.size() >= 6 && std::abs (period - 0.2) <= 0.2e-3 && worst <= 0.002, what);
+        }
+
+        // No play head: 120 BPM, free-running, like the delay's sync.
+        {
+            tubamp::TubampAudioProcessor fresh;
+            setFloatParam (fresh, params::modType, 1.0f);
+            setFloatParam (fresh, params::modPhaserModel, 2.0f);
+            const auto run = syncRun (fresh, nullptr, eighth, {});
+            ok &= expectIdentical (run.r.processor, run.r.engine,
+                                   "phaser Small Stone, sync 1/8 with no play head: 120 BPM, 4 Hz free-running, as the engine alone");
+        }
+
+        // A note faster than the engines' 20 Hz cannot follow the song: 1/32 at 200 BPM is
+        // 26.7 Hz, which runs free at 20 Hz.
+        {
+            tubamp::TubampAudioProcessor fresh;
+            setFloatParam (fresh, params::modType, 2.0f);
+            setFloatParam (fresh, params::modTremVoice, 1.0f);
+            setFloatParam (fresh, params::modSync, 1.0f);
+            fresh.setChainOrder ({ BlockId::mod }, {});
+            fresh.prepareToPlay (sampleRate, blockSize);
+            TransportPlayHead playHead;
+            playHead.bpm = 200.0;
+            fresh.setPlayHead (&playHead);
+
+            ModEnginesAlone alone (sampleRate, blockSize);
+            int lastStart = 0;
+            const auto r = renderLockstep (fresh, input, sampleRate, blockSize,
+                                           [&] (int start) { playHead.advance (start - lastStart, sampleRate); lastStart = start; },
+                                           [&] (juce::dsp::AudioBlock<float> block) { alone.run (fresh, 0, block, 20.0f, -1.0); });
+            fresh.setPlayHead (nullptr);
+            ok &= expectIdentical (r.processor, r.engine, "tremolo Smooth, sync 1/32 at 200 BPM (26.7 Hz): 20 Hz free-running, "
+                                                          "as the engine alone");
+        }
+
+        // Classic ignores sync and the song position: mod_rate, free-running, as before.
+        {
+            tubamp::TubampAudioProcessor fresh;
+            setFloatParam (fresh, params::modType, 2.0f);
+            setFloatParam (fresh, params::modTremVoice, 0.0f);
+            setFloatParam (fresh, params::modRate, 2.0f);
+            setFloatParam (fresh, params::modSync, (float) eighth);
+            fresh.setChainOrder ({ BlockId::mod }, {});
+            fresh.prepareToPlay (sampleRate, blockSize);
+            TransportPlayHead playHead;
+            playHead.ppq = 1.7;
+            fresh.setPlayHead (&playHead);
+
+            ModEnginesAlone alone (sampleRate, blockSize);
+            int lastStart = 0;
+            const auto r = renderLockstep (fresh, input, sampleRate, blockSize,
+                                           [&] (int start) { playHead.advance (start - lastStart, sampleRate); lastStart = start; },
+                                           [&] (juce::dsp::AudioBlock<float> block) { alone.runFree (fresh, 0, block); });
+            fresh.setPlayHead (nullptr);
+            ok &= expectIdentical (r.processor, r.engine, "tremolo Classic with sync 1/8 and the host playing: mod_rate, "
+                                                          "free-running, as the engine alone");
+        }
+    }
+
+    // --- instances 2 and 3 run their own engines from their own ids.
+    {
+        tubamp::TubampAudioProcessor fresh;
+        setFloatParam (fresh, params::mod2Type, 2.0f);
+        setFloatParam (fresh, params::mod2TremVoice, 3.0f);
+        setFloatParam (fresh, params::mod2Depth, 0.75f);
+        setFloatParam (fresh, params::mod2Shape, 0.4f);
+        setFloatParam (fresh, params::mod2Width, 0.5f);
+        setFloatParam (fresh, params::mod2Sync, 6.0f);
+        setFloatParam (fresh, params::mod3Type, 0.0f);
+        setFloatParam (fresh, params::mod3ChorusMode, 3.0f);
+        setFloatParam (fresh, params::mod3Rate, 0.25f);
+        setFloatParam (fresh, params::mod3Depth, 0.8f);
+        setFloatParam (fresh, params::mod3Mix, 0.5f);
+        setFloatParam (fresh, params::mod3Tone, 0.4f);
+
+        const auto input = chordSignal (sampleRate, 1.0);
+        const auto instanceRun = [&] (int k)
+        {
+            fresh.setChainOrder ({ chain::instanceId (BlockId::mod, k) }, {});
+            fresh.prepareToPlay (sampleRate, blockSize);
+            ModEnginesAlone alone (sampleRate, blockSize);
+            return renderLockstep (fresh, input, sampleRate, blockSize, {}, [&] (juce::dsp::AudioBlock<float> block)
+            {
+                if (k == 1)
+                    alone.run (fresh, 1, block, 4.0f, -1.0);   // 1/8 at the fallback 120 BPM
+                else
+                    alone.runFree (fresh, k, block);
+            });
+        };
+
+        const auto mod2 = instanceRun (1), mod3 = instanceRun (2);
+        ok &= expectIdentical (mod2.processor, mod2.engine, "mod2 (tremolo Bias, sync 1/8) runs from the mod2_* ids, as the engine alone");
+        ok &= expectIdentical (mod3.processor, mod3.engine, "mod3 (chorus Dimension) runs from the mod3_* ids, as the engine alone");
+
+        for (const auto* id : { params::mod3Type, params::mod3ChorusMode, params::mod3PhaserModel, params::mod3TremVoice,
+                                params::mod3Rate, params::mod3Depth, params::mod3Mix, params::mod3Sync, params::mod3Width,
+                                params::mod3Tone, params::mod3Shape, params::mod3Wave })
+            setFloatParam (fresh, id, 1.0f);
+
+        setBoolParam (fresh, params::mod3Color, false);
+
+        ok &= expectIdentical (mod2.processor, instanceRun (1).processor, "mod2 renders the same whatever mod3's ids are");
+        ok &= expect (firstDifference (mod3.processor, instanceRun (2).processor) >= 0
+                          && firstDifference (mod2.processor, mod3.processor) >= 0,
+                      "...while mod3's own render follows them (control)");
+    }
+
+    // --- switches on a sustained chord: inside an engine (its own 40 ms fade) and of mod_type
+    // (the dispatcher's crossfade) neither steps the level by more than P7/T16's 3 dB.
+    {
+        int n = 0;
+        const auto chord = p7Chord (sampleRate, 2.0, n);
+        const int switchAt = at (1.0);
+
+        struct Switch { const char* label; std::vector<std::pair<const char*, float>> before, after; };
+        const std::vector<Switch> switches {
+            { "Phase 90 script -> block", { { params::modType, 1 }, { params::modPhaserModel, 1 }, { params::modColor, 0 } },
+              { { params::modColor, 1 } } },
+            { "Phase 90 block -> Small Stone on", { { params::modType, 1 }, { params::modPhaserModel, 1 } },
+              { { params::modPhaserModel, 2 } } },
+            { "chorus Wide -> CE", { { params::modType, 0 }, { params::modChorusMode, 1 } }, { { params::modChorusMode, 2 } } },
+            { "tremolo Smooth -> Optical", { { params::modType, 2 }, { params::modTremVoice, 1 }, { params::modRate, 4 },
+                                             { params::modDepth, 0.5f }, { params::modWidth, 0 } },
+              { { params::modTremVoice, 2 } } },
+            // Classic chorus is left out: on this chord it steps 3.4 dB with no switch at all.
+            { "mod_type Classic phaser -> Classic tremolo", { { params::modType, 1 }, { params::modPhaserModel, 0 },
+                                                             { params::modTremVoice, 0 }, { params::modDepth, 0.5f },
+                                                             { params::modMix, 0.5f } },
+              { { params::modType, 2 } } },
+            { "mod_type chorus Wide -> phaser Phase 90 block", { { params::modType, 0 }, { params::modChorusMode, 1 } },
+              { { params::modType, 1 } } },
+            { "mod_type phaser Phase 90 block -> tremolo Smooth", { { params::modType, 1 }, { params::modDepth, 0.5f },
+                                                                   { params::modWidth, 0 } },
+              { { params::modType, 2 } } },
+            { "mod_type tremolo Smooth -> chorus CE", { { params::modType, 2 }, { params::modChorusMode, 2 },
+                                                       { params::modDepth, 0.5f }, { params::modWidth, 0 } },
+              { { params::modType, 0 } } } };
+
+        for (const auto& s : switches)
+        {
+            const auto render = [&] (bool doSwitch)
+            {
+                tubamp::TubampAudioProcessor fresh;
+
+                for (const auto& [id, value] : s.before)
+                    setFloatParam (fresh, id, value);
+
+                fresh.setChainOrder ({ BlockId::mod }, {});
+                fresh.prepareToPlay (sampleRate, blockSize);
+                bool switched = false;
+                return renderSignal (fresh, chord, blockSize, [&] (int start)
+                {
+                    if (doSwitch && ! switched && start >= switchAt)
+                    {
+                        for (const auto& [id, value] : s.after)
+                            setFloatParam (fresh, id, value);
+
+                        switched = true;
+                    }
+                });
+            };
+
+            const auto switched = render (true), steady = render (false);
+            const int from = switchAt - at (0.05), to = switchAt + at (0.15);
+            const double step = largestLevelStepDb (switched, from, to, n), base = largestLevelStepDb (steady, from, to, n);
+            std::snprintf (what, sizeof (what), "%s on the chord: largest 1 ms level step %.2f dB (bound 3; unswitched %.2f)",
+                           s.label, step, base);
+            ok &= expect (step <= 3.0 && firstDifference (switched, steady) >= 0, what);
+        }
+    }
+
+    // --- the mod_type crossfade itself (FX-ENGINES.md D-5): the incoming engine is reset in
+    // the block the change arrives in and runs from there, as the old block did, and the
+    // output moves linearly from the outgoing engine to it over exactly 20 ms.
+    {
+        const int fade = tubamp::Modulation::crossfadeSamples (sampleRate);
+        ok &= expect (fade == at (0.02), "a mod_type crossfade lasts 20 ms");
+
+        const auto input = chordSignal (sampleRate, 1.0);
+        struct TypeSwitch { const char* label; int fromType, toType; int chorusMode, tremVoice; };
+        static constexpr TypeSwitch typeSwitches[] { { "Classic chorus -> Classic tremolo", 0, 2, 0, 0 },
+                                                     { "chorus Wide -> tremolo Smooth", 0, 2, 1, 1 },
+                                                     { "tremolo Optical -> chorus Tri", 2, 0, 4, 2 } };
+
+        for (const auto& s : typeSwitches)
+        {
+            tubamp::TubampAudioProcessor fresh;
+            setFloatParam (fresh, params::modType, (float) s.fromType);
+            setFloatParam (fresh, params::modChorusMode, (float) s.chorusMode);
+            setFloatParam (fresh, params::modTremVoice, (float) s.tremVoice);
+            setFloatParam (fresh, params::modRate, 3.0f);
+            setFloatParam (fresh, params::modDepth, 0.7f);
+            fresh.setChainOrder ({ BlockId::mod }, {});
+            fresh.prepareToPlay (sampleRate, blockSize);
+
+            const int requestAt = at (0.4);
+            int switchBlock = -1, blockStart = 0;
+            ModEnginesAlone alone (sampleRate, blockSize);
+            juce::AudioBuffer<float> outgoing (2, blockSize);
+
+            const auto r = renderLockstep (fresh, input, sampleRate, blockSize, [&] (int start)
+            {
+                blockStart = start;
+
+                if (switchBlock < 0 && start >= requestAt)
+                {
+                    setFloatParam (fresh, params::modType, (float) s.toType);
+                    switchBlock = start;
+                }
+            },
+            [&] (juce::dsp::AudioBlock<float> block)
+            {
+                const int n = (int) block.getNumSamples();
+
+                if (switchBlock < 0 || blockStart >= switchBlock + fade)
+                {
+                    alone.runFree (fresh, 0, block);
+                    return;
+                }
+
+                if (blockStart == switchBlock)
+                    alone.reset (s.toType);
+
+                juce::dsp::AudioBlock<float> old (outgoing.getArrayOfWritePointers(), 2, (size_t) n);
+                old.copyFrom (block);
+                alone.runFree (fresh, 0, old, s.fromType);
+                alone.runFree (fresh, 0, block, s.toType);
+
+                for (size_t ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < n && blockStart + i < switchBlock + fade; ++i)
+                    {
+                        const float w = (float) (blockStart + i - switchBlock) / (float) fade;
+                        auto& y = block.getChannelPointer (ch)[i];
+                        const float o = old.getChannelPointer (ch)[i];
+                        y = o + w * (y - o);
+                    }
+            });
+
+            std::snprintf (what, sizeof (what), "mod_type %s through the processor equals the engines alone with the incoming one "
+                           "reset at the switch and a linear %d-sample crossfade", s.label, fade);
+            ok &= expectIdentical (r.processor, r.engine, what);
+        }
+    }
+
+    return ok;
+}
+
+/** Three mod blocks cycling through types, voicings, colours, sync and the transport,
+    with bypass and re-entry, allocate nothing on the audio thread. */
+bool runModRtTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    std::printf ("mod real-time safety:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+
+    const chain::Order full { BlockId::mod, BlockId::mod2, BlockId::mod3 };
+    proc.setChainOrder (full, {});
+    TransportPlayHead playHead;
+    proc.setPlayHead (&playHead);
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+    long allocations = 0;
+    int armedBlocks = 0;
+
+    for (int block = 0; block < 600; ++block)
+    {
+        if (block % 7 == 0 && block > 0)
+        {
+            const int step = block / 7;
+            const int k = step % params::maxInstances;
+            setFloatParam (proc, params::modTypeIds[k], (float) (step % tubamp::Modulation::numTypes));
+            setFloatParam (proc, params::modChorusModeIds[k], (float) ((step / 3) % tubamp::ChorusFx::numModes));
+            setFloatParam (proc, params::modPhaserModelIds[k], (float) ((step / 2) % tubamp::PhaserFx::numModels));
+            setFloatParam (proc, params::modTremVoiceIds[k], (float) ((step / 3) % tubamp::TremoloFx::numVoices));
+            setBoolParam (proc, params::modColorIds[k], step % 2 == 0);
+            setFloatParam (proc, params::modSyncIds[k], (float) ((step * 5) % tubamp::kNumModSyncChoices));
+            setFloatParam (proc, params::modRateIds[k], step % 2 == 0 ? 0.4f : 6.0f);
+            setFloatParam (proc, params::modWidthIds[k], step % 3 == 0 ? 0.0f : 1.0f);
+            setFloatParam (proc, params::modWaveIds[k], (float) (step % 3) * 0.5f);
+            setBoolParam (proc, params::modOnIds[(k + 1) % params::maxInstances], step % 5 != 0);
+            playHead.playing = step % 4 != 1;
+            playHead.bpm = step % 3 == 0 ? 90.0 : 140.0;
+
+            if (step % 6 == 2)
+                proc.setChainOrder ({ BlockId::mod3, BlockId::mod }, {});
+            else if (step % 6 == 3)
+                proc.setChainOrder (full, {});
+        }
+
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < blockSize; ++i)
+                buffer.setSample (ch, i, 0.3f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 220.0
+                                                                  * (block * blockSize + i) / sampleRate));
+
+        playHead.advance (blockSize, sampleRate);
+
+        if (block < 20)
+        {
+            proc.processBlock (buffer, midi);
+            continue;
+        }
+
+        const long before = allocCount.load();
+
+        {
+            const AllocationGuard guard;
+            proc.processBlock (buffer, midi);
+        }
+
+        allocations += allocCount.load() - before;
+        ++armedBlocks;
+    }
+
+    char what[220];
+    std::snprintf (what, sizeof (what), "%d processBlock calls with mod x3 cycling types, voicings, colours, sync and the "
+                   "transport: %ld allocations or frees", armedBlocks, allocations);
+    ok &= expect (allocations == 0, what);
+
+    proc.setPlayHead (nullptr);
+
+    for (int k = 0; k < params::maxInstances; ++k)
+        resetParams (proc, { params::modTypeIds[k], params::modChorusModeIds[k], params::modPhaserModelIds[k],
+                             params::modTremVoiceIds[k], params::modColorIds[k], params::modSyncIds[k], params::modRateIds[k],
+                             params::modWidthIds[k], params::modWaveIds[k], params::modOnIds[k] });
+
+    proc.setChainOrder (chain::defaultOrder(), {});
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    return ok;
+}
 } // namespace
 
 int main (int argc, char** argv)
@@ -4340,6 +5205,14 @@ int main (int argc, char** argv)
     std::printf (eqDriveRtPass ? "PASS: the EQ and drive path allocates nothing\n"
                                : "FAIL: the EQ and drive path allocates\n");
 
+    const bool modEnginePass = runModEngineTests (sampleRate, blockSize);
+    std::printf (modEnginePass ? "PASS: mod voicings, tempo sync and instances run through the processor as the engines do\n"
+                               : "FAIL: mod engine behaviour through the processor is wrong\n");
+
+    const bool modRtPass = runModRtTests (proc, sampleRate, blockSize);
+    std::printf (modRtPass ? "PASS: the mod path allocates nothing\n"
+                           : "FAIL: the mod path allocates\n");
+
     return modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
                    && ampEqPass && factoryPass && concurrentPass && fxPass
                    && modelPathBPass && delayModePass
@@ -4347,6 +5220,7 @@ int main (int argc, char** argv)
                    && engineStatePass && legacyPinPass && engineRenderPass && delaySyncPass
                    && gateCompPass && gateAlignPass && dynRtPass
                    && eqDriveEnginePass && driveLatencyPass && eqDriveInstancePass && eqDriveRtPass
+                   && modEnginePass && modRtPass
                ? 0
                : 1;
 }

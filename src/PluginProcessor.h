@@ -294,6 +294,14 @@ private:
         holds chainLock across the callback. */
     void adoptChainOrder (const chain::Order& order, const std::vector<int>& rows);
 
+    /** The play head, read once per callback. */
+    struct HostTransport
+    {
+        double bpm = 120.0;        // 120 when the host reports no tempo
+        double ppqPosition = 0.0;  // quarter notes at the callback's first sample
+        bool playing = false;      // the host is playing and reported ppqPosition
+    };
+
     /** Audio thread: silences one block instance that is re-entering the chain, so it
         cannot replay what it was holding when it left. Allocation-free. */
     void resetBlockInstance (chain::BlockId id) noexcept;
@@ -302,20 +310,20 @@ private:
         `block` are two views of the same audio — the host buffer for a serial entry or
         a lane B entry's laneScratch view — which is what lets a block run in a lane
         without knowing it is in one. `monoScratchData` is the amp blocks' collapse
-        scratch (null falls back to the target buffer's first channel). `hostBpm` is the
-        play head's tempo for this callback (120 when the host reports none), read once
-        in processBlock for every tempo-synced delay. */
+        scratch (null falls back to the target buffer's first channel). `transport` is the
+        play head as processBlock read it once for every tempo-synced delay and mod block. */
     void processChainBlock (chain::BlockId id, juce::AudioBuffer<float>& buf,
                             juce::dsp::AudioBlock<float> block, int numSamples,
                             float* monoScratchData, bool gateOn, bool deferGateToAmp,
                             bool ampOn, bool amp2On, juce::AudioPlayHead* playHead,
-                            double hostBpm) noexcept;
+                            const HostTransport& transport) noexcept;
 
     /** Audio thread: this block's engine parameters, read raw (the engines clamp). */
     GateParams gateParams() const noexcept;
     CompParams compParams (int instance) const noexcept;
     DriveParams driveParams (int instance) const noexcept;
     EqParams eqParams (int instance) const noexcept;
+    ModParams modParams (int instance, const HostTransport& transport) const noexcept;
 
     /** Audio thread: collapse to mono -> engine -> deferred gate -> tone stack -> out
         gain -> expand, on whichever buffer `block` views. Both amp blocks run through

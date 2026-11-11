@@ -1,5 +1,7 @@
 #include "FxBlocks.h"
 
+#include "Parameters.h"
+
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include <cmath>
@@ -18,6 +20,12 @@ float clampCutoff (float hz, double sampleRate)
     const auto nyquistLimit = (float) (sampleRate * 0.49);
     return juce::jlimit (kMinCutoffHz, juce::jmax (kMinCutoffHz + 1.0f, nyquistLimit), hz);
 }
+
+// --- mod block ----------------------------------------------------------------
+// The rate range every non-Classic voicing clamps to (Chorus.h, Phaser.h, Tremolo.h).
+constexpr double kModMinRateHz = 0.01, kModMaxRateHz = 20.0;
+// A mod_type change crossfades over the switcher's 20 ms ramp.
+constexpr double kModCrossfadeSeconds = 0.02;
 } // namespace
 
 //==============================================================================
@@ -47,18 +55,43 @@ void DcBlocker::process (juce::dsp::AudioBlock<float> block)
 //==============================================================================
 // Modulation
 //==============================================================================
+static_assert (std::size (params::modSyncNames) == (size_t) kNumModSyncChoices,
+               "mod_sync choices must match kModSyncBeats");
+
+Modulation::Timing Modulation::resolveTiming (const ModParams& p, bool classic) noexcept
+{
+    const int sync = juce::jlimit (0, kNumModSyncChoices - 1, p.sync);
+
+    if (classic || sync == 0)
+        return { p.rateHz, -1.0 };
+
+    const double bpm = p.bpm > 1.0 ? p.bpm : 120.0;
+    const double beats = kModSyncBeats[sync];
+    const double hz = bpm / (60.0 * beats);
+
+    // The engines clamp their rate to this range, and a clamped LFO cannot follow the song.
+    if (hz < kModMinRateHz || hz > kModMaxRateHz)
+        return { (float) juce::jlimit (kModMinRateHz, kModMaxRateHz, hz), -1.0 };
+
+    if (! p.playing || ! std::isfinite (p.ppqPosition))
+        return { (float) hz, -1.0 };
+
+    const double cycles = p.ppqPosition / beats;
+    return { (float) hz, cycles - std::floor (cycles) };
+}
+
+int Modulation::crossfadeSamples (double sampleRate) noexcept
+{
+    return juce::jmax (1, (int) std::lround (kModCrossfadeSeconds * sampleRate));
+}
+
 void Modulation::prepare (const juce::dsp::ProcessSpec& spec)
 {
-    sampleRate = spec.sampleRate;
-
     chorus.prepare (spec);
     phaser.prepare (spec);
-
-    chorus.setCentreDelay (7.0f);
-    chorus.setFeedback (0.0f);
-    phaser.setCentreFrequency (600.0f);
-    phaser.setFeedback (0.0f);
-
+    tremolo.prepare (spec);
+    outgoingAudio.setSize (juce::jmax (1, (int) spec.numChannels), juce::jmax (1, (int) spec.maximumBlockSize));
+    fadeLength = crossfadeSamples (spec.sampleRate);
     reset();
 }
 
@@ -66,87 +99,151 @@ void Modulation::reset()
 {
     chorus.reset();
     phaser.reset();
-    tremPhase = 0.0f;
+    tremolo.reset();
+    outgoing = -1;
+    snapType = true;
 }
 
-void Modulation::setParameters (Type type, float rateHz, float depth01, float mix01)
+void Modulation::setParameters (const ModParams& newParams)
 {
-    rate = juce::jlimit (0.01f, 100.0f, rateHz);
-    depth = juce::jlimit (0.0f, 1.0f, depth01);
-    mix = juce::jlimit (0.0f, 1.0f, mix01);
+    params = newParams;
+}
 
-    if (type != currentType)
+void Modulation::resetEngine (int type)
+{
+    switch ((Type) type)
     {
-        currentType = type;
-        // Clearing the unused engine's state avoids a stale burst when switching back.
-        // Neither reset() allocates, so this is fine on the audio thread.
-        chorus.reset();
-        phaser.reset();
-        tremPhase = 0.0f;
+        case Type::chorus:  chorus.reset();  break;
+        case Type::phaser:  phaser.reset();  break;
+        case Type::tremolo: tremolo.reset(); break;
     }
+}
 
-    switch (currentType)
+void Modulation::configure (int type, bool current)
+{
+    switch ((Type) type)
     {
         case Type::chorus:
-            chorus.setRate (rate);
-            chorus.setDepth (depth);
-            chorus.setMix (mix);
+            if (current)
+            {
+                const int mode = juce::jlimit (0, ChorusFx::numModes - 1, params.chorusMode);
+                const auto timing = resolveTiming (params, mode == (int) ChorusFx::Mode::classic);
+                chorusSent = { mode, timing.rateHz, params.depth, params.mix, params.width, params.tone, timing.syncPhase };
+            }
+            else
+            {
+                chorusSent.syncPhase = -1.0;
+            }
+
+            chorus.setParameters (chorusSent);
             break;
 
         case Type::phaser:
-            phaser.setRate (rate);
-            phaser.setDepth (depth);
-            phaser.setMix (mix);
+            if (current)
+            {
+                const int model = juce::jlimit (0, PhaserFx::numModels - 1, params.phaserModel);
+                const auto timing = resolveTiming (params, model == (int) PhaserFx::Model::classic);
+                phaserSent = { model, timing.rateHz, params.depth, params.mix, params.color, timing.syncPhase };
+            }
+            else
+            {
+                phaserSent.syncPhase = -1.0;
+            }
+
+            phaser.setParameters (phaserSent);
             break;
 
         case Type::tremolo:
-        default:
+            if (current)
+            {
+                const int voice = juce::jlimit (0, TremoloFx::numVoices - 1, params.tremVoice);
+                const auto timing = resolveTiming (params, voice == (int) TremoloFx::Voice::classic);
+                tremoloSent = { voice, timing.rateHz, params.depth, params.mix, params.width, params.tone,
+                                params.shape, params.wave, timing.syncPhase };
+            }
+            else
+            {
+                tremoloSent.syncPhase = -1.0;
+            }
+
+            tremolo.setParameters (tremoloSent);
             break;
+    }
+}
+
+void Modulation::runEngine (int type, juce::dsp::AudioBlock<float> block)
+{
+    switch ((Type) type)
+    {
+        case Type::chorus:  chorus.process (block);  break;
+        case Type::phaser:  phaser.process (block);  break;
+        case Type::tremolo: tremolo.process (block); break;
     }
 }
 
 void Modulation::process (juce::dsp::AudioBlock<float> block)
 {
-    if (block.getNumSamples() == 0)
-        return;
-
-    if (currentType == Type::chorus)
-    {
-        juce::dsp::ProcessContextReplacing<float> context (block);
-        chorus.process (context);
-        return;
-    }
-
-    if (currentType == Type::phaser)
-    {
-        juce::dsp::ProcessContextReplacing<float> context (block);
-        phaser.process (context);
-        return;
-    }
-
-    // Tremolo: sine LFO amplitude modulation, equal-power dry/wet blend.
-    const float dryGain = std::sqrt (1.0f - mix);
-    const float wetGain = std::sqrt (mix);
-    const float phaseInc = rate / (float) sampleRate;
     const auto numSamples = block.getNumSamples();
     const auto numChannels = block.getNumChannels();
 
-    for (size_t i = 0; i < numSamples; ++i)
+    if (numSamples == 0)
+        return;
+
+    const int requested = juce::jlimit (0, numTypes - 1, params.type);
+
+    if (snapType)
     {
-        const float lfo = 0.5f + 0.5f * std::sin (juce::MathConstants<float>::twoPi * tremPhase);
-        const float modGain = 1.0f - depth * (1.0f - lfo);
-
-        for (size_t ch = 0; ch < numChannels; ++ch)
-        {
-            auto* data = block.getChannelPointer (ch);
-            data[i] = data[i] * dryGain + data[i] * modGain * wetGain;
-        }
-
-        tremPhase += phaseInc;
-
-        if (tremPhase >= 1.0f)
-            tremPhase -= 1.0f;
+        snapType = false;
+        active = requested;
+        outgoing = -1;
     }
+    else if (requested != active)
+    {
+        // Every switch starts its engine in the block the old one did, so a second switch
+        // inside a crossfade cuts the first one short.
+        outgoing = active;
+        active = requested;
+        resetEngine (active);
+        fadePosition = 0;
+    }
+
+    // Without room for the outgoing engine's copy (a block larger than prepare() promised)
+    // the switch completes outright, which is exactly the old jump.
+    if ((int) numSamples > outgoingAudio.getNumSamples() || (int) numChannels > outgoingAudio.getNumChannels())
+        outgoing = -1;
+
+    configure (active, true);
+
+    if (outgoing < 0)
+    {
+        runEngine (active, block);
+        return;
+    }
+
+    juce::dsp::AudioBlock<float> outgoingBlock (outgoingAudio.getArrayOfWritePointers(), numChannels, numSamples);
+    outgoingBlock.copyFrom (block);
+    configure (outgoing, false);
+    runEngine (outgoing, outgoingBlock);
+    runEngine (active, block);
+
+    const int count = juce::jmin ((int) numSamples, fadeLength - fadePosition);
+
+    for (size_t ch = 0; ch < numChannels; ++ch)
+    {
+        auto* data = block.getChannelPointer (ch);
+        const auto* old = outgoingBlock.getChannelPointer (ch);
+
+        for (int i = 0; i < count; ++i)
+        {
+            const float w = (float) (fadePosition + i) / (float) fadeLength;
+            data[i] = old[i] + w * (data[i] - old[i]);
+        }
+    }
+
+    fadePosition += count;
+
+    if (fadePosition >= fadeLength)
+        outgoing = -1;
 }
 
 //==============================================================================

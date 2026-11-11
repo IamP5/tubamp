@@ -2066,7 +2066,13 @@ also captured with the processor as it stood before the EQ/drive integration and
 to this build's, so each case equals the old plugin with its flat EQs removed. `tubamp_golden
 --legacy-check` meets the same two fixes: its flat cases (`eq_flat`, `ampeq_flat`) compare
 with the legacy chain without the EQ, and `eq_steps` compares only up to its first knob step
-(D-4 smoothing); every other case is bit-identical to `tools/fxbench/legacy`.
+(D-4 smoothing). The mod cases that change `mod_type` (`mod_typechange`, `mod3_typesteps`,
+`mod_absent`) meet the D-5 crossfade: leaving the fade's samples out would not do, because the
+always-on DC blocker carries any difference on, so the legacy side runs the old class once per
+type, resets the incoming one where the old block reset everything and crossfades as
+`Modulation` does; the processor must equal that everywhere, and that must equal the old
+single-instance jump everywhere outside the fades (checked before the DC blocker, reported per
+case). Every other case is bit-identical to `tools/fxbench/legacy`.
 
 ---
 
@@ -2157,11 +2163,12 @@ Invariant: latency is reported from the audio thread when it changes
 
 ### 6.5 Mod block (chorus, phaser, tremolo) — `Modulation` becomes the dispatcher
 
-`src/dsp/FxBlocks.h/.cpp` (integrator):
+`src/dsp/FxBlocks.h/.cpp` (integrator). As built — `Modulation` keeps its name and its place
+in `FxBlocks`, so the processor's prepare/reset call sites are unchanged:
 
 ```cpp
 /** Note values for mod_sync in quarter-note beats per LFO cycle; index 0 = Off. Order
-    matches modSyncNames and is FROZEN. */
+    matches modSyncNames and is FROZEN (FxBlocks.cpp static_asserts the two sizes). */
 inline constexpr double kModSyncBeats[] { 0.0, 0.125, 1.0/6, 0.25, 1.0/3, 0.375, 0.5, 2.0/3,
                                           0.75, 1.0, 4.0/3, 1.5, 2.0, 3.0, 4.0, 8.0, 16.0 };
 
@@ -2173,38 +2180,55 @@ struct ModParams
     int sync = 0;                 // index into kModSyncBeats
     float width = 1.0f, tone = 0.5f, shape = 0.5f, wave = 0.0f;
     bool color = true;
-    double bpm = 120.0;           // host tempo
-    double ppqPosition = -1.0;    // host position at block start; < 0 when not playing
+    double bpm = 120.0;           // host tempo; <= 1 (or none) means 120, as for the delay
+    double ppqPosition = 0.0;     // host position at the block's first sample
+    bool playing = false;         // the host is playing and gave ppqPosition (a flag, not
+                                  // ppq < 0: hosts report negative positions in pre-roll)
 };
 
-class Modulation   // holds ChorusFx chorus; PhaserFx phaser; TremoloFx tremolo; fx::EngineSwitcher switcher;
+class Modulation   // holds ChorusFx, PhaserFx, TremoloFx and a scratch copy for the crossfade
 {
 public:
     enum class Type { chorus = 0, phaser = 1, tremolo = 2 };
+    struct Timing { float rateHz; double syncPhase; };
+    static Timing resolveTiming (const ModParams&, bool classic) noexcept;
+    static int crossfadeSamples (double sampleRate) noexcept;   // 20 ms
     void prepare (const juce::dsp::ProcessSpec&);
     void reset();
     void setParameters (const ModParams&);
     void process (juce::dsp::AudioBlock<float>);
 };
 ```
-- Rate resolution: if `sync > 0` (and the voicing is not Classic): `rate = bpm/60/beats`,
-  clamped to [0.01, 20] Hz, and `syncPhase = ppqPosition ≥ 0 ? frac(ppqPosition/beats) : −1`;
-  else `rate = mod_rate`, `syncPhase = −1`. Classic voicings always get `mod_rate` and
-  `syncPhase = −1` (bit-identity).
-- Dispatch on `mod_type` through an `fx::EngineSwitcher` keyed by `mod_type`
-  (`resetEngine(t)` resets the incoming engine); snap on the first block after
-  prepare/reset. Static renders equal today's (today a type change resets all three and
-  switches instantly; with the switcher it fades — an intended click fix, §8 D-5).
-- `processBlock` already reads the play head (`:965-973`); pass `ppqPosition` (when
-  `isPlaying`) and `hostBpm` into `processChainBlock` → `ModParams`.
+- Rate resolution (`resolveTiming`): Classic voicings always get `mod_rate` and
+  `syncPhase = −1` (bit-identity). Otherwise sync Off is `mod_rate`, free-running; a note
+  value is `rate = bpm / (60·beats)` at the host tempo, with the delay's fallback (no tempo,
+  or ≤ 1 BPM → 120), and `syncPhase = frac(ppqPosition / beats)` while the host plays and
+  gives a position, else −1 (free-running at the synced rate). A synced rate outside the
+  engines' [0.01, 20] Hz is clamped **and runs free**: a clamped LFO cannot follow the song
+  position (1/32 above 150 BPM, 1/16T above 200, 4/1 below 9.6).
+- `mod_type` switch — **a crossfade, not `fx::EngineSwitcher`.** On a change the incoming
+  engine is reset in that block and runs from there, exactly where the old block reset
+  everything and jumped; the outgoing engine keeps running for 20 ms on a copy of the input
+  with the last parameters it had (free-running), and the output moves linearly from it to
+  the incoming one over `crossfadeSamples()`. When the fade ends the output is the old
+  block's bit for bit. The switcher's fade through dry was not used: it resets the incoming
+  engine 20 ms after the request, so that type would run 20 ms behind the old jump for good.
+  A second change inside a fade cuts the fade short (a new one starts from the engine that
+  was coming in), so every type still starts where the old block started it. A block larger
+  than `prepare()` promised completes the switch outright (the old jump). Snap on the first
+  block after prepare/reset. Only the running engines get `setParameters`, as the old block
+  only set the active type; each engine fades its own voicing and colour switches and is
+  never reset for them.
+- `processBlock` reads the play head once (`HostTransport { bpm, ppqPosition, playing }`) and
+  hands it to `processChainBlock`; the delays take `bpm` from it, the mod blocks all three.
 
 | File:line | Change |
 |---|---|
 | `FxBlocks.h:114-134`, `FxBlocks.cpp:349-449` | replace the old `Modulation` with the dispatcher above; delete `Drive`, `ToneStackEQ`, `NoiseGate` (`FxBlocks.h:15-112`, `FxBlocks.cpp:15-30, 45-193, 222-344`) and the AudioDSPTools include; keep `DcBlocker`, `CabSim` byte-identical |
 | `PluginProcessor.cpp:818, 926, 1845` | prepare/reset unchanged in form |
-| `PluginProcessor.cpp:1428-1442` | fill `ModParams` from the 4 existing + 9 new ids, bpm, ppq |
-| `PluginProcessor.cpp:965-973` | capture `ppqPosition` and `isPlaying` once per callback |
-| tests | every (type × voicing × color) renders finite mono and stereo; tempo sync lands on the note (pattern of `runDelaySyncTests`, `:2118`); pin for the three voicing ids |
+| `PluginProcessor.cpp:1428-1442` | `modParams (k, transport)` fills `ModParams` from the 4 existing + 9 new ids, raw, and the transport |
+| `PluginProcessor.cpp:965-973` | capture tempo, `ppqPosition` and `isPlaying` once per callback (`HostTransport`) |
+| tests | smoke `runModEngineTests`: every new voicing (knob steps, voicing and colour switches) through the processor equals the engine alone; sync 1/8 at 120 BPM for CE, Phase 90 block and Smooth, host playing and stopped: equal to the engine alone at 4 Hz with `frac(ppq/0.5)` or free-running, output repeats every 250 ms (residual ≤ −60 dB; a 0.1 % tempo error exceeds it), Smooth's dips within 2 ms of each eighth; 120 → 150 BPM followed; no play head = 120 BPM; clamped 1/32 at 200 BPM free at 20 Hz; Classic ignores sync; instances 2/3 drive their own ids; voicing and `mod_type` switches on P7's chord ≤ 3 dB per 1 ms; the crossfade is exactly the engines alone with a linear 20 ms fade. `runModRtTests`: three mod blocks cycling types, voicings, colours, sync, transport, bypass and re-entry allocate nothing. `--legacy-check` mod cases: see §5.4.3. The voicing-id pin is `runLegacyPinTests` |
 
 ### 6.6 Invariants that must not regress (whole integration)
 
@@ -2312,7 +2336,7 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-2 | Factory presets are captured by the running build, so a fresh install would write them with the recommended types while existing installs keep old files (pinned to Classic). | Write factory presets with every new type id = 0 so they sound the same everywhere; a later preset refresh can adopt the new types deliberately. |
 | D-3 | Gate deferred-curve alignment (study R4) would change Classic renders whenever the NAM model resamples. | Alignment for Tight/Smooth only; Classic stays unaligned (strict D2). |
 | D-4 | D7 asks for knob smoothing in every EQ type incl. Classic and the amp EQ. | Done; static Classic renders stay bit-identical, automated ones change (the click fix). Not listed as a D2 exception because static bit-identity holds. |
-| D-5 | `mod_type` switches today reset and jump instantly. | The dispatcher fades through the switcher; static renders unchanged. |
+| D-5 | `mod_type` switches today reset and jump instantly. | The dispatcher crossfades over 20 ms from the outgoing type to the incoming one, which is reset where the old block reset it (§6.5, not through the switcher); static renders, and everything after a fade, are unchanged. |
 | D-6 | Drive latency: JUCE's integer-latency mode would add a fractional delay and change Classic audio. | Report `lround` (Classic 3, oversampled types 5 at 48 kHz, 3 at 96, 1 at 192; Boost/Treble 0) and leave the audio alone; residual ≤ 0.44 sample. |
 | D-7 | Drive latency counted only while `drive_on`, like the amp; automating `drive_on` or `drive_type` moves the reported latency mid-playback. | Follow the amp precedent (D2 "like the amp"). Alternative: the FX-slot rule (count while bypassed and delay the bypassed signal) — not chosen because it would delay a bypassed Classic drive. |
 | D-8 | Small Stone Color at 2x internal rate. | Not done (latency forbidden by D6; never rendered, needs a refit). Revisit with GR6 renders at 44.1/96 kHz. |
