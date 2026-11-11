@@ -24,8 +24,9 @@ TYPE_KEY = "type"
 TYPES = {0: "Classic", 1: "Screamer", 2: "Distortion", 3: "Fuzz", 4: "Boost", 5: "Treble"}
 # Float keys at their documented limits, for the finite-output test.
 RANGES = {"gain": (0.0, 36.0), "tone": (500.0, 12000.0), "level": (-24.0, 12.0)}
-# Percent of real time per instance (§4.3.7).
-BUDGETS = {0: 0.35, 1: 2.0, 2: 2.0, 3: 3.0, 4: 0.05, 5: 0.05}
+# Percent of real time per instance (§4.3.7; Distortion and Fuzz raised to 3.5 / 4.0 % by the
+# coordinator for the anti-aliasing scheme).
+BUDGETS = {0: 0.35, 1: 2.0, 2: 3.5, 3: 4.0, 4: 0.05, 5: 0.05}
 VARIANTS = {}
 NULL_KEYS = [{}, {"gain": 36, "tone": 12000, "level": -6}, {"gain": 0, "tone": 500}]
 PEDALS = (1, 2, 3)
@@ -36,10 +37,11 @@ ALIAS_F0 = (3830, 5000, 6100, 7919)
 IS, A = 2.52e-9, 1.752 * 0.02585
 TS = dict(R1=4.7e3, Cz=47e-9, Cc=51e-12, R2=51e3, Pot=500e3, Rs=1e3, Cs=0.22e-6, Ri=10e3, Rf=1e3,
           Tone=20e3, Rz=220.0, Cz2=0.22e-6, End=0.005)
-RAT = dict(R1=47.0, C1=2.2e-6, R2=560.0, C2=4.7e-6, Pot=100e3, Cf=100e-12, Rclip=1e3, Gbw=2.3e6,
+RAT = dict(R1=47.0, C1=2.2e-6, R2=560.0, C2=4.7e-6, Pot=100e3, Cf=100e-12, Rclip=1e3, Gbw=1.0e6,
            Rfix=1.5e3, Rpot=100e3, C=3.3e-9)
 MUFF = dict(Boost=470e3 / 39e3, Stage=470e3 / 10e3, Rfb=470e3, Cfb=470e-12, Sus=100e3, Load=10e3,
-            Rt=27e3, Ct=10e-9, Cb=4.7e-9, Rb=27e3, Pot=100e3)
+            SusMin=0.018745, Rt=39e3, Ct=10e-9, Cb=4e-9, Rb=22e3, Pot=100e3, End=0.005,
+            ToneLoad=470e3 * 100e3 / 570e3)
 COUPLE_HZ = 1.0 / (2 * np.pi * 1e-6 * 10e3)
 INPUT_HP_HZ = 15.9
 
@@ -64,8 +66,9 @@ def clip_g0(r_series):
     return 1.0 / (1.0 + 2 * IS * r_series / A)
 
 
-def factor(sr):
-    return 4 if sr < 80000 else (2 if sr < 160000 else 1)
+def factor(sr, typ=1):
+    base = 4 if sr < 80000 else (2 if sr < 160000 else 1)
+    return 2 * base if typ == 2 else base
 
 
 def hp1(s, hz):
@@ -112,15 +115,24 @@ def rat_filter_hz(t):
 
 
 def muff_sustain(d):
-    return d * MUFF["Load"] / (MUFF["Load"] + d * (1 - d) * MUFF["Sus"])
+    p = MUFF["SusMin"] + (1 - MUFF["SusMin"]) * d
+    return p * MUFF["Load"] / (MUFF["Load"] + p * (1 - p) * MUFF["Sus"])
 
 
 def muff_tone(s, t):
-    gT, gB, gM = 1 / MUFF["Rt"], 1 / MUFF["Rb"], 1 / MUFF["Pot"]
-    na = gT * gB + gT * gM + s * MUFF["Cb"] * (gT + gM)
-    nb = gM * gT + s * MUFF["Cb"] * (gT + gM) + s * s * MUFF["Ct"] * MUFF["Cb"]
-    den = gT * gB + gT * gM + gB * gM + s * (MUFF["Ct"] * (gB + gM) + MUFF["Cb"] * (gT + gM)) + s * s * MUFF["Ct"] * MUFF["Cb"]
-    return ((1 - t) * na + t * nb) / den
+    """The passive tone stack by plain nodal analysis (nodes A, B and the wiper W, which is
+    loaded by the output stage's bias divider), solved numerically: an independent check of
+    the closed form Drive.cpp uses."""
+    tp = float(np.clip(t, MUFF["End"], 1 - MUFF["End"]))
+    ga, gb = 1 / (tp * MUFF["Pot"]), 1 / ((1 - tp) * MUFF["Pot"])
+    gT, gB, gL = 1 / MUFF["Rt"], 1 / MUFF["Rb"], 1 / MUFF["ToneLoad"]
+    out = []
+    for sv in np.atleast_1d(s):
+        y = np.array([[gT + sv * MUFF["Ct"] + ga, 0, -ga],
+                      [0, sv * MUFF["Cb"] + gB + gb, -gb],
+                      [-ga, -gb, ga + gb + gL]], complex)
+        out.append(np.linalg.solve(y, np.array([gT, sv * MUFF["Cb"], 0], complex))[2])
+    return np.array(out) if np.ndim(s) else out[0]
 
 
 def muff_lp_hz():
@@ -135,7 +147,7 @@ def analog(typ, f, gain_db, tone, sr=48000):
     if typ == 1:
         return hp * (1 + ts_pre(s, d) * ts_g0(d)) * ts_tone(s, t)
     if typ == 2:
-        fos = sr * factor(sr)
+        fos = sr * factor(sr, 2)
         bw = min(rat_gbw_hz(d), 0.45 * fos)
         fc = min(rat_filter_hz(t), 0.45 * fos)
         return hp * rat_gain(s, d) * lp1(s, bw) * clip_g0(RAT["Rclip"]) * lp1(s, fc)
@@ -161,7 +173,7 @@ def discrete(typ, f, gain_db, tone, sr):
     rate, without the half-band filters and without the ADAA half-sample (that is the
     latency). Used only to take the circuit phase out of a delay measurement."""
     f = np.asarray(f, float)
-    n = factor(sr)
+    n = factor(sr, typ)
     fos = sr * n
     d, t = knob_d(gain_db), knob_t(tone)
     hp = hp1(bilinear_s(f, sr, warp_c(INPUT_HP_HZ, sr)), INPUT_HP_HZ)
@@ -446,8 +458,9 @@ def specific_checks(report, args, extra):
                 worst, where = err[i], f"d={d} at {freqs[i]:.0f} Hz"
             if d == 1.0:
                 s = 2j * np.pi * freqs
-                stage = h / np.abs(hp1(s, INPUT_HP_HZ) * lp1(s, min(rat_gbw_hz(1.0), 0.45 * 192000))
-                                   * clip_g0(RAT["Rclip"]) * lp1(s, min(rat_filter_hz(1.0), 0.45 * 192000)))
+                fos = 48000 * factor(48000, 2)
+                stage = h / np.abs(hp1(s, INPUT_HP_HZ) * lp1(s, min(rat_gbw_hz(1.0), 0.45 * fos))
+                                   * clip_g0(RAT["Rclip"]) * lp1(s, min(rat_filter_hz(1.0), 0.45 * fos)))
                 peak = fx.db(stage.max())
         target = fx.db(1 + RAT["Pot"] / (RAT["R1"] * RAT["R2"] / (RAT["R1"] + RAT["R2"])))
         ok = abs(worst) <= 0.5 and abs(peak - target) <= 1.0
@@ -543,24 +556,43 @@ def specific_checks(report, args, extra):
     # D18 split-lane alignment (offline model of the processor's lane ring) ---------------------
     # Lane B empty means the lane ring hands the dry signal on delayed by the drive's reported
     # latency. Two otherwise identical lanes then comb by |1 + exp (-j w (D(f) - L))| / 2, where
-    # D(f) is the delay the drive's processing adds (its phase against its own tone filter).
-    if sel(0):
+    # D(f) is the delay the drive's processing adds (its phase against its own circuit model).
+    # Restated by the coordinator: Classic's frozen 2x IIR delay rises from 3.14 samples at low
+    # frequency to 3.84 at 16 kHz, so the bar is 0.5 dB to 10 kHz; 16 kHz is reported. D18n is
+    # the same test for the new types (their IIR half-bands rise the same way, see Drive.cpp).
+    def lane_comb(typ, keys, sr, level_db, lag):
+        fr, h = sweep_complex(keys, sr, level_db)
+        band = (fr >= 50) & (fr <= 16000)
+        f = fr[band]
+        w = 2 * np.pi * f / sr
+        if typ == 0:
+            ref = svf_lowpass(f, keys["tone"], sr)
+        else:
+            ref = discrete(typ, f, keys["gain"], keys["tone"], sr)
+        delay = -np.unwrap(np.angle(h[band] / ref)) / w
+        return f, fx.db(np.abs(1 + np.exp(-1j * w * (delay - lag))) / 2)
+
+    def lane_row(name, scope, typ, keys, level_db, lag_of):
         cells, ok = [], True
         for sr in (44100, 48000):
-            fr, h = sweep_complex({"type": 0, "gain": 0, "tone": 12000}, sr, -40.0)
-            band = (fr >= 50) & (fr <= 16000)
-            w = 2 * np.pi * fr[band] / sr
-            delay = -np.unwrap(np.angle(h[band] / svf_lowpass(fr[band], 12000, sr))) / w
-            for lag, tag in ((DRIVE_CLASSIC_LATENCY, "reported"), (0, "unreported")):
-                comb = fx.db(np.abs(1 + np.exp(-1j * w * (delay - lag))) / 2)
-                worst = float(comb.min())
-                bad = np.flatnonzero(comb < -0.5)
-                holds = fr[band][bad[0]] if len(bad) else 16000.0
-                if tag == "reported":
-                    ok &= worst >= -0.5
-                cells.append(f"{sr / 1000:g}k {tag} (lag {lag}) min {worst:.2f} dB at "
-                             f"{fr[band][np.argmin(comb)]:.0f} Hz, within 0.5 dB to {holds:.0f} Hz")
-        report.add("D18 split lanes", "Classic gain 0, dry lane, to 16 kHz", ok, "; ".join(cells))
+            lag = lag_of(sr)
+            f, comb = lane_comb(typ, keys, sr, level_db, lag)
+            low = f <= 10000
+            bad = np.flatnonzero(comb < -0.5)
+            holds = f[bad[0]] if len(bad) else 16000.0
+            ok &= comb[low].min() >= -0.5
+            cells.append(f"{sr / 1000:g}k lag {lag}: min to 10 kHz {comb[low].min():.2f} dB, "
+                         f"{comb[-1]:.2f} dB at 16 kHz, within 0.5 dB to {holds:.0f} Hz")
+        report.add(name, scope, ok, "; ".join(cells))
+
+    if sel(0):
+        lane_row("D18 split lanes", "Classic gain 0, 0.5 dB to 10 kHz", 0, {"type": 0, "gain": 0, "tone": 12000},
+                 -40.0, lambda sr: DRIVE_CLASSIC_LATENCY)
+    for typ, gain, lv in ((1, 0, -60.0), (2, 0, -60.0), (3, 0, -120.0)):
+        if sel(typ):
+            lane_row("D18n split lanes", f"{TYPES[typ]} gain 0, 0.5 dB to 10 kHz", typ,
+                     {"type": typ, "gain": gain, "tone": 12000}, lv,
+                     lambda sr, t=typ: int(run(np.zeros(64), {"type": t}, sr, ["--latency"]).number(r"latency\t(-?\d+)")))
 
     # X: DC, gain smoothing, type switches ---------------------------------------------------------
     for typ in (1, 2, 3, 4, 5):

@@ -44,11 +44,11 @@ export const COMP_STARTING_POINTS: StartingPoints = {
 
 /** Classic, Screamer, Distortion, Fuzz, Boost, Treble (Drive.h `kDriveGainDefault`,
  *  `kDriveToneDefault`, `kDriveLevelDefault`; Distortion and Fuzz levels are the
- *  measured L2 = -8.2 and L3 = 2.2). */
+ *  measured L2 = -8.2 and L3 = 4.6). */
 export const DRIVE_STARTING_POINTS: StartingPoints = {
   gain: [12, 12, 18, 18, 12, 12],
   tone: [4000, 4000, 2449, 2449, 12000, 3000],
-  level: [0, 0, -8.2, 2.2, 0, 0],
+  level: [0, 0, -8.2, 4.6, 0, 0],
 };
 
 /** Classic, Wide, CE, Dimension, Tri (Chorus.h). */

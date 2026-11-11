@@ -131,18 +131,13 @@ constexpr double kInputLimitVolts = 1000.0;   // [choice] keeps any finite input
 constexpr double kInputHighPassHz = 15.9;     // [circuit: TS-808 input coupling, Yeh DAFx-07]
 constexpr float kParamSmoothSeconds = 0.02f;
 constexpr int kControlInterval = 32;          // base samples between coefficient updates
+constexpr int kMaxFactor = 8;
 constexpr int kHalleySteps = 3;               // see DiodeClipper::evaluateMagnitude
-constexpr double kAdaaMinStep = 1.0e-6;       // volts
 
 // 1N4148/1N914, the standard SPICE model D1N4148 (IS=2.52n N=1.752) at 25.85 mV thermal
 // voltage; all three pedals use this diode family (docs/FX-ENGINES.md §4.3.4).
 constexpr double kDiodeIs = 2.52e-9;
 constexpr double kDiodeA = 1.752 * 0.02585;
-
-// JUCE's maximum-quality polyphase IIR half-bands, low-frequency delay in base samples
-// (juce::dsp::Oversampling::getLatencyInSamples, which prepare() checks against these).
-constexpr double kHalfBandLatency2x = 3.137320995;
-constexpr double kHalfBandLatency4x = 4.432672501;
 
 // Ibanez TS-808 clipping stage and tone/volume stage, as given in Yeh, Abel & Smith,
 // "Simplified, physically-informed models of distortion and overdrive guitar effects
@@ -168,22 +163,38 @@ constexpr double kRatR1 = 47.0, kRatC1 = 2.2e-6, kRatR2 = 560.0, kRatC2 = 4.7e-6
 constexpr double kRatGainPot = 100.0e3, kRatCf = 100.0e-12;
 constexpr double kRatClipSeries = 1.0e3;
 constexpr double kRatRail = 4.5;              // [circuit: 9 V supply, op-amp biased at 4.5 V]
-constexpr double kRatGbw = 2.3e6;             // [fit: study R5, harness-only evidence (V:97); revisit by ear]
+// [circuit: National LM108/LM208/LM308 data sheet (Dec 1994), LM308 "Open Loop Frequency
+// Response": with the standard 30 pF compensation (C3 above) the gain crosses unity near
+// 1 MHz, falling 6 dB/oct; "bandwidth and slew rate are proportional to 1/Cf"]
+constexpr double kRatGbw = 1.0e6;
 constexpr double kRatFilterFixed = 1.5e3, kRatFilterPot = 100.0e3, kRatFilterC = 3.3e-9;
 
-// Big Muff Pi, early version: guitarscience.net/papers/bigmuff.pdf Fig. 1 (RG1 39k,
-// RB 470k, CF 470pF, RG2/RG3 10k, coupling 1uF; tone RT 27k, CT 10nF, CB 4.7nF, RB 27k).
-// Tone ("mix") pot 100 k: "a pair of filters whose output is combined through the 100k mix
-// pot" (muzique.com/lab/dtone.htm). Sustain pot 100 k linear ("SUSTAIN B100K",
-// docs.pedalpcb.com/project/MuffinFuzz-PedalPCB.pdf), a divider whose wiper feeds RG2 into
-// the next stage's virtual-ground base (Fig. 1), so the divider is loaded by RG2.
+// Big Muff Pi: J.L., "A case study: re-engineering the Big Muff Pi" (2014,
+// guitarscience.net/papers/bigmuff.pdf) Fig. 1 and eq. (14): every gain stage is
+// K = -Z2 / (Rs + R1), Z2 = RB || CF. Input booster RB11 470k, RG1 39k, CF1 470pF (12.05,
+// 720 Hz); clipping stages RB21/RB31 470k, RG2/RG3 10k, CF2/CF3 470pF (47, 720 Hz) with the
+// 1N914 pair across RB (through CR 1uF, which settles the limits symmetric, Fig. 8);
+// CB2 1uF into RG2 and CO2 1uF into RG3 (15.9 Hz). The sustain pot ("SUSTAIN B100K",
+// docs.pedalpcb.com/project/MuffinFuzz-PedalPCB.pdf) is a divider whose wiper feeds RG2,
+// so its Thevenin resistance is part of Rs in eq. (14).
 constexpr double kMuffBoostGain = 470.0e3 / 39.0e3;
 constexpr double kMuffStageGain = 470.0e3 / 10.0e3;
 constexpr double kMuffFeedbackR = 470.0e3, kMuffFeedbackC = 470.0e-12;
 constexpr double kMuffCouplingHz = 1.0 / (kTwoPi * 1.0e-6 * 10.0e3);
 constexpr double kMuffSustainPot = 100.0e3, kMuffSustainLoad = 10.0e3;
-constexpr double kMuffRt = 27.0e3, kMuffCt = 10.0e-9, kMuffCb = 4.7e-9, kMuffRb = 27.0e3;
+// The knob spans the sustain pot from where the divider is 36 dB down to full [choice: the
+// knob is 36 dB wide, and the bottom 1.9 % of travel only fades the pedal out to silence].
+constexpr double kMuffSustainMin = 0.018745;
+// Tone stack. The paper's values (RT 27k, CT 10nF, CB 4.7nF, RB 27k, 500k pot, its Fig. 14)
+// dip only 3.4 dB below the 220 Hz-5 kHz line at 900 Hz with the pot centred. Used here
+// instead [choice]: the 1975 "Ram's Head" stack, R8 39k, C8 10nF, C9 4nF, R5 22k (LP 408 Hz,
+// HP 1809 Hz, "big scoop of the mids", coda-effects.com/p/big-muff-tonestack-dealing-with-
+// mids.html), 100k linear tone pot (muzique.com/lab/dtone.htm), which dips 6.1 dB.
+constexpr double kMuffRt = 39.0e3, kMuffCt = 10.0e-9, kMuffCb = 4.0e-9, kMuffRb = 22.0e3;
 constexpr double kMuffTonePot = 100.0e3;
+constexpr double kMuffToneEnd = 0.005;        // [choice] pot end resistance, as the TS tone
+// The tone stack drives the output stage's bias divider, RB41 470k || RB42 100k (Fig. 1).
+constexpr double kMuffToneLoad = 470.0e3 * 100.0e3 / 570.0e3;
 
 /** Audio-taper pot: 10 % of the resistance at mid travel (the common A-taper law). */
 double audioTaper (double p) noexcept
@@ -284,20 +295,29 @@ struct SecondOrder
 };
 
 //==============================================================================
-/** Antiparallel diode pair behind a resistance R: u = v + k sinh (v / a), k = 2 Is R,
-    solved for v per sample and anti-aliased to first order through the exact
-    antiderivative of v(u) (docs/FX-ENGINES.md §4.3.4). An optional rail clamps u before
-    the diodes; the clamp is folded into the same antiderivative. */
+/** Antiparallel diode pair behind a resistance R: u = g(v) = v + k sinh (v / a), k = 2 Is R,
+    solved for v per sample and anti-aliased to second order through the exact
+    antiderivatives of v(u) (one oversampled sample of delay). An optional rail clamps u
+    before the diodes; the clamp is folded into the same antiderivatives. Second order
+    rather than the spec's first: at full gain all three pedals drive the diodes so hard
+    that the output edge is a step within a fraction of a sample, and a first-order kernel
+    at 4x leaves its images at -46 dB (Distortion, 7.5 kHz) to -57 dB (1.2 kHz) below 20 kHz.
+
+    Both antiderivatives are written so that their derivative with respect to v vanishes at
+    the root (F1 = u v - G(v), F2 = u^2 v / 2 - u G(v) + B(v), G' = g, B' = g^2 / 2): an error
+    e in the solved v moves them by O(e^2) only, which the divided differences need. */
 class DiodeClipper
 {
 public:
+    struct Point { double u = 0.0, v = 0.0, f1 = 0.0, f2 = 0.0; };
+
     void setSeriesResistance (double ohms) noexcept
     {
         k = 2.0 * kDiodeIs * ohms;
         kOverA = k / kDiodeA;
 
         if (rail > 0.0)
-            evaluateMagnitude (rail, railV, railF);
+            evaluateMagnitude (rail, railPoint);
     }
 
     void setRail (double volts) noexcept
@@ -305,7 +325,7 @@ public:
         rail = volts;
 
         if (rail > 0.0)
-            evaluateMagnitude (rail, railV, railF);
+            evaluateMagnitude (rail, railPoint);
     }
 
     void reset() noexcept
@@ -314,125 +334,221 @@ public:
             s = {};
     }
 
-    /** Re-evaluates the stored previous input on the current curve, so a change of R does
+    /** Re-evaluates the stored previous inputs on the current curve, so a change of R does
         not put a step into the next difference quotient. */
     void refresh() noexcept
     {
         for (auto& s : state)
-            evaluate (s.u, s.v, s.F);
+        {
+            evaluate (s.p1.u, s.p1);
+            evaluate (s.p2.u, s.p2);
+            s.mean1 = mean (s.p1, s.p2);
+        }
     }
 
-    /** The stateless part: v(u) and F(u) for a run of inputs. Separate from finish() so
-        the solves, which are independent of each other, can overlap in the CPU. */
-    void solve (const double* u, double* v, double* F, int count) const noexcept
+    /** The stateless part: v(u) and the antiderivatives for a run of inputs. Separate from
+        finish() so the solves, which are independent of each other, can overlap in the CPU. */
+    void solve (const double* u, Point* p, int count) const noexcept
     {
         for (int m = 0; m < count; ++m)
-            evaluate (u[m], v[m], F[m]);
+            evaluate (u[m], p[m]);
     }
 
-    /** The difference quotient (F(u) - F(u_prev)) / (u - u_prev), in order. */
-    double finish (int ch, double u, double v, double F) noexcept
+    /** The anti-aliased output for the next point, in order. */
+    double finish (int ch, const Point& p) noexcept
     {
         auto& s = state[ch];
-        const double du = u - s.u;
-        // Below the step the quotient is ill-conditioned; the mean of the two solutions is
-        // v at the midpoint to second order.
-        const double y = std::abs (du) > kAdaaMinStep ? (F - s.F) / du : 0.5 * (v + s.v);
 
-        s.u = u;
-        s.v = v;
-        s.F = F;
+        // y = 2 (D(u, u1) - D(u1, u2)) / (u - u2), D the mean of F1 over an interval: the
+        // average of v(u) under a triangle spanning the last three inputs.
+        const double m0 = mean (p, s.p1);
+        const double span = p.u - s.p2.u;
+        double y;
+
+        if (std::abs (span) > tolerance (p.u, s.p2.u))
+        {
+            y = 2.0 * (m0 - s.mean1) / span;
+        }
+        else
+        {
+            // u2 -> u: the limit is 2 dD(u1, b)/db at b = u, = 2 (D(u1, u) - F1(u)) / (u1 - u).
+            const double h = s.p1.u - p.u;
+            y = std::abs (h) > tolerance (s.p1.u, p.u) ? 2.0 * (m0 - p.f1) / h : s.p1.v;
+        }
+
+        s.p2 = s.p1;
+        s.p1 = p;
+        s.mean1 = m0;
         return y;
     }
 
 private:
-    /** v >= 0 and F(u) for u >= 0. Three Halley steps from the upper bound
+    static double tolerance (double a, double b) noexcept
+    {
+        return 1.0e-5 * (1.0 + 0.5 * (std::abs (a) + std::abs (b)));
+    }
+
+    /** Mean of F1 over [b.u, a.u]: the divided difference of F2 where it is well conditioned,
+        else the end-corrected trapezoid (F1' = v), exact to O(h^4). */
+    double mean (const Point& a, const Point& b) const noexcept
+    {
+        const double h = a.u - b.u;
+
+        if (std::abs (h) > tolerance (a.u, b.u))
+            return (a.f2 - b.f2) / h;
+
+        return 0.5 * (a.f1 + b.f1) - h * (a.v - b.v) * (1.0 / 12.0);
+    }
+
+    /** v >= 0, F1 and F2 for u >= 0. Three Halley steps from the upper bound
         min (u, a asinh (u / k)) reach double precision from 1e-6 to 1e5 V for every R used
-        here (checked against an 80-step Newton reference); the spec's four Newton steps
-        leave up to 1e-5 V and cost more. At the root k sinh (v / a) = u - v, so
-        k cosh (v / a) = sqrt (k^2 + (u - v)^2) gives F without another exp. */
-    void evaluateMagnitude (double u, double& v, double& F) const noexcept
+        here. expm1 keeps cosh - 1 and sinh exact for small v. */
+    void evaluateMagnitude (double u, Point& p) const noexcept
     {
         const double y = u / k;
-        v = juce::jmin (u, kDiodeA * roughLog (y + std::sqrt (y * y + 1.0)));
+        double v = juce::jmin (u, kDiodeA * roughLog (y + std::sqrt (y * y + 1.0)));
+        double em = 0.0, step = 0.0;
 
         for (int i = 0; i < kHalleySteps; ++i)
         {
             // f, f' and f'' all scaled by e = exp (v / a), which cancels in the Halley step
             // and saves the division for exp (-v / a).
-            const double e = std::exp (v * (1.0 / kDiodeA));
-            const double ee = e * e;
-            const double f = e * (v - u) + 0.5 * k * (ee - 1.0);
-            const double f1 = e + 0.5 * kOverA * (ee + 1.0);
-            const double f2 = 0.5 * kOverA * (1.0 / kDiodeA) * (ee - 1.0);
-            v -= 2.0 * f * f1 / (2.0 * f1 * f1 - f * f2);
+            em = std::expm1 (v * (1.0 / kDiodeA));
+            const double e = 1.0 + em;
+            const double f = e * (v - u) + 0.5 * k * em * (e + 1.0);
+            const double f1 = e + 0.5 * kOverA * (e * e + 1.0);
+            const double f2 = 0.5 * kOverA * (1.0 / kDiodeA) * em * (e + 1.0);
+            step = 2.0 * f * f1 / (2.0 * f1 * f1 - f * f2);
+            v -= step;
         }
 
-        const double r = u - v;
-        F = u * v - 0.5 * v * v - kDiodeA * (std::sqrt (k * k + r * r) - k);
+        // exp (v / a) at the final v, from the last one to first order in the last step.
+        em -= (1.0 + em) * step * (1.0 / kDiodeA);
+        const double e = 1.0 + em;
+        const double sh = 0.5 * em * (e + 1.0) / e;          // sinh (v / a)
+        const double chm1 = 0.5 * em * em / e;               // cosh (v / a) - 1
+        const double ch = 1.0 + chm1;
+        const double ka = k * kDiodeA;
+
+        const double g = v * v * 0.5 + ka * chm1;            // G(v)
+        const double b = v * v * v * (1.0 / 6.0) + ka * (v * ch - kDiodeA * sh)
+                       + 0.25 * k * k * (kDiodeA * sh * ch - v);
+        p.u = u;
+        p.v = v;
+        p.f1 = u * v - g;
+        p.f2 = 0.5 * u * u * v - u * g + b;
     }
 
-    void evaluate (double u, double& v, double& F) const noexcept
+    void evaluate (double u, Point& p) const noexcept
     {
         const double mag = std::abs (u);
 
         if (rail > 0.0 && mag > rail)
         {
-            v = std::copysign (railV, u);
-            F = railF + railV * (mag - rail);
+            const double over = mag - rail;
+            p.u = u;
+            p.v = std::copysign (railPoint.v, u);
+            p.f1 = railPoint.f1 + railPoint.v * over;
+            p.f2 = std::copysign (railPoint.f2 + over * (railPoint.f1 + 0.5 * railPoint.v * over), u);
             return;
         }
 
-        double w;
-        evaluateMagnitude (mag, w, F);
-        v = std::copysign (w, u);
+        evaluateMagnitude (mag, p);
+        p.u = u;
+        p.v = std::copysign (p.v, u);
+        p.f2 = std::copysign (p.f2, u);
     }
 
-    struct State { double u = 0.0, v = 0.0, F = 0.0; };
+    struct State { Point p1, p2; double mean1 = 0.0; };
 
     double k = 1.0e-4, kOverA = 1.0e-4 / kDiodeA;
-    double rail = 0.0, railV = 0.0, railF = 0.0;
+    double rail = 0.0;
+    Point railPoint;
     State state[2];
 };
+
+//==============================================================================
+int clippersOf (DriveFx::Type type) noexcept
+{
+    return type == DriveFx::Type::fuzz ? 2 : 1;
+}
 
 //==============================================================================
 /** Screamer, Distortion and Fuzz: one engine, the type fixed between resets. */
 class PedalDrive
 {
 public:
-    static int factorFor (double sampleRate) noexcept
+    static int factorFor (DriveFx::Type type, double sampleRate) noexcept
     {
-        // Keeps the internal rate >= 176.4 kHz (docs/FX-ENGINES.md §4.3.4).
-        return sampleRate < 80000.0 ? 4 : (sampleRate < 160000.0 ? 2 : 1);
+        // Keeps the internal rate >= 176.4 kHz (docs/FX-ENGINES.md §4.3.4), >= 352.8 kHz for
+        // Distortion: its 67 dB op-amp stage into a rail makes the edge a near-ideal step, and
+        // at 4x even the second-order kernel leaves -67 dB of images for a 7.5 kHz tone.
+        const int base = sampleRate < 80000.0 ? 4 : (sampleRate < 160000.0 ? 2 : 1);
+        return type == DriveFx::Type::distortion ? 2 * base : base;
     }
 
+    static int stagesFor (int factor) noexcept
+    {
+        return factor >= 8 ? 3 : (factor >= 4 ? 2 : (factor >= 2 ? 1 : 0));
+    }
+
+    /** JUCE's maximum-quality polyphase IIR half-band cascades, low-frequency delay in base
+        samples (juce::dsp::Oversampling::getLatencyInSamples, which prepare() checks). */
     static double halfBandLatency (int factor) noexcept
     {
-        return factor == 4 ? kHalfBandLatency4x : (factor == 2 ? kHalfBandLatency2x : 0.0);
+        static constexpr double delay[4] { 0.0, 3.137320995, 4.432672501, 4.951390743 };
+        return delay[stagesFor (factor)];
     }
 
-    /** First-order ADAA delays each clipper by half an oversampled sample; Fuzz has two. */
+    /** Each clipper's second-order ADAA delays the signal by one oversampled sample. */
     static double clipperDelay (DriveFx::Type type, int factor) noexcept
     {
-        return (type == DriveFx::Type::fuzz ? 1.0 : 0.5) / (double) factor;
+        return clippersOf (type) / (double) factor;
+    }
+
+    static int latencyFor (DriveFx::Type type, double sampleRate) noexcept
+    {
+        const int factor = factorFor (type, sampleRate);
+        return (int) std::lround (halfBandLatency (factor) + clipperDelay (type, factor));
     }
 
     void prepare (const juce::dsp::ProcessSpec& spec)
     {
         sampleRate = spec.sampleRate;
-        factor = factorFor (sampleRate);
-        osRate = sampleRate * factor;
+        const auto channels = (size_t) juce::jmax ((juce::uint32) 1, spec.numChannels);
 
-        const auto stages = (size_t) (factor == 4 ? 2 : (factor == 2 ? 1 : 0));
-        oversampling = std::make_unique<juce::dsp::Oversampling<float>> (
-            juce::jmax ((juce::uint32) 1, spec.numChannels), stages,
-            juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, false);
-        oversampling->initProcessing (spec.maximumBlockSize);
-        osLatency = (double) oversampling->getLatencyInSamples();
-        jassert (std::abs (osLatency - halfBandLatency (factor)) < 1.0e-6);
+        for (auto pedal : { DriveFx::Type::screamer, DriveFx::Type::distortion })
+        {
+            const int n = factorFor (pedal, sampleRate);
+            auto& os = oversamplers[stagesFor (n)];
+            os = std::make_unique<juce::dsp::Oversampling<float>> (
+                channels, (size_t) stagesFor (n), juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, false);
+            os->initProcessing (spec.maximumBlockSize);
+            jassert (std::abs ((double) os->getLatencyInSamples() - halfBandLatency (n)) < 1.0e-6);
+        }
 
         const double cIn = warpedC (kInputHighPassHz, sampleRate);
         inputHighPass.setAnalog (0.0, 1.0 / (kTwoPi * kInputHighPassHz), 1.0, 1.0 / (kTwoPi * kInputHighPassHz), cIn);
+
+        drive.prepare (kParamSmoothSeconds, (float) sampleRate, 0.0f);
+        tone.prepare (kParamSmoothSeconds, (float) sampleRate, 0.5f);
+        level.prepare (kParamSmoothSeconds, (float) sampleRate, 1.0f);
+
+        setType (DriveFx::Type::screamer);
+        reset();
+    }
+
+    void setType (DriveFx::Type newType) noexcept
+    {
+        type = newType;
+        factor = factorFor (type, sampleRate);
+        osRate = sampleRate * factor;
+        oversampling = oversamplers[stagesFor (factor)].get();
+
+        clip1.setRail (type == DriveFx::Type::distortion ? kRatRail : 0.0);
+        clip1.setSeriesResistance (type == DriveFx::Type::fuzz ? kMuffFeedbackR
+                                   : (type == DriveFx::Type::distortion ? kRatClipSeries : kTsR2Fixed));
+        clip2.setSeriesResistance (kMuffFeedbackR);
 
         tsPreC = warpedC (kTsPreWarpHz, osRate);
         bilinearOs = 2.0 * osRate;
@@ -448,26 +564,6 @@ public:
         const double cCouple = warpedC (kMuffCouplingHz, osRate);
         muffCouple1.setAnalog (0.0, 1.0 / (kTwoPi * kMuffCouplingHz), 1.0, 1.0 / (kTwoPi * kMuffCouplingHz), cCouple);
         muffCouple2 = muffCouple1;
-
-        drive.prepare (kParamSmoothSeconds, (float) sampleRate, 0.0f);
-        tone.prepare (kParamSmoothSeconds, (float) sampleRate, 0.5f);
-        level.prepare (kParamSmoothSeconds, (float) sampleRate, 1.0f);
-
-        setType (DriveFx::Type::screamer);
-        reset();
-    }
-
-    /** What the prepared oversampler reports, in base samples. */
-    double getHalfBandLatency() const noexcept { return osLatency; }
-    int getFactor() const noexcept { return factor; }
-
-    void setType (DriveFx::Type newType) noexcept
-    {
-        type = newType;
-        clip1.setRail (type == DriveFx::Type::distortion ? kRatRail : 0.0);
-        clip1.setSeriesResistance (type == DriveFx::Type::fuzz ? kMuffFeedbackR
-                                   : (type == DriveFx::Type::distortion ? kRatClipSeries : kTsR2Fixed));
-        clip2.setSeriesResistance (kMuffFeedbackR);
     }
 
     void setTargets (float d, float t, float levelGain) noexcept
@@ -486,8 +582,10 @@ public:
 
     void reset() noexcept
     {
-        if (oversampling != nullptr)
-            oversampling->reset();
+        // All of them: the next block may start on another type without a further reset.
+        for (auto& os : oversamplers)
+            if (os != nullptr)
+                os->reset();
 
         inputHighPass.reset();
         tsPre.reset();
@@ -614,16 +712,15 @@ private:
             for (int m = 0; m < count; ++m)
                 scratchU[m] = tsPre.process (ch, (double) data[m]);
 
-            clip1.solve (scratchU, scratchV, scratchF, count);
+            clip1.solve (scratchU, scratchP, count);
 
             for (int m = 0; m < count; ++m)
             {
                 // Non-inverting stage: output = input + voltage across the feedback network.
-                // The input is delayed by the same half sample the clipper's ADAA adds.
-                const double x = (double) data[m];
-                const double clean = 0.5 * (x + cleanPrev[ch]);
-                cleanPrev[ch] = x;
-                data[m] = (float) (clean + clip1.finish (ch, scratchU[m], scratchV[m], scratchF[m]));
+                // The input is delayed by the one sample the ADAA adds.
+                const double clean = cleanPrev[ch];
+                cleanPrev[ch] = (double) data[m];
+                data[m] = (float) (clean + clip1.finish (ch, scratchP[m]));
             }
         }
         else if constexpr (T == DriveFx::Type::distortion)
@@ -635,28 +732,26 @@ private:
                 scratchU[m] = ratBandwidth.process (ch, x + ratFeedback.process (ch, current));
             }
 
-            clip1.solve (scratchU, scratchV, scratchF, count);
+            clip1.solve (scratchU, scratchP, count);
 
             for (int m = 0; m < count; ++m)
-                data[m] = (float) clip1.finish (ch, scratchU[m], scratchV[m], scratchF[m]);
+                data[m] = (float) clip1.finish (ch, scratchP[m]);
         }
         else
         {
+            // Booster, sustain divider, CB2 into RG2, stage 1.
             for (int m = 0; m < count; ++m)
-                scratchU[m] = muffStage1.process (ch, muffBoost.process (ch, (double) data[m])) * sustainGain;
+                scratchU[m] = muffStage1.process (ch, muffCouple2.process (ch, muffBoost.process (ch, (double) data[m]) * sustainGain));
 
-            clip1.solve (scratchU, scratchV, scratchF, count);
-
-            for (int m = 0; m < count; ++m)
-            {
-                const double y = clip1.finish (ch, scratchU[m], scratchV[m], scratchF[m]);
-                scratchU[m] = muffStage2.process (ch, muffCouple1.process (ch, y));
-            }
-
-            clip2.solve (scratchU, scratchV, scratchF, count);
+            clip1.solve (scratchU, scratchP, count);
 
             for (int m = 0; m < count; ++m)
-                data[m] = (float) muffCouple2.process (ch, clip2.finish (ch, scratchU[m], scratchV[m], scratchF[m]));
+                scratchU[m] = muffStage2.process (ch, muffCouple1.process (ch, clip1.finish (ch, scratchP[m])));
+
+            clip2.solve (scratchU, scratchP, count);
+
+            for (int m = 0; m < count; ++m)
+                data[m] = (float) clip2.finish (ch, scratchP[m]);
         }
     }
 
@@ -690,10 +785,10 @@ private:
         }
         else
         {
-            // Linear divider with Thevenin resistance d (1 - d) Rpot, feeding RG2 into a
-            // virtual ground: the stage gain RB / RG2 is scaled by RG2 / (RG2 + d (1 - d) Rpot).
-            // (The spec's unloaded audio-taper divider is not what Fig. 1 or the BOM show.)
-            sustainGain = d * kMuffSustainLoad / (kMuffSustainLoad + d * (1.0 - d) * kMuffSustainPot);
+            // Linear pot over the knob's span, Thevenin resistance p (1 - p) Rpot in series
+            // with RG2 into the virtual ground: eq. (14) with Rs = p (1 - p) Rpot.
+            const double p = kMuffSustainMin + (1.0 - kMuffSustainMin) * d;
+            sustainGain = p * kMuffSustainLoad / (kMuffSustainLoad + p * (1.0 - p) * kMuffSustainPot);
         }
     }
 
@@ -713,15 +808,18 @@ private:
 
             case DriveFx::Type::fuzz:
             {
-                // Passive LP/HP pair joined by the pot, wiper unloaded (docs/FX-ENGINES.md §4.3.5).
-                const double gT = 1.0 / kMuffRt, gB = 1.0 / kMuffRb, gM = 1.0 / kMuffTonePot;
-                const double nA0 = gT * gB + gT * gM, nA1 = kMuffCb * (gT + gM);
-                const double nB0 = gM * gT, nB1 = kMuffCb * (gT + gM), nB2 = kMuffCt * kMuffCb;
-                const double d0 = gT * gB + gT * gM + gB * gM;
-                const double d1 = kMuffCt * (gB + gM) + kMuffCb * (gT + gM);
-                const double d2 = kMuffCt * kMuffCb;
-                toneFilter.setAnalog ((1.0 - t) * nA0 + t * nB0, (1.0 - t) * nA1 + t * nB1, t * nB2,
-                                      d0, d1, d2, bilinearOs);
+                // Low-pass leg RT/CT to node A, high-pass leg CB/RB to node B, the pot from A
+                // (T = 0, bass) to B, the wiper loaded by RL. Node W eliminated, then A and B:
+                // H = N(s) / D(s), both quadratic (each divided by the wiper node sum S).
+                const double tp = juce::jlimit (kMuffToneEnd, 1.0 - kMuffToneEnd, t);
+                const double gT = 1.0 / kMuffRt, gB = 1.0 / kMuffRb;
+                const double ga = 1.0 / (tp * kMuffTonePot), gb = 1.0 / ((1.0 - tp) * kMuffTonePot);
+                const double sum = ga + gb + 1.0 / kMuffToneLoad;
+                const double m = ga * gb / sum;
+                const double p0 = gT + ga - ga * ga / sum, q0 = gB + gb - gb * gb / sum;
+                toneFilter.setAnalog (gT * (ga * q0 + gb * m), kMuffCb * (ga * gT + ga * m + gb * p0), gb * kMuffCt * kMuffCb,
+                                      sum * (p0 * q0 - m * m), sum * (p0 * kMuffCb + q0 * kMuffCt), sum * kMuffCt * kMuffCb,
+                                      bilinearOs);
                 break;
             }
 
@@ -742,16 +840,18 @@ private:
         }
     }
 
-    std::unique_ptr<juce::dsp::Oversampling<float>> oversampling;
+    std::unique_ptr<juce::dsp::Oversampling<float>> oversamplers[4];   // by stage count
+    juce::dsp::Oversampling<float>* oversampling = nullptr;
     DriveFx::Type type = DriveFx::Type::screamer;
-    double sampleRate = 48000.0, osRate = 192000.0, osLatency = 0.0;
+    double sampleRate = 48000.0, osRate = 192000.0;
     double tsPreC = 1.0, bilinearOs = 1.0;
     double sustainGain = 0.0;
     double cleanPrev[2] {};
     int factor = 4, phase = 0;
 
-    static constexpr int kScratch = kControlInterval * 4;
-    double scratchU[kScratch], scratchV[kScratch], scratchF[kScratch];
+    static constexpr int kScratch = kControlInterval * kMaxFactor;
+    double scratchU[kScratch];
+    DiodeClipper::Point scratchP[kScratch];
 
     FirstOrder inputHighPass;
     SecondOrder tsPre;
@@ -1009,7 +1109,7 @@ int DriveFx::getLatencySamples() const noexcept
     if (! isPedal (type))
         return 0;
 
-    return (int) std::lround (s.pedal.getHalfBandLatency() + PedalDrive::clipperDelay ((Type) type, s.pedal.getFactor()));
+    return PedalDrive::latencyFor ((Type) type, s.sampleRate);
 }
 
 int DriveFx::latencyFor (int type, double sampleRate) noexcept
@@ -1017,12 +1117,11 @@ int DriveFx::latencyFor (int type, double sampleRate) noexcept
     type = juce::jlimit (0, numTypes - 1, type);
 
     if (type == (int) Type::classic)
-        return (int) std::lround (kHalfBandLatency2x);
+        return (int) std::lround (PedalDrive::halfBandLatency (2));   // Classic's own 2x stage
 
     if (! isPedal (type))
         return 0;
 
-    const int factor = PedalDrive::factorFor (sampleRate);
-    return (int) std::lround (PedalDrive::halfBandLatency (factor) + PedalDrive::clipperDelay ((Type) type, factor));
+    return PedalDrive::latencyFor ((Type) type, sampleRate);
 }
 } // namespace tubamp
