@@ -18,3 +18,4 @@ xcuserdata/
 # JUCE / CMake artifacts
 CMakeUserPresets.json
 compile_commands.json
+__pycache__/
