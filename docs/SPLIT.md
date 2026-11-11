@@ -195,35 +195,94 @@ a dangling `split` flattens to serial, never errors.
 
 Data contract: `BLOCK_IDS` grows to 28 mirroring the enum; `lane2` exists in the type
 but is filtered from every card-rendering path. TS mirrors of `findStructure` /
-`sanitizeStructure` live beside `normaliseChainRows` in the store; the UI must never
-commit a malformed structure (C++ flatten is the backstop, not the norm).
+`sanitizeStructure` live in `ui/src/chain/structure.ts`; the UI must never commit a
+malformed structure (C++ flatten is the backstop, not the norm). Every whole-region edit
+is a pure helper there that returns the COMPLETE next order, already a fixed point of
+`sanitizeStructure`, published in ONE `setChainOrder`: `insertSplit`, `removeSplit(order,
+"keepA" | "keepB" | "series")` (+ `blocksDroppedBy` for menu copy), `swapLanes`,
+`dualAmpOrder`. Self-checking tests: `ui/src/chain/structure.test.ts` (run line in its
+header — the UI has no test runner, so it bundles with the esbuild Vite ships).
 
-Rendering: when the order contains a structure, the board renders the split region as a
-lane container — SPLIT tile, then lane A's cards on an upper half-track and lane B's on
-a lower half-track (shared column grid, half-height lane tracks), then MIX tile. The
-container is one row-equivalent for outer wrap math and contributes its taller height to
-the stage fit/pan box. Connectors: split fans out to both lane heads; both lane tails
-converge on mix. Serial sections render exactly as today.
+**Lane identity** (`ui/src/features/board/lanes.ts`, the one table every surface reads):
+lane names follow `split_mode` — Copy → `A`/`B`, L/R → `L`/`R`, X-Over → `LOW`/`HIGH` —
+and each lane has a quiet tint (A warm amber, B cool blue; low = warm is the only colour
+convention any mode has). Badges, lane wires, lane [+] slots, card notes, the Splitter
+diagram and the Mixer strips all use it, so a lane is never "A" in one place and "L" in
+another. Meanings (verified against `splitLanes` in PluginProcessor.cpp): Copy — both
+lanes get the full signal; L/R — lane A gets the left input channel, lane B the right
+(mono host: same as Copy); X-Over — lane A below the crossover, lane B above.
+
+Rendering: when the order contains a structure, the region renders as a lane container
+INSIDE its row — serial blocks may sit on the same row either side of it, so IN → AMP →
+[split] → OUT reads left to right on one line. On the shared column grid: SPLIT, lane A's
+cards on an upper half-track and lane B's on a lower one, each lane closed by its own
+small dashed [+] slot (always visible; it is a drop target too), MIX after the longer
+lane. A row holding the region is `LANE_ROW_H` tall; that is all fit/pan needs to know.
+Each lane has a head badge set into the container frame like a legend (lane A's on the
+top edge above its first column, lane B's on the bottom edge), with a tooltip saying what
+that lane receives. Connectors: split fans out to both lane heads, both lane tails
+converge on mix; lane wires wear their lane's tint; the gaps into/out of a lane [+] slot
+belong to the slot (no insert dot), like the tail [+] on the main path. Serial sections
+render exactly as before.
+
+Card notes (the existing `CardNote` pill): SPLIT shows the mode — `COPY`, `L | R`,
+`X-OVER 800 Hz` (or `B MUTED` when the splitter is bypassed, which mutes lane B at the
+mixer); MIX shows a compact lane read-out — `A C · B C`, `A 100L · B 100R`, level only
+when not 0 dB (`A -6dB C`), `Ø` on lane B when inverted, `UNITY SUM` when the mixer is
+bypassed. The full numbers are in the tooltip.
+
+Rows: `displayRows` (board `layout.ts`) is the single source of the partition. The store
+still holds `[]` for auto; the board's `autoRows` wraps a structureless chain exactly like
+the store's `rowsFor` (6 blocks a row) and a structured chain by COLUMNS — the region one
+unbreakable unit as wide as it really is, everything else one column, 6 columns a row —
+so a short rig stays on one row and only wraps when it must. An explicit partition goes
+through `laneRows`, which only removes row breaks that fall INSIDE the region (older
+partitions that isolate the region are kept as the user's layout).
+
+Framing: any chain change that did not come from a card drop (picker add, menu remove,
+split built or taken apart, preset recall) re-frames when the new content no longer fits
+the visible band — an animated fit while the framing is still automatic, otherwise
+zoom-out-only plus the minimal pan. Never mid-gesture; it runs one frame late so the
+panel inset of a just-selected block is accounted for, and the "panel never covers the
+selected card" rule still applies (the revealed content box contains it).
 
 Drag rules (enforced in the drag machine against frozen geometry, mirrored in the
 commit sanitizer):
-- Ordinary blocks (incl. amp, amp2, fx slots) drop anywhere: serial sections or either
-  lane track.
-- SPLIT/MIX tiles: draggable only as a pair-preserving unit along the serial sections
-  (v1 simplification: they may also simply be non-draggable — implementer's choice,
-  note which in REACT-UI.md); deleting either deletes the structure (lanes flatten
-  into the serial chain at the split's position, lane A first then lane B).
-- Creating a split: an "Add split" entry in the existing add-block affordance inserts
-  `split, lane2, mix` at the insertion point.
-- `lane2` is never a drop target/tile; the UI recomputes its position from lane
-  membership on every commit.
+- Ordinary blocks (incl. amp, amp2, fx slots) drop anywhere: serial sections, either lane
+  track (empty lanes included — the [+] slot column is a lane column), across from one
+  lane to the other, or out of a lane. In the region's row the column decides: at or
+  left of SPLIT → serial before, the lane columns → lane (upper half A, lower half B),
+  from MIX on → serial after.
+- SPLIT/MIX tiles are not draggable (v1). Their kebabs — and the panel header's trash for
+  either — offer the three explicit ways out, under a "Remove split" heading: **Keep lane
+  A** (lane B's blocks leave the chain), **Keep lane B**, **Chain A → B** (series, the old
+  flatten). Each row names what it drops; keeping both in series is never the only
+  choice, because for a dual-amp rig it stacks two amps.
+- MIX's kebab and the Mixer panel also offer **Swap lanes** (one order write).
+- `lane2` is never a drop target/tile.
 
-Panels: `SplitBody` (mode ParamMenu + xover knob, xover shown only in X-Over mode is
-optional), `MixBody` (A/B level + pan knobs, phase B toggle, master level), `Amp2Body`
-(model B management moved from AmpBody's stereo section: picker over the library list,
-"Use model A", clear, status — plus amp2 in/out knobs). AmpBody loses its STEREO
-section entirely. Mock bridge: mirror new params, add a malformed-structure preset
-fixture (dangling split) to exercise the TS sanitizer, keep modelB state.
+Creating a split: every [+] picker (tail node, hover inserts, empty-chain button) ends with
+a "Split path" section, absent once a region exists, rows disabled when the chain has no
+room:
+- **Empty split** — `split, lane2, mix` at the picker's position.
+- **Dual amp (stereo)** — `amp` in the chain → wrapped in place `[..., split, amp, lane2,
+  amp2, mix, ...]`; no `amp` → `[split, amp, lane2, amp2, mix]` at the picker's position.
+  Disabled when `amp2` is already placed. Then: split mode Copy, lane A pan hard left,
+  lane B hard right (relay gestures, like a knob), engine B seeded with model A's path
+  when B is empty (`loadModelB`), and `amp2` selected so its panel opens on the
+  second-capture picker. The AMP card's kebab offers the same as "Make stereo (dual amp)"
+  whenever it can be built.
+
+Panels: `SplitBody` — a 3-way segmented control for the mode, one plain sentence saying
+what each lane receives, a small SVG flow diagram of the current mode (fork / two
+channels / fork + low- and high-pass sketches, lane badges at the ends), and the X-OVER
+knob only in X-Over mode (it grows in). `MixBody` — two lane strips (badge, Level, Pan,
+knobs in the lane's colour; lane B's strip holds the "Ø Invert" toggle), then Master, then
+quick actions: Center, Wide (lit when the pans already match) and Swap lanes. Pans read
+`C` / `40L` / `100R` through the Knob primitive's optional `format`. `Amp2Body` (model B
+management: picker over the library list, "Use model A", clear, status, amp2 in/out
+knobs). AmpBody has no STEREO section. Mock bridge: mirrors the new params, carries a
+malformed-structure preset fixture (dangling split) for the TS sanitizer, keeps modelB.
 
 ## 6. CPU / scope notes
 

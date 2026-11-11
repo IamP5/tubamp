@@ -121,14 +121,20 @@ UI iteration goes through `npm run dev` and the mock bridge in a browser.
 
 ## NAM engine rules (real-time safety)
 
-- `nam::get_dsp()` / `Reset()` / `prewarm()` only ever on a background thread.
-- Staged-swap: loader thread fills `stagedModel`, audio thread adopts it at the top of
-  `processBlock`; the *old* model is pushed to a garbage slot released on the message
-  thread (fixes the reference implementation's audio-thread destructor gotcha).
+Full spec — loading, levels, click-free swapping, IR conditioning, what a session
+carries — in docs/NAM-IR.md. The rules that must not regress:
+
+- `nam::get_dsp()` / `Reset()` / `prewarm()` never on the audio thread.
+- Staged-swap (`EngineHandoff`): the loader fills one atomic slot, the audio thread
+  fades the block out, swaps on the silent sample and fades back in; the *old* engine
+  is pushed to a garbage slot released on the message thread (fixes the reference
+  implementation's audio-thread destructor gotcha). The cab's convolvers go through
+  the same handoff.
 - `juce::ScopedNoDenormals` in `processBlock`.
-- Model native SR (assume 48 kHz when unreported) vs host SR handled by `ResamplingNAM`.
-- Loudness normalization: when the model carries loudness metadata and "normalize" is on,
-  apply `(-18 dB − modelLoudness)` output makeup.
+- Model native SR (assume 48 kHz when unreported) vs host SR handled by `ResamplingNAM`;
+  its latency is measured, not taken from the resampler's priming length.
+- Loudness normalization: when the model carries plausible loudness metadata and
+  "normalize" is on, apply `(-18 dB − modelLoudness)` output makeup, limited to ±24 dB.
 
 ## TONE3000 integration
 
@@ -178,7 +184,10 @@ docs/AU-SLOTS.md §Known limitations.
 | `src/PluginProcessor.*` | chain wiring, APVTS, state (model/IR paths) | `juce::dsp` blocks |
 | `src/Parameters.h` | param ids + layout | header-only |
 | `src/dsp/NamEngine.*` | load/stage/swap + ResamplingNAM + normalize | NAM core |
-| `src/dsp/FxBlocks.{h,cpp}` | Drive, ToneStackEQ, Modulation, DelayFx, ReverbFx, CabSim | thin `juce::dsp` wrappers |
+| `src/dsp/FxBlocks.{h,cpp}` | Drive, ToneStackEQ, Modulation | thin `juce::dsp` wrappers |
+| `src/dsp/Delay.*`, `src/dsp/Reverb.*` | typed delay and reverb engines | docs/REVERB-DELAY.md |
+| `src/dsp/CabSim.*` | IR conditioning, levels, mono/true-stereo convolvers | docs/NAM-IR.md §3 |
+| `src/dsp/EngineHandoff.h`, `SwapFade.h` | lock-free staged swap through silence (models and IRs) | docs/NAM-IR.md §1 |
 | `src/dsp/FxHost.{h,cpp}` | the three external-AU slots: staged swap, bypass latency, deferred re-prepare | threading contract in the class comment |
 | `src/dsp/FxCatalog.{h,cpp}` | AU discovery (metadata-only) + async instantiation | AudioComponent registry walk |
 | `src/library/ModelLibrary.*` | scan/import models+IRs | juce::File |
