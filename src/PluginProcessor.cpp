@@ -61,6 +61,13 @@ float valueOf (const std::atomic<float>* p, float fallback = 0.0f) noexcept
     return p != nullptr ? p->load (std::memory_order_relaxed) : fallback;
 }
 
+/** The meters' accumulate step: the inputPeak loop, for any reading. */
+void publishMax (std::atomic<float>& meter, float value) noexcept
+{
+    float prev = meter.load (std::memory_order_relaxed);
+    while (value > prev && ! meter.compare_exchange_weak (prev, value, std::memory_order_relaxed)) {}
+}
+
 /** An order and the row layout that describes it, always consistent with each other. */
 struct SanitisedChain
 {
@@ -852,20 +859,14 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     const auto numChannels = (juce::uint32) juce::jmax (1, getTotalNumOutputChannels());
     const juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) juce::jmax (1, samplesPerBlock), numChannels };
 
-    // Sized for the largest block the host promised: the AudioDSPTools trigger/gain
-    // only ever grow their buffers, so priming at the maximum keeps processBlock
-    // allocation-free. Everything else about the gate's character is fixed by spec.
-    gate.prepare (sampleRate, juce::jmax (1, samplesPerBlock));
-    gate.reset();
-
     // Every instance is prepared whether or not it is in the current order: a block the
     // user drops onto the board has to run in the same block, and preparing one there
     // would allocate on the audio thread.
+    gate.prepare (spec);
+
     for (int k = 0; k < params::maxInstances; ++k)
     {
-        compressor[(size_t) k].prepare (spec);
-        compressor[(size_t) k].reset();
-
+        comp[(size_t) k].prepare (spec);
         drive[(size_t) k].prepare (spec);
         eq[(size_t) k].prepare (spec);
         modulation[(size_t) k].prepare (spec);
@@ -943,13 +944,6 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
             juce::Decibels::decibelsToGain (valueOf (pp.mixBLevel)));
     }
 
-    for (int k = 0; k < params::maxInstances; ++k)
-    {
-        compMakeupLin[(size_t) k].reset (sampleRate, kGainSmoothingSeconds);
-        compMakeupLin[(size_t) k].setCurrentAndTargetValue (
-            juce::Decibels::decibelsToGain (valueOf (pp.compMakeup[k])));
-    }
-
     // Everything above was just reset, so nothing now in the chain needs the re-entry
     // reset: seed the edge detector from the published order rather than paying a mass
     // drain (and its callbacks of bypass silence) on the first block after a restore.
@@ -973,7 +967,7 @@ void TubampAudioProcessor::releaseResources()
 
     for (int k = 0; k < params::maxInstances; ++k)
     {
-        compressor[(size_t) k].reset();
+        comp[(size_t) k].reset();
         drive[(size_t) k].reset();
         eq[(size_t) k].reset();
         modulation[(size_t) k].reset();
@@ -1109,14 +1103,6 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         return 3;
     };
 
-    // Gate split: the trigger always measures at the gate's own position. The reduction
-    // is deferred onto the model's mono output only when the amp runs later in the SAME
-    // segment; across a split there is no shared post-model point to gate at (the other
-    // lane never saw the model), so it is applied right where the gate sits. Without a
-    // split every entry is in segment 0 and this is exactly the old rule.
-    const bool deferGateToAmp = gateOn && ampOn && gateIndex >= 0 && ampIndex > gateIndex
-                                && segmentOf (gateIndex) == segmentOf (ampIndex);
-
     // A block that left the chain and comes back must not replay what it was holding
     // when it left — a delay line keeps minutes of audio. The reset is deferred through
     // pendingReset and drained a bounded few per callback: clearing three 4-second
@@ -1144,15 +1130,41 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         ++drained;
     }
 
+    // Gate split: the trigger always measures at the gate's own position. The reduction
+    // is deferred onto the model's mono output only when the amp runs later in the SAME
+    // segment; across a split there is no shared post-model point to gate at (the other
+    // lane never saw the model), so it is applied right where the gate sits. Without a
+    // split every entry is in segment 0 and this is exactly the old rule. A gate whose
+    // re-entry reset is still pending runs as bypassed, like every other block.
+    const bool gateRuns = gateOn && ! pendingReset[(size_t) chain::BlockId::gate];
+    const bool deferGateToAmp = gateRuns && ampOn && gateIndex >= 0 && ampIndex > gateIndex
+                                && segmentOf (gateIndex) == segmentOf (ampIndex);
+
+    // A deferred curve meets audio that is late by everything from the gate to the amp's
+    // output, the amp's own resampler included; Tight and Smooth wait for it (Classic
+    // ignores the delay, FX-ENGINES.md D-3). The span lies inside one segment, so this is
+    // its share of the latency the host is told about, by the same per-entry rule.
+    {
+        int curveDelay = 0;
+
+        if (deferGateToAmp)
+            for (int i = gateIndex + 1; i <= ampIndex; ++i)
+                curveDelay += blockLatency (order[(size_t) i], ampOn, amp2On);
+
+        gate.setCurveDelay (curveDelay);
+    }
+
+    if (! present[(size_t) chain::BlockId::gate] || ! gateRuns)
+        gateState.store (-1, std::memory_order_relaxed);
+
     // Blocks that are not in the chain at all keep their gain smoothers in step
     // exactly like a bypassed block, so putting them back never jumps.
     for (int k = 0; k < params::maxInstances; ++k)
     {
         if (! present[(size_t) chain::instanceId (chain::BlockId::comp, k)])
         {
-            compMakeupLin[(size_t) k].setTargetValue (
-                juce::Decibels::decibelsToGain (valueOf (pp.compMakeup[k])));
-            compMakeupLin[(size_t) k].skip (numSamples);
+            comp[(size_t) k].setParameters (compParams (k));
+            comp[(size_t) k].skip (numSamples);
         }
     }
 
@@ -1184,7 +1196,7 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                juce::dsp::AudioBlock<float> targetBlock)
     {
         processChainBlock (order[(size_t) index], target, targetBlock, numSamples,
-                           monoScratchData, gateOn, deferGateToAmp, ampOn, amp2On, playHead,
+                           monoScratchData, gateRuns, deferGateToAmp, ampOn, amp2On, playHead,
                            hostBpm);
     };
 
@@ -1260,6 +1272,35 @@ juce::AudioProcessorEditor* TubampAudioProcessor::createEditor()
    #else
     return new WebEditor (*this);
    #endif
+}
+
+GateParams TubampAudioProcessor::gateParams() const noexcept
+{
+    GateParams gp;
+    gp.mode        = (int) valueOf (pp.gateMode, (float) GateFx::Mode::tight);
+    gp.thresholdDb = valueOf (pp.gateThreshold, -80.0f);
+    gp.releaseMs   = valueOf (pp.gateRelease, kGateReleaseDefault[(int) GateFx::Mode::tight]);
+    gp.holdMs      = valueOf (pp.gateHold, kGateHoldDefault[(int) GateFx::Mode::tight]);
+    gp.rangeDb     = valueOf (pp.gateRange, -90.0f);
+    gp.scHpfHz     = valueOf (pp.gateScHpf, 90.0f);
+    return gp;
+}
+
+CompParams TubampAudioProcessor::compParams (int instance) const noexcept
+{
+    const auto k = (size_t) instance;
+    CompParams cp;
+    cp.type        = (int) valueOf (pp.compType[k], (float) CompFx::Type::clean);
+    cp.thresholdDb = valueOf (pp.compThreshold[k], -20.0f);
+    cp.ratio       = valueOf (pp.compRatio[k], 4.0f);
+    cp.attackMs    = valueOf (pp.compAttack[k], 5.0f);
+    cp.releaseMs   = valueOf (pp.compRelease[k], 120.0f);
+    cp.makeupDb    = valueOf (pp.compMakeup[k]);
+    cp.kneeDb      = valueOf (pp.compKnee[k], kCompKneeDefault[(int) CompFx::Type::clean]);
+    cp.mixPct      = valueOf (pp.compMix[k], 100.0f);
+    cp.scHpfHz     = valueOf (pp.compScHpf[k], 20.0f);
+    cp.autoMakeup  = isOn (pp.compAutoMakeup[k]);
+    return cp;
 }
 
 void TubampAudioProcessor::processAmpMono (NamEngine& engine, juce::dsp::AudioBlock<float> block,
@@ -1344,7 +1385,6 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
                                               double hostBpm) noexcept
 {
     const auto k = (size_t) chain::instanceOf (id);
-    juce::dsp::ProcessContextReplacing<float> context (block);
 
     switch (id)
     {
@@ -1353,35 +1393,35 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         {
             if (gateOn)
             {
-                gate.measure (block, numSamples, valueOf (pp.gateThreshold, -80.0f));
+                gate.setParameters (gateParams());
+                gate.measure (block, numSamples);
 
                 if (! deferGateToAmp)
                     gate.apply (block, numSamples);
+
+                publishMax (gateGrDb, gate.getGainReductionDb());
+                publishMax (gateLevelDb, gate.getDetectorLevelDb());
+                gateState.store (gate.getState(), std::memory_order_relaxed);
             }
 
             break;
         }
 
-        // --- compressor (+ makeup)
+        // --- compressor (+ makeup); a bypassed one still steps its makeup smoother
         case chain::BlockId::comp:
         case chain::BlockId::comp2:
         case chain::BlockId::comp3:
         {
+            comp[k].setParameters (compParams ((int) k));
+
             if (isOn (pp.compOn[k]) && ! pendingReset[(size_t) id])
             {
-                compressor[k].setThreshold (valueOf (pp.compThreshold[k], -20.0f));
-                compressor[k].setRatio (juce::jmax (1.0f, valueOf (pp.compRatio[k], 4.0f)));
-                compressor[k].setAttack (juce::jmax (0.0f, valueOf (pp.compAttack[k], 5.0f)));
-                compressor[k].setRelease (juce::jmax (0.0f, valueOf (pp.compRelease[k], 120.0f)));
-                compressor[k].process (context);
-
-                compMakeupLin[k].setTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.compMakeup[k])));
-                applySmoothedGain (buf, numSamples, compMakeupLin[k]);
+                comp[k].process (block);
+                publishMax (compGrDb[k], comp[k].getGainReductionDb());
             }
             else
             {
-                compMakeupLin[k].setTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.compMakeup[k])));
-                compMakeupLin[k].skip (numSamples);
+                comp[k].skip (numSamples);
             }
 
             break;
@@ -1816,24 +1856,7 @@ TubampAudioProcessor::computeChainLatency (const chain::BlockId* order, int numB
 
     for (int i = 0; i < numBlocks; ++i)
     {
-        const auto id = order[i];
-        int latency = 0;
-
-        // A resampler's latency only reaches the signal when its block actually runs:
-        // in the published order AND enabled. Otherwise it contributes zero, so hosts
-        // don't compensate for a delay that never happens. amp2 also needs a LIVE model
-        // — the same test its DSP path makes.
-        if (id == chain::BlockId::amp)
-            latency = ampOn ? namEngine.getLatencySamples() : 0;
-        else if (id == chain::BlockId::amp2)
-            latency = (amp2On && namEngineB.hasLiveModel()) ? namEngineB.getLatencySamples() : 0;
-        // A loaded FX slot contributes its plugin's latency whether or not the slot is
-        // bypassed: fxN_on is a normal automatable parameter, and letting an automation
-        // lane move the reported latency mid-playback would shift the track against every
-        // other one in the project (hosts only re-apply delay compensation at transport
-        // boundaries). FxHost holds a bypassed slot at the same latency instead.
-        else if (chain::isFxSlot (id))
-            latency = fxHost.latencyFor (chain::fxSlotIndex (id));
+        const int latency = blockLatency (order[i], ampOn, amp2On);
 
         if (latency == 0)
             continue;
@@ -1847,6 +1870,29 @@ TubampAudioProcessor::computeChainLatency (const chain::BlockId* order, int numB
     }
 
     return result;
+}
+
+int TubampAudioProcessor::blockLatency (chain::BlockId id, bool ampOn, bool amp2On) const noexcept
+{
+    // A resampler's latency only reaches the signal when its block actually runs:
+    // in the published order AND enabled. Otherwise it contributes zero, so hosts
+    // don't compensate for a delay that never happens. amp2 also needs a LIVE model
+    // — the same test its DSP path makes.
+    if (id == chain::BlockId::amp)
+        return ampOn ? namEngine.getLatencySamples() : 0;
+
+    if (id == chain::BlockId::amp2)
+        return (amp2On && namEngineB.hasLiveModel()) ? namEngineB.getLatencySamples() : 0;
+
+    // A loaded FX slot contributes its plugin's latency whether or not the slot is
+    // bypassed: fxN_on is a normal automatable parameter, and letting an automation
+    // lane move the reported latency mid-playback would shift the track against every
+    // other one in the project (hosts only re-apply delay compensation at transport
+    // boundaries). FxHost holds a bypassed slot at the same latency instead.
+    if (chain::isFxSlot (id))
+        return fxHost.latencyFor (chain::fxSlotIndex (id));
+
+    return 0;
 }
 
 int TubampAudioProcessor::computeWantedLatency (const chain::BlockId* order, int numBlocks,
@@ -1883,7 +1929,11 @@ void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
     {
         case chain::BlockId::comp:
         case chain::BlockId::comp2:
-        case chain::BlockId::comp3:   compressor[k].reset(); break;
+        case chain::BlockId::comp3:   comp[k].reset();       break;
+
+        // Tight and Smooth would resume from the gain they had when the gate left; a
+        // reset starts them closed. Classic only drops its curve, as it always did.
+        case chain::BlockId::gate:    gate.reset();          break;
 
         case chain::BlockId::drive:
         case chain::BlockId::drive2:
@@ -1924,9 +1974,8 @@ void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
         }
 
         // Lifecycles owned elsewhere: the models and the hosted plugins are swapped in
-        // and out by their own staging, the cab's tail belongs to the IR that is
-        // loaded, and the gate holds nothing to replay. lane2 is a marker, not a block.
-        case chain::BlockId::gate:
+        // and out by their own staging, and the cab's tail belongs to the IR that is
+        // loaded. lane2 is a marker, not a block.
         case chain::BlockId::amp:
         case chain::BlockId::amp2:
         case chain::BlockId::cab:

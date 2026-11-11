@@ -19,7 +19,131 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <functional>
+#include <new>
 #include <vector>
+
+#include <pthread.h>
+
+//==============================================================================
+// Allocation guard for the real-time checks, the counter tubamp_fxbench --rt-check uses:
+// every global operator new/delete, plus (on macOS) libmalloc's logger hook, which also
+// sees malloc/free that never go through operator new. It counts only on the thread that
+// armed it, so the message thread and the model loader cannot trip it.
+namespace
+{
+std::atomic<bool> allocArmed { false };
+std::atomic<pthread_t> allocThread {};
+std::atomic<long> allocCount { 0 };
+
+inline void noteAllocation() noexcept
+{
+    if (allocArmed.load (std::memory_order_relaxed)
+        && pthread_equal (pthread_self(), allocThread.load (std::memory_order_relaxed)) != 0)
+        allocCount.fetch_add (1, std::memory_order_relaxed);
+}
+
+void* allocateAligned (std::size_t size, std::size_t alignment) noexcept
+{
+    void* p = nullptr;
+    alignment = std::max (alignment, sizeof (void*));
+    return posix_memalign (&p, alignment, size != 0 ? size : 1) == 0 ? p : nullptr;
+}
+
+void* allocateOrThrow (std::size_t size)
+{
+    noteAllocation();
+
+    if (void* p = std::malloc (size != 0 ? size : 1))
+        return p;
+
+    throw std::bad_alloc();
+}
+
+void* allocateAlignedOrThrow (std::size_t size, std::align_val_t alignment)
+{
+    noteAllocation();
+
+    if (void* p = allocateAligned (size, (std::size_t) alignment))
+        return p;
+
+    throw std::bad_alloc();
+}
+
+void release (void* p) noexcept
+{
+    if (p != nullptr)
+        noteAllocation();
+
+    std::free (p);
+}
+} // namespace
+
+void* operator new (std::size_t size)                                   { return allocateOrThrow (size); }
+void* operator new[] (std::size_t size)                                 { return allocateOrThrow (size); }
+void* operator new (std::size_t size, const std::nothrow_t&) noexcept   { noteAllocation(); return std::malloc (size != 0 ? size : 1); }
+void* operator new[] (std::size_t size, const std::nothrow_t&) noexcept { noteAllocation(); return std::malloc (size != 0 ? size : 1); }
+void* operator new (std::size_t size, std::align_val_t a)               { return allocateAlignedOrThrow (size, a); }
+void* operator new[] (std::size_t size, std::align_val_t a)             { return allocateAlignedOrThrow (size, a); }
+void* operator new (std::size_t size, std::align_val_t a, const std::nothrow_t&) noexcept   { noteAllocation(); return allocateAligned (size, (std::size_t) a); }
+void* operator new[] (std::size_t size, std::align_val_t a, const std::nothrow_t&) noexcept { noteAllocation(); return allocateAligned (size, (std::size_t) a); }
+void operator delete (void* p) noexcept                                          { release (p); }
+void operator delete[] (void* p) noexcept                                        { release (p); }
+void operator delete (void* p, std::size_t) noexcept                             { release (p); }
+void operator delete[] (void* p, std::size_t) noexcept                           { release (p); }
+void operator delete (void* p, const std::nothrow_t&) noexcept                   { release (p); }
+void operator delete[] (void* p, const std::nothrow_t&) noexcept                 { release (p); }
+void operator delete (void* p, std::align_val_t) noexcept                        { release (p); }
+void operator delete[] (void* p, std::align_val_t) noexcept                      { release (p); }
+void operator delete (void* p, std::size_t, std::align_val_t) noexcept           { release (p); }
+void operator delete[] (void* p, std::size_t, std::align_val_t) noexcept         { release (p); }
+void operator delete (void* p, std::align_val_t, const std::nothrow_t&) noexcept { release (p); }
+void operator delete[] (void* p, std::align_val_t, const std::nothrow_t&) noexcept { release (p); }
+
+#if JUCE_MAC
+// libmalloc calls this (when set) for every allocation and free in every zone. Bit 2 =
+// allocate, bit 4 = deallocate (realloc: both).
+typedef void (malloc_logger_t) (uint32_t type, uintptr_t arg1, uintptr_t arg2, uintptr_t arg3,
+                                uintptr_t result, uint32_t numHotFramesToSkip);
+extern "C" malloc_logger_t* malloc_logger;
+
+namespace
+{
+void allocMallocLogger (uint32_t type, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uint32_t)
+{
+    if ((type & 6u) != 0)
+        noteAllocation();
+}
+} // namespace
+#endif
+
+namespace
+{
+/** Counts every allocation and free the calling thread makes while one is alive. */
+struct AllocationGuard
+{
+    AllocationGuard()
+    {
+       #if JUCE_MAC
+        malloc_logger = allocMallocLogger;
+       #endif
+        allocThread.store (pthread_self(), std::memory_order_relaxed);
+        allocArmed.store (true, std::memory_order_relaxed);
+    }
+
+    ~AllocationGuard()
+    {
+        allocArmed.store (false, std::memory_order_relaxed);
+       #if JUCE_MAC
+        malloc_logger = nullptr;
+       #endif
+    }
+
+    AllocationGuard (const AllocationGuard&) = delete;
+    AllocationGuard& operator= (const AllocationGuard&) = delete;
+};
+} // namespace
 
 namespace
 {
@@ -2605,6 +2729,632 @@ bool runDelaySyncTests (tubamp::TubampAudioProcessor& proc, double sampleRate, i
 
     return ok;
 }
+//==============================================================================
+// Gate and compressor engines through the processor (docs/FX-ENGINES.md §6.1, §6.2).
+// Classic's bit-identity with the old code is tubamp_golden --legacy-check's job; these
+// prove the new modes really run, the deferred curve lines up with the resampled amp,
+// switches stay inside the engines' fades, the instances are independent, the meters
+// read sanely, and the wired path allocates nothing.
+
+/** Runs `input` (mono, fed to both channels) through the processor as it stands and
+    returns channel 0. `beforeBlock (startSample)` runs before each block. */
+std::vector<float> renderSignal (tubamp::TubampAudioProcessor& proc, const std::vector<float>& input,
+                                 int blockSize, const std::function<void (int)>& beforeBlock = {})
+{
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+    std::vector<float> out;
+    out.reserve (input.size());
+
+    for (int start = 0; start < (int) input.size(); start += blockSize)
+    {
+        const int n = std::min (blockSize, (int) input.size() - start);
+
+        if (beforeBlock)
+            beforeBlock (start);
+
+        float* channels[2] { buffer.getWritePointer (0), buffer.getWritePointer (1) };
+        juce::AudioBuffer<float> view (channels, 2, n);
+
+        for (int ch = 0; ch < 2; ++ch)
+            std::copy (input.begin() + start, input.begin() + start + n, channels[ch]);
+
+        proc.processBlock (view, midi);
+        out.insert (out.end(), channels[0], channels[0] + n);
+    }
+
+    return out;
+}
+
+std::vector<float> sineSignal (double sampleRate, double hz, float amplitude, int numSamples, int startAt = 0)
+{
+    std::vector<float> out ((size_t) numSamples, 0.0f);
+
+    for (int i = startAt; i < numSamples; ++i)
+        out[(size_t) i] = amplitude * (float) std::sin (2.0 * juce::MathConstants<double>::pi * hz * (i - startAt) / sampleRate);
+
+    return out;
+}
+
+float peakOf (const std::vector<float>& x, size_t from, size_t to)
+{
+    float peak = 0.0f;
+
+    for (size_t i = from; i < std::min (to, x.size()); ++i)
+        peak = std::max (peak, std::abs (x[i]));
+
+    return peak;
+}
+
+double rmsOf (const std::vector<float>& x, size_t from, size_t to)
+{
+    double sum = 0.0;
+    to = std::min (to, x.size());
+
+    for (size_t i = from; i < to; ++i)
+        sum += (double) x[i] * x[i];
+
+    return to > from ? std::sqrt (sum / (double) (to - from)) : 0.0;
+}
+
+double toDb (double linear) { return 20.0 * std::log10 (std::max (linear, 1.0e-12)); }
+
+void resetParams (tubamp::TubampAudioProcessor& proc, std::initializer_list<const char*> ids)
+{
+    for (const auto* id : ids)
+        if (auto* p = proc.apvts.getParameter (id))
+            p->setValueNotifyingHost (p->getDefaultValue());
+}
+
+/** What the editor's timer does, minus the event: every dynamics meter read and reset. */
+struct DynReading
+{
+    int gateState;
+    float gateGr, gateLevel;
+    std::array<float, params::maxInstances> compGr;
+};
+
+DynReading readDynMeters (tubamp::TubampAudioProcessor& proc)
+{
+    DynReading r {};
+    r.gateState = proc.gateState.load();
+    r.gateGr = proc.gateGrDb.exchange (0.0f);
+    r.gateLevel = proc.gateLevelDb.exchange (tubamp::TubampAudioProcessor::kDynMeterFloorDb);
+
+    for (int k = 0; k < params::maxInstances; ++k)
+        r.compGr[(size_t) k] = proc.compGrDb[(size_t) k].exchange (0.0f);
+
+    return r;
+}
+
+const std::initializer_list<const char*> kGateParamIds { params::gateOn, params::gateThreshold, params::gateMode,
+                                                         params::gateRelease, params::gateHold, params::gateRange,
+                                                         params::gateScHpf };
+
+std::vector<const char*> compParamIds()
+{
+    std::vector<const char*> ids;
+
+    for (int k = 0; k < params::maxInstances; ++k)
+        for (const auto* id : { params::compOnIds[k], params::compThresholdIds[k], params::compRatioIds[k],
+                                params::compAttackIds[k], params::compReleaseIds[k], params::compMakeupIds[k],
+                                params::compTypeIds[k], params::compKneeIds[k], params::compMixIds[k],
+                                params::compScHpfIds[k], params::compAutoMakeupIds[k] })
+            ids.push_back (id);
+
+    return ids;
+}
+
+void resetDynamicsParams (tubamp::TubampAudioProcessor& proc)
+{
+    resetParams (proc, kGateParamIds);
+
+    for (const auto* id : compParamIds())
+        resetParams (proc, { id });
+
+    setBoolParam (proc, params::ampEqOn, true);
+}
+
+/** Gate modes and compressor types through the processor, at the smoke test's rate. */
+bool runGateCompEngineTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    std::printf ("gate and compressor engines:\n");
+
+    bool ok = true;
+    const auto samples = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    char what[200];
+
+    // --- Tight mutes a palm-mute gap that Classic leaves open: 50 ms notes (1 kHz, -12 dBFS,
+    // 10 ms raised-cosine edges) every 100 ms over a -60 dBFS RMS noise floor, threshold -40.
+    // The soft edges and the high note keep the always-on DC blocker from ringing into the
+    // gaps, which no gate in front of it could remove.
+    {
+        std::vector<float> chug ((size_t) samples (2.0));
+        uint32_t seed = 12345u;
+
+        for (size_t i = 0; i < chug.size(); ++i)
+        {
+            seed = seed * 1664525u + 1013904223u;
+            const float noise = ((float) (seed >> 8) / 8388608.0f - 1.0f) * 0.001f * std::sqrt (3.0f);
+            const double t = (double) i / sampleRate;
+            const double inPeriod = std::fmod (t, 0.1);
+            const double envelope = inPeriod >= 0.05 ? 0.0
+                                  : 0.5 - 0.5 * std::cos (juce::MathConstants<double>::pi * std::min (1.0, std::min (inPeriod, 0.05 - inPeriod) / 0.01));
+            chug[i] = noise + (float) (0.25 * envelope * std::sin (2.0 * juce::MathConstants<double>::pi * 1000.0 * t));
+        }
+
+        proc.setChainOrder ({ BlockId::gate }, {});
+        setBoolParam (proc, params::gateOn, true);
+        setFloatParam (proc, params::gateThreshold, -40.0f);
+
+        const auto medianGapDb = [&] (int mode)
+        {
+            setFloatParam (proc, params::gateMode, (float) mode);
+            proc.prepareToPlay (sampleRate, blockSize);
+            const auto out = renderSignal (proc, chug, blockSize);
+            std::vector<double> gaps;
+
+            // The last 10 ms of each gap, from the fourth period on.
+            for (int period = 3; period < 20; ++period)
+            {
+                const auto from = (size_t) samples (period * 0.1 + 0.09), to = (size_t) samples (period * 0.1 + 0.1);
+                gaps.push_back (toDb (rmsOf (out, from, to) / rmsOf (chug, from, to)));
+            }
+
+            std::sort (gaps.begin(), gaps.end());
+            return gaps[gaps.size() / 2];
+        };
+
+        const double classicGap = medianGapDb ((int) tubamp::GateFx::Mode::classic);
+        const double tightGap = medianGapDb ((int) tubamp::GateFx::Mode::tight);
+        const double smoothGap = medianGapDb ((int) tubamp::GateFx::Mode::smooth);
+        std::printf ("  50 ms gaps, median gain: Classic %.1f dB, Tight %.1f dB, Smooth %.1f dB\n",
+                     classicGap, tightGap, smoothGap);
+
+        ok &= expect (classicGap > -6.0, "Classic leaves a 50 ms palm-mute gap open (> -6 dB)");
+        ok &= expect (tightGap <= -30.0, "Tight mutes the same gap (<= -30 dB)");
+        ok &= expect (smoothGap < classicGap - 3.0 && smoothGap > tightGap,
+                      "Smooth sits between them (an expander, not a mute)");
+    }
+
+    // --- Clean compressor on a steady -10 dBFS tone: T -20, R 4, knee 6 puts the tone
+    // 10 dB over, past the knee, so GR = 10 * (1 - 1/4) = 7.5 dB and the output peak
+    // follows the static curve to -17.5 dBFS.
+    {
+        proc.setChainOrder ({ BlockId::comp }, {});
+        setBoolParam (proc, params::compOn, true);
+        setFloatParam (proc, params::compType, (float) tubamp::CompFx::Type::clean);
+        setFloatParam (proc, params::compThreshold, -20.0f);
+        setFloatParam (proc, params::compRatio, 4.0f);
+        setFloatParam (proc, params::compKnee, 6.0f);
+        setFloatParam (proc, params::compMakeup, 0.0f);
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        const auto tone = sineSignal (sampleRate, 1000.0, std::pow (10.0f, -10.0f / 20.0f), samples (1.5));
+        const int lastBlockStart = ((int) tone.size() - 1) / blockSize * blockSize;
+        const auto out = renderSignal (proc, tone, blockSize, [&] (int start)
+        {
+            if (start == lastBlockStart)
+                readDynMeters (proc);
+        });
+        const auto last = readDynMeters (proc);
+
+        const double outDb = toDb (peakOf (out, (size_t) samples (1.0), out.size()));
+        std::printf ("  Clean, -10 dBFS tone: GR meter %.2f dB, output peak %.2f dBFS\n", (double) last.compGr[0], outDb);
+        ok &= expect (std::abs (last.compGr[0] - 7.5f) <= 0.3f, "Clean reports 7.5 +- 0.3 dB of gain reduction");
+        ok &= expect (std::abs (outDb + 17.5) <= 0.3, "...and its output peak sits on the static curve (-17.5 +- 0.3 dBFS)");
+        ok &= expect (last.compGr[1] == 0.0f && last.compGr[2] == 0.0f, "...while the absent instances read 0");
+    }
+
+    // --- Instances are independent: comp and comp2 on the same settings render the same
+    // samples, and comp3's settings reach neither of them.
+    {
+        const auto configure = [&] (int k, int type, float threshold, float ratio, float makeup, float mix, float scHpf)
+        {
+            setBoolParam (proc, params::compOnIds[k], true);
+            setFloatParam (proc, params::compTypeIds[k], (float) type);
+            setFloatParam (proc, params::compThresholdIds[k], threshold);
+            setFloatParam (proc, params::compRatioIds[k], ratio);
+            setFloatParam (proc, params::compAttackIds[k], 2.0f);
+            setFloatParam (proc, params::compReleaseIds[k], 200.0f);
+            setFloatParam (proc, params::compMakeupIds[k], makeup);
+            setFloatParam (proc, params::compKneeIds[k], 3.0f);
+            setFloatParam (proc, params::compMixIds[k], mix);
+            setFloatParam (proc, params::compScHpfIds[k], scHpf);
+            setBoolParam (proc, params::compAutoMakeupIds[k], true);
+        };
+
+        configure (0, (int) tubamp::CompFx::Type::fet, -30.0f, 8.0f, 3.0f, 80.0f, 100.0f);
+        configure (1, (int) tubamp::CompFx::Type::fet, -30.0f, 8.0f, 3.0f, 80.0f, 100.0f);
+        configure (2, (int) tubamp::CompFx::Type::opto, -15.0f, 2.0f, 0.0f, 100.0f, 20.0f);
+
+        const auto renderOne = [&] (BlockId id, DynReading& meters)
+        {
+            proc.setChainOrder ({ id }, {});
+            proc.prepareToPlay (sampleRate, blockSize);
+            std::vector<float> captured;
+            runSine (proc, sampleRate, blockSize, 40, &captured);
+            meters = readDynMeters (proc);
+            return captured;
+        };
+
+        DynReading m1 {}, m2 {}, m3 {}, m2b {};
+        const auto one = renderOne (BlockId::comp, m1);
+        const auto two = renderOne (BlockId::comp2, m2);
+        const auto three = renderOne (BlockId::comp3, m3);
+
+        configure (2, (int) tubamp::CompFx::Type::squash, -50.0f, 20.0f, 12.0f, 50.0f, 300.0f);
+        const auto twoAgain = renderOne (BlockId::comp2, m2b);
+
+        ok &= expectIdentical (one, two, "comp and comp2 on the same settings render identical samples");
+        ok &= expectIdentical (two, twoAgain, "comp3's settings do not reach comp2");
+        ok &= expect (firstDifference (two, three) >= 0, "comp3 on its own settings renders differently");
+        ok &= expect (m2.compGr[1] > 0.0f && m2.compGr[0] == 0.0f && m2.compGr[2] == 0.0f,
+                      "comp2 alone moves only its own meter");
+        ok &= expect (m3.compGr[2] > 0.0f && m3.compGr[2] != m2.compGr[1], "comp3 reports its own gain reduction");
+    }
+
+    resetDynamicsParams (proc);
+
+    // --- Type switches mid-stream stay inside the engines' own fades.
+    {
+        const int window = std::max (1, samples (0.001));
+
+        // Compressor: a sustained -10 dBFS tone through every type; the switcher fades the
+        // effect out and back in over 20 + 20 ms, so no 1 ms window may step by more than
+        // 3 dB (check_comp.py C22's bound).
+        proc.setChainOrder ({ BlockId::comp }, {});
+        setBoolParam (proc, params::compOn, true);
+        setFloatParam (proc, params::compType, 0.0f);
+        setFloatParam (proc, params::compMakeup, 0.0f);
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        const auto loud = sineSignal (sampleRate, 1000.0, std::pow (10.0f, -10.0f / 20.0f), samples (1.6));
+        static constexpr int compSequence[] { 1, 2, 3, 4, 0, 4, 1 };
+        int nextSwitch = 0;
+        const auto compOut = renderSignal (proc, loud, blockSize, [&] (int start)
+        {
+            if (nextSwitch < (int) std::size (compSequence) && start >= samples (0.2 * (nextSwitch + 1)))
+                setFloatParam (proc, params::compType, (float) compSequence[nextSwitch++]);
+        });
+
+        double worstCompStepDb = 0.0;
+
+        for (int w = samples (0.1) / window; (w + 2) * window <= (int) compOut.size(); ++w)
+        {
+            const auto a = toDb (peakOf (compOut, (size_t) (w * window), (size_t) ((w + 1) * window)));
+            const auto b = toDb (peakOf (compOut, (size_t) ((w + 1) * window), (size_t) ((w + 2) * window)));
+            worstCompStepDb = std::max (worstCompStepDb, std::abs (b - a));
+        }
+
+        std::snprintf (what, sizeof (what), "compressor type switches mid-note: largest 1 ms step %.2f dB (<= 3 dB)",
+                       worstCompStepDb);
+        ok &= expect (nextSwitch == (int) std::size (compSequence) && worstCompStepDb <= 3.0, what);
+
+        // Gate: a steady tone 10 dB under the threshold, where the three modes disagree most
+        // (Classic ~shut, Tight at range -20 dB, Smooth at -8 dB). The engine crossfades the
+        // two curves linearly over 20 ms, so the level may move by at most 1/20 of the swing
+        // per ms; an instant switch would jump the whole swing at once.
+        proc.setChainOrder ({ BlockId::gate }, {});
+        setBoolParam (proc, params::gateOn, true);
+        setFloatParam (proc, params::gateThreshold, -40.0f);
+        setFloatParam (proc, params::gateRange, -20.0f);
+        setFloatParam (proc, params::gateMode, (float) tubamp::GateFx::Mode::tight);
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        const float quietAmp = std::pow (10.0f, -50.0f / 20.0f);
+        const auto quiet = sineSignal (sampleRate, 1000.0, quietAmp, samples (1.6));
+        static constexpr int gateSequence[] { 2, 0, 1, 0, 2, 1 };
+        nextSwitch = 0;
+        const auto gateOut = renderSignal (proc, quiet, blockSize, [&] (int start)
+        {
+            if (nextSwitch < (int) std::size (gateSequence) && start >= samples (0.2 * (nextSwitch + 1)))
+                setFloatParam (proc, params::gateMode, (float) gateSequence[nextSwitch++]);
+        });
+
+        float worstGateStep = 0.0f;
+        const float firstPeak = peakOf (gateOut, (size_t) samples (0.15), (size_t) samples (0.2));
+        float lowest = firstPeak, highest = firstPeak;
+
+        for (int w = samples (0.1) / window; (w + 2) * window <= (int) gateOut.size(); ++w)
+        {
+            const float a = peakOf (gateOut, (size_t) (w * window), (size_t) ((w + 1) * window));
+            const float b = peakOf (gateOut, (size_t) ((w + 1) * window), (size_t) ((w + 2) * window));
+            worstGateStep = std::max (worstGateStep, std::abs (b - a));
+            lowest = std::min (lowest, b);
+            highest = std::max (highest, b);
+        }
+
+        const float widestSwing = highest - lowest;
+        std::printf ("  gate mode switches: level swing %.3g, largest 1 ms step %.3g (fade bound %.3g)\n",
+                     (double) widestSwing, (double) worstGateStep, (double) (quietAmp / 20.0f));
+        ok &= expect (widestSwing > 0.3f * quietAmp, "the gate modes really disagree on the quiet tone (control)");
+        ok &= expect (nextSwitch == (int) std::size (gateSequence) && worstGateStep <= 1.25f * quietAmp / 20.0f,
+                      "gate mode switches move at most 1/20 of the full swing per ms (the 20 ms crossfade)");
+    }
+
+    resetDynamicsParams (proc);
+
+    // --- Meters: sane while running, idle once the block stops running.
+    {
+        proc.setChainOrder ({ BlockId::gate, BlockId::comp }, {});
+        setBoolParam (proc, params::gateOn, true);
+        setFloatParam (proc, params::gateMode, (float) tubamp::GateFx::Mode::tight);
+        setFloatParam (proc, params::gateThreshold, -40.0f);
+        setBoolParam (proc, params::compOn, true);
+        setFloatParam (proc, params::compType, (float) tubamp::CompFx::Type::clean);
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        const auto tone = sineSignal (sampleRate, 1000.0, std::pow (10.0f, -10.0f / 20.0f), samples (0.5));
+        renderSignal (proc, tone, blockSize);
+        readDynMeters (proc);
+        renderSignal (proc, std::vector<float> (tone.begin(), tone.begin() + blockSize), blockSize);
+        const auto playing = readDynMeters (proc);
+
+        std::printf ("  playing: gate state %d, GR %.2f dB, level %.2f dBFS; comp GR %.2f dB\n", playing.gateState,
+                     (double) playing.gateGr, (double) playing.gateLevel, (double) playing.compGr[0]);
+        ok &= expect (playing.gateState == 2 && playing.gateGr < 0.1f, "a note over the threshold reads open, no GR");
+        ok &= expect (std::abs (playing.gateLevel + 10.0f) <= 1.0f, "...the detector level reads the note (-10 +- 1 dBFS)");
+        ok &= expect (std::abs (playing.compGr[0] - 7.5f) <= 0.5f, "...and the compressor reads its gain reduction");
+
+        renderSignal (proc, std::vector<float> ((size_t) samples (0.1), 0.0f), blockSize);
+        readDynMeters (proc);
+        renderSignal (proc, std::vector<float> ((size_t) blockSize, 0.0f), blockSize);
+        const auto silent = readDynMeters (proc);
+
+        std::printf ("  100 ms of silence: gate state %d, GR %.1f dB, level %.1f dBFS\n", silent.gateState,
+                     (double) silent.gateGr, (double) silent.gateLevel);
+        ok &= expect (silent.gateState == 0 && silent.gateGr == 90.0f && silent.gateLevel == -120.0f,
+                      "100 ms after the note the gate reads closed, 90 dB of GR (mute), level at the floor");
+
+        setBoolParam (proc, params::gateOn, false);
+        setBoolParam (proc, params::compOn, false);
+        renderSignal (proc, std::vector<float> (tone.begin(), tone.begin() + blockSize), blockSize);
+        const auto bypassed = readDynMeters (proc);
+        ok &= expect (bypassed.gateState == -1 && bypassed.gateGr == 0.0f && bypassed.gateLevel == -120.0f
+                          && bypassed.compGr[0] == 0.0f,
+                      "bypassed, both meters read idle (state -1, 0 dB, -120 dBFS, 0 dB)");
+
+        setBoolParam (proc, params::gateOn, true);
+        setBoolParam (proc, params::compOn, true);
+        proc.setChainOrder ({}, {});
+        renderSignal (proc, std::vector<float> (tone.begin(), tone.begin() + blockSize), blockSize);
+        const auto absent = readDynMeters (proc);
+        ok &= expect (absent.gateState == -1 && absent.gateGr == 0.0f && absent.gateLevel == -120.0f
+                          && absent.compGr[0] == 0.0f,
+                      "out of the chain, both meters read idle");
+    }
+
+    resetDynamicsParams (proc);
+    proc.setChainOrder (tubamp::chain::defaultOrder(), {});
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    return ok;
+}
+
+/** G16, the deferred curve's alignment on a resampling amp. A Tight gate in front of the
+    amp measures the dry input and its curve lands on the model's output, which the
+    resampler has delayed; the processor delays the curve by the latency it reports for
+    that span. Three measurements, at 44.1 and 96 kHz against the model's own rate:
+
+    - exact: with a muted gate the first non-zero output sample is an exact index, and the
+      deferred curve must open precisely `reported latency` samples after the same gate
+      opens on its own;
+    - against the audio: the amp's true delay is the phase delay of a low tone through it,
+      less the same at the model's own rate (where nothing resamples), and the curve may
+      miss it only by what the reported latency itself misses;
+    - against a gate placed after the amp: printed for reference, after removing the
+      offset the model's own response puts between the two even at its own rate. */
+bool runGateAlignmentTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    std::printf ("gate curve alignment on a resampling amp:\n");
+
+    bool ok = true;
+    char what[240];
+    const double nativeRate = proc.namEngine.getModelInfo().sampleRate;
+    const float amplitude = 0.3f;
+
+    setBoolParam (proc, params::ampOn, true);
+    setBoolParam (proc, params::ampEqOn, false);
+    setBoolParam (proc, params::gateOn, true);
+    setFloatParam (proc, params::gateMode, (float) tubamp::GateFx::Mode::tight);
+    setFloatParam (proc, params::gateRange, -90.0f);
+
+    const auto render = [&] (const tubamp::chain::Order& order, double rate, const std::vector<float>& input)
+    {
+        proc.setChainOrder (order, {});
+        proc.prepareToPlay (rate, blockSize);
+        return renderSignal (proc, input, blockSize);
+    };
+
+    const auto firstNonZero = [] (const std::vector<float>& x)
+    {
+        for (size_t i = 0; i < x.size(); ++i)
+            if (x[i] != 0.0f)
+                return (long) i;
+
+        return -1L;
+    };
+
+    // Phase delay of the amp at 200 Hz, seconds, modulo the tone's period.
+    const auto ampPhaseDelay = [&] (double rate)
+    {
+        const int n = (int) std::lround (rate);
+        const auto tone = sineSignal (rate, 200.0, 0.01f, n);
+        const auto out = render ({ BlockId::amp }, rate, tone);
+        double inI = 0.0, inQ = 0.0, outI = 0.0, outQ = 0.0;
+
+        for (int i = n / 2; i < n; ++i)
+        {
+            const double w = 2.0 * juce::MathConstants<double>::pi * 200.0 * i / rate;
+            inI += tone[(size_t) i] * std::sin (w);
+            inQ += tone[(size_t) i] * std::cos (w);
+            outI += out[(size_t) i] * std::sin (w);
+            outQ += out[(size_t) i] * std::cos (w);
+        }
+
+        return (std::atan2 (inQ, inI) - std::atan2 (outQ, outI)) / (2.0 * juce::MathConstants<double>::pi * 200.0);
+    };
+
+    // 250 ms of digital silence, then a 1 kHz tone from a zero crossing. Each gate opens at
+    // a tenth of what it listens to: the input in front of the amp, the amp's output behind.
+    struct Edges { long alone, deferred, after; int latency; };
+
+    const auto edges = [&] (double rate, int onset)
+    {
+        const auto input = sineSignal (rate, 1000.0, amplitude, (int) std::lround (0.5 * rate), onset);
+        const auto ampOnly = render ({ BlockId::amp }, rate, input);
+        const float ampPeak = peakOf (ampOnly, (size_t) onset + 400, ampOnly.size());
+
+        Edges e {};
+        e.latency = proc.namEngine.getLatencySamples();
+        setFloatParam (proc, params::gateThreshold, (float) toDb (0.1 * amplitude));
+        e.alone = firstNonZero (render ({ BlockId::gate }, rate, input)) - onset;
+        e.deferred = firstNonZero (render ({ BlockId::gate, BlockId::amp }, rate, input)) - onset;
+        setFloatParam (proc, params::gateThreshold, (float) toDb (0.1 * ampPeak));
+        e.after = firstNonZero (render ({ BlockId::amp, BlockId::gate }, rate, input)) - onset;
+        return e;
+    };
+
+    const auto native = edges (nativeRate, (int) std::lround (0.25 * nativeRate));
+    const double nativeDelay = ampPhaseDelay (nativeRate);
+    const double modelOffset = (double) (native.after - native.deferred) / nativeRate;
+
+    std::snprintf (what, sizeof (what), "at the model's own rate (%.0f Hz) nothing resamples and the curve is not delayed", nativeRate);
+    ok &= expect (native.latency == 0 && native.deferred == native.alone, what);
+
+    for (const double rate : { 44100.0, 96000.0 })
+    {
+        if (rate == nativeRate)
+            continue;
+
+        const auto e = edges (rate, (int) std::lround (0.25 * rate));
+        const double period = 1.0 / 200.0;
+        double trueDelay = ampPhaseDelay (rate) - nativeDelay;
+        trueDelay -= period * std::round (trueDelay / period);
+        const double trueSamples = trueDelay * rate;
+        const double missed = trueSamples - (double) e.latency;
+        const double afterResidual = (double) (e.after - e.deferred) - modelOffset * rate;
+
+        std::printf ("  %.0f Hz: reported latency %d, true resampler delay %.2f samples; deferred curve opens at +%ld "
+                     "(uncompensated +%ld); gate after the amp at +%ld, %.2f samples later than at the model's rate\n",
+                     rate, e.latency, trueSamples, e.deferred, e.alone, e.after, afterResidual);
+
+        std::snprintf (what, sizeof (what), "%.0f Hz: the model resamples (latency %d > 0, control)", rate, e.latency);
+        ok &= expect (e.latency > 0, what);
+        std::snprintf (what, sizeof (what), "%.0f Hz: the deferred Tight curve is delayed by exactly the reported latency", rate);
+        ok &= expect (e.alone >= 0 && e.deferred == e.alone + e.latency, what);
+        std::snprintf (what, sizeof (what),
+                       "%.0f Hz: ...which meets the amp's audio within 4 samples (misses by %.2f: what the reported latency misses)",
+                       rate, missed);
+        ok &= expect (std::abs (missed) <= 4.0 && std::abs (afterResidual) <= 4.0, what);
+    }
+
+    resetParams (proc, kGateParamIds);
+    setBoolParam (proc, params::ampEqOn, true);
+    proc.setChainOrder (tubamp::chain::defaultOrder(), {});
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    return ok;
+}
+
+/** The wired gate and compressor path allocates nothing: a guard counts every operator
+    new/delete and malloc/free the audio thread makes inside processBlock, across mode and
+    type switches, bypass toggles, the deferred apply onto the amp and re-entry resets. */
+bool runDynamicsRtTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    std::printf ("gate and compressor real-time safety:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+
+    {
+        const long before = allocCount.load();
+        juce::HeapBlock<float> probe;
+
+        {
+            const AllocationGuard guard;
+            probe.malloc (64);
+            auto boxed = std::make_unique<int> (1);
+            juce::ignoreUnused (boxed);
+        }
+
+        ok &= expect (allocCount.load() - before >= 2, "the guard sees operator new and malloc on its thread (control)");
+    }
+
+    const chain::Order full { BlockId::gate, BlockId::comp, BlockId::comp2, BlockId::comp3, BlockId::amp };
+    proc.setChainOrder (full, {});
+    setBoolParam (proc, params::gateOn, true);
+    setBoolParam (proc, params::ampOn, true);
+
+    for (int k = 0; k < params::maxInstances; ++k)
+    {
+        setBoolParam (proc, params::compOnIds[k], true);
+        setFloatParam (proc, params::compTypeIds[k], (float) k);
+    }
+
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+    long allocations = 0;
+    int armedBlocks = 0;
+
+    for (int block = 0; block < 400; ++block)
+    {
+        // Every change happens on this (message) thread between blocks, as a host's would.
+        if (block % 25 == 0 && block > 0)
+        {
+            const int step = block / 25;
+            setFloatParam (proc, params::gateMode, (float) (step % tubamp::GateFx::numModes));
+            setFloatParam (proc, params::compTypeIds[step % params::maxInstances], (float) (step % tubamp::CompFx::numTypes));
+            setFloatParam (proc, params::gateThreshold, step % 2 == 0 ? -40.0f : -70.0f);
+            setBoolParam (proc, params::compOnIds[(step + 1) % params::maxInstances], step % 3 != 0);
+
+            if (step % 4 == 1)
+                proc.setChainOrder ({ BlockId::comp2, BlockId::amp }, {});
+            else if (step % 4 == 2)
+                proc.setChainOrder (full, {});
+        }
+
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < blockSize; ++i)
+            {
+                const int n = block * blockSize + i;
+                const bool note = (n / (int) (sampleRate * 0.15)) % 2 == 0;
+                buffer.setSample (ch, i, note ? 0.3f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * n / sampleRate)
+                                              : 0.0f);
+            }
+
+        // The first blocks settle the latency report and warm the model.
+        if (block < 20)
+        {
+            proc.processBlock (buffer, midi);
+            continue;
+        }
+
+        const long before = allocCount.load();
+
+        {
+            const AllocationGuard guard;
+            proc.processBlock (buffer, midi);
+        }
+
+        allocations += allocCount.load() - before;
+        ++armedBlocks;
+    }
+
+    char what[200];
+    std::snprintf (what, sizeof (what), "%d processBlock calls with gate, comp x3 and the amp: %ld allocations or frees",
+                   armedBlocks, allocations);
+    ok &= expect (allocations == 0, what);
+
+    resetDynamicsParams (proc);
+    proc.setChainOrder (chain::defaultOrder(), {});
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    return ok;
+}
 } // namespace
 
 int main (int argc, char** argv)
@@ -2731,11 +3481,24 @@ int main (int argc, char** argv)
     std::printf (delaySyncPass ? "PASS: delay tempo sync lands on the note length\n"
                                : "FAIL: delay tempo sync behaviour is wrong\n");
 
+    const bool gateCompPass = runGateCompEngineTests (proc, sampleRate, blockSize);
+    std::printf (gateCompPass ? "PASS: gate modes and compressor types run through the processor\n"
+                              : "FAIL: gate or compressor engine behaviour is wrong\n");
+
+    const bool gateAlignPass = runGateAlignmentTests (proc, sampleRate, blockSize);
+    std::printf (gateAlignPass ? "PASS: the deferred gate curve lines up with the resampled amp\n"
+                               : "FAIL: the deferred gate curve is misaligned\n");
+
+    const bool dynRtPass = runDynamicsRtTests (proc, sampleRate, blockSize);
+    std::printf (dynRtPass ? "PASS: the gate and compressor path allocates nothing\n"
+                           : "FAIL: the gate and compressor path allocates\n");
+
     return modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
                    && ampEqPass && factoryPass && concurrentPass && fxPass
                    && modelPathBPass && delayModePass
                    && splitPathPass && dualAmpLanePass && splitLatencyPass && splitStatePass
                    && engineStatePass && legacyPinPass && engineRenderPass && delaySyncPass
+                   && gateCompPass && gateAlignPass && dynRtPass
                ? 0
                : 1;
 }

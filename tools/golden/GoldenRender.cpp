@@ -445,6 +445,10 @@ struct Step
     float value;
 };
 
+/** A step with this id takes the case's block out of the chain (value 0) or puts it
+    back (1), for the absent-block and re-entry paths. */
+const std::string kPresentStep = "@present";
+
 enum class LegacyKind { gate, gateDeferred, comp, drive, eq, mod };
 
 struct LegacyCase
@@ -473,6 +477,15 @@ std::vector<LegacyCase> buildLegacyCases()
     add ("gate_m80_steps", LegacyKind::gate, 0, { { "gate_threshold", -80.0f } },
          { { 2.5, "gate_threshold", -30.0f }, { 4.2, "gate_threshold", -55.0f } });
     add ("gate_deferred", LegacyKind::gateDeferred, 0, { { "gate_threshold", -40.0f }, { "amp_eq_on", 0.0f } });
+    add ("gate_toggle", LegacyKind::gate, 0, { { "gate_threshold", -40.0f } },
+         { { 1.5, "gate_on", 0.0f }, { 2.5, "gate_on", 1.0f }, { 3.5, "gate_threshold", -60.0f } });
+    add ("gate_deferred_steps", LegacyKind::gateDeferred, 0, { { "gate_threshold", -40.0f }, { "amp_eq_on", 0.0f } },
+         { { 1.5, "gate_on", 0.0f }, { 2.5, "gate_on", 1.0f }, { 3.5, "gate_threshold", -55.0f } });
+    // The old processor never reset the gate on re-entry; the engine now does, which
+    // Classic must not hear.
+    add ("gate_absent", LegacyKind::gate, 0, { { "gate_threshold", -40.0f } },
+         { { 2.0, kPresentStep, 0.0f }, { 3.0, kPresentStep, 1.0f } });
+    cases.back().dumpable = false;
 
     add ("comp_def_steps", LegacyKind::comp, 0, {},
          { { 1.5, "comp_makeup", 12.0f }, { 2.2, "comp_threshold", -35.0f }, { 3.0, "comp_on", 0.0f },
@@ -483,6 +496,15 @@ std::vector<LegacyCase> buildLegacyCases()
                                              { "comp_release", 1000.0f }, { "comp_makeup", 3.0f } });
     add ("comp2_steps", LegacyKind::comp, 1, { { "comp2_threshold", -40.0f } },
          { { 2.0, "comp2_ratio", 8.0f }, { 3.3, "comp2_attack", 0.5f } });
+    add ("comp3_steps", LegacyKind::comp, 2, { { "comp3_threshold", -30.0f } },
+         { { 1.0, "comp3_makeup", 9.0f }, { 2.0, "comp3_on", 0.0f }, { 3.0, "comp3_release", 400.0f },
+           { 3.5, "comp3_on", 1.0f } });
+    // Absent: the makeup smoother keeps stepping (and moving) while the block is out of
+    // the chain; on re-entry the compressor is reset and the makeup is not.
+    add ("comp_absent", LegacyKind::comp, 0, { { "comp_makeup", 6.0f } },
+         { { 1.5, kPresentStep, 0.0f }, { 2.0, "comp_makeup", 12.0f }, { 3.0, kPresentStep, 1.0f },
+           { 4.0, "comp_makeup", 0.0f } });
+    cases.back().dumpable = false;
 
     add ("drive_def_steps", LegacyKind::drive, 0, { { "drive_on", 1.0f } },
          { { 1.0, "drive_gain", 30.0f }, { 2.0, "drive_tone", 800.0f }, { 3.0, "drive_level", -6.0f },
@@ -629,15 +651,27 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
     size_t nextStep = 0;
     const auto keys = fxbenchKeys (c);
     std::vector<std::string> stepTokens;
+    bool present = true;
 
     for (int start = 0; start < numFrames; start += cfg.block)
     {
         const int n = juce::jmin (cfg.block, numFrames - start);
         const double t = (double) start / cfg.sampleRate;
 
+        bool reentered = false;
+
         while (nextStep < c.steps.size() && t >= c.steps[nextStep].time)
         {
             const auto& s = c.steps[nextStep++];
+
+            if (s.id == kPresentStep)
+            {
+                reentered = ! present && s.value > 0.5f;
+                present = s.value > 0.5f;
+                proc.setChainOrder (present ? legacyOrder (c) : chain::Order {}, {});
+                continue;
+            }
+
             setParam (proc, s.id, s.value);
 
             for (const auto& [key, id] : keys)
@@ -655,7 +689,7 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
         float* lp[2] { legacyOut.getWritePointer (0, start), legacyOut.getWritePointer (1, start) };
         juce::AudioBuffer<float> legacyView (lp, 2, n);
         juce::dsp::AudioBlock<float> block (legacyView);
-        const bool on = raw (onId) > 0.5f;
+        const bool on = present && raw (onId) > 0.5f;
 
         inputTrimLin.setTargetValue (juce::Decibels::decibelsToGain (raw ("input_trim")));
         applySmoothedGain (legacyView, n, inputTrimLin);
@@ -720,6 +754,10 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
                 comp.setParameters (raw (idOf ("comp", k, "threshold")), raw (idOf ("comp", k, "ratio")),
                                     raw (idOf ("comp", k, "attack")), raw (idOf ("comp", k, "release")),
                                     raw (idOf ("comp", k, "makeup")));
+                // The processor's re-entry reset: the compressor, never the makeup.
+                if (reentered)
+                    comp.reset();
+
                 if (on)
                     comp.process (block);
                 else

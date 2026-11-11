@@ -2,11 +2,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
-#include <algorithm>
 #include <cmath>
-#include <vector>
-
-#include <dsp/NoiseGate.h>
 
 namespace tubamp
 {
@@ -21,13 +17,6 @@ constexpr float kShelfQ = 0.707f;
 constexpr float kMidQCut = 1.5f, kMidQBoost = 0.7f;
 constexpr float kBassDbPerUnit = 4.0f, kMidDbPerUnit = 3.0f, kTrebleDbPerUnit = 2.0f;
 constexpr float kToneCentre = 5.0f;
-
-// --- noise gate, mirroring NeuralAmpModeler::ProcessBlock:346-352 ----------
-constexpr double kGateTime = 0.01;
-constexpr double kGateRatio = 0.1;
-constexpr double kGateOpenTime = 0.005;
-constexpr double kGateHoldTime = 0.01;
-constexpr double kGateCloseTime = 0.05;
 
 // --- DC blocker, mirroring kDCBlockerFrequency ------------------------------
 constexpr float kDcBlockerHz = 5.0f;
@@ -214,133 +203,6 @@ void DcBlocker::process (juce::dsp::AudioBlock<float> block)
 {
     juce::dsp::ProcessContextReplacing<float> context (block);
     filter.process (context);
-}
-
-//==============================================================================
-// NoiseGate
-//==============================================================================
-struct NoiseGate::Impl
-{
-    ::dsp::noise_gate::Trigger trigger;
-    ::dsp::noise_gate::Gain gain;
-
-    // The AudioDSPTools objects work in DSP_SAMPLE, which is not necessarily float,
-    // so audio crosses in and out of them through these fixed-size scratch buffers.
-    std::vector<DSP_SAMPLE> monoIn;  // what the trigger listens to
-    std::vector<DSP_SAMPLE> ones;    // probe fed to the gain to read back its curve
-
-    // The gain's own output for a unit input == the linear gain-reduction curve.
-    // Owned by `gain`, valid until its next Process() call.
-    const DSP_SAMPLE* curve = nullptr;
-    int curveFrames = 0;
-
-    int maxBlockSize = 0;
-    double sampleRate = 48000.0;
-
-    /** Runs both objects at full size so their vectors reach their final capacity.
-        Every later block is smaller or equal, and std::vector never releases capacity
-        on shrink, so Process() cannot allocate on the audio thread afterwards. */
-    void primeBuffers()
-    {
-        if (maxBlockSize <= 0)
-            return;
-
-        std::fill (monoIn.begin(), monoIn.end(), (DSP_SAMPLE) 0);
-        run (maxBlockSize, -80.0f);
-        curve = nullptr;
-        curveFrames = 0;
-    }
-
-    void run (int numSamples, float thresholdDb)
-    {
-        trigger.SetSampleRate (sampleRate);
-        trigger.SetParams (::dsp::noise_gate::TriggerParams (
-            kGateTime, (double) thresholdDb, kGateRatio, kGateOpenTime, kGateHoldTime, kGateCloseTime));
-
-        DSP_SAMPLE* triggerIn[1] = { monoIn.data() };
-        trigger.Process (triggerIn, 1, (size_t) numSamples);
-
-        // Trigger::Process pushed the new reduction curve into `gain` via the listener
-        // link. Running the gain over a buffer of ones turns that dB curve into the
-        // linear per-sample multiplier, which we can then apply to any channel count.
-        DSP_SAMPLE* probe[1] = { ones.data() };
-        curve = gain.Process (probe, 1, (size_t) numSamples)[0];
-        curveFrames = numSamples;
-    }
-};
-
-NoiseGate::NoiseGate() : impl (std::make_unique<Impl>())
-{
-    impl->trigger.AddListener (&impl->gain);
-}
-
-NoiseGate::~NoiseGate() = default;
-
-void NoiseGate::prepare (double sampleRate, int maxBlockSize)
-{
-    impl->sampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
-    impl->maxBlockSize = juce::jmax (1, maxBlockSize);
-
-    impl->monoIn.assign ((size_t) impl->maxBlockSize, (DSP_SAMPLE) 0);
-    impl->ones.assign ((size_t) impl->maxBlockSize, (DSP_SAMPLE) 1);
-
-    impl->primeBuffers();
-}
-
-void NoiseGate::reset()
-{
-    // The trigger keeps no externally resettable state; invalidating the curve is
-    // enough to stop apply() from reusing a stale block.
-    impl->curve = nullptr;
-    impl->curveFrames = 0;
-}
-
-void NoiseGate::measure (const juce::dsp::AudioBlock<float>& block, int numSamples, float thresholdDb)
-{
-    impl->curve = nullptr;
-    impl->curveFrames = 0;
-
-    const auto numChannels = (int) block.getNumChannels();
-
-    if (numSamples <= 0 || numChannels <= 0 || numSamples > impl->maxBlockSize)
-        return; // oversized block: pass through ungated rather than reallocate here
-
-    const float scale = 1.0f / (float) numChannels;
-
-    for (int i = 0; i < numSamples; ++i)
-    {
-        float sum = 0.0f;
-
-        for (int ch = 0; ch < numChannels; ++ch)
-            sum += block.getChannelPointer ((size_t) ch)[i];
-
-        impl->monoIn[(size_t) i] = (DSP_SAMPLE) (sum * scale);
-    }
-
-    impl->run (numSamples, thresholdDb);
-}
-
-void NoiseGate::apply (juce::dsp::AudioBlock<float> block, int numSamples)
-{
-    if (impl->curve == nullptr || impl->curveFrames != numSamples)
-        return;
-
-    for (size_t ch = 0; ch < block.getNumChannels(); ++ch)
-    {
-        auto* data = block.getChannelPointer (ch);
-
-        for (int i = 0; i < numSamples; ++i)
-            data[i] *= (float) impl->curve[i];
-    }
-}
-
-void NoiseGate::apply (float* mono, int numSamples)
-{
-    if (mono == nullptr || impl->curve == nullptr || impl->curveFrames != numSamples)
-        return;
-
-    for (int i = 0; i < numSamples; ++i)
-        mono[i] *= (float) impl->curve[i];
 }
 
 //==============================================================================

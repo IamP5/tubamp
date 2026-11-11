@@ -290,6 +290,19 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
 
 ```
 "meters"         { in: number, out: number }        // 30 Hz editor timer, linear peaks
+"dynMeters"      { gate: { state: -1|0|1|2, gr: number, level: number },
+                   comp: [number, number, number] } // same tick, right after "meters"
+                                                    // (docs/FX-ENGINES.md §2.8). gr and
+                                                    // comp[i]: max gain reduction since the
+                                                    // last tick, dB >= 0 (gate up to 90,
+                                                    // Classic up to 120); level: max gate
+                                                    // detector level, dBFS, floor -120;
+                                                    // comp index = instance. Reset on read
+                                                    // to 0 / -120 / 0, so a block that did
+                                                    // not run reads idle. state is NOT reset:
+                                                    // the last block's 0 closed / 1 hold /
+                                                    // 2 open, -1 while the gate is absent,
+                                                    // off or waiting for its re-entry reset
 "chainChanged"   { chainOrder: string[], chainRows: number[] }  // onChainChanged incl.
                                                     // state restore
 "libraryChanged" { models, irs }

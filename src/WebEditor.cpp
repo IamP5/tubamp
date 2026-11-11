@@ -456,6 +456,11 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
     // both meters to whatever the loudest passage was.
     proc.inputPeak .exchange (0.0f);
     proc.outputPeak.exchange (0.0f);
+    proc.gateGrDb   .exchange (0.0f);
+    proc.gateLevelDb.exchange (TubampAudioProcessor::kDynMeterFloorDb);
+
+    for (auto& gr : proc.compGrDb)
+        gr.exchange (0.0f);
 
    #if TUBAMP_WEBUI_DEV
     web->goToURL (kDevServerUrl);
@@ -1066,6 +1071,20 @@ void WebEditor::timerCallback()
     // decay/ballistics live in the UI.
     emit ("meters", makeObject ({ { "in",  (double) proc.inputPeak .exchange (0.0f) },
                                   { "out", (double) proc.outputPeak.exchange (0.0f) } }));
+
+    // Gate and compressor meters (docs/FX-ENGINES.md §2.8), on the same reset-on-read
+    // terms. The gate's state is not a peak: it is whatever the last block left.
+    juce::Array<juce::var> compGr;
+
+    for (auto& gr : proc.compGrDb)
+        compGr.add ((double) gr.exchange (0.0f));
+
+    emit ("dynMeters",
+          makeObject ({ { "gate", makeObject ({ { "state", proc.gateState.load (std::memory_order_relaxed) },
+                                                { "gr",    (double) proc.gateGrDb.exchange (0.0f) },
+                                                { "level", (double) proc.gateLevelDb.exchange (
+                                                               TubampAudioProcessor::kDynMeterFloorDb) } }) },
+                        { "comp", compGr } }));
 
     // Model / IR / latency have no push notification; poll at 5 Hz (every 6th tick).
     if (++pollDivider >= 6)

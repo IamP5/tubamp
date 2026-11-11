@@ -69,48 +69,6 @@ private:
     juce::dsp::StateVariableTPTFilter<float> filter;
 };
 
-/** Port of the official plugin's noise gate: AudioDSPTools' dsp::noise_gate::Trigger
-    measures the pre-model signal and hands a per-sample gain-reduction curve to a
-    dsp::noise_gate::Gain that is applied further down the chain (post-model).
-
-    Usage per block, audio thread:
-      measure (postTrimBlock, n, thresholdDb);   // analysis only, does not touch audio
-      ... model ...
-      apply (block, n);                          // or apply (mono, n)
-
-    The trigger is always fed a single mono sum, so left and right are gated by the
-    same curve and the buffer geometry never changes underneath the AudioDSPTools
-    objects (they reallocate whenever the channel count moves).
-
-    AudioDSPTools' headers are kept out of this header on purpose: their DSP_SAMPLE
-    typedef is a build-wide macro, and Trigger/Gain would pull the whole dsp:: namespace
-    into every translation unit that includes FxBlocks.h. */
-class NoiseGate
-{
-public:
-    NoiseGate();
-    ~NoiseGate();
-
-    /** Sizes and primes the internal buffers so the audio thread never allocates.
-        Blocks larger than maxBlockSize are passed through ungated. */
-    void prepare (double sampleRate, int maxBlockSize);
-    void reset();
-
-    /** Audio thread. Analyses `block` summed to mono; leaves `block` untouched. */
-    void measure (const juce::dsp::AudioBlock<float>& block, int numSamples, float thresholdDb);
-
-    /** Audio thread. Applies the curve from this block's measure() to every channel. */
-    void apply (juce::dsp::AudioBlock<float> block, int numSamples);
-    /** Audio thread. Applies the curve from this block's measure() to one mono buffer. */
-    void apply (float* mono, int numSamples);
-
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NoiseGate)
-};
-
 /** Chorus / Phaser / Tremolo behind one interface. */
 class Modulation
 {

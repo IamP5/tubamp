@@ -7,6 +7,8 @@
 #include "dsp/ChainOrder.h"
 #include "dsp/NamEngine.h"
 #include "dsp/FxBlocks.h"
+#include "dsp/Compressor.h"
+#include "dsp/Gate.h"
 #include "dsp/FxHost.h"
 #include "dsp/FxCatalog.h"
 #include "library/ModelLibrary.h"
@@ -222,6 +224,17 @@ public:
     /** UI level metering (linear peak, decayed by UI). */
     std::atomic<float> inputPeak { 0.0f }, outputPeak { 0.0f };
 
+    /** Dynamics metering (docs/FX-ENGINES.md §2.8), the same contract as the peaks: the
+        audio thread max-accumulates, the editor reads with exchange. Gain reductions are
+        dB >= 0, the gate's detector level is dBFS with this floor; gateState is a plain
+        store of the last block's (0 closed, 1 hold, 2 open), -1 while the gate is absent,
+        off or waiting for its re-entry reset. A compressor that does not run this block
+        accumulates nothing, so it reads 0. */
+    static constexpr float kDynMeterFloorDb = -120.0f;
+    std::atomic<float> gateGrDb { 0.0f }, gateLevelDb { kDynMeterFloorDb };
+    std::atomic<int> gateState { -1 };
+    std::array<std::atomic<float>, params::maxInstances> compGrDb {};
+
 private:
     void updateLatency();
 
@@ -264,6 +277,10 @@ private:
                                       bool ampOn, bool amp2On,
                                       bool lanesRunning = true) const noexcept;
 
+    /** What one chain entry delays the signal by, the term computeChainLatency sums and
+        the gate's deferred curve is delayed by. Any thread (atomics only). */
+    int blockLatency (chain::BlockId id, bool ampOn, bool amp2On) const noexcept;
+
     /** What the host is told: the serial sections plus the slower lane. */
     int computeWantedLatency (const chain::BlockId* order, int numBlocks,
                               bool ampOn, bool amp2On) const noexcept;
@@ -291,6 +308,10 @@ private:
                             float* monoScratchData, bool gateOn, bool deferGateToAmp,
                             bool ampOn, bool amp2On, juce::AudioPlayHead* playHead,
                             double hostBpm) noexcept;
+
+    /** Audio thread: this block's engine parameters, read raw (the engines clamp). */
+    GateParams gateParams() const noexcept;
+    CompParams compParams (int instance) const noexcept;
 
     /** Audio thread: collapse to mono -> engine -> deferred gate -> tone stack -> out
         gain -> expand, on whichever buffer `block` views. Both amp blocks run through
@@ -540,11 +561,8 @@ private:
 
     // chain blocks — one object per instance, all prepared eagerly in prepareToPlay
     // regardless of what the current order contains.
-    NoiseGate gate;
-    std::array<juce::dsp::Compressor<float>, params::maxInstances> compressor;
-    std::array<juce::SmoothedValue<float>, params::maxInstances> compMakeupLin { {
-        juce::SmoothedValue<float> { 1.0f }, juce::SmoothedValue<float> { 1.0f },
-        juce::SmoothedValue<float> { 1.0f } } };
+    GateFx gate;
+    std::array<CompFx, params::maxInstances> comp;
     std::array<Drive, params::maxInstances> drive;
     CabSim cab;
     std::array<ToneStackEQ, params::maxInstances> eq;

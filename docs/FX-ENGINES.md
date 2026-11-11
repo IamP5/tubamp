@@ -400,15 +400,21 @@ emitted by `WebEditor::timerCallback`, `src/WebEditor.cpp:1018-1024`, 30 Hz):
   report the last block.
 - **Processor side (integrator):** after each instance runs,
   `compGrDb[k]` and `gateGrDb`, `gateLevelDb` are max-accumulated with the
-  `compare_exchange_weak` loop used for `inputPeak` (`:986-990`); `gateState` is a plain
-  `store` of the last block's state. When a block is absent, bypassed or reset-pending,
-  nothing is accumulated and `gateState` stores −1.
+  `compare_exchange_weak` loop used for `inputPeak` (`publishMax` in
+  `PluginProcessor.cpp`); `gateState` is a plain `store` of the last block's state. When a
+  block is absent, bypassed or reset-pending, nothing is accumulated and `gateState`
+  stores −1.
   ```cpp
-  std::atomic<float> gateGrDb { 0.0f }, gateLevelDb { -120.0f };
+  static constexpr float kDynMeterFloorDb = -120.0f;
+  std::atomic<float> gateGrDb { 0.0f }, gateLevelDb { kDynMeterFloorDb };
   std::atomic<int>   gateState { -1 };               // -1 inactive, 0 closed, 1 hold, 2 open
   std::array<std::atomic<float>, params::maxInstances> compGrDb {};  // all 0
   ```
-- **Editor:** one new event per timer tick, reset-on-read (`exchange`):
+- **Editor:** one new event per timer tick, emitted right after `meters`. The gain
+  reductions and the level are reset on read (`exchange` to 0 / −120 / 0), so a block that
+  did not run since the last tick reads idle; `gateState` is a plain `load`, not reset
+  (it is a lamp, not a peak). Opening the editor discards the accumulated backlog, as for
+  the peaks:
   ```
   "dynMeters" { gate: { state: -1|0|1|2, gr: number /* dB >= 0 */, level: number /* dBFS */ },
                 comp: [number, number, number] /* dB >= 0, index = instance */ }
@@ -657,6 +663,16 @@ earlier: `measure` writes this block's gains into the curve ring; `apply` reads
 output equals the undelayed curve exactly. Non-deferred `apply` always uses D = 0.
 `[study: R4; ver: V:32, V:61 — size never measured, inferred from code]`
 
+**As integrated, measured** (smoke "gate curve alignment", A2.nam, a 48 kHz model): the
+deferred curve is delayed by exactly the reported span latency (27 samples at 44.1 kHz,
+42 at 96 kHz). That figure is AudioDSPTools' `ResamplingContainer::GetLatency()`, a
+buffer-fill count, and it is short of the resampler pair's true delay (phase delay of a
+200 Hz tone through the amp, less the same at 48 kHz): 28.9 samples at 44.1 kHz, 45.0 at
+96 kHz. The curve therefore opens 1.9 / 3.0 samples (0.04 / 0.03 ms) before the audio it
+gates, against a 0.5 ms attack. The latency reported to the host has the same shortfall
+and is frozen by the golden renders; closing the gap would need a measured group delay
+from `NamEngine` used for D only (§8 D-22).
+
 #### 4.1.8 Mode switches
 
 All detectors run every block (Classic trigger + windowed detector, both cheap). On a mode
@@ -698,7 +714,7 @@ to 12 ms (V:37). Each cell is the max over 8 start phases × 4 burst lengths
 | G13 | Smooth static: steady 1 kHz at −50/−55/−60 dBFS, thr −40 | −8.0 / −18.0 / −28.0 dB ± 0.5 [exact] |
 | G14 | Range: Tight, range −20, closed | gain −20.0 ± 0.1 dB; range −90 → exactly 0 |
 | G15 | SC HPF: 50 Hz hum −44 dBFS + chug, thr −50 | HPF 90: median gap ≤ −30 dB; HPF off: gate stays open (documents the benefit, V:42) |
-| G16 | Deferred alignment (processor test, §6.1): 1 kHz burst through gate → amp on a model forced to resample (session 44.1 kHz) | gain edge and audio edge coincide within 1 sample |
+| G16 | Deferred alignment (processor test, §6.1): 1 kHz burst through gate → amp on a model forced to resample (session 44.1 kHz) | gain edge and audio edge coincide within 1 sample. **As integrated:** the curve is delayed by exactly the reported latency (checked to the sample); against the audio it lands within 4 samples (measured 1.9 at 44.1 kHz, 3.0 at 96 kHz), the reported latency's own error (§4.1.7) |
 | G17 | Rates | G2, G5, G9 also at 44.1 and 96 kHz, same bounds + 1 ms |
 | G18 | Meter: thr −40, silence after a note | state 0 within 100 ms of the note end; 2 on the first sample above threshold; GR reads 90 when closed with range −90 |
 
@@ -2078,10 +2094,10 @@ commit's. Do the common part first, then one effect at a time, running `tubamp_g
 
 | File:line | Change |
 |---|---|
-| `PluginProcessor.cpp:805-806` | `gate.prepare (spec); gate.reset();` |
-| `PluginProcessor.cpp:919` | `gate.reset()` |
-| `PluginProcessor.cpp:1064-1065` → | after `deferGateToAmp`: compute D = (`ampOn` ? `namEngine.getLatencySamples()` : 0) + Σ over entries strictly between `gateIndex` and `ampIndex` (same segment) of drive latency (`DriveFx::latencyFor`, if that drive is on) and `fxHost.latencyFor (slot)`; `gate.setCurveDelay (deferGateToAmp ? D : 0)` |
-| `PluginProcessor.cpp:1299-1310` | fill `GateParams` from `gate_threshold`, `gate_mode`, `gate_release`, `gate_hold`, `gate_range`, `gate_sc_hpf`; `setParameters`; `measure (block, n)`; if not deferred `apply (block, n)`; publish meters; when `gate_on` is off store `gateState = −1` |
+| `PluginProcessor.cpp:805-806` | `gate.prepare (spec)` (prepare resets) |
+| `PluginProcessor.cpp:919` | `gate.reset()` in `releaseResources`, and in `resetBlockInstance` on re-entry: the gate is now drained through `pendingReset` like every block and runs as bypassed while pending (`gateRuns`). Classic's reset only drops its curve, so Classic is unaffected (legacy case `gate_absent`) |
+| `PluginProcessor.cpp:1064-1065` → | after `deferGateToAmp` (now computed after the reset drain): D = Σ `blockLatency (order[i])` for i from `gateIndex + 1` through `ampIndex`; `blockLatency` is the per-entry term `computeChainLatency` sums (amp, amp2 with a live model, FX slots), so the amp's own latency and anything between share one rule; `gate.setCurveDelay (deferGateToAmp ? D : 0)`. **Drive latency is not in it yet**: the drive integrator adds it to `blockLatency` and both the host report and D pick it up |
+| `PluginProcessor.cpp:1299-1310` | fill `GateParams` from `gate_threshold`, `gate_mode`, `gate_release`, `gate_hold`, `gate_range`, `gate_sc_hpf` (`gateParams()`); `setParameters`; `measure (block, n)`; if not deferred `apply (block, n)`; publish meters; `gateState = −1` is stored in `processBlock` whenever the gate is absent, off or pending |
 | `PluginProcessor.cpp:1254-1255` | unchanged call `gate.apply (mono, numSamples)` |
 | `tests/ProcessorSmokeTest.cpp` | new: gate modes render finite; deferred alignment G16 (with the smoke model at 44.1 kHz); pin rule for `gate_mode` |
 
@@ -2097,8 +2113,8 @@ mono path (`:1257-1268`); Classic is never delayed.
 | `PluginProcessor.cpp:813-814` | `comp[k].prepare (spec);` (no separate reset) |
 | `PluginProcessor.cpp:893-898` | delete (makeup now inside `CompFx`, primed by its first `setParameters` after `prepare`) |
 | `PluginProcessor.cpp:923, 1833` | `comp[k].reset()` |
-| `PluginProcessor.cpp:1096-1104` | absent instance: build `CompParams`, `comp[k].setParameters (cp); comp[k].skip (numSamples);` |
-| `PluginProcessor.cpp:1312-1335` | on: `setParameters` + `process (block)` + publish GR; off or pending: `setParameters` + `skip` |
+| `PluginProcessor.cpp:1096-1104` | absent instance: build `CompParams` (`compParams (k)`), `comp[k].setParameters (cp); comp[k].skip (numSamples);` |
+| `PluginProcessor.cpp:1312-1335` | on: `setParameters` + `process (block)` + publish GR; off or pending: `setParameters` + `skip`. The makeup now goes through the block's channels, not the host `AudioBuffer` (same channels: input and output layouts are equal) |
 | tests | type round-trip and pin; `skip` keeps makeup in step (render with comp toggled on/off mid-stream equals the golden behaviour for Classic); every type renders finite |
 
 Invariant: each makeup smoother advances exactly `numSamples` per callback whatever the
@@ -2304,6 +2320,7 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-19 | Tremolo depth law, 120 Hz smoother, Optical constants, Bias fit and Harmonic voice have no installed reference (report.md:12, :386). | Built as specified; parity with the prototype is enforced; Harmonic and Bias need a listening pass before release. |
 | D-20 | Golden hashes depend on arch and build type. | Capture and verify on the development Mac, arm64, Release. |
 | D-21 | `mod_color` default on means a new Phase 90 starts as the block-logo (resonant) voicing. | Chosen because it is the validated fit; switch the default to off if the owner prefers the script sound. |
+| D-22 | The NAM resampler's reported latency is 1.9 (44.1 kHz) / 3.0 (96 kHz) samples short of its true delay (§4.1.7), so a deferred Tight/Smooth curve leads the audio by that much, and the host's delay compensation is off by the same amount. | Left as is: D uses the reported latency as specified, and the host figure is frozen by the golden renders. A measured group delay from `NamEngine` (probe at model load), used for D only, would close it for the gate. |
 
 ---
 
