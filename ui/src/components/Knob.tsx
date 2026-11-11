@@ -38,6 +38,9 @@ export interface KnobProps {
   accent?: string;
   /** Hide the numeric readout (footer knobs that show their value elsewhere). */
   hideValue?: boolean;
+  /** Replaces the numeric readout (tempo-synced rate shows its note value). The
+   *  dial still moves and reads the parameter; only the text differs. */
+  valueText?: string;
   disabled?: boolean;
   className?: string;
 }
@@ -59,6 +62,7 @@ export function Knob({
   size = "md",
   accent,
   hideValue,
+  valueText,
   disabled,
   className,
 }: KnobProps) {
@@ -73,13 +77,13 @@ export function Knob({
   const dragStart = useRef({ y: 0, value: 0 });
 
   const paintReadout = useCallback(() => {
-    const text = formatParamValue(state.getScaledValue(), state.properties);
+    const text = valueText ?? formatParamValue(state.getScaledValue(), state.properties);
     if (readoutRef.current) readoutRef.current.textContent = text;
     if (dialRef.current) {
       dialRef.current.setAttribute("aria-valuenow", String(state.getScaledValue()));
       dialRef.current.setAttribute("aria-valuetext", text);
     }
-  }, [state]);
+  }, [state, valueText]);
 
   /* Keep the motion value + readout in sync with the backend (automation,
      preset loads, our own writes) without re-rendering. */

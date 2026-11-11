@@ -16,3 +16,12 @@ export {
   type MeterChannel,
 } from "./useMeters";
 export { onFrame, type FrameCallback } from "./rafDriver";
+export {
+  useDynMeters,
+  DYN_FALL_DB_PER_SECOND,
+  GATE_GR_SCALE_DB,
+  COMP_GR_SCALE_DB,
+  GATE_LEVEL_MIN_DB,
+  GATE_LEVEL_MAX_DB,
+  type DynMeters,
+} from "./useDynMeters";

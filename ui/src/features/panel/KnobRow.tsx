@@ -20,6 +20,9 @@ export interface KnobRowProps {
    *  by `key` (id minus its kind/instance prefix, e.g. "lowcut") so one list
    *  serves all three instances. */
   disabledKeys?: ReadonlySet<string>;
+  /** Readout text that replaces a knob's number, by `key` (a synced rate shows
+   *  its note value). */
+  valueTexts?: Readonly<Record<string, string>>;
 }
 
 /** `delay2_lowcut` → `lowcut`: everything after the first underscore. */
@@ -33,6 +36,7 @@ export function KnobRow({
   className,
   snug,
   disabledKeys,
+  valueTexts,
 }: KnobRowProps) {
   if (specs.length === 0) return null;
   return (
@@ -44,6 +48,7 @@ export function KnobRow({
             label={spec.label}
             size={size}
             disabled={disabledKeys?.has(paramKey(spec.id))}
+            valueText={valueTexts?.[paramKey(spec.id)]}
           />
         </div>
       ))}

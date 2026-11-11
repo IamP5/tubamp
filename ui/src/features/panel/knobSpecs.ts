@@ -32,13 +32,24 @@ export interface KnobSpec {
 }
 
 const BASE_KNOB_SPECS: Record<BaseBlockId, readonly KnobSpec[]> = {
-  gate: [{ id: "gate_threshold", label: "THRESH" }],
+  /* gate / comp / eq / mod: every knob any type reads, most-used first; the typed
+     bodies pick their subset from FX_TYPE_SPECS below (docs/FX-ENGINES.md §7.2). */
+  gate: [
+    { id: "gate_threshold", label: "THRESH" },
+    { id: "gate_release", label: "RELEASE" },
+    { id: "gate_hold", label: "HOLD" },
+    { id: "gate_range", label: "RANGE" },
+    { id: "gate_sc_hpf", label: "SC HPF" },
+  ],
   comp: [
     { id: "comp_threshold", label: "THRESH" },
     { id: "comp_ratio", label: "RATIO" },
     { id: "comp_attack", label: "ATTACK" },
     { id: "comp_release", label: "RELEASE" },
     { id: "comp_makeup", label: "MAKEUP" },
+    { id: "comp_knee", label: "KNEE" },
+    { id: "comp_mix", label: "MIX" },
+    { id: "comp_sc_hpf", label: "SC HPF" },
   ],
   drive: [
     { id: "drive_gain", label: "GAIN" },
@@ -60,6 +71,10 @@ const BASE_KNOB_SPECS: Record<BaseBlockId, readonly KnobSpec[]> = {
     { id: "mod_rate", label: "RATE" },
     { id: "mod_depth", label: "DEPTH" },
     { id: "mod_mix", label: "MIX" },
+    { id: "mod_width", label: "WIDTH" },
+    { id: "mod_tone", label: "TONE" },
+    { id: "mod_shape", label: "SHAPE" },
+    { id: "mod_wave", label: "WAVE" },
   ],
   /* ratio + width appended per docs/STEREO.md §4; ratio only bites in Dual mode
      but stays visible (and turnable) in every mode, per spec. */
@@ -110,14 +125,61 @@ const BASE_KNOB_SPECS: Record<BaseBlockId, readonly KnobSpec[]> = {
   lane2: [],
 };
 
-export const KNOB_SPECS: Record<BlockId, readonly KnobSpec[]> = blockRecord((id) => {
-  const kind = kindOf(id);
-  const base = BASE_KNOB_SPECS[kind];
-  if (instanceOf(id) === 0) return base;
-  // `comp2` + `comp_ratio` → `comp2_ratio`. Safe by construction: the pooled
-  // instance ids in bridge/types are minted from the same kind/key pairs.
-  return base.map((spec) => ({
+/** Maps a row written for a kind's first instance onto `block`'s own ids:
+ *  `comp2` + `comp_ratio` → `comp2_ratio`. Safe by construction: the pooled
+ *  instance ids in bridge/types are minted from the same kind/key pairs. */
+function forInstance(block: BlockId, specs: readonly KnobSpec[]): readonly KnobSpec[] {
+  const kind = kindOf(block);
+  if (instanceOf(block) === 0) return specs;
+  return specs.map((spec) => ({
     ...spec,
-    id: `${id}${spec.id.slice(kind.length)}` as SliderParamId,
+    id: `${block}${spec.id.slice(kind.length)}` as SliderParamId,
   }));
-});
+}
+
+export const KNOB_SPECS: Record<BlockId, readonly KnobSpec[]> = blockRecord((id) =>
+  forInstance(id, BASE_KNOB_SPECS[kindOf(id)]),
+);
+
+/**
+ * Per-type rows for the typed bodies (docs/FX-ENGINES.md §7.2), written once per
+ * base like BASE_KNOB_SPECS and mapped onto an instance by `typedSpecs`. Each
+ * list is exactly the knobs that type reads, in display order.
+ */
+const k = (id: SliderParamId, label: string): KnobSpec => ({ id, label });
+
+const FX_TYPE_SPECS = {
+  gateClassic: [k("gate_threshold", "THRESH")],
+  gateFull: BASE_KNOB_SPECS.gate,
+  compClassic: BASE_KNOB_SPECS.comp.slice(0, 5),
+  compFull: BASE_KNOB_SPECS.comp,
+  eqClassic: BASE_KNOB_SPECS.eq,
+  eqStack: [...BASE_KNOB_SPECS.eq, k("eq_level", "LEVEL")],
+  /* Parametric, grouped by where it acts on the signal. */
+  eqParamLow: [k("eq_lowcut", "LO CUT"), k("eq_bass", "BASS")],
+  eqParamMid: [k("eq_mid", "MID"), k("eq_mid_freq", "FREQ"), k("eq_mid_q", "Q")],
+  eqParamHigh: [k("eq_treble", "TREBLE"), k("eq_highcut", "HI CUT")],
+  eqParamOut: [k("eq_tilt", "TILT"), k("eq_level", "LEVEL")],
+  eqGraphicLevel: [k("eq_level", "LEVEL")],
+  modPhaser: BASE_KNOB_SPECS.mod.slice(0, 3),
+  modChorus: BASE_KNOB_SPECS.mod.slice(0, 5),
+  modTrem: BASE_KNOB_SPECS.mod,
+} satisfies Record<string, readonly KnobSpec[]>;
+
+export type FxTypeSpecName = keyof typeof FX_TYPE_SPECS;
+
+/** A named per-type row, with its ids swapped to `block`'s instance. */
+export function typedSpecs(block: BlockId, name: FxTypeSpecName): readonly KnobSpec[] {
+  return forInstance(block, FX_TYPE_SPECS[name]);
+}
+
+/** The drive knobs are always gain / tone / level; only the labels change per
+ *  type (docs/FX-ENGINES.md §4.3.2, §7.2). Index = `drive_type`. */
+export const DRIVE_LABELS: readonly (readonly [string, string, string])[] = [
+  ["GAIN", "TONE", "LEVEL"], // Classic
+  ["DRIVE", "TONE", "LEVEL"], // Screamer
+  ["DIST", "FILTER", "LEVEL"], // Distortion
+  ["SUSTAIN", "TONE", "LEVEL"], // Fuzz
+  ["GAIN", "HI CUT", "LEVEL"], // Boost
+  ["BOOST", "FREQ", "LEVEL"], // Treble
+];

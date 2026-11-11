@@ -829,6 +829,85 @@ function meterTick(now: number): void {
   const output = Math.min(1, input * 1.15 + notePeak * 0.18 * Math.exp(-age * 0.8));
 
   emit("meters", { in: input, out: output });
+  emitDynMeters(now, input);
+}
+
+/* ───────────────────────────── fake dynMeters ──────────────────────────── */
+
+/**
+ * `dynMeters` (docs/FX-ENGINES.md §2.8, §7.1), emitted from the same 30 Hz tick.
+ * The gate sees its own slow phrase (a pluck that decays 50 dB/s into a quiet
+ * floor, every 3.2 s) so that it visibly closes at a sensible threshold; its state
+ * machine is Tight/Smooth's (6 dB hysteresis, hold, then a dB-linear release to
+ * the range). The compressors read the note envelope above and compress it with a
+ * hard knee, one reading per instance present in the chain.
+ */
+const GATE_PHRASE_MS = 3200;
+let gateOpen = false;
+let gateHoldUntil = 0;
+let gateGrNow = 0;
+let lastDynEmit = 0;
+
+function scaledOf(id: SliderParamId, fallback: number): number {
+  return sliders.get(id)?.getScaledValue() ?? fallback;
+}
+
+function emitDynMeters(now: number, inputLinear: number): void {
+  const dt = lastDynEmit === 0 ? 1 / 30 : Math.min((now - lastDynEmit) / 1000, 0.1);
+  lastDynEmit = now;
+
+  /* Gate. */
+  let gate: BridgeEventMap["dynMeters"]["gate"] = { state: -1, gr: 0, level: -120 };
+  if (state.chainOrder.includes("gate") && toggles.get("gate_on")?.getValue() !== false) {
+    const phase = (now % GATE_PHRASE_MS) / 1000;
+    const level = Math.max(-100 + Math.random() * 3, -6 - phase * 50 + Math.random() * 1.5);
+    const threshold = scaledOf("gate_threshold", -80);
+    const mode = combos.get("gate_mode")?.getChoiceIndex() ?? 1;
+    const hysteresis = mode === 0 ? 0 : 6;
+    const range = mode === 0 ? -120 : scaledOf("gate_range", -90);
+    const releaseSec = scaledOf("gate_release", 30) / 1000;
+    const holdMs = scaledOf("gate_hold", 6);
+
+    let stateCode: -1 | 0 | 1 | 2;
+    if (level >= threshold) {
+      gateOpen = true;
+      gateHoldUntil = now + holdMs;
+    } else if (gateOpen && level < threshold - hysteresis) {
+      gateOpen = false;
+    }
+    if (gateOpen) {
+      stateCode = 2;
+      gateGrNow = 0;
+    } else {
+      // Hold keeps the gate fully open for `hold` ms after the close point is crossed.
+      if (now < gateHoldUntil) {
+        stateCode = 1;
+        gateGrNow = 0;
+      } else {
+        stateCode = 0;
+        const target = Math.min(120, -range);
+        // 60 dB of gain change per `release` seconds.
+        gateGrNow = Math.min(target, gateGrNow + (60 / Math.max(releaseSec, 0.005)) * dt);
+      }
+    }
+    gate = { state: stateCode, gr: gateGrNow, level };
+  } else {
+    gateOpen = false;
+    gateGrNow = 0;
+  }
+
+  /* Compressors. */
+  const tokens = ["comp", "comp2", "comp3"] as const;
+  const inputDb = inputLinear > 1e-6 ? 20 * Math.log10(inputLinear) : -120;
+  const comp = tokens.map((token) => {
+    if (!state.chainOrder.includes(token)) return 0;
+    if (toggles.get(`${token}_on` as ToggleParamId)?.getValue() === false) return 0;
+    const threshold = scaledOf(`${token}_threshold` as SliderParamId, -20);
+    const ratio = scaledOf(`${token}_ratio` as SliderParamId, 4);
+    return Math.max(0, (inputDb - threshold) * (1 - 1 / ratio));
+  }) as [number, number, number];
+
+  emit("dynMeters", { gate, comp });
 }
 
 function startMeters(): void {
@@ -1158,7 +1237,7 @@ export const mockBridge: Bridge = {
     }
     const fn = listener as Listener;
     set.add(fn);
-    if (event === "meters") startMeters();
+    if (event === "meters" || event === "dynMeters") startMeters();
     return () => {
       set.delete(fn);
     };

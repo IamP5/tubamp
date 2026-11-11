@@ -36,8 +36,12 @@ import {
 import { Amp2Body } from "./Amp2Body";
 import { AmpBody } from "./AmpBody";
 import { CabBody } from "./CabBody";
+import { CompBody } from "./CompBody";
 import { DelayBody } from "./DelayBody";
+import { DriveBody } from "./DriveBody";
+import { EqBody } from "./EqBody";
 import { FxSlotBody } from "./FxSlotBody";
+import { GateBody } from "./GateBody";
 import { MixBody } from "./MixBody";
 import { ReverbBody } from "./ReverbBody";
 import { ModBody } from "./ModBody";
@@ -171,11 +175,16 @@ function PanelHeader({ block }: { block: BlockId }) {
 function BlockBody({ block }: { block: BlockId }) {
   // Keyed by KIND, not token: mod2/mod3 need ModBody (and its per-instance Type
   // combo) exactly like instance 1 — a token match would silently drop them to
-  // the generic knob row with no way to reach mod2_type/mod3_type.
+  // the generic knob row with no way to reach mod2_type/mod3_type. Same for
+  // comp2/comp3, drive2/drive3 and eq2/eq3.
   const kind = kindOf(block);
   if (kind === "amp") return <AmpBody />;
   if (kind === "amp2") return <Amp2Body />;
   if (kind === "cab") return <CabBody />;
+  if (kind === "gate") return <GateBody block={block} />;
+  if (kind === "comp") return <CompBody block={block} />;
+  if (kind === "drive") return <DriveBody block={block} />;
+  if (kind === "eq") return <EqBody block={block} />;
   if (kind === "mod") return <ModBody block={block} />;
   if (kind === "delay") return <DelayBody block={block} />;
   if (kind === "reverb") return <ReverbBody block={block} />;

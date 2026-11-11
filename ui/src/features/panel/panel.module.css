@@ -748,3 +748,280 @@
   gap: 8px;
   width: 140px;
 }
+
+/* ───────────────────── FX engines: typed bodies (§7.2) ──────────────────── */
+
+/* A field label that sizes to its text ("Script / Block", "Auto makeup"). */
+.fieldLabelFit {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* One-line note under a knob row; always rendered so the body never jumps. */
+.dynHint {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+/* Comp's TYPE menu, AUTO switch and GR meter on one row. */
+.dynMenuRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+/* Gate: the menu + knobs column beside the meter card. */
+.dynBody {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  width: 100%;
+}
+
+.dynMain {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── knob groups (parametric EQ, graphic EQ) ── */
+
+.knobGroups {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 14px;
+}
+
+.knobGroupWrap {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+}
+
+.knobGroup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.groupCaption {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.groupDivider {
+  flex: none;
+  align-self: stretch;
+  width: 1px;
+  margin: 14px 0 4px;
+  background: var(--border);
+}
+
+/* ── vertical band faders (graphic EQ) ── */
+
+.faderBank {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.fader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 52px;
+  user-select: none;
+}
+
+.faderReadout {
+  min-width: 36px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.faderTrack {
+  position: relative;
+  width: 8px;
+  height: 78px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+/* A wider invisible hit area, so an 8px rail is easy to grab. */
+.faderTrack::before {
+  content: "";
+  position: absolute;
+  inset: -2px -18px;
+}
+
+.faderCentre {
+  position: absolute;
+  left: -4px;
+  right: -4px;
+  top: 50%;
+  height: 1px;
+  background: var(--border-hover);
+}
+
+.faderFill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-radius: 999px;
+  background: var(--block-accent);
+}
+
+.faderThumb {
+  position: absolute;
+  left: -4px;
+  right: -4px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 3px;
+  background: var(--text-primary);
+  box-shadow: 0 0 0 1px var(--block-accent);
+}
+
+.faderLabel {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* ── dynamics meters (§7.4) ── */
+
+.meterCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: none;
+  width: 260px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+}
+
+.lampRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.lampDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* Three shades of the block accent: full when open, the dim variant while the
+   hold runs out, the faint fill when closed. */
+.lampOpen .lampDot {
+  background: var(--block-accent);
+  box-shadow: 0 0 6px var(--block-glow);
+}
+.lampClosing .lampDot {
+  background: var(--block-dim);
+}
+.lampClosed .lampDot {
+  background: var(--block-fill-25);
+  box-shadow: inset 0 0 0 1px var(--block-dim);
+}
+
+.dynBarRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dynBarLabel {
+  width: 34px;
+  flex: none;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+}
+
+.dynBarTrack {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  box-shadow: var(--ring-inset);
+}
+
+.dynBarFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--block-accent);
+}
+
+.dynMarker {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+}
+.dynMarkerOpen {
+  background: var(--text-primary);
+}
+.dynMarkerClose {
+  background: var(--text-tertiary);
+}
+
+.dynBarReadout {
+  width: 58px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.compMeter {
+  width: 270px;
+}

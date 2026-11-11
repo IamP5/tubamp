@@ -198,7 +198,7 @@ export function blockRecord<T>(make: (id: BlockId) => T): Record<BlockId, T> {
 /* ─────────────────────────── parameter identifiers ─────────────────────── */
 
 /**
- * 119 slider params — ids are the APVTS ids verbatim and are frozen.
+ * 183 slider params — ids are the APVTS ids verbatim and are frozen.
  *
  * The first 29 are v1's, in v1 order. The rest are appended in Parameters.cpp's
  * v2 append order: each duplicable kind's instances 2 and 3 (same ranges,
@@ -336,10 +336,76 @@ export const SLIDER_PARAM_IDS = [
   "reverb3_lowcut",
   "reverb3_highcut",
   "reverb3_mod",
+
+  /* docs/FX-ENGINES.md §2.7.1 append order (+64): gate, comp x3, eq x3, mod x3 */
+  "gate_release",
+  "gate_hold",
+  "gate_range",
+  "gate_sc_hpf",
+  "comp_knee",
+  "comp_mix",
+  "comp_sc_hpf",
+  "comp2_knee",
+  "comp2_mix",
+  "comp2_sc_hpf",
+  "comp3_knee",
+  "comp3_mix",
+  "comp3_sc_hpf",
+  "eq_lowcut",
+  "eq_highcut",
+  "eq_mid_freq",
+  "eq_mid_q",
+  "eq_tilt",
+  "eq_level",
+  "eq_g100",
+  "eq_g200",
+  "eq_g400",
+  "eq_g800",
+  "eq_g1k6",
+  "eq_g3k2",
+  "eq_g6k4",
+  "eq2_lowcut",
+  "eq2_highcut",
+  "eq2_mid_freq",
+  "eq2_mid_q",
+  "eq2_tilt",
+  "eq2_level",
+  "eq2_g100",
+  "eq2_g200",
+  "eq2_g400",
+  "eq2_g800",
+  "eq2_g1k6",
+  "eq2_g3k2",
+  "eq2_g6k4",
+  "eq3_lowcut",
+  "eq3_highcut",
+  "eq3_mid_freq",
+  "eq3_mid_q",
+  "eq3_tilt",
+  "eq3_level",
+  "eq3_g100",
+  "eq3_g200",
+  "eq3_g400",
+  "eq3_g800",
+  "eq3_g1k6",
+  "eq3_g3k2",
+  "eq3_g6k4",
+  "mod_width",
+  "mod_tone",
+  "mod_shape",
+  "mod_wave",
+  "mod2_width",
+  "mod2_tone",
+  "mod2_shape",
+  "mod2_wave",
+  "mod3_width",
+  "mod3_tone",
+  "mod3_shape",
+  "mod3_wave",
 ] as const;
 
 /**
- * 30 toggle params: v1's 13, then every instance's bypass and the amp EQ's,
+ * 36 toggle params: v1's 13, then every instance's bypass and the amp EQ's,
  * then the split-path enables (docs/SPLIT.md §2). `amp_stereo` is gone —
  * SUPERSEDED by `amp2` as a chain block (docs/SPLIT.md, top): there is no
  * toggle for it any more, only the block's own `amp2_on`.
@@ -377,9 +443,17 @@ export const TOGGLE_PARAM_IDS = [
   "split_on",
   "mix_on",
   "mix_bphase",
+
+  /* docs/FX-ENGINES.md §2.7.1 (+6): comp auto makeup x3, mod color x3 */
+  "comp_auto_makeup",
+  "comp2_auto_makeup",
+  "comp3_auto_makeup",
+  "mod_color",
+  "mod2_color",
+  "mod3_color",
 ] as const;
 
-/** 17 combo params — mod and delay (docs/STEREO.md §4) are the duplicable kinds
+/** 42 combo params — mod and delay (docs/STEREO.md §4) are the duplicable kinds
  *  with a choice parameter; `split_mode` (docs/SPLIT.md §2) is the split
  *  region's, FROZEN once shipped like `delay_mode`; the nine appended last are
  *  the delay/reverb type + delay sync choices (docs/REVERB-DELAY.md §1). */
@@ -405,12 +479,51 @@ export const COMBO_PARAM_IDS = [
   "reverb_type",
   "reverb2_type",
   "reverb3_type",
+
+  /* docs/FX-ENGINES.md §2.7.1 (+25): gate mode, comp/drive/eq type x3, eq voice x3, mod voicings + sync x3 */
+  "gate_mode",
+  "comp_type",
+  "comp2_type",
+  "comp3_type",
+  "drive_type",
+  "drive2_type",
+  "drive3_type",
+  "eq_type",
+  "eq_voice",
+  "eq2_type",
+  "eq2_voice",
+  "eq3_type",
+  "eq3_voice",
+  "mod_chorus_mode",
+  "mod_phaser_model",
+  "mod_trem_voice",
+  "mod_sync",
+  "mod2_chorus_mode",
+  "mod2_phaser_model",
+  "mod2_trem_voice",
+  "mod2_sync",
+  "mod3_chorus_mode",
+  "mod3_phaser_model",
+  "mod3_trem_voice",
+  "mod3_sync",
 ] as const;
 
 export type SliderParamId = (typeof SLIDER_PARAM_IDS)[number];
 export type ToggleParamId = (typeof TOGGLE_PARAM_IDS)[number];
 export type ComboParamId = (typeof COMBO_PARAM_IDS)[number];
 export type ParamId = SliderParamId | ToggleParamId | ComboParamId;
+
+/** Mirrors WebEditor.cpp's static_asserts (docs/FX-ENGINES.md §7.5): the build
+ *  fails here if an id list drifts from 183 / 36 / 42. */
+export type RelayCountsCheck = [
+  (typeof SLIDER_PARAM_IDS)["length"],
+  (typeof TOGGLE_PARAM_IDS)["length"],
+  (typeof COMBO_PARAM_IDS)["length"],
+] extends [183, 36, 42]
+  ? true
+  : never;
+/** Assigning `true` to a `never` fails the type-check when a count drifts. */
+export const relayCountsCheck: RelayCountsCheck = true;
 
 /* ───────────────────────────── param state shapes ──────────────────────── */
 
@@ -708,6 +821,15 @@ export interface T3kModelsResult {
 
 export interface BridgeEventMap {
   meters: { in: number; out: number };
+  /** Dynamics meters, 30 Hz alongside `meters`, reset-on-read (docs/FX-ENGINES.md
+   *  §2.8). `gate.state`: -1 inactive, 0 closed, 1 hold, 2 open. `gate.gr` and
+   *  `comp[i]` are gain reduction in dB (>= 0; the gate can reach 90, Classic 120).
+   *  `gate.level` is the detector level in the threshold's units (dBFS, floor -120).
+   *  `comp` is indexed by instance (0 = comp, 1 = comp2, 2 = comp3). */
+  dynMeters: {
+    gate: { state: -1 | 0 | 1 | 2; gr: number; level: number };
+    comp: [number, number, number];
+  };
   chainChanged: { chainOrder: string[]; chainRows: number[] };
   libraryChanged: { models: FileEntry[]; irs: FileEntry[] };
   presetChanged: {

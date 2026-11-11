@@ -189,10 +189,16 @@ function instanceEntry(
     case "toggle":
       // Every instance enable ships ON, including drive's (whose instance 1 is
       // the one block bypassed by default) — a block is not in the chain until
-      // it is added, so adding one and hearing nothing is the wrong answer.
+      // it is added, so adding one and hearing nothing is the wrong answer. Any
+      // other toggle (comp auto makeup, mod color) keeps its own default.
       return {
         control: "toggle",
-        spec: { ...base.spec, id: id as ToggleParamId, name, def: true },
+        spec: {
+          ...base.spec,
+          id: id as ToggleParamId,
+          name,
+          def: base.spec.id.endsWith("_on") ? true : base.spec.def,
+        },
       };
     case "combo":
       return { control: "combo", spec: { ...base.spec, id: id as ComboParamId, name } };
@@ -335,10 +341,96 @@ const PRO_LAYOUT: readonly LayoutEntry[] = [
   ...EXTRA_INSTANCES.flatMap((n) => REVERB_PRO_1.map((b) => instanceEntry(b, "reverb", n))),
 ];
 
+/* ───────── v4 FX engines append (docs/FX-ENGINES.md §2.7.1, §4.1–§4.7) ───── */
+
+/** Frozen choice lists (append only), copied from Parameters.h. */
+const GATE_MODES = ["Classic", "Tight", "Smooth"];
+const COMP_TYPES = ["Classic", "Clean", "Squash", "FET", "Opto"];
+const DRIVE_TYPES = ["Classic", "Screamer", "Distortion", "Fuzz", "Boost", "Treble"];
+const EQ_TYPES = ["Classic", "Parametric", "Stack", "Graphic"];
+const EQ_VOICES = ["Tweed", "Blackface", "British", "Top Boost"];
+const CHORUS_MODES = ["Classic", "Wide", "CE", "Dimension", "Tri"];
+const PHASER_MODELS = ["Classic", "Phase 90", "Small Stone"];
+const TREM_VOICES = ["Classic", "Smooth", "Optical", "Bias", "Harmonic"];
+const MOD_SYNCS = [
+  "Off", "1/32", "1/16T", "1/16", "1/8T", "1/16.", "1/8", "1/4T", "1/8.",
+  "1/4", "1/2T", "1/4.", "1/2", "1/2.", "1/1", "2/1", "4/1",
+];
+
+/** Gate is a singleton: no instance cloning. Hold defaults to 6 ms (Tight), as
+ *  Gate.h's `kGateHoldDefault[Tight]`, not the contract table's 10. */
+const GATE_PRO: readonly LayoutEntry[] = [
+  c("gate_mode", "Gate Mode", GATE_MODES, 1),
+  s("gate_release", "Gate Release", 5, 500, 0.1, 30, "ms", true),
+  s("gate_hold", "Gate Hold", 0, 250, 0.1, 6, "ms"),
+  s("gate_range", "Gate Range", -90, 0, 0.1, -90, "dB"),
+  s("gate_sc_hpf", "Gate SC HPF", 20, 300, 1, 90, "Hz", true),
+];
+
+const COMP_PRO_1: readonly LayoutEntry[] = [
+  c("comp_type", "Comp Type", COMP_TYPES, 1),
+  s("comp_knee", "Comp Knee", 0, 24, 0.1, 6, "dB"),
+  s("comp_mix", "Comp Mix", 0, 100, 0.1, 100, "%"),
+  s("comp_sc_hpf", "Comp SC HPF", 20, 300, 1, 20, "Hz", true),
+  t("comp_auto_makeup", "Comp Auto Makeup", false),
+];
+
+const DRIVE_PRO_1: readonly LayoutEntry[] = [
+  c("drive_type", "Drive Type", DRIVE_TYPES, 1),
+];
+
+const EQ_PRO_1: readonly LayoutEntry[] = [
+  c("eq_type", "EQ Type", EQ_TYPES, 1),
+  s("eq_lowcut", "EQ Low Cut", 20, 400, 1, 20, "Hz", true),
+  s("eq_highcut", "EQ High Cut", 2000, 20000, 1, 20000, "Hz", true),
+  s("eq_mid_freq", "EQ Mid Freq", 100, 8000, 1, 425, "Hz", true),
+  s("eq_mid_q", "EQ Mid Q", 0.5, 8, 0.01, 0.7, "", true),
+  s("eq_tilt", "EQ Tilt", -6, 6, 0.1, 0, "dB"),
+  s("eq_level", "EQ Level", -12, 12, 0.1, 0, "dB"),
+  c("eq_voice", "EQ Voice", EQ_VOICES, 2),
+  s("eq_g100", "EQ 100 Hz", -12, 12, 0.1, 0, "dB"),
+  s("eq_g200", "EQ 200 Hz", -12, 12, 0.1, 0, "dB"),
+  s("eq_g400", "EQ 400 Hz", -12, 12, 0.1, 0, "dB"),
+  s("eq_g800", "EQ 800 Hz", -12, 12, 0.1, 0, "dB"),
+  s("eq_g1k6", "EQ 1.6 kHz", -12, 12, 0.1, 0, "dB"),
+  s("eq_g3k2", "EQ 3.2 kHz", -12, 12, 0.1, 0, "dB"),
+  s("eq_g6k4", "EQ 6.4 kHz", -12, 12, 0.1, 0, "dB"),
+];
+
+const MOD_PRO_1: readonly LayoutEntry[] = [
+  c("mod_chorus_mode", "Mod Chorus Mode", CHORUS_MODES, 1),
+  c("mod_phaser_model", "Mod Phaser Model", PHASER_MODELS, 1),
+  c("mod_trem_voice", "Mod Trem Voice", TREM_VOICES, 1),
+  c("mod_sync", "Mod Sync", MOD_SYNCS, 0),
+  s("mod_width", "Mod Width", 0, 1, 0.001, 1),
+  s("mod_tone", "Mod Tone", 0, 1, 0.001, 0.5),
+  s("mod_shape", "Mod Shape", 0, 1, 0.001, 0.5),
+  s("mod_wave", "Mod Wave", 0, 1, 0.001, 0),
+  t("mod_color", "Mod Color", true),
+];
+
+/** One kind's block of new parameters: instance 1, then 2 and 3 in full. */
+function instanced(base: readonly LayoutEntry[], kind: DuplicableKind): LayoutEntry[] {
+  return [
+    ...base,
+    ...EXTRA_INSTANCES.flatMap((n) => base.map((b) => instanceEntry(b, kind, n))),
+  ];
+}
+
+/** Appended after PRO_LAYOUT in Parameters.cpp's order: gate, comp x3, drive x3,
+ *  eq x3, mod x3 — 64 sliders, 6 toggles, 25 combos. */
+const FX_LAYOUT: readonly LayoutEntry[] = [
+  ...GATE_PRO,
+  ...instanced(COMP_PRO_1, "comp"),
+  ...instanced(DRIVE_PRO_1, "drive"),
+  ...instanced(EQ_PRO_1, "eq"),
+  ...instanced(MOD_PRO_1, "mod"),
+];
+
 /** The whole APVTS layout, in order: 44 v1 parameters, 54 instance parameters,
  *  4 for the amp tone stack, 12 for the stereo-chain append, 13 for the
- *  split-path append, 39 for the reverb/delay engines append — 119 sliders,
- *  30 toggles, 17 combos. */
+ *  split-path append, 39 for the reverb/delay engines append, 95 for the FX
+ *  engines append — 183 sliders, 36 toggles, 42 combos. */
 const LAYOUT: readonly LayoutEntry[] = [
   ...V1_LAYOUT,
   ...INSTANCE_LAYOUT,
@@ -346,6 +438,7 @@ const LAYOUT: readonly LayoutEntry[] = [
   ...STEREO_LAYOUT,
   ...SPLIT_LAYOUT,
   ...PRO_LAYOUT,
+  ...FX_LAYOUT,
 ];
 
 /* ────────────────────────────── derived tables ─────────────────────────── */
