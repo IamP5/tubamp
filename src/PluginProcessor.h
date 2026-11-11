@@ -261,11 +261,14 @@ private:
         `block` are two views of the same audio — the host buffer for a serial entry or
         a lane B entry's laneScratch view — which is what lets a block run in a lane
         without knowing it is in one. `monoScratchData` is the amp blocks' collapse
-        scratch (null falls back to the target buffer's first channel). */
+        scratch (null falls back to the target buffer's first channel). `hostBpm` is the
+        play head's tempo for this callback (120 when the host reports none), read once
+        in processBlock for every tempo-synced delay. */
     void processChainBlock (chain::BlockId id, juce::AudioBuffer<float>& buf,
                             juce::dsp::AudioBlock<float> block, int numSamples,
                             float* monoScratchData, bool gateOn, bool deferGateToAmp,
-                            bool ampOn, bool amp2On, juce::AudioPlayHead* playHead) noexcept;
+                            bool ampOn, bool amp2On, juce::AudioPlayHead* playHead,
+                            double hostBpm) noexcept;
 
     /** Audio thread: collapse to mono -> engine -> deferred gate -> tone stack -> out
         gain -> expand, on whichever buffer `block` views. Both amp blocks run through
@@ -424,12 +427,25 @@ private:
         std::atomic<float>* delayMode[params::maxInstances] {};
         std::atomic<float>* delayRatio[params::maxInstances] {};
         std::atomic<float>* delayWidth[params::maxInstances] {};
+        std::atomic<float>* delayType[params::maxInstances] {};
+        std::atomic<float>* delaySync[params::maxInstances] {};
+        std::atomic<float>* delayLowCut[params::maxInstances] {};
+        std::atomic<float>* delayHighCut[params::maxInstances] {};
+        std::atomic<float>* delayModAmt[params::maxInstances] {};
+        std::atomic<float>* delayColor[params::maxInstances] {};
+        std::atomic<float>* delayDuck[params::maxInstances] {};
 
         std::atomic<float>* reverbOn[params::maxInstances] {};
         std::atomic<float>* reverbSize[params::maxInstances] {};
         std::atomic<float>* reverbDamping[params::maxInstances] {};
         std::atomic<float>* reverbMix[params::maxInstances] {};
         std::atomic<float>* reverbWidth[params::maxInstances] {};
+        std::atomic<float>* reverbType[params::maxInstances] {};
+        std::atomic<float>* reverbPreDelay[params::maxInstances] {};
+        std::atomic<float>* reverbDecay[params::maxInstances] {};
+        std::atomic<float>* reverbLowCut[params::maxInstances] {};
+        std::atomic<float>* reverbHighCut[params::maxInstances] {};
+        std::atomic<float>* reverbModAmt[params::maxInstances] {};
 
         std::atomic<float>* amp2On = nullptr;
         std::atomic<float>* amp2Input = nullptr;

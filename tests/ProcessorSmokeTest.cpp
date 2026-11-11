@@ -1598,9 +1598,22 @@ bool runDelayModeTests (tubamp::TubampAudioProcessor& proc, double sampleRate, i
         monoDelayL.prepare (monoSpec);
         monoDelayR.prepare (monoSpec);
 
-        stereoDelay.setParameters (280.0f, 0.4f, 0.35f, 0 /* Stereo */, 100.0f, 1.0f);
-        monoDelayL.setParameters (280.0f, 0.4f, 0.35f, 0, 100.0f, 1.0f);
-        monoDelayR.setParameters (280.0f, 0.4f, 0.35f, 0, 100.0f, 1.0f);
+        // Digital with nothing that couples or moves the channels: no modulation (the
+        // two sides run a quarter cycle apart) and no ducking (it follows both).
+        tubamp::DelayParams dp;
+        dp.type = (int) tubamp::DelayFx::Type::digital;
+        dp.mod = 0.0f;
+        dp.duck = 0.0f;
+        dp.timeMs = 280.0f;
+        dp.feedback = 0.4f;
+        dp.mix = 0.35f;
+        dp.mode = 0; // Stereo
+        dp.ratioPct = 100.0f;
+        dp.width = 1.0f;
+
+        stereoDelay.setParameters (dp);
+        monoDelayL.setParameters (dp);
+        monoDelayR.setParameters (dp);
 
         const int numBlocks = 8;
         std::vector<float> stereoL, stereoR, monoL, monoR;
@@ -1650,10 +1663,20 @@ bool runDelayModeTests (tubamp::TubampAudioProcessor& proc, double sampleRate, i
 
         tubamp::DelayFx delayFx;
         delayFx.prepare (stereoSpec);
-        delayFx.setParameters (2000.0f, 0.0f, 1.0f, 2 /* Dual */, 200.0f, 1.0f);
+        tubamp::DelayParams dp;
+        dp.type = (int) tubamp::DelayFx::Type::digital;
+        dp.mod = 0.0f;
+        dp.duck = 0.0f;
+        dp.timeMs = 2000.0f;
+        dp.feedback = 0.0f;
+        dp.mix = 1.0f;
+        dp.mode = 2; // Dual
+        dp.ratioPct = 200.0f;
+        dp.width = 1.0f;
+        delayFx.setParameters (dp);
 
-        // The delay length is smoothed over 150 ms from its prepared value; let it
-        // settle on silence before the impulse so the echo lands at the target time.
+        // Half a second of silence first, so every smoother has settled before the
+        // impulse and the echo lands at the target time.
         juce::AudioBuffer<float> buf (2, blockSize);
         const int settleBlocks = (int) std::ceil (sampleRate * 0.5 / blockSize);
 
@@ -1702,6 +1725,449 @@ bool runDelayModeTests (tubamp::TubampAudioProcessor& proc, double sampleRate, i
         if (std::abs (peakIndex - expectedIndex) > tolerance)
             std::printf ("  (right echo at sample %d, expected ~%d)\n", peakIndex, expectedIndex);
     }
+
+    proc.setChainOrder (chain::defaultOrder(), {});
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    return ok;
+}
+
+/** Current choice index of a parameter, read the way the audio thread reads it. */
+int choiceIndex (tubamp::TubampAudioProcessor& proc, const char* paramId)
+{
+    auto* raw = proc.apvts.getRawParameterValue (paramId);
+    return raw != nullptr ? juce::roundToInt (raw->load()) : -1;
+}
+
+/** Engine types (docs/REVERB-DELAY.md §1): a fresh instance starts on Digital and Plate
+    with duck and damping at those types' own starting points, the type ids round-trip
+    through both restore paths -- the host's ValueTree blob and the preset / A/B var --
+    and state that predates them takes the defaults. */
+bool runEngineTypeStateTests (double sampleRate, int blockSize)
+{
+    std::printf ("engine type state:\n");
+    bool ok = true;
+
+    const int digital = (int) tubamp::DelayFx::Type::digital;
+    const int plate = (int) tubamp::ReverbFx::Type::plate;
+
+    const auto allDefault = [&] (tubamp::TubampAudioProcessor& p)
+    {
+        bool defaults = true;
+
+        for (int k = 0; k < params::maxInstances; ++k)
+        {
+            defaults &= choiceIndex (p, params::delayTypeIds[k]) == digital;
+            defaults &= choiceIndex (p, params::reverbTypeIds[k]) == plate;
+        }
+
+        return defaults;
+    };
+
+    tubamp::TubampAudioProcessor fresh;
+    fresh.prepareToPlay (sampleRate, blockSize);
+    ok &= expect (allDefault (fresh), "a fresh instance has every delay_type = Digital and reverb_type = Plate");
+
+    bool startingPoints = true;
+
+    for (int k = 0; k < params::maxInstances; ++k)
+    {
+        const auto startsAt = [&fresh] (const char* id, float expected)
+        {
+            return juce::approximatelyEqual (fresh.apvts.getRawParameterValue (id)->load(), expected);
+        };
+
+        startingPoints &= startsAt (params::delayDuckIds[k], tubamp::kDelayDuckDefault[digital]);
+        startingPoints &= startsAt (params::delayColorIds[k], tubamp::kDelayColorDefault[digital]);
+        startingPoints &= startsAt (params::delayHighCutIds[k], tubamp::kDelayHighCutDefault[digital]);
+        startingPoints &= startsAt (params::reverbDampingIds[k], tubamp::kReverbDampingDefault[plate]);
+        startingPoints &= startsAt (params::reverbDecayIds[k], tubamp::kReverbDecayDefault[plate]);
+    }
+
+    ok &= expect (startingPoints, "knobs with a per-type starting point default to the default type's");
+
+    // A distinctive non-default value on every type id, so a round-trip that silently
+    // fell back to the defaults cannot pass.
+    const int delayPick[params::maxInstances]  { (int) tubamp::DelayFx::Type::tape,
+                                                 (int) tubamp::DelayFx::Type::diffuse,
+                                                 (int) tubamp::DelayFx::Type::lofi };
+    const int reverbPick[params::maxInstances] { (int) tubamp::ReverbFx::Type::hall,
+                                                 (int) tubamp::ReverbFx::Type::spring,
+                                                 (int) tubamp::ReverbFx::Type::ambient };
+
+    const auto setPicks = [&] (tubamp::TubampAudioProcessor& p)
+    {
+        for (int k = 0; k < params::maxInstances; ++k)
+        {
+            setFloatParam (p, params::delayTypeIds[k], (float) delayPick[k]);
+            setFloatParam (p, params::reverbTypeIds[k], (float) reverbPick[k]);
+        }
+    };
+
+    const auto picksHeld = [&] (tubamp::TubampAudioProcessor& p)
+    {
+        bool held = true;
+
+        for (int k = 0; k < params::maxInstances; ++k)
+        {
+            held &= choiceIndex (p, params::delayTypeIds[k]) == delayPick[k];
+            held &= choiceIndex (p, params::reverbTypeIds[k]) == reverbPick[k];
+        }
+
+        return held;
+    };
+
+    const auto setAllDefault = [&] (tubamp::TubampAudioProcessor& p)
+    {
+        for (int k = 0; k < params::maxInstances; ++k)
+        {
+            setFloatParam (p, params::delayTypeIds[k], (float) digital);
+            setFloatParam (p, params::reverbTypeIds[k], (float) plate);
+        }
+    };
+
+    // --- host state (getStateInformation / setStateInformation)
+    {
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        setPicks (proc);
+        juce::MemoryBlock blob;
+        proc.getStateInformation (blob);
+
+        setAllDefault (proc);
+        proc.setStateInformation (blob.getData(), (int) blob.getSize());
+        ok &= expect (picksHeld (proc), "host state carrying the type ids round-trips them");
+
+        // The same blob with the six type PARAM children removed is what a session
+        // saved before the types existed looks like.
+        auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
+        auto root = xml != nullptr ? juce::ValueTree::fromXml (*xml) : juce::ValueTree();
+        auto paramTree = root.getChildWithName (proc.apvts.state.getType());
+
+        for (int k = 0; k < params::maxInstances; ++k)
+        {
+            paramTree.removeChild (paramTree.getChildWithProperty ("id", params::delayTypeIds[k]), nullptr);
+            paramTree.removeChild (paramTree.getChildWithProperty ("id", params::reverbTypeIds[k]), nullptr);
+        }
+
+        juce::MemoryBlock olderBlob;
+
+        if (auto olderXml = root.createXml())
+            juce::AudioProcessor::copyXmlToBinary (*olderXml, olderBlob);
+
+        ok &= expect (paramTree.isValid() && olderBlob.getSize() > 0, "host state built without the type ids");
+
+        setPicks (proc);
+        proc.setStateInformation (olderBlob.getData(), (int) olderBlob.getSize());
+        ok &= expect (allDefault (proc), "host state without the type ids restores Digital and Plate");
+    }
+
+    // --- preset / A/B var (captureStateVar / applyStateVar)
+    {
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        setPicks (proc);
+        const auto modern = proc.captureStateVar();
+
+        setAllDefault (proc);
+        proc.applyStateVar (modern);
+        ok &= expect (picksHeld (proc), "a preset carrying the type ids round-trips them");
+
+        auto older = proc.captureStateVar();
+        auto* paramValues = older.getProperty ("params", juce::var()).getDynamicObject();
+
+        if (paramValues != nullptr)
+            for (int k = 0; k < params::maxInstances; ++k)
+            {
+                paramValues->removeProperty (juce::Identifier (params::delayTypeIds[k]));
+                paramValues->removeProperty (juce::Identifier (params::reverbTypeIds[k]));
+            }
+
+        ok &= expect (paramValues != nullptr, "preset built without the type ids");
+
+        setPicks (proc);
+        proc.applyStateVar (older);
+        ok &= expect (allDefault (proc), "a preset without the type ids restores Digital and Plate");
+    }
+
+    return ok;
+}
+
+/** Feeds `numChannels` of sine for one second, then silence, and returns how many
+    seconds after the input stopped the output's 50 ms peak first fell below -60 dBFS
+    (-1 if it never did within `limitSeconds`). Clears `finite` on any non-finite
+    sample. The processor must already be prepared for `numChannels`. */
+double secondsToSilence (tubamp::TubampAudioProcessor& proc, int numChannels, double sampleRate,
+                         int blockSize, double limitSeconds, bool& finite)
+{
+    juce::AudioBuffer<float> buffer (numChannels, blockSize);
+    juce::MidiBuffer midi;
+
+    const int inputBlocks = (int) std::ceil (sampleRate / blockSize);
+    const int tailBlocks = (int) std::ceil (sampleRate * limitSeconds / blockSize);
+    const int windowSamples = (int) std::lround (sampleRate * 0.05);
+    const float threshold = 0.001f; // -60 dBFS
+
+    float windowPeak = 0.0f;
+    int windowFill = 0;
+
+    for (int block = 0; block < inputBlocks + tailBlocks; ++block)
+    {
+        const bool feeding = block < inputBlocks;
+
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            auto* data = buffer.getWritePointer (ch);
+
+            for (int i = 0; i < blockSize; ++i)
+                data[i] = feeding ? 0.3f * (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                                             * 220.0 * (block * blockSize + i) / sampleRate)
+                                  : 0.0f;
+        }
+
+        proc.processBlock (buffer, midi);
+
+        for (int i = 0; i < blockSize; ++i)
+        {
+            float peak = 0.0f;
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                const float v = buffer.getSample (ch, i);
+
+                if (! std::isfinite (v))
+                    finite = false;
+
+                peak = std::max (peak, std::abs (v));
+            }
+
+            if (feeding)
+                continue;
+
+            windowPeak = std::max (windowPeak, peak);
+
+            if (++windowFill == windowSamples)
+            {
+                if (windowPeak < threshold)
+                    return (double) ((block - inputBlocks) * blockSize + i + 1) / sampleRate;
+
+                windowPeak = 0.0f;
+                windowFill = 0;
+            }
+        }
+    }
+
+    return -1.0;
+}
+
+/** Every delay type x mode and every reverb type, through the real processor on both
+    host layouts, at the default controls: only finite samples, and silence again
+    within a generous limit once the input stops (a runaway loop or a stuck denormal
+    tail would never get there). */
+bool runEngineRenderTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    std::printf ("engine renders:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+    const double limitSeconds = 12.0;
+
+    const auto check = [&] (const char* label, int numChannels, bool finite, double silentAfter)
+    {
+        char what[160];
+        std::snprintf (what, sizeof (what), "%s is only finite samples (%s host)",
+                       label, numChannels == 2 ? "stereo" : "mono");
+        ok &= expect (finite, what);
+
+        std::snprintf (what, sizeof (what), "%s returns below -60 dBFS within %.0f s (%s host)",
+                       label, limitSeconds, numChannels == 2 ? "stereo" : "mono");
+        ok &= expect (silentAfter >= 0.0, what);
+
+        // A block that never ran would be "silent" at once; every engine at its
+        // defaults leaves well over 100 ms of tail.
+        std::snprintf (what, sizeof (what), "...and leaves a tail first (%.2f s)", silentAfter);
+        ok &= expect (silentAfter > 0.1, what);
+    };
+
+    const auto renderBoth = [&] (const chain::Order& order, const char* label)
+    {
+        proc.setChainOrder (order, {});
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        bool finite = true;
+        const double stereoSilent = secondsToSilence (proc, 2, sampleRate, blockSize, limitSeconds, finite);
+        check (label, 2, finite, stereoSilent);
+
+        bool monoFinite = true;
+        double monoSilent = 0.0;
+        const bool monoRan = withMonoHost (proc, sampleRate, blockSize, [&]
+        {
+            monoSilent = secondsToSilence (proc, 1, sampleRate, blockSize, limitSeconds, monoFinite);
+        });
+
+        if (monoRan)
+            check (label, 1, monoFinite, monoSilent);
+    };
+
+    setBoolParam (proc, params::delayOn, true);
+    setBoolParam (proc, params::reverbOn, true);
+
+    for (int type = 0; type < tubamp::DelayFx::numTypes; ++type)
+    {
+        for (int mode = 0; mode < 3; ++mode)
+        {
+            setFloatParam (proc, params::delayType, (float) type);
+            setFloatParam (proc, params::delayMode, (float) mode);
+
+            char label[96];
+            std::snprintf (label, sizeof (label), "delay %s / mode %s",
+                           params::delayTypeNames[type], params::delayModeChoices[mode].toRawUTF8());
+            renderBoth ({ BlockId::delay }, label);
+        }
+    }
+
+    for (int type = 0; type < tubamp::ReverbFx::numTypes; ++type)
+    {
+        setFloatParam (proc, params::reverbType, (float) type);
+
+        char label[96];
+        std::snprintf (label, sizeof (label), "reverb %s", params::reverbTypeNames[type]);
+        renderBoth ({ BlockId::reverb }, label);
+    }
+
+    setFloatParam (proc, params::delayType, (float) tubamp::DelayFx::Type::digital);
+    setFloatParam (proc, params::delayMode, 0.0f);
+    setFloatParam (proc, params::reverbType, (float) tubamp::ReverbFx::Type::plate);
+    proc.setChainOrder (chain::defaultOrder(), {});
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    return ok;
+}
+
+/** A play head that reports nothing but a fixed tempo. */
+class FixedTempoPlayHead final : public juce::AudioPlayHead
+{
+public:
+    explicit FixedTempoPlayHead (double bpmToReport) : bpm (bpmToReport) {}
+
+    juce::Optional<PositionInfo> getPosition() const override
+    {
+        PositionInfo info;
+        info.setBpm (bpm);
+        info.setIsPlaying (true);
+        return info;
+    }
+
+    double bpm;
+};
+
+/** Sends one impulse through a delay-only chain and returns the sample index (from the
+    impulse) of the strongest repeat, ignoring the dry impulse itself. */
+int firstRepeatIndex (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize,
+                      double maxSeconds)
+{
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+
+    // Let the smoothed delay length settle on silence before the impulse.
+    const int settleBlocks = (int) std::ceil (sampleRate * 0.5 / blockSize);
+
+    for (int block = 0; block < settleBlocks; ++block)
+    {
+        buffer.clear();
+        proc.processBlock (buffer, midi);
+    }
+
+    const int tailBlocks = (int) std::ceil (sampleRate * maxSeconds / blockSize);
+    int peakIndex = -1;
+    float peak = 0.0f;
+
+    for (int block = 0; block < tailBlocks; ++block)
+    {
+        buffer.clear();
+
+        if (block == 0)
+        {
+            buffer.setSample (0, 0, 1.0f);
+            buffer.setSample (1, 0, 1.0f);
+        }
+
+        proc.processBlock (buffer, midi);
+
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const int index = block * blockSize + i;
+            const float magnitude = std::abs (buffer.getSample (0, i));
+
+            if (index > (int) (sampleRate * 0.005) && magnitude > peak)
+            {
+                peak = magnitude;
+                peakIndex = index;
+            }
+        }
+    }
+
+    return peak > 0.01f ? peakIndex : -1;
+}
+
+/** Tempo sync (docs/REVERB-DELAY.md §1.1): with delay_sync on, a delay's
+    first repeat lands on the note length at the play head's tempo (120 BPM when there
+    is no play head), and delay_time is ignored. */
+bool runDelaySyncTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    std::printf ("delay tempo sync:\n");
+
+    namespace chain = tubamp::chain;
+    bool ok = true;
+    const int quarterIndex = 9; // "1/4" in delaySyncNames
+
+    ok &= expect (juce::String (params::delaySyncNames[quarterIndex]) == "1/4",
+                  "delay_sync choice 9 is 1/4");
+
+    proc.setChainOrder ({ BlockId::delay }, {});
+    setBoolParam (proc, params::delayOn, true);
+    setFloatParam (proc, params::delayType, (float) tubamp::DelayFx::Type::digital);
+    setFloatParam (proc, params::delayMode, 0.0f);
+    setFloatParam (proc, params::delayTime, 300.0f); // must be ignored while synced
+    setFloatParam (proc, params::delayFeedback, 0.0f);
+    setFloatParam (proc, params::delayMix, 1.0f);
+    setFloatParam (proc, params::delayModAmt, 0.0f);
+    setFloatParam (proc, params::delayDuck, 0.0f);
+    setFloatParam (proc, params::delaySync, (float) quarterIndex);
+
+    const int tolerance = (int) std::lround (sampleRate * 0.005); // 5 ms
+
+    const auto expectRepeatAt = [&] (double expectedSeconds, const char* what)
+    {
+        proc.prepareToPlay (sampleRate, blockSize);
+        const int index = firstRepeatIndex (proc, sampleRate, blockSize, expectedSeconds + 0.5);
+        const int expected = (int) std::lround (sampleRate * expectedSeconds);
+        const bool hit = index >= 0 && std::abs (index - expected) <= tolerance;
+
+        if (! hit)
+            std::printf ("        first repeat at sample %d, expected ~%d\n", index, expected);
+
+        ok &= expect (hit, what);
+    };
+
+    FixedTempoPlayHead playHead { 100.0 };
+    proc.setPlayHead (&playHead);
+    expectRepeatAt (0.6, "Digital, sync 1/4 at 100 BPM: first repeat at 600 ms (+-5 ms)");
+
+    playHead.bpm = 150.0;
+    expectRepeatAt (0.4, "Digital, sync 1/4 at 150 BPM: first repeat at 400 ms (+-5 ms)");
+
+    proc.setPlayHead (nullptr);
+    expectRepeatAt (0.5, "Digital, sync 1/4 with no play head: 120 BPM, first repeat at 500 ms (+-5 ms)");
+
+    proc.setPlayHead (nullptr);
+
+    for (const auto* id : { params::delayType, params::delayTime, params::delayFeedback,
+                            params::delayMix, params::delayModAmt, params::delaySync })
+        if (auto* p = proc.apvts.getParameter (id))
+            p->setValueNotifyingHost (p->getDefaultValue());
 
     proc.setChainOrder (chain::defaultOrder(), {});
     proc.prepareToPlay (sampleRate, blockSize);
@@ -1818,10 +2284,23 @@ int main (int argc, char** argv)
     std::printf (splitStatePass ? "PASS: split-path structure round-trips through state\n"
                                 : "FAIL: split-path state behaviour is wrong\n");
 
+    const bool engineStatePass = runEngineTypeStateTests (sampleRate, blockSize);
+    std::printf (engineStatePass ? "PASS: engine type defaults and state round-trips are correct\n"
+                                 : "FAIL: engine type state behaviour is wrong\n");
+
+    const bool engineRenderPass = runEngineRenderTests (proc, sampleRate, blockSize);
+    std::printf (engineRenderPass ? "PASS: every reverb/delay engine renders finite and decays to silence\n"
+                                  : "FAIL: a reverb/delay engine render is wrong\n");
+
+    const bool delaySyncPass = runDelaySyncTests (proc, sampleRate, blockSize);
+    std::printf (delaySyncPass ? "PASS: delay tempo sync lands on the note length\n"
+                               : "FAIL: delay tempo sync behaviour is wrong\n");
+
     return modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
                    && ampEqPass && factoryPass && concurrentPass && fxPass
                    && modelPathBPass && delayModePass
                    && splitPathPass && dualAmpLanePass && splitLatencyPass && splitStatePass
+                   && engineStatePass && engineRenderPass && delaySyncPass
                ? 0
                : 1;
 }

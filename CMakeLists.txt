@@ -269,6 +269,30 @@ target_link_libraries(tubamp_smoke PRIVATE
     juce::juce_recommended_config_flags)
 
 # ---------------------------------------------------------------------------
+# Offline renderer for the reverb and delay engines: one block, a known stimulus, a
+# float WAV out. Compiles only the two engines (no processor, no NAM), so it builds
+# in seconds and the engines can be measured (decay per band, echo density, repeat spacing) without the
+# processor or a host around them.
+# ---------------------------------------------------------------------------
+juce_add_console_app(tubamp_fxrender PRODUCT_NAME "tubamp_fxrender")
+file(GLOB tubamp_fx_engine_sources CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/Reverb*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/Delay*.cpp")
+target_sources(tubamp_fxrender PRIVATE
+    tools/FxRender.cpp
+    ${tubamp_fx_engine_sources})
+target_include_directories(tubamp_fxrender PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(tubamp_fxrender PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_STANDALONE_APPLICATION=1)
+target_link_libraries(tubamp_fxrender PRIVATE
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+# ---------------------------------------------------------------------------
 # Headless probe for the external-AU slots: the only automated coverage of the
 # code paths that need a real AudioUnit. Unlike tubamp_smoke this one IS built with
 # hosting enabled, so it can enumerate the machine's plugins, load one into a slot

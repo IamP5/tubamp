@@ -302,12 +302,25 @@ TubampAudioProcessor::TubampAudioProcessor()
         pp.delayMode[k]     = raw (params::delayModeIds[k]);
         pp.delayRatio[k]    = raw (params::delayRatioIds[k]);
         pp.delayWidth[k]    = raw (params::delayWidthIds[k]);
+        pp.delayType[k]     = raw (params::delayTypeIds[k]);
+        pp.delaySync[k]     = raw (params::delaySyncIds[k]);
+        pp.delayLowCut[k]   = raw (params::delayLowCutIds[k]);
+        pp.delayHighCut[k]  = raw (params::delayHighCutIds[k]);
+        pp.delayModAmt[k]   = raw (params::delayModAmtIds[k]);
+        pp.delayColor[k]    = raw (params::delayColorIds[k]);
+        pp.delayDuck[k]     = raw (params::delayDuckIds[k]);
 
         pp.reverbOn[k]      = raw (params::reverbOnIds[k]);
         pp.reverbSize[k]    = raw (params::reverbSizeIds[k]);
         pp.reverbDamping[k] = raw (params::reverbDampingIds[k]);
         pp.reverbMix[k]     = raw (params::reverbMixIds[k]);
         pp.reverbWidth[k]   = raw (params::reverbWidthIds[k]);
+        pp.reverbType[k]     = raw (params::reverbTypeIds[k]);
+        pp.reverbPreDelay[k] = raw (params::reverbPreDelayIds[k]);
+        pp.reverbDecay[k]    = raw (params::reverbDecayIds[k]);
+        pp.reverbLowCut[k]   = raw (params::reverbLowCutIds[k]);
+        pp.reverbHighCut[k]  = raw (params::reverbHighCutIds[k]);
+        pp.reverbModAmt[k]   = raw (params::reverbModAmtIds[k]);
     }
 
     pendingSlim.store (valueOf (raw (params::ampSlim)), std::memory_order_relaxed);
@@ -951,6 +964,14 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     auto* const playHead = getPlayHead();
 
+    // One tempo for the whole callback, shared by every delay instance.
+    double hostBpm = 120.0;
+
+    if (playHead != nullptr)
+        if (const auto position = playHead->getPosition())
+            if (const auto bpm = position->getBpm(); bpm.hasValue() && *bpm > 0.0)
+                hostBpm = *bpm;
+
     if (numSamples <= 0 || numOutputChannels <= 0)
         return;
 
@@ -1110,7 +1131,8 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                juce::dsp::AudioBlock<float> targetBlock)
     {
         processChainBlock (order[(size_t) index], target, targetBlock, numSamples,
-                           monoScratchData, gateOn, deferGateToAmp, ampOn, amp2On, playHead);
+                           monoScratchData, gateOn, deferGateToAmp, ampOn, amp2On, playHead,
+                           hostBpm);
     };
 
     if (! lanes)
@@ -1265,7 +1287,8 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
                                               juce::dsp::AudioBlock<float> block, int numSamples,
                                               float* monoScratchData, bool gateOn,
                                               bool deferGateToAmp, bool ampOn, bool amp2On,
-                                              juce::AudioPlayHead* playHead) noexcept
+                                              juce::AudioPlayHead* playHead,
+                                              double hostBpm) noexcept
 {
     const auto k = (size_t) chain::instanceOf (id);
     juce::dsp::ProcessContextReplacing<float> context (block);
@@ -1425,12 +1448,23 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         {
             if (isOn (pp.delayOn[k]) && ! pendingReset[(size_t) id])
             {
-                delay[k].setParameters (valueOf (pp.delayTime[k], 420.0f),
-                                        valueOf (pp.delayFeedback[k], 0.35f),
-                                        valueOf (pp.delayMix[k], 0.25f),
-                                        (int) valueOf (pp.delayMode[k]),
-                                        valueOf (pp.delayRatio[k], 100.0f),
-                                        valueOf (pp.delayWidth[k], 1.0f));
+                DelayParams dp;
+                dp.timeMs    = valueOf (pp.delayTime[k], 420.0f);
+                dp.feedback  = valueOf (pp.delayFeedback[k], 0.35f);
+                dp.mix       = valueOf (pp.delayMix[k], 0.25f);
+                dp.mode      = (int) valueOf (pp.delayMode[k]);
+                dp.ratioPct  = valueOf (pp.delayRatio[k], 100.0f);
+                dp.width     = valueOf (pp.delayWidth[k], 1.0f);
+                dp.type      = (int) valueOf (pp.delayType[k], (float) DelayFx::Type::digital);
+                dp.sync      = (int) valueOf (pp.delaySync[k]);
+                dp.bpm       = hostBpm;
+                dp.lowCutHz  = valueOf (pp.delayLowCut[k], 80.0f);
+                dp.highCutHz = valueOf (pp.delayHighCut[k], kDelayHighCutDefault[(int) DelayFx::Type::digital]);
+                dp.mod       = valueOf (pp.delayModAmt[k], 0.2f);
+                dp.color     = valueOf (pp.delayColor[k], kDelayColorDefault[(int) DelayFx::Type::digital]);
+                dp.duck      = valueOf (pp.delayDuck[k], kDelayDuckDefault[(int) DelayFx::Type::digital]);
+
+                delay[k].setParameters (dp);
                 delay[k].process (block);
             }
 
@@ -1444,10 +1478,19 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         {
             if (isOn (pp.reverbOn[k]) && ! pendingReset[(size_t) id])
             {
-                reverbFx[k].setParameters (valueOf (pp.reverbSize[k], 0.5f),
-                                           valueOf (pp.reverbDamping[k], 0.5f),
-                                           valueOf (pp.reverbMix[k], 0.25f),
-                                           valueOf (pp.reverbWidth[k], 1.0f));
+                ReverbParams rp;
+                rp.type         = (int) valueOf (pp.reverbType[k], (float) ReverbFx::Type::plate);
+                rp.size         = valueOf (pp.reverbSize[k], 0.5f);
+                rp.damping      = valueOf (pp.reverbDamping[k], 0.5f);
+                rp.mix          = valueOf (pp.reverbMix[k], 0.25f);
+                rp.width        = valueOf (pp.reverbWidth[k], 1.0f);
+                rp.preDelayMs   = valueOf (pp.reverbPreDelay[k], 10.0f);
+                rp.decaySeconds = valueOf (pp.reverbDecay[k], kReverbDecayDefault[(int) ReverbFx::Type::plate]);
+                rp.lowCutHz     = valueOf (pp.reverbLowCut[k], 120.0f);
+                rp.highCutHz    = valueOf (pp.reverbHighCut[k], 8000.0f);
+                rp.mod          = valueOf (pp.reverbModAmt[k], 0.35f);
+
+                reverbFx[k].setParameters (rp);
                 reverbFx[k].process (block);
             }
 

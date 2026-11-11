@@ -40,7 +40,7 @@ struct FxEditorWindow;
     that covers the whole editor.
 
     Owns:
-      - one relay per APVTS parameter (89 sliders / 30 toggles / 8 combos),
+      - one relay per APVTS parameter (119 sliders / 30 toggles / 17 combos),
         each named *verbatim* after its APVTS id, plus the matching Web*Attachment;
       - the native-function surface described in docs/REACT-UI.md (chain, model, IR,
         preset, A/B and TONE3000 operations);

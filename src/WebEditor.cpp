@@ -74,7 +74,20 @@ const char* const kSliderIds[] = {
     // Split/mix chain (docs/SPLIT.md §2), appended in spec order.
     params::amp2Input,       params::amp2Output,     params::splitXover,
     params::mixALevel,       params::mixBLevel,      params::mixAPan,
-    params::mixBPan,         params::mixLevel };
+    params::mixBPan,         params::mixLevel,
+    // Reverb/delay engine controls (docs/REVERB-DELAY.md §1.4), appended in spec order.
+    params::delayLowCut,     params::delayHighCut,   params::delayModAmt,
+    params::delayColor,      params::delayDuck,
+    params::delay2LowCut,    params::delay2HighCut,  params::delay2ModAmt,
+    params::delay2Color,     params::delay2Duck,
+    params::delay3LowCut,    params::delay3HighCut,  params::delay3ModAmt,
+    params::delay3Color,     params::delay3Duck,
+    params::reverbPreDelay,  params::reverbDecay,    params::reverbLowCut,
+    params::reverbHighCut,   params::reverbModAmt,
+    params::reverb2PreDelay, params::reverb2Decay,   params::reverb2LowCut,
+    params::reverb2HighCut,  params::reverb2ModAmt,
+    params::reverb3PreDelay, params::reverb3Decay,   params::reverb3LowCut,
+    params::reverb3HighCut,  params::reverb3ModAmt };
 
 const char* const kToggleIds[] = {
     params::gateOn,  params::compOn,  params::driveOn, params::ampOn,
@@ -97,11 +110,16 @@ const char* const kComboIds[] = { params::ampOutMode, params::modType,
                                   // stereo chain (docs/STEREO.md §4)
                                   params::delayMode,  params::delay2Mode, params::delay3Mode,
                                   // split/mix chain (docs/SPLIT.md §2)
-                                  params::splitMode };
+                                  params::splitMode,
+                                  // reverb/delay engines (docs/REVERB-DELAY.md §1.4)
+                                  params::delayType,  params::delaySync,
+                                  params::delay2Type, params::delay2Sync,
+                                  params::delay3Type, params::delay3Sync,
+                                  params::reverbType, params::reverb2Type, params::reverb3Type };
 
-static_assert (std::size (kSliderIds) == 89, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params");
+static_assert (std::size (kSliderIds) == 119, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params + 30 reverb/delay engine params");
 static_assert (std::size (kToggleIds) == 30, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables + 4 split/mix enables (amp_stereo removed)");
-static_assert (std::size (kComboIds) == 8, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode");
+static_assert (std::size (kComboIds) == 17, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode + delay type/sync x3 + reverb type x3");
 
 /** Upper bound on hosted parameters surfaced to the UI. A handful of plugins publish
     thousands; serializing all of them into every slot payload would cost more than it

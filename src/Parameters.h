@@ -2,6 +2,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <iterator>
+
 // Single source of truth for every parameter in the chain. The classic arrangement
 // (chain::classicOrder(); a fresh instance starts with the amp alone):
 // Trim -> Gate trigger -> Comp -> Drive -> NAM -> Gate gain -> Amp EQ -> Cab IR
@@ -200,6 +202,49 @@ inline constexpr auto mixBPan   = "mix_bpan";   // [-1, 1] lane B equal-power pa
 inline constexpr auto mixBPhase = "mix_bphase"; // bool: invert lane B before summing
 inline constexpr auto mixLevel  = "mix_level";  // dB [-60, 12] master level after the sum
 
+// Reverb and delay engine types (docs/REVERB-DELAY.md §1). Every instance picks its own.
+inline constexpr auto delayType     = "delay_type";     // choice: delayTypeChoices (FROZEN)
+inline constexpr auto delaySync     = "delay_sync";     // choice: delaySyncChoices (FROZEN), 0 = Off
+inline constexpr auto delayLowCut   = "delay_lowcut";   // Hz [20, 1000] log, in the feedback loop
+inline constexpr auto delayHighCut  = "delay_highcut";  // Hz [1000, 20000] log, in the feedback loop
+inline constexpr auto delayModAmt   = "delay_mod";      // [0, 1] time modulation depth
+inline constexpr auto delayColor    = "delay_color";    // [0, 1] amount of the type's character
+inline constexpr auto delayDuck     = "delay_duck";     // [0, 1] wet ducking under the input; each type
+                                                        // has its own starting point (kDelayDuckDefault)
+inline constexpr auto delay2Type    = "delay2_type";
+inline constexpr auto delay2Sync    = "delay2_sync";
+inline constexpr auto delay2LowCut  = "delay2_lowcut";
+inline constexpr auto delay2HighCut = "delay2_highcut";
+inline constexpr auto delay2ModAmt  = "delay2_mod";
+inline constexpr auto delay2Color   = "delay2_color";
+inline constexpr auto delay2Duck    = "delay2_duck";
+inline constexpr auto delay3Type    = "delay3_type";
+inline constexpr auto delay3Sync    = "delay3_sync";
+inline constexpr auto delay3LowCut  = "delay3_lowcut";
+inline constexpr auto delay3HighCut = "delay3_highcut";
+inline constexpr auto delay3ModAmt  = "delay3_mod";
+inline constexpr auto delay3Color   = "delay3_color";
+inline constexpr auto delay3Duck    = "delay3_duck";
+
+inline constexpr auto reverbType      = "reverb_type";      // choice: reverbTypeChoices (FROZEN)
+inline constexpr auto reverbPreDelay  = "reverb_predelay";  // ms [0, 250]
+inline constexpr auto reverbDecay     = "reverb_decay";     // s [0.2, 20] log, mid-band T60
+inline constexpr auto reverbLowCut    = "reverb_lowcut";    // Hz [20, 1000] log, wet only
+inline constexpr auto reverbHighCut   = "reverb_highcut";   // Hz [1000, 20000] log, wet only
+inline constexpr auto reverbModAmt    = "reverb_mod";       // [0, 1] tail modulation
+inline constexpr auto reverb2Type     = "reverb2_type";
+inline constexpr auto reverb2PreDelay = "reverb2_predelay";
+inline constexpr auto reverb2Decay    = "reverb2_decay";
+inline constexpr auto reverb2LowCut   = "reverb2_lowcut";
+inline constexpr auto reverb2HighCut  = "reverb2_highcut";
+inline constexpr auto reverb2ModAmt   = "reverb2_mod";
+inline constexpr auto reverb3Type     = "reverb3_type";
+inline constexpr auto reverb3PreDelay = "reverb3_predelay";
+inline constexpr auto reverb3Decay    = "reverb3_decay";
+inline constexpr auto reverb3LowCut   = "reverb3_lowcut";
+inline constexpr auto reverb3HighCut  = "reverb3_highcut";
+inline constexpr auto reverb3ModAmt   = "reverb3_mod";
+
 // Instance-indexed views of the ids above (index 0 = instance 1). The processor
 // resolves its per-instance pointer arrays through these; the ids stay literals, so
 // nothing anywhere may derive one by string manipulation.
@@ -240,6 +285,21 @@ inline constexpr const char* reverbDampingIds[maxInstances] { reverbDamping, rev
 inline constexpr const char* reverbMixIds[maxInstances]     { reverbMix,     reverb2Mix,     reverb3Mix };
 inline constexpr const char* reverbWidthIds[maxInstances]   { reverbWidth,   reverb2Width,   reverb3Width };
 
+inline constexpr const char* delayTypeIds[maxInstances]    { delayType,    delay2Type,    delay3Type };
+inline constexpr const char* delaySyncIds[maxInstances]    { delaySync,    delay2Sync,    delay3Sync };
+inline constexpr const char* delayLowCutIds[maxInstances]  { delayLowCut,  delay2LowCut,  delay3LowCut };
+inline constexpr const char* delayHighCutIds[maxInstances] { delayHighCut, delay2HighCut, delay3HighCut };
+inline constexpr const char* delayModAmtIds[maxInstances]  { delayModAmt,  delay2ModAmt,  delay3ModAmt };
+inline constexpr const char* delayColorIds[maxInstances]   { delayColor,   delay2Color,   delay3Color };
+inline constexpr const char* delayDuckIds[maxInstances]    { delayDuck,    delay2Duck,    delay3Duck };
+
+inline constexpr const char* reverbTypeIds[maxInstances]     { reverbType,     reverb2Type,     reverb3Type };
+inline constexpr const char* reverbPreDelayIds[maxInstances] { reverbPreDelay, reverb2PreDelay, reverb3PreDelay };
+inline constexpr const char* reverbDecayIds[maxInstances]    { reverbDecay,    reverb2Decay,    reverb3Decay };
+inline constexpr const char* reverbLowCutIds[maxInstances]   { reverbLowCut,   reverb2LowCut,   reverb3LowCut };
+inline constexpr const char* reverbHighCutIds[maxInstances]  { reverbHighCut,  reverb2HighCut,  reverb3HighCut };
+inline constexpr const char* reverbModAmtIds[maxInstances]   { reverbModAmt,   reverb2ModAmt,   reverb3ModAmt };
+
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
 inline const juce::StringArray modTypeChoices { "Chorus", "Phaser", "Tremolo" };
@@ -251,6 +311,20 @@ inline const juce::StringArray delayModeChoices { "Stereo", "Ping-Pong", "Dual" 
 // Frozen once shipped (docs/SPLIT.md) — do not reorder/append without a migration
 // plan, hosts store the choice as an index.
 inline const juce::StringArray splitModeChoices { "Copy", "L/R", "X-Over" };
+
+// Frozen once shipped (docs/REVERB-DELAY.md §1) — append only, never reorder: hosts
+// store the choice as an index, and DelayFx::Type / ReverbFx::Type / kDelaySyncBeats
+// are indexed by these lists (Parameters.cpp ties the sizes together, which is why the
+// names live in plain arrays first).
+inline constexpr const char* delayTypeNames[] { "Digital", "Analog", "Tape", "Lo-Fi", "Diffuse" };
+inline constexpr const char* delaySyncNames[] { "Off",  "1/32", "1/16T", "1/16", "1/8T",
+                                                "1/16.", "1/8", "1/4T",  "1/8.", "1/4",
+                                                "1/2T", "1/4.", "1/2",   "1/2.", "1/1" };
+inline constexpr const char* reverbTypeNames[] { "Room", "Hall", "Plate", "Spring", "Ambient" };
+
+inline const juce::StringArray delayTypeChoices  { delayTypeNames,  (int) std::size (delayTypeNames) };
+inline const juce::StringArray delaySyncChoices  { delaySyncNames,  (int) std::size (delaySyncNames) };
+inline const juce::StringArray reverbTypeChoices { reverbTypeNames, (int) std::size (reverbTypeNames) };
 
 /** Output-gain compensation modes, in the official plugin's index order. */
 enum class OutputMode { raw = 0, normalized = 1, calibrated = 2 };

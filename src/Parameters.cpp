@@ -1,7 +1,25 @@
 #include "Parameters.h"
 
+#include "dsp/Delay.h"
+#include "dsp/Reverb.h"
+
 namespace params
 {
+// The engines index their enums and kDelaySyncBeats by these choice lists.
+static_assert (std::size (delayTypeNames) == (size_t) tubamp::DelayFx::numTypes,
+               "delay_type choices must match DelayFx::Type");
+static_assert (std::size (reverbTypeNames) == (size_t) tubamp::ReverbFx::numTypes,
+               "reverb_type choices must match ReverbFx::Type");
+static_assert (std::size (delaySyncNames) == (size_t) tubamp::kNumDelaySyncChoices,
+               "delay_sync choices must match kDelaySyncBeats");
+
+// Damping starts where the default reverb type's table entry puts it (the editor
+// applies the other types' entries when one is picked). reverb_damping is a v1
+// parameter whose default has always been 0.5, which is why Plate, the default type,
+// is the type the knob's centre is calibrated to.
+constexpr float kReverbDampingAtDefaultType = tubamp::kReverbDampingDefault[(int) tubamp::ReverbFx::Type::plate];
+static_assert (kReverbDampingAtDefaultType == 0.5f, "reverb_damping's default is frozen at 0.5");
+
 namespace
 {
 constexpr int kVersionHint = 1;
@@ -12,6 +30,12 @@ constexpr int kVersionHint = 1;
     the additions append to it. The AU parameter ID is a hash of the string id and does
     not depend on the hint, so saved automation is unaffected either way. */
 constexpr int kVersionHint2 = 2;
+
+/** Hint for parameters added after the hint-2 set shipped. Within one hint the AU list
+    is sorted by id hash, so adding to hint 2 would interleave the new ids among the
+    shipped hint-2 ones and shift their AU indices; a higher hint sorts the whole group
+    after them instead. Every later release that adds parameters needs the next number. */
+constexpr int kVersionHint3 = 3;
 
 /** Range whose normalised 0.5 point sits at the geometric mean — the natural
     feel for frequency / time / ratio controls. */
@@ -110,7 +134,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 
     // --- reverb
     addFloat (layout, reverbSize,    "Reverb Size",    { 0.0f, 1.0f, 0.001f }, 0.5f);
-    addFloat (layout, reverbDamping, "Reverb Damping", { 0.0f, 1.0f, 0.001f }, 0.5f);
+    addFloat (layout, reverbDamping, "Reverb Damping", { 0.0f, 1.0f, 0.001f }, kReverbDampingAtDefaultType);
     addFloat (layout, reverbMix,     "Reverb Mix",     { 0.0f, 1.0f, 0.001f }, 0.25f);
 
     // --- external AudioUnit slots
@@ -201,12 +225,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 
     addBool  (layout, reverb2On,      "Reverb 2 On",      true, kVersionHint2);
     addFloat (layout, reverb2Size,    "Reverb 2 Size",    { 0.0f, 1.0f, 0.001f }, 0.5f,  {}, kVersionHint2);
-    addFloat (layout, reverb2Damping, "Reverb 2 Damping", { 0.0f, 1.0f, 0.001f }, 0.5f,  {}, kVersionHint2);
+    addFloat (layout, reverb2Damping, "Reverb 2 Damping", { 0.0f, 1.0f, 0.001f }, kReverbDampingAtDefaultType,  {}, kVersionHint2);
     addFloat (layout, reverb2Mix,     "Reverb 2 Mix",     { 0.0f, 1.0f, 0.001f }, 0.25f, {}, kVersionHint2);
 
     addBool  (layout, reverb3On,      "Reverb 3 On",      true, kVersionHint2);
     addFloat (layout, reverb3Size,    "Reverb 3 Size",    { 0.0f, 1.0f, 0.001f }, 0.5f,  {}, kVersionHint2);
-    addFloat (layout, reverb3Damping, "Reverb 3 Damping", { 0.0f, 1.0f, 0.001f }, 0.5f,  {}, kVersionHint2);
+    addFloat (layout, reverb3Damping, "Reverb 3 Damping", { 0.0f, 1.0f, 0.001f }, kReverbDampingAtDefaultType,  {}, kVersionHint2);
     addFloat (layout, reverb3Mix,     "Reverb 3 Mix",     { 0.0f, 1.0f, 0.001f }, 0.25f, {}, kVersionHint2);
 
     // --- amp tone stack (inside the amp block, after the model)
@@ -265,6 +289,48 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     addFloat (layout, mixBPan,   "Mix B Pan",   { -1.0f, 1.0f, 0.001f }, 0.0f, {},   kVersionHint2);
     addBool  (layout, mixBPhase, "Mix B Phase", false, kVersionHint2);
     addFloat (layout, mixLevel,  "Mix Level",   { -60.0f, 12.0f, 0.1f }, 0.0f, "dB", kVersionHint2);
+
+    // --- reverb and delay engine types (docs/REVERB-DELAY.md §1), hint 3: added after
+    // the hint-2 set shipped. Delay instances 1-3, then reverb instances 1-3, each in
+    // the spec's per-instance order. Knobs with a per-type starting point (delay high
+    // cut, color and duck; reverb decay) default to the default type's table entry; the
+    // editor applies the other types' entries when one is picked.
+    const char* const delayNames[maxInstances]  { "Delay", "Delay 2", "Delay 3" };
+    const char* const reverbNames[maxInstances] { "Reverb", "Reverb 2", "Reverb 3" };
+
+    for (int k = 0; k < maxInstances; ++k)
+    {
+        const juce::String name { delayNames[k] };
+
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { delayTypeIds[k], kVersionHint3 }, name + " Type", delayTypeChoices,
+            (int) tubamp::DelayFx::Type::digital));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { delaySyncIds[k], kVersionHint3 }, name + " Sync", delaySyncChoices, 0));
+        addFloat (layout, delayLowCutIds[k],  name + " Low Cut",  logRange (20.0f, 1000.0f, 1.0f),    80.0f,  "Hz", kVersionHint3);
+        addFloat (layout, delayHighCutIds[k], name + " High Cut", logRange (1000.0f, 20000.0f, 1.0f),
+                  tubamp::kDelayHighCutDefault[(int) tubamp::DelayFx::Type::digital], "Hz", kVersionHint3);
+        addFloat (layout, delayModAmtIds[k],  name + " Mod",      { 0.0f, 1.0f, 0.001f },             0.2f,  {},   kVersionHint3);
+        addFloat (layout, delayColorIds[k],   name + " Color",    { 0.0f, 1.0f, 0.001f },
+                  tubamp::kDelayColorDefault[(int) tubamp::DelayFx::Type::digital], {}, kVersionHint3);
+        addFloat (layout, delayDuckIds[k],    name + " Duck",     { 0.0f, 1.0f, 0.001f },
+                  tubamp::kDelayDuckDefault[(int) tubamp::DelayFx::Type::digital], {}, kVersionHint3);
+    }
+
+    for (int k = 0; k < maxInstances; ++k)
+    {
+        const juce::String name { reverbNames[k] };
+
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { reverbTypeIds[k], kVersionHint3 }, name + " Type", reverbTypeChoices,
+            (int) tubamp::ReverbFx::Type::plate));
+        addFloat (layout, reverbPreDelayIds[k], name + " Pre-Delay", { 0.0f, 250.0f, 0.1f },             10.0f,  "ms", kVersionHint3);
+        addFloat (layout, reverbDecayIds[k],    name + " Decay",     logRange (0.2f, 20.0f, 0.01f),
+                  tubamp::kReverbDecayDefault[(int) tubamp::ReverbFx::Type::plate], "s", kVersionHint3);
+        addFloat (layout, reverbLowCutIds[k],   name + " Low Cut",   logRange (20.0f, 1000.0f, 1.0f),    120.0f, "Hz", kVersionHint3);
+        addFloat (layout, reverbHighCutIds[k],  name + " High Cut",  logRange (1000.0f, 20000.0f, 1.0f), 8000.0f, "Hz", kVersionHint3);
+        addFloat (layout, reverbModAmtIds[k],   name + " Mod",       { 0.0f, 1.0f, 0.001f },             0.35f,  {},   kVersionHint3);
+    }
 
     return layout;
 }
