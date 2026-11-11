@@ -23,8 +23,18 @@ first block glides from the input into the tremolo instead of stepping to the di
 Rows M1, R1, S1, T5 (table), X7 and N1 were added after the independent verification
 (.audit/fx-verify/mod.md): mono and Width, re-enable after bypass, song-position jumps,
 pulse splatter against the carrier frequency, depth 0 after automation, NaN and Inf.
+
+Rows Y1-Y8 and Z1 were added after the second verification (.audit/fx-verify/r2-mod.md):
+sync transitions at every host block size (N4), sync under host jitter and tempo changes,
+voice switches against both voices' trajectories (N5), the start after a reset (N10), pulse
+splatter against the edge time (N9), CPU at every width (N15), huge finite samples (N14),
+Bias and DC (N11), and real-time safety during switches. The Smooth and Bias references of T2
+start at the voice's crest (Tremolo.h reset()); Smooth's pulse has the engine's raised-cosine
+edges, Bias's detector its 10 Hz AC coupling. T16's fade-length probe holds the LFO near phase
+0 by a song position, since a reset now starts each voice at its crest.
 """
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -49,6 +59,9 @@ NULL_KEYS = [{}, {"rate": 10, "depth": 1, "mix": 1}, {"rate": 0.05, "depth": 0.1
 NULL_STEPS = ["rate@1=10", "depth@2=1", "mix@2.5=1", "rate@3..4=0.05..7", "depth@4=0.1", "mix@5=0.5"]
 
 LEVEL = -18.0          # §4.7.7: steady 1 kHz sine at -18 dBFS, 4 Hz unless stated
+# T5 splatter at the contract's carriers and in the dense sweep: was -58 dBc (one-pole edges,
+# worst -59.1); the raised-cosine edges measure -89.8 worst at 44.1, 48 and 96 kHz, plus 1 dB.
+SPLATTER_CONTRACT = -88.8
 CARRIER = 1000.0
 
 
@@ -122,13 +135,38 @@ def sliding_rms_db(y, sr, ms):
 
 # ---------------------------------------------------------------------------- reference (T2)
 
+PULSE_EDGE_S = 0.001   # Tremolo.cpp kPulseEdgeSeconds
+
+
+def w_morph_edged(ph, wave, s, rate):
+    """proto.w_morph with the engine's pulse: raised-cosine edges kPulseEdgeSeconds long,
+    centred on the hard edges, in place of the hard steps."""
+    if wave <= 0.5:
+        return proto.w_morph(ph, wave, s)
+    tri = proto.w_tri(proto.skew(ph, s))
+    q = (ph - 0.5 * s) % 1.0
+    e = PULSE_EDGE_S * rate
+    h = 0.5 * e
+    pulse = np.where(q < s, 1.0, 0.0)
+    rc = lambda v: 0.5 - 0.5 * np.cos(np.pi * v)  # noqa: E731
+    m = q < h
+    pulse[m] = rc(0.5 + q[m] / e)
+    m = q >= 1.0 - h
+    pulse[m] = rc(0.5 + (q[m] - 1.0) / e)
+    m = (q >= s - h) & (q < s + h)
+    pulse[m] = 1.0 - rc(0.5 + (q[m] - s) / e)
+    a = 2 * wave - 1
+    return (1 - a) * tri + a * pulse
+
+
 def ref_smooth(x, sr, rate, depth, wave, shape, width):
+    """Smooth starts at its crest, phase s (Tremolo.h reset())."""
     n = x.shape[1]
     s = 0.1 + 0.8 * f32(shape)
     e = 1.0 - 0.5 * f32(width)
     out = []
-    for c, start in enumerate((0.0, 0.5 * f32(width))):
-        w = proto.w_morph(proto.phase(f32(rate), n, sr, start), f32(wave), s)
+    for c, start in enumerate((s, s + 0.5 * f32(width))):
+        w = w_morph_edged(proto.phase(f32(rate), n, sr, start), f32(wave), s, f32(rate))
         g = proto.onepole(proto.apply_depth(w ** e, f32(depth)), proto.SLEW_HZ, sr=sr, y0=1.0)
         out.append(x[c] * g)
     return np.vstack(out)
@@ -151,11 +189,19 @@ def envelope_follower(level, sr, attack=0.005, release=0.150):
 
 
 def ref_bias(x, sr, rate, depth, shape, width, exponent=1.0):
+    """Bias starts at its crest, phase 0.5 (Tremolo.h reset()); its detector is AC-coupled at
+    10 Hz (one-pole low-pass subtracted) ahead of the follower."""
     n = x.shape[1]
-    env = envelope_follower(np.abs(0.5 * (x[0] + x[1])), sr)
+    m = 0.5 * (x[0] + x[1])
+    a = 1 - np.exp(-2 * np.pi * 10.0 / sr)
+    hp, low = np.empty(n), 0.0
+    for i, v in enumerate(m):
+        low += a * (v - low)
+        hp[i] = v - low
+    env = envelope_follower(np.abs(hp), sr)
     e = exponent
     out = []
-    for c, start in enumerate((0.0, 0.5 * f32(width))):
+    for c, start in enumerate((0.5, 0.5 + 0.5 * f32(width))):
         u = 0.5 + 0.5 * np.cos(2 * np.pi * proto.phase(f32(rate), n, sr, start))
         g = proto.bias_gain(u ** e, f32(depth), env, knee_dbfs=-24.0 + 24.0 * f32(shape))
         out.append(x[c] * proto.onepole(g, proto.SLEW_HZ, sr=sr, y0=1.0))
@@ -260,13 +306,13 @@ def t5_pulse(report, sr=48000, tag=""):
         out, _ = render(tone_in(sr, freq=f, phase=ph, channels=1), keys, sr)
         results[(f, ph)] = splatter_dbc(out, sr, f)
     wc = max(contract, key=lambda c: results[c])
-    detail = f"worst {results[wc]:.1f} dBc at {wc[0]} Hz, phase {np.degrees(wc[1]):.0f} deg"
-    ok = results[wc] <= -58.0
+    detail = f"worst {results[wc]:.1f} dBc at {wc[0]} Hz, phase {np.degrees(wc[1]):.0f} deg (bar {SPLATTER_CONTRACT})"
+    ok = results[wc] <= SPLATTER_CONTRACT
     if not tag:
         wd = max(results, key=results.get)
         detail += f"; dense sweep ({len(results)} carriers) worst {results[wd]:.1f} dBc at {wd[0]} Hz, " \
                   f"phase {np.degrees(wd[1]):.1f} deg"
-        ok &= results[wd] <= -58.0
+        ok &= results[wd] <= SPLATTER_CONTRACT
     report.add("T5" + tag, f"pulse splatter carrier+2..5 kHz{' ' + str(sr) if tag else ''}", ok, detail)
     return results
 
@@ -436,11 +482,13 @@ def t16_switch(report):
     report.add("T16", "voice switch mid-note", worst <= 3.0, f"largest 1 ms level step {worst:.2f} dB ({where})")
 
     # (b) fade length, from the per-sample gain c = y / x read where the carrier is near
-    # its peaks. Smooth at rate 0.01 Hz sits at its dip (c ~ 0); Optical at rate 0.01 Hz
-    # is dark (c = 1, dry). Smooth -> Optical shows the fade-out alone; Optical -> Smooth
-    # shows nothing until the fade-in, so its end measures the whole switch.
+    # its peaks. At rate 0.01 Hz with the LFO held near phase 0 by a song position (a reset
+    # starts each voice at its crest, Tremolo.h), Smooth's pulse sits in its gap (c = 0) and
+    # Optical is dark (c = 1). The switch is one crossfade, so either direction measures it
+    # whole.
     def gain_curve(a, b, ts, blk):
-        keys = [f"voice={a}", f"voice@{ts / sr!r}={b}", "rate=0.01", "depth=1", "width=0", "wave=0"]
+        keys = [f"voice={a}", f"voice@{ts / sr!r}={b}", "rate=0.01", "depth=1", "width=0", "wave=1",
+                "sync_phase@0..2=0..0.02"]
         x = tone_in(sr)
         out, _ = render(x, keys, sr, blk)
         valid = np.nonzero(np.abs(x[0]) >= 0.7 * np.max(np.abs(x[0])))[0]
@@ -739,11 +787,13 @@ def s1_sync_jump(report):
 
 
 # Pulse splatter bound against the carrier, from the measured worst case (16 carrier phases,
-# carriers on the 4 Hz grid so the phase at every edge is the same). The edge itself does not
-# change with the carrier: the measure's band (carrier + 2..5 kHz) also catches the lower
-# sideband of the edge, which for a low carrier lands at nearly the same offsets and adds
-# coherently at the worst phase (+3.3 dB at 40 Hz). The incoherent mean is -61.6 dBc flat.
-SPLATTER_BOUNDS = ((40.0, -55.5), (82.0, -55.8), (200.0, -56.4), (500.0, -58.0))   # (from Hz, bar dBc)
+# carriers on the 4 Hz grid so the phase at every edge is the same) plus 1 dB. The edge itself
+# does not change with the carrier: the measure's band (carrier + 2..5 kHz) also catches the
+# lower sideband of the edge, which for a low carrier lands at nearly the same offsets and adds
+# coherently at the worst phase. Tightened after the raised-cosine edges (Y5): measured worst
+# -85.8 dBc from 40 Hz, -87.0 from 82 Hz, -88.6 from 200 Hz, -90.1 from 500 Hz (the one-pole
+# edge alone measured -55.8 / -56.1 / -56.9 / -58.4 there, under bars -55.5 / -55.8 / -56.4 / -58.0).
+SPLATTER_BOUNDS = ((40.0, -84.8), (82.0, -86.0), (200.0, -87.6), (500.0, -89.1))   # (from Hz, bar dBc)
 
 
 def t5_splatter_table(report):
@@ -809,6 +859,387 @@ def n1_non_finite(report):
     report.add("N1", "NaN/Inf bursts: extra non-finite samples / 0.5 s later vs clean", ok, ", ".join(rows))
 
 
+# ---------------------------------------------------------------------------- rows after the second verification
+# (.audit/fx-verify/r2-mod.md N4, N5, N9, N10, N11, N14, N15). Y1-Y3 drive the engine through the adapter's
+# scripted play head (host_* keys, fx_tremolo.cpp), which resolves rate and sync phase as the processor does.
+
+POOL = 8
+
+
+def pmap(fn, jobs):
+    with ThreadPoolExecutor(POOL) as ex:
+        return list(ex.map(fn, jobs))
+
+
+def hp_2k(y, sr):
+    """|y| high-passed at 2 kHz: S1's Kaiser windowed sinc, its length scaled with the rate."""
+    taps = int(1023 * sr / 48000) | 1
+    k = np.arange(taps) - taps // 2
+    h = -np.sinc(2 * 2000.0 / sr * k) * 2 * 2000.0 / sr
+    h[taps // 2] += 1.0
+    h *= np.kaiser(taps, 14.0)
+    n = len(y) + taps - 1
+    m = 1 << int(np.ceil(np.log2(n)))
+    z = np.fft.irfft(np.fft.rfft(y, m) * np.fft.rfft(h, m), m)[taps // 2:taps // 2 + len(y)]
+    return np.abs(z)
+
+
+def peak_db(a, i0, i1):
+    return float(fx.db(max(float(np.max(a[max(0, i0):i1])), 1e-12)))
+
+
+SYNC_BASE = ["host_bpm=120", "host_beats=1", "width=0", "wave=0", "rate=3.3"]
+SYNC_EVENTS = {
+    # name: (constant keys, keys at the event time T)
+    "engage": (["host_sync=0"], lambda T: [f"host_sync@{T!r}=1"]),
+    "release": (["host_sync=1"], lambda T: [f"host_sync@{T!r}=0"]),
+    "note 1/4->1/16": (["host_sync=1"], lambda T: [f"host_beats@{T!r}=0.25"]),
+    "locate +0.37": (["host_sync=1"], lambda T: [f"host_ppq@{T!r}={2 * T + 0.37!r}"]),
+    "loop -1.5 cycles": (["host_sync=1"], lambda T: [f"host_ppq@{T!r}={2 * T - 1.5!r}"]),
+    "transport start": (["host_sync=1", "host_play=0"], lambda T: [f"host_play@{T!r}=1", f"host_ppq@{T!r}=2.73"]),
+}
+
+
+def optical_edges(sr, level, depth, rates, f0=110.0):
+    """Optical's own lamp edges: the peak above 2 kHz of a steady take, worst of eight carrier
+    phases (an edge's figure depends on where in the carrier's cycle it lands) and of the
+    given LFO rates."""
+    def one(job):
+        rate, k = job
+        x = as_f32(fx.sine(f0, level, 1.6, sr, k * np.pi / 4))[None, :]
+        y = render(x, ["voice=2", f"depth={depth}", f"rate={rate}", "width=0"], sr, 512)[0][0]
+        return peak_db(hp_2k(y, sr), int(0.3 * sr), int(1.57 * sr))
+    return max(pmap(one, [(r, k) for r in rates for k in range(8)]))
+
+
+def y1_sync_transitions(report):
+    """N4: sync engaged and released, note value changed, locate, loop and transport start while
+    a 110 Hz note plays, every voice at depth 1, host blocks 16-4096 at 48 kHz and 64/512/4096
+    at 44.1, 96 and 192 kHz, two event instants each. Click = peak above 2 kHz from 5 ms before
+    the event to 250 ms after. Bar -70 dBFS at -12 dBFS input, or what the voice itself puts
+    above 2 kHz in the same take outside the event, whichever is higher; for Optical also its
+    steady lamp edges at the worst carrier phase (optical_edges, at the take's 2, 3.3 and 8 Hz).
+    The 0 dBFS takes (48 kHz, blocks 64 and 256) carry the same bar 12 dB up."""
+    configs = [(48000, b) for b in (16, 64, 128, 256, 512, 1024, 4096)]
+    configs += [(sr, b) for sr in (44100, 96000, 192000) for b in (64, 512, 4096)]
+    jobs = [(v, ev, T, sr, b, -12.0) for v in (1, 2, 3, 4) for ev in SYNC_EVENTS for T in (1.0133, 1.2771)
+            for sr, b in configs]
+    jobs += [(v, ev, T, 48000, b, 0.0) for v in (1, 2, 3, 4) for ev in SYNC_EVENTS for T in (1.0133, 1.2771)
+             for b in (64, 256)]
+
+    def one(job):
+        v, ev, T, sr, b, level = job
+        const, at = SYNC_EVENTS[ev]
+        secs = T + 0.55
+        x = as_f32(fx.sine(110.0, level, secs, sr, 0.7))[None, :]
+        keys = [f"voice={v}", "depth=1"] + SYNC_BASE + const + at(T)
+        y = render(x, keys, sr, b)[0][0]
+        h = hp_2k(y, sr)
+        a, e = int((T - 0.005) * sr), int(secs * sr) - int(0.03 * sr)
+        click = peak_db(h, a, int((T + 0.25) * sr))
+        own = max(peak_db(h, int(0.3 * sr), a - int(0.05 * sr)), peak_db(h, int((T + 0.3) * sr), e))
+        return job, click, own
+
+    res = pmap(one, jobs)
+    edges = {(sr, level): optical_edges(sr, level, 1.0, (2.0, 3.3, 8.0)) for sr, level in {(j[3], j[5]) for j in jobs}}
+    res = [(j, click, max(own, edges[(j[3], j[5])]) if j[0] == 2 else own) for j, click, own in res]
+    rows, ok = [], True
+    for v in (1, 2, 3, 4):
+        for level in (-12.0, 0.0):
+            rr = [r for r in res if r[0][0] == v and r[0][5] == level]
+            bar = -70.0 + (level + 12.0)
+            w = max(rr, key=lambda r: r[1] - max(bar, r[2]))
+            ok &= all(r[1] <= max(bar, r[2]) for r in rr)
+            rows.append(f"{TYPES[v]} {level:.0f} dBFS {w[1]:.1f} (own {w[2]:.1f}; {w[0][1]}, "
+                        f"{w[0][3] // 1000} kHz block {w[0][4]})")
+    report.add("Y1", "sync transitions click above 2 kHz (dBFS)", ok, "; ".join(rows) + f" ({len(res)} takes)")
+
+
+def meter_rows(meters):
+    a = np.array([[float(c) for c in m.split("\t")] for m in meters])
+    return a[:, 0], a[:, 1], a[:, 2]
+
+
+def y2_sync_tracking(report):
+    """The other half of N4 (and the chorus's N1): an imperfect host. Song position jittered by
+    +-2 and +-8 samples per block, tempo stepped 1 BPM at a time and ramped 100 -> 140 BPM, at
+    1/32 and 1/4, host blocks 16-4096 and 22.05-192 kHz: zero song-position jumps, and from one
+    second on the LFO within 0.01 cycle of the true (unjittered) host phase."""
+    steps = [f"host_bpm@{0.1 * k!r}={100 + k}" for k in range(1, 41)]
+    cases = {"jitter 2": ["host_bpm=140", "host_jitter=2"], "jitter 8": ["host_bpm=140", "host_jitter=8"],
+             "1 BPM steps": ["host_bpm=100"] + steps, "ramp 100-140": ["host_bpm@0..4=100..140"]}
+    configs = [(48000, b) for b in (16, 64, 128, 256, 512, 1024, 4096)]
+    configs += [(22050, 4096), (44100, 64), (44100, 4096), (96000, 512), (192000, 64), (192000, 4096)]
+    jobs = [(c, beats, sr, b) for c in cases for beats in (0.125, 1.0) for sr, b in configs]
+
+    def one(job):
+        c, beats, sr, b = job
+        keys = ["voice=1", "depth=1", "host_sync=1", f"host_beats={beats}"] + cases[c]
+        r = fx.invoke(EFFECT, "gen:silence", keys, [f"--block={b}", "--meters", "--seconds=5", f"--sr={sr}"], sr)
+        start, jumps, err = meter_rows(r.meters)
+        late = start >= sr
+        return job, int(jumps[-1] - jumps[0]), float(np.max(np.abs(err[late])))
+
+    res = pmap(one, jobs)
+    rows, ok = [], True
+    for c in cases:
+        rr = [r for r in res if r[0][0] == c]
+        jumps = sum(r[1] for r in rr)
+        w = max(rr, key=lambda r: r[2])
+        ok &= jumps == 0 and w[2] < 0.01
+        rows.append(f"{c}: {jumps} jumps, error {w[2]:.4f} (1/{int(4 / w[0][1])}, {w[0][2] // 1000} kHz block {w[0][3]})")
+    report.add("Y2", "sync under host jitter and tempo changes", ok, "; ".join(rows) + f" ({len(res)} takes)")
+
+
+def frames_db(g, sr, ms=5.0):
+    n, hop = int(sr * ms / 1000), sr // 1000
+    c = np.concatenate([[0.0], np.cumsum(g * g)])
+    i = np.arange(0, len(g) - n, hop)
+    return i, np.maximum(10 * np.log10(np.maximum((c[i + n] - c[i]) / n, 1e-30)), -40.0)
+
+
+def y3_voice_switch(report):
+    """N5: every ordered pair of the five voices at depth 0.6 and 1, switched at four LFO phases.
+    The play head pins every voice's LFO to one song position (voices 1-4 lock to it; Classic
+    runs from its own reset phase, which the position matches), so each voice alone gives its own
+    trajectory. Level from a quadrature probe (2917 Hz, -12 dBFS, width 0) in 5 ms frames, floored
+    at -40 dB: from 5 ms before the switch to 100 ms after it must stay within 1 dB of the span of
+    the two trajectories. Click: peak above 2 kHz of a 110 Hz -12 dBFS note over the same window,
+    bar -62 dBFS or the two voices' own figure in that window, whichever is higher; with Optical
+    on either side also its steady lamp edges at the worst carrier phase (optical_edges)."""
+    sr, block, rate = 48000, 64, 4.0
+    secs = 1.5
+    base = ["host_sync=1", "host_bpm=240", "host_beats=1", "host_ppq=0.25", "width=0", "wave=0", "mix=0.35"]
+    t = np.arange(int(secs * sr)) / sr
+    amp = fx.amp(-12.0)
+    quad = as_f32(np.vstack([amp * np.sin(2 * np.pi * 2917.0 * t), amp * np.cos(2 * np.pi * 2917.0 * t)]))
+    note = as_f32(fx.sine(110.0, -12.0, secs, sr, 0.7))[None, :]
+    instants = [1.0 + k / (4 * rate) + 0.0007 for k in range(4)]
+
+    def gain(y):
+        return np.sqrt(y[0] ** 2 + y[1] ** 2) / amp
+
+    def ref(job):
+        v, d = job
+        keys = [f"voice={v}", f"depth={d}"] + base
+        return job, gain(render(quad, keys, sr, block)[0]), hp_2k(render(note, keys, sr, block)[0][0], sr)
+
+    refs = {r[0]: r[1:] for r in pmap(ref, [(v, d) for v in TYPES for d in (0.6, 1.0)])}
+
+    def one(job):
+        a, b, d, T = job
+        keys = [f"voice={a}", f"voice@{T!r}={b}", f"depth={d}"] + base
+        g = gain(render(quad, keys, sr, block)[0])
+        h = hp_2k(render(note, keys, sr, block)[0][0], sr)
+        i, L = frames_db(g, sr)
+        _, La = frames_db(refs[(a, d)][0], sr)
+        _, Lb = frames_db(refs[(b, d)][0], sr)
+        t0 = int(np.ceil(T * sr / block)) * block
+        m = (i >= t0 - sr // 200) & (i < t0 + sr // 10)
+        out = float(np.max(np.maximum(L - np.maximum(La, Lb), np.minimum(La, Lb) - L)[m]))
+        a0, a1 = t0 - sr // 200, t0 + sr // 10
+        click = peak_db(h, a0, a1)
+        own = max(peak_db(refs[(a, d)][1], a0, a1), peak_db(refs[(b, d)][1], a0, a1))
+        return job, out, click, own
+
+    res = pmap(one, [(a, b, d, T) for a in TYPES for b in TYPES if a != b for d in (0.6, 1.0) for T in instants])
+    edges = {d: optical_edges(sr, -12.0, d, (rate,)) for d in (0.6, 1.0)}
+    res = [(j, out, click, max(own, edges[j[2]]) if 2 in j[:2] else own) for j, out, click, own in res]
+    wl = max(res, key=lambda r: r[1])
+    wc = max(res, key=lambda r: r[2] - max(-62.0, r[3]))
+    ok = all(r[1] <= 1.0 and r[2] <= max(-62.0, r[3]) for r in res)
+    pairs = {}
+    for r in res:
+        pairs[(r[0][0], r[0][1])] = max(pairs.get((r[0][0], r[0][1]), -99.0), r[1])
+    nxt = sorted(pairs.items(), key=lambda kv: -kv[1])[1:3]
+    report.add("Y3", "voice switch: level outside both trajectories / click", ok,
+               f"worst {wl[1]:.2f} dB ({TYPES[wl[0][0]]} -> {TYPES[wl[0][1]]}, depth {wl[0][2]}); click {wc[2]:.1f} dBFS "
+               f"(own {wc[3]:.1f}; {TYPES[wc[0][0]]} -> {TYPES[wc[0][1]]}); next pairs "
+               + ", ".join(f"{TYPES[a]}->{TYPES[b]} {v:.1f}" for (a, b), v in nxt) + f" ({len(res)} switches)")
+
+
+def y4_switch_on(report):
+    """N10: switched on (reset) without sync, the LFO starts where the voice's gain is at its
+    crest: 20 ms later the gain is within 1 dB of the voice's steady crest (gain trace; Harmonic:
+    the low band), voices 1-4 at their starting rates, depth 0.6 and 1."""
+    sr, block = 48000, 64
+    rows, ok = [], True
+    for v, (rate, _) in VOICE_START.items():
+        for d in (0.6, 1.0):
+            keys = [f"voice={v}", f"rate={rate}", f"depth={d}", "width=0", "wave=0", "on@0.5=0", "on@1.0=1"]
+            _, tr = render(tone_in(sr, secs=2.0), keys, sr, block)
+            t_on = int(np.ceil(1.0 * sr / block)) * block
+            g = tr[0]
+            crest = float(np.max(g[t_on + sr // 2:t_on + sr // 2 + int(sr / rate)]))
+            at = float(fx.db(g[t_on + int(0.02 * sr)] / crest))
+            ok &= at >= -1.0
+            rows.append(f"{TYPES[v]} d{d} {at:+.1f}")
+    report.add("Y4", "switch-on: gain 20 ms after re-enable re crest (dB)", ok, ", ".join(rows))
+
+
+def hf_dbc(y, sr, skip):
+    y = y[skip:]
+    spec = np.abs(np.fft.rfft(y * np.hanning(len(y))))
+    freqs = np.fft.rfftfreq(len(y), 1.0 / sr)
+    return float(fx.db(np.sqrt(np.sum(spec[freqs >= 2000.0] ** 2)) / spec.max()))
+
+
+def y5_pulse_edges(report):
+    """N9: pulse and square splatter against the edge time. A 110 Hz note at -12 dBFS through
+    Smooth wave 1, depth 1, rates 1-20 Hz, duty 0.1-0.9, the LFO pinned to a song position so
+    its phase is known. The engine's 10-90 % edge time at each rate is read from its gain trace
+    at duty 0.5 (a full swing). The comparison is today's edge at that same time: the hard pulse
+    on the same phase through a one-pole whose 10-90 % time is the measured one (y0 = 1), applied
+    to the same note. Energy above 2 kHz re the note (Hann, after the first 0.25 s). Bar: at
+    least 8 dB less than today's edge, every case."""
+    sr = 48000
+    print("\npulse edge: rate, duty, engine 10-90 % ms (duty 0.5), energy above 2 kHz dBc: engine, "
+          "one-pole edge of that time, difference")
+    rates, shapes = (1.0, 2.0, 4.0, 10.0, 20.0), (0.0, 0.25, 0.5, 0.75, 1.0)
+
+    def one(job):
+        rate, shape = job
+        secs = 4.0 if rate < 3 else 2.0
+        x = as_f32(fx.sine(110.0, -12.0, secs, sr, 0.3))[None, :]
+        keys = ["voice=1", f"rate={rate}", "depth=1", "wave=1", f"shape={shape}", "width=0",
+                f"sync_phase@0..{secs!r}=0..{rate * secs!r}"]
+        out, tr = render(x, keys, sr)
+        _, _, _, _, rise, fall = stats(tr[0], rate, sr)
+        return job, 0.5 * (rise + fall), x[0], out[0]
+
+    res = {r[0]: r[1:] for r in pmap(one, [(r, s) for r in rates for s in shapes])}
+    ok, worst, edges = True, None, []
+    for rate in rates:
+        edge = res[(rate, 0.5)][0]
+        edges.append(edge)
+        a = 1.0 - np.exp(-np.log(9.0) / (edge * 1e-3 * sr))
+        for shape in shapes:
+            _, x, out = res[(rate, shape)]
+            s = 0.1 + 0.8 * f32(shape)
+            ph = rate * np.arange(len(x)) / sr
+            hard = (((ph - 0.5 * s) % 1.0) < s).astype(float)
+            today, z = np.empty_like(hard), 1.0
+            for i, v in enumerate(hard):
+                z += a * (v - z)
+                today[i] = z
+            eng, old = hf_dbc(out, sr, sr // 4), hf_dbc(x * today, sr, sr // 4)
+            print(f"{rate:g}\t{s:.1f}\t{edge:.2f}\t{eng:.1f}\t{old:.1f}\t{old - eng:+.1f}")
+            ok &= old - eng >= 8.0
+            if worst is None or old - eng < worst[0]:
+                worst = (old - eng, rate, s)
+    report.add("Y5", "pulse splatter vs today's edge at the same 10-90 % time", ok,
+               f"least improvement {worst[0]:.1f} dB (rate {worst[1]:g} Hz, duty {worst[2]:.1f}); "
+               f"edge 10-90 % {min(edges):.2f}-{max(edges):.2f} ms")
+
+
+def y6_cpu_width(report):
+    """N15: every voice inside its budget at every width (48 kHz, block 64, stereo pink), Smooth
+    also at wave 0.7; the figure with a song-position jump fade running all the time is shown.
+    Each figure is the least of three --bench runs (each already the least of five), so a busy
+    machine does not read as engine cost."""
+    rows, ok = [], True
+    jobs = [(v, w, wave) for v in (1, 2, 3, 4) for w in (0.0, 0.25, 0.5, 0.75, 1.0)
+            for wave in ((0.0, 0.7) if v == 1 else (0.0,))]
+    for v, w, wave in jobs:
+        cpu = min(fx._bench(EFFECT, "gen:noise:pink:-18", dict(voice=v, rate=5.0, depth=0.8, width=w, wave=wave))
+                  for _ in range(3))
+        ok &= cpu is not None and cpu <= BUDGETS[v]
+        rows.append((v, w, wave, cpu))
+    fade = fx._bench(EFFECT, "gen:noise:pink:-18",
+                     ["voice=1", "rate=5", "depth=0.8", "width=0.5", "sync_phase@0..10=0..3777.7"])
+    worst = {v: max(r[3] for r in rows if r[0] == v) for v in (1, 2, 3, 4)}
+    report.add("Y6", "CPU at widths 0-1 (% real time, worst)", ok,
+               ", ".join(f"{TYPES[v]} {c:.3f}/{BUDGETS[v]}" for v, c in worst.items())
+               + f"; Smooth w0.5 with a jump fade always on {fade:.3f}")
+
+
+def y7_huge(report):
+    """N14: one sample of 3e38 (and the pair 3e38, -3e38; and 1e7) at eight points of a 4 Hz cycle,
+    in every voice: the output is finite and 0.5 s after the last one equals the clean render
+    (bar -100 dB rms). Classic with a sample of
+    9.9e5 (below the limit) is the legacy code's output bit for bit."""
+    sr = 48000
+    clean = as_f32(np.vstack([fx.pink(2.0, -18.0, sr, seed=41), fx.pink(2.0, -18.0, sr, seed=42)]))
+    k = sr // 2
+    rows, ok = [], True
+    for v in TYPES:
+        keys = dict(voice=v, depth=1.0, rate=4.0, width=0.5)
+        ref, _ = render(clean, keys, sr)
+        worst = "finite, identical"
+        for burst in ((3e38,), (3e38, -3e38), (1e7,)):
+            bad = clean.copy()
+            for at in range(8):
+                for j, val in enumerate(burst):
+                    bad[:, k + at * sr // 32 + j] = val
+            out, _ = render(bad, keys, sr)
+            fin = bool(np.all(np.isfinite(out)))
+            a = k + sr // 4 + sr // 2
+            diff = rel_db(out[:, a:] - ref[:, a:], ref[:, a:]) if fin else np.inf
+            if fin and np.max(np.abs(out[:, a:] - ref[:, a:])) == 0.0:
+                diff = -np.inf
+            ok &= fin and diff <= -100.0
+            if not fin or diff > -np.inf:
+                worst = f"{burst}: {'non-finite' if not fin else f'{diff:.0f} dB'}"
+        rows.append(f"{TYPES[v]} {worst}")
+    x = clean.copy()
+    x[:, k] = 9.9e5
+    a = fx.invoke(EFFECT, x, dict(voice=0), ["--block=512"], sr).out
+    b = fx.invoke(EFFECT, x, dict(voice=0), ["--block=512", "--legacy"], sr).out
+    same = int(np.sum(a != b))
+    ok &= same == 0
+    report.add("Y7", "huge finite samples / Classic below 1e6", ok,
+               ", ".join(rows) + f"; Classic 9.9e5: {same} samples differ from legacy")
+
+
+def y8_bias_dc(report):
+    """N11: a DC offset on the input must not change Bias's depth (an AC-coupled amp never lets
+    DC reach its bias): -40 dBFS 997 Hz, depth 1, shape 0.5, DC 0 / 0.01 / 0.1 / -0.1: depth
+    within 0.5 dB of the DC-free take. The onset response is reported (the voice: Tremolo.h)."""
+    sr = 48000
+    depths = {}
+    for dc in (0.0, 0.01, 0.1, -0.1):
+        x = as_f32(fx.sine(997.0, -40.0, 3.0, sr) + dc)[None, :]
+        _, tr = render(x, dict(voice=3, rate=5.0, depth=1.0, shape=0.5, width=0.0), sr)
+        c = tr[0][2 * sr:]
+        depths[dc] = float(fx.db(c.max() / c.min()))
+    ok = all(abs(d - depths[0.0]) <= 0.5 for d in depths.values())
+    steady = as_f32(fx.sine(196.0, -6.0, 3.0, sr))[None, :]
+    onset = steady.copy()
+    i0 = 2 * sr
+    onset[:, :i0] = 0.0
+    keys = ["voice=3", "rate=5", "depth=0.75", "shape=0.5", "width=0", "sync_phase@0..3=0..15"]
+    _, g1 = render(onset, keys, sr, 64)
+    _, g2 = render(steady, keys, sr, 64)
+    dip = float(np.min(fx.db(g1[0][i0:i0 + sr // 20] / g2[0][i0:i0 + sr // 20])))
+    report.add("Y8", "Bias depth with DC on the input (dB)", ok,
+               ", ".join(f"DC {dc:+g}: {d:.2f}" for dc, d in depths.items()) + f"; onset on the dip (voice): {dip:+.1f} dB")
+
+
+def z1_switch_robust(report):
+    """--rt-check, --reset-repeat and finite output during voice switches, sync events and a
+    bypass, every voice in turn, 22.05-192 kHz, blocks 1-4096, mono and stereo (gen:music); the
+    same timeline under --bench."""
+    timeline = ["voice=1", "rate=5", "depth=0.9", "width=0.5", "wave=0.6", "host_sync=0", "host_bpm=133",
+                "voice@0.5=2", "voice@0.53=3", "voice@0.9=4", "voice@1.2=0", "voice@1.5=1", "voice@1.51=0",
+                "host_sync@1.7=1", "voice@1.8=3", "host_beats@2.1=0.25", "host_ppq@2.4=1.37", "voice@2.45=4",
+                "on@2.6=0", "on@2.7=1", "host_sync@2.9=0", "voice@2.95=2"]
+    jobs = [(sr, b, ch) for sr in (22050, 44100, 96000, 192000) for b in (1, 37, 512, 4096) for ch in (1, 2)]
+
+    def one(job):
+        sr, b, ch = job
+        opts = [f"--block={b}", f"--channels={ch}", "--seconds=3.2", f"--sr={sr}"]
+        rt = fx.invoke(EFFECT, "gen:music", timeline, opts + ["--rt-check"], sr)
+        rr = fx.invoke(EFFECT, "gen:music", timeline, opts + ["--reset-repeat"], sr)
+        return job, rt.code, rr.code, bool(np.all(np.isfinite(rt.out)))
+
+    res = pmap(one, jobs)
+    bad = [r for r in res if r[1] != 0 or r[2] != 0 or not r[3]]
+    cpu = fx._bench(EFFECT, "gen:noise:pink:-18", timeline)
+    report.add("Z1", "rt-check / reset-repeat / finite during switches", not bad,
+               f"{len(res)} runs, {len(bad)} failing" + (f" (first {bad[0]})" if bad else "")
+               + f"; bench {cpu:.3f} % real time")
+
+
 def specific_checks(report, args):
     only = args.types
     if only is None or 0 in only:
@@ -842,6 +1273,15 @@ def specific_checks(report, args):
     t5_splatter_table(report)
     x7_depth_zero_after(report)
     n1_non_finite(report)
+    y1_sync_transitions(report)
+    y2_sync_tracking(report)
+    y3_voice_switch(report)
+    y4_switch_on(report)
+    y5_pulse_edges(report)
+    y6_cpu_width(report)
+    y7_huge(report)
+    y8_bias_dc(report)
+    z1_switch_robust(report)
 
 
 def main():
