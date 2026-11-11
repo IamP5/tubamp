@@ -48,6 +48,7 @@ public:
 
     void prepare (double sampleRate, int maxBlock, int numChannels) override
     {
+        rate = sampleRate;
         drive.prepare ({ sampleRate, (juce::uint32) maxBlock, (juce::uint32) numChannels });
     }
 
@@ -66,6 +67,7 @@ public:
         p.gainDb = (float) a.get ("gain", p.gainDb);
         p.toneHz = (float) a.get ("tone", p.toneHz);
         p.levelDb = (float) a.get ("level", p.levelDb);
+        type = p.type;
         drive.setParameters (p);
     }
 
@@ -75,12 +77,20 @@ public:
             drive.process (juce::dsp::AudioBlock<float> (io));
     }
 
-    int latency() const override { return drive.getLatencySamples(); }
+    /** The processor's latency rule calls the static latencyFor() from the message thread; a
+        disagreement with the prepared engine is reported as -1 so --latency checks both. */
+    int latency() const override
+    {
+        const int reported = drive.getLatencySamples();
+        return reported == tubamp::DriveFx::latencyFor (type, rate) ? reported : -1;
+    }
 
     std::unique_ptr<fxbench::Effect> makeLegacy() const override { return std::make_unique<LegacyDriveBench>(); }
 
 private:
     tubamp::DriveFx drive;
+    double rate = 48000.0;
+    int type = tubamp::DriveParams().type;
     bool on = true;
 };
 

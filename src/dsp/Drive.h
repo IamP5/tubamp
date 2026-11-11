@@ -61,7 +61,8 @@ private:
 inline constexpr float kDriveGainDefault[DriveFx::numTypes]  { 12.0f, 12.0f, 18.0f, 18.0f, 12.0f, 12.0f };
 /** Tone in Hz (Screamer, Distortion, Fuzz: T = ln (tone / 500) / ln 24 is the pot position). */
 inline constexpr float kDriveToneDefault[DriveFx::numTypes]  { 4000.0f, 4000.0f, 2449.0f, 2449.0f, 12000.0f, 3000.0f };
-/** Level in dB. Distortion and Fuzz (L2, L3) are placeholders until measured: the level
-    at which a -18 dBFS 1 kHz sine at that row's gain and tone leaves at -12 dBFS peak. */
-inline constexpr float kDriveLevelDefault[DriveFx::numTypes] { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+/** Level in dB. Distortion and Fuzz (L2, L3) are measured: the level at which a -18 dBFS
+    1 kHz sine at that row's gain and tone leaves at -12 dBFS peak (tools/fxbench/check_drive.py
+    prints it; D16 checks it). */
+inline constexpr float kDriveLevelDefault[DriveFx::numTypes] { 0.0f, 0.0f, -8.2f, 2.2f, 0.0f, 0.0f };
 } // namespace tubamp
