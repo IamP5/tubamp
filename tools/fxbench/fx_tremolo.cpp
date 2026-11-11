@@ -1,10 +1,13 @@
 // fxbench adapter for the tremolo voicings of the mod block (docs/FX-ENGINES.md §4.7).
 // Keys: voice rate depth mix width tone shape wave sync_phase on (0 skips process()). The legacy reference is
-// the old Modulation block running its tremolo.
+// the old Modulation block running its tremolo. --trace writes the gain each channel gets (voices 1-4;
+// Harmonic: the low band's), through TremoloFx::setTraceBuffers.
 #include "FxBench.h"
 #include "legacy/LegacyFx.h"
 
 #include "../../src/dsp/Tremolo.h"
+
+#include <vector>
 
 namespace
 {
@@ -51,29 +54,39 @@ public:
     void prepare (double sampleRate, int maxBlock, int numChannels) override
     {
         tremolo.prepare ({ sampleRate, (juce::uint32) maxBlock, (juce::uint32) numChannels });
+
+        for (auto& t : traced)
+            t.assign ((size_t) juce::jmax (1, maxBlock), 0.0f);
+
+        tremolo.setTraceBuffers (traced[0].data(), traced[1].data());
     }
 
     void reset() override { tremolo.reset(); }
 
     void setParams (const fxbench::Args& a) override
     {
-        // Like the processor: a bypassed block is neither updated nor run.
-        on = a.get ("on", 1.0) > 0.5;
-
-        if (! on)
-            return;
-
+        // --bench times setParams too, so walk only the keys that were given: nine map
+        // lookups per block would cost more than the Classic voice itself.
         tubamp::TremoloParams p;
-        p.voice = (int) a.get ("voice", p.voice);
-        p.rateHz = (float) a.get ("rate", p.rateHz);
-        p.depth = (float) a.get ("depth", p.depth);
-        p.mix = (float) a.get ("mix", p.mix);
-        p.width = (float) a.get ("width", p.width);
-        p.tone = (float) a.get ("tone", p.tone);
-        p.shape = (float) a.get ("shape", p.shape);
-        p.wave = (float) a.get ("wave", p.wave);
-        p.syncPhase = a.get ("sync_phase", p.syncPhase);
-        tremolo.setParameters (p);
+        on = true;
+
+        for (const auto& [key, value] : a.values)
+        {
+            if (key == "voice")            p.voice = (int) value;
+            else if (key == "rate")        p.rateHz = (float) value;
+            else if (key == "depth")       p.depth = (float) value;
+            else if (key == "mix")         p.mix = (float) value;
+            else if (key == "width")       p.width = (float) value;
+            else if (key == "tone")        p.tone = (float) value;
+            else if (key == "shape")       p.shape = (float) value;
+            else if (key == "wave")        p.wave = (float) value;
+            else if (key == "sync_phase")  p.syncPhase = value;
+            else if (key == "on")          on = value > 0.5;
+        }
+
+        // Like the processor: a bypassed block is neither updated nor run.
+        if (on)
+            tremolo.setParameters (p);
     }
 
     void process (juce::AudioBuffer<float>& io, int) override
@@ -82,10 +95,22 @@ public:
             tremolo.process (juce::dsp::AudioBlock<float> (io));
     }
 
+    int traceChannels() const override { return 2; }
+
+    void trace (float* const* dst, int numSamples) override
+    {
+        const auto n = (size_t) juce::jmin (numSamples, (int) traced[0].size());
+
+        for (int ch = 0; ch < 2; ++ch)
+            if (dst[ch] != nullptr)
+                std::copy (traced[ch].begin(), traced[ch].begin() + (std::ptrdiff_t) n, dst[ch]);
+    }
+
     std::unique_ptr<fxbench::Effect> makeLegacy() const override { return std::make_unique<LegacyModBench>(); }
 
 private:
     tubamp::TremoloFx tremolo;
+    std::vector<float> traced[2];
     bool on = true;
 };
 

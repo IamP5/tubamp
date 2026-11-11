@@ -47,6 +47,12 @@ public:
 
     int getLatencySamples() const noexcept { return 0; }
 
+    /** Test hook for tubamp_fxbench --trace, never used by the plugin. While set, each
+        process() of voices 1-4 writes the gain it applies to each channel (Harmonic: the
+        low band's) from index 0; a mono block writes the left gain to both. The buffers
+        must hold maximumBlockSize samples. Classic leaves them untouched. */
+    void setTraceBuffers (float* left, float* right) noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;
