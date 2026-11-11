@@ -1,0 +1,86 @@
+# Solid Bus Comp (NI::DSP::CSL::G_BusComp), binary "Solid Bus Comp"
+- evaluate 0xef378: per channel state (0xc0 bytes, 16 of them at this+0x19e8). detector input = state[+8] = previous OUTPUT sample *2^-7 (0xef3d4..0xef404: d9=in*2^-7; updateRMS(state[8]); gain=exp2(clamp(-32*env,-32,0)); state[8]=d9*gain) => FEEDBACK, one-sample loop.
+- updateRMS 0xef630: |x| clipped to 1; L=log2(|x|)/32 floor -0.75 (=2^-24); c=clamp(-(L-T)*slope,0,1) with slope=state[0x60]=1-1/state[0x58], state[0x58]=1/ratio => c=(R-1)(L-T) (feedback law). Then branching one-pole on c: attack coef state[0x40] if c>env else release coef state[0x48]. No RMS despite the name. Auto (state[0x68]): slow env state[0x70] with coefs [0x78]/[0x80]; on release env relaxes toward max(c, slow env).
+- gain = exp2(-32*env) (0xef3ec..0xef3fc). Ballistics are in log2 domain, after gain computer.
+- updateRatioFactor 0xef7b8: T = log2(10^((thr_dB + compens)/20)*2^-7)/32.
+- coef = exp(ln(0.8)/(t_ms/1000*sr)) (const 0xbfcc8ff7c79a9a20 = -0.22314 at 0xee168; 1000.0 at 0xee15c): onSetSampleRate 0xee120. => open-loop tau = t/0.2231.
+- tables (doubles): s_cfThreshCurve 0x613f88 -18.6..18.6 (11 pts) and threshold = curve-20 dB (0xee324); s_cfMakeupCurve 0x613fe0 -5.25..21; s_cfRatioTable 0x614038 1.5,2,3,4,5,10; s_cfThreshCompensTable 0x614068 -12,-9,-5,-4,-3.3,-0.2 dB; s_cfAttackTable 0x614098 0.1,0.3,1,3,10,30 ms; s_cfReleaseTable 0x6140c8 0.2,0.3,0.4,0.8,1.6,1.2(auto idx5) times 62.5 (0x404f400000000000 at 0xee5c0) = 12.5,18.75,25,50,100,75 ms.
+- apply 0xef464: out = in*gain (linked: min gain over channels this+0x18d8 when link flag), *makeup state[0x50], then out*wet(state[0xa8]) + in*dry(state[0xb0]). GR meter track via vtable at this+0x25e8.
+- no oversampling, no lookahead, double precision.
+- measured r4/a30/r0.1: att t63 34.7 ms (= 134 ms open loop /(1+3)), rel t63 56 ms = 12.5/0.2231 ms.
+
+# GR6 NI::DSP::CompressorPedal ("Stomp Compressor"), binary "Guitar Rig 6"
+- processBuffer 0x269344: FEEDBACK. y = x * A2 * (1-env) ; detector on post-gain signal x*A0*(1-env) (0x269440-0x269444), linked max(|L|,|R|) (0x269380-0x269394), d = clamp(|.| - 3.926, 0, 1) (const 0xc07b4396 at 0x269360), d^2 (0x2693a8), env += coef*(d^2-env)+1e-12, coef = attack [0xd4] if d^2>env else release [0xa0]. Gain = 1-env (linear domain). External sidechain flag [0x98] uses inputs 2/3 instead (feed-forward).
+- output crossfade out = in + (comp - in)*B0 (0x2693d0-0x2693d8).
+- setParamSustain 0x268e80: G = (s^2*7.8+0.44)*10.2 => 4.49..84.0 (13..38.5 dB).
+- setParamThreshold 0x268f90: dB = 20-40t ; lin = 10^(dB/20) via 2^((i-1200)/60) table ; detector gain A0 = G * lin * 17.18 (0x418973f5).
+- setParamVolume 0x268f14: vol = v*0.813 ; A2 = G*vol.
+- setParamAttack 0x268c18: f = midi2hz(-72.7068 p + 44.3756) => tau 1.5..100 ms ; coef = min(1, 2*pi*f/sr) ([0x80]=6.2832/sr at 0x268aa0). Display ConvAttack 0xad400 = 159.155/f ms.
+- setParamRelease 0x268cdc: f = midi2hz(-91.7262 p - 28.3312) => tau 0.1..20 s. Display ConvRelease 0xad310 = 0.159155/f s.
+- onSetSampleRate 0x268a54: parameter ramp length = 0.02 s (0x3ca3d70a) in control blocks; onControlRate 0x2690a4 linear ramps of 8 params.
+
+# GR6 NI::DSP::FBCompLite, binary "Guitar Rig 6" (circuit-style feedback compressor)
+- processBuffer 0x27bbc8: detector = max(|L|,|R|) of the post-gain, high-passed signal (feedback) or of ext sidechain ([0x8c]); 2 sidechain sub-steps per sample (coefs use -0.5/(tau*sr)).
+- cap1 [0xb8] charges only when gain*level > cap1: cap1 += (gain*level-cap1)*attCoef[0xd8]; discharges toward bias 0.286748 (0x2bde920) with relCoef [0xdc] and couples to cap2 with [0xf0]; cap2 [0xb0] follows with [0xf4]. Control v = (cap1+cap2)/2 (2.2e6 * 2.2727e-7, consts 0x4140c8e000000000 / 0x3e8e810800000000 at 0x27bc30/0x27bc48).
+- gain(v): 1 for v<=0.245471 (0x2bde928); exp(-19.7291*ln(v/0.245471)^4) up to v=0.391291 (0x2bde930, 0x2bde938); 0.393550*(v/0.391291)^-8 above (0x2bde940).
+- setParamAttack 0x27b3f4: RC = (37500 p + 6500) * 2.2e-7 s = 1.43..9.68 ms; coef = 1-exp(-0.5/(RC*sr)).
+- onSetSampleRate 0x27b518: release tau 0.0759 s (0x3d9b7176) and 0.484 s (0x3ef7ced9) fixed. 0.484 = 2.2M*0.22u.
+- setParamInGain 0x27b344: 0..40 dB. setParamOutGain 0x27b390: -24..0 dB below 0.5, 0..+6 dB above.
+
+# GR6 NI::DSP::TubeCompressor, binary "Guitar Rig 6"
+- processBuffer 0x3099bc: FEED-FORWARD. x*drive -> parabolic soft clip f(u)=u-u|u|/8 for |u|<4, +-2 beyond (0x309ab8..0x309b3c; consts 2,4,-0.125 at 0x3099e8..0x3099f0). detector = |satL*g + satR*g| (sum link) or ext sidechain sum (0x309b44-0x309b5c).
+- envelope: env = max(|d|, (env+1e-12)*relCoef[0x88]) -> instant attack, multiplicative decay = constant dB/s release (0x309b60-0x309b78).
+- level dB = ln(env)*8.68589 (0x410af968) ; over = L - T + 2k, clamp 0..144 ; u = over/k ; E = k*(u - softclip(u)) = k*u^2/8 for u<4, else k*(u-2) => quadratic soft knee, total width 4k dB (0x309b9c-0x309c94).
+- attack: e += (E - e)*attCoef (+1e-12) one-pole on the dB overshoot (0x309c98-0x309cb0); GR dB = slope*e stored at [0x98] (meter).
+- gain = 2^((dB*9.9658+1200-1200)/60) table = 10^(dB/20). Output stage: soft clip normalised to T+e level and Dynamic[0x94] (0x309d14-0x309dd8), final dry/wet crossfade [0xe8].
+- setThreshold 0x309524: 60p-72 dB. setKnee 0x309570: k=(59p+1)/2 => knee width 2..120 dB. setDynamic 0x309594: 10^(-6p/20). setOutputGain 0x309648: 96p-48 dB. setAttack 0x30915c: f=midi2hz(60-120p), coef capped 0.99. setRelease 0x309260: rate 1000*10^(-6p).
+
+# AmpliTube 5 (binary "AmpliTube 5")
+- Stomp/rack wrappers IK::Comp::* are UI/profile only. DSP kernels are IK::KIS::FX::*: AT3::DynaComp::Stomp (Process 0xc9ec28, SetSampleRate 0xc9f344), TR5::Urei1176LN::Limiter (Process 0xff2e50 7676 bytes, UpdateKMethod 0xff51d0), TR3::TeletronixLA2A::Compressor (Process 0xfd213c 8376 bytes, UpdateDriverEL 0xfcf21c), TR3::Fairchild670::Module, AT4::StereoCompressor::Module/MonoCompressor (0xefc5a4/0xefcaa8), AT3::OptoCompressorStereo::Module (0xd8cb30), AT3::FenderCompressor::Stomp.
+- DynaComp::Stomp::Process 0xc9ec28: circuit model with 4 device tables (DynacompTableRon 0x239c24c, DynacompTableIbd 0x239a308, DynacompTableClipperPos 0x2399320, ...Neg 0x2398338); constants 500000 (0xc9ec44) and 27000 (0xc9ec54) = sensitivity pot + series R; 1e-5 (0xc9ec70) = 10 uF. Params: Sensitivity [0x1c], Volume [0x20] (DynaCompStomp::OnSetParameter 0x1585d30).
+- 1176 and LA-2A: K-method circuit simulation with clip tables (gcClip1176Table 0x31186b8, gcClipLA2ATable 0x3116488), opto V->R table gcV2RTable 0x2a5b660.
+- AT4::StereoCompressor::MonoCompressor::Process 0xefcaa8: FEEDBACK; gain = max((1 - k*env)*g, 0.01) (0.01 at 0xefcad0) linear-domain; detector |filtered out| vs env; attack network = bilinear RC biquad from component constants 0.032, 4.7e-6, 20000, 6.3e-6, 1.6e-6 (ComputeCoeff 0xefc8f8: 0xefc924,0xefc93c,0xefc964,0xefc974,0xefca1c); release exp(-2/(sr*t)) (0xefca60..).
+
+# Solid Dynamics (NI::DSP::CSL::E_Dynamics), binary "Solid Dynamics" - compressor half
+- evaluate 0xef514: FEED-FORWARD. x*inGain ; ms = min(x^2,1) one-pole [0x10] (coef = exp(ln0.2/(8.25e-8*sr)) ~ 0 => instantaneous square; const 0x3e76255b5942109c at 0xee5c4..0xee5d4), floor 10^-7.2 (0xef580), L = 10*log10(ms) dB (0xef5a0-0xef5ac).
+- gain computer: a = L - T[0x88] - comp[0x90]; knee k=[0x98]: |a|<k -> (a+k)^2/(4k) else a ; max(.,0) (0xef5b4-0xef5f4) = quadratic soft knee of total width 2k.
+- ballistics on overshoot dB e=[0]: attack one-pole coef [0xa0]; release either linear-in-dB: e -= min(rate[0xd0], e-over) when flag [0xc8], or one-pole coef [0xa8] (0xef620-0xef654). gain = 10^(e*slope[0xc0]/20) (0xef658-0xef668).
+- E_Dyn_State::setSampleRate 0xee5b4: coef = exp(ln(0.2)/(t_ms/1000*sr)) (ln0.2 = -1.609437912 0xbff9c041f7ed8d33; 80 % time); linear rate = 1/((rel/3600)*sr) dB per sample (3600 at 0xee66c).
+- calculateMakeup 0xef008: resistor-network style formula of threshold and ratio knob positions: 0.44 + 5.9*f(thr,ratio) with 2.7 and 10 constants (auto makeup tied to threshold and ratio).
+- calculateThreshComp 0xef09c: +8.5 dB when knee type <= 0.5 (soft), +2 dB when [0x20] > 0.5.
+- combined gain = min(comp gain, gate/expander gain); link takes min across channels (0xef688..).
+
+# GRMeter (NI::DSP::CSL::GRMeter), binary "Solid Bus Comp"
+- track 0xed40c: g=max(gain,0.1) (0x3fb999999999999a) ; target = -log10(g) ; rising: one-pole coef exp(ln(0.01)/(0.3*sr)) (setSampleRate 0xed3b0: 0.3 at 0xed3b8, -4.60517 at 0xed3c4) ; falling: linear, step 1/(0.3*sr) per sample = 20 dB per 0.3 s.
+
+# Supercharger GT (NI::DSP::CSL::Rockruepel_CompXT_State), binary "Supercharger GT" (partial read)
+- evaluate 0xf2c70: first ~300 instructions are per-sample one-pole parameter smoothers, coef 0.005/0.995 (0xf2d38/0xf2d54) and 0.0005, 0.0001, 0.0003 for slower ones; denormal flush +-1e-15.
+- detector: sidechain biquads (states 0x390.., 0x3f0.., 0x450..) fed with gain[0x198]*filtered input (0xf3408-0xf3470) => FEEDBACK; env[0x190] = d + coef*(env-d), d=clamp(|sc|,floor[0x1a0],1), coef = attack[0x2b0] if d>env else release[0x2b8] (0xf3608-0xf362c) => branching one-pole peak detector, linear domain.
+- updateGainFactor 0xf2aa8: gain[0x198] = cubic-spline table lookup (Spline<18>) of env*scale[0x2c0] => static curve is an 18-point spline (vari-mu style progressive ratio).
+- after gain: saturate() 0xf3808 then 4 biquads (0x0..0x160), output gain; dry path through a 16-sample ring (0xe38, mask 0xf at 0xf37a4-0xf37b0) then mix out = wet*m + dry*(1-m) (0xf37b4-0xf37c8). Reported AU latency 16 samples at 44.1k.
+
+# Exact instruction addresses (grep-verified on the dumps; these supersede the approximate ranges above)
+Guitar Rig 6 TubeCompressor::processBuffer 0x3099bc:
+  0x309a10/0x309a14  fmov 4.0 / -0.125 (parabolic soft-clip constants)
+  0x309b90           fabs of the summed detector signal
+  0x309b9c           str s8,[x21,#0xa8]  envelope = max(|d|, env*relCoef)
+  0x309ba8           0x410af968 = 8.68589 (ln -> dB)      0x309bbc  -300 dB floor
+  0x309be4           0x43100000 = 144 (clamp of the knee input)
+  0x309ca8           str s2,[x21,#0xac]  attack one-pole on the dB overshoot
+  0x309cb0           str s0,[x21,#0x98]  gain reduction in dB (meter)
+  0x309d7c           ldr s2,[x21,#0x94]  Dynamic factor      0x309a60  ldr [0xe8] dry/wet crossfade
+Guitar Rig 6 FBCompLite::processBuffer 0x27bbc8:
+  0x27bc24 ldr 0x2bde920 (bias 0.286748)   0x27bc28 2.2e6   0x27bc48 2.2727e-7
+  0x27bc38 ldr 0x2bde928 (0.245471)        0x27bc40 ldr 0x2bde930 (0.391291)
+  0x27bf90 ldr 0x2bde938 (-19.7291)        0x27c02c fmov -8.0     0x27bc80, 0x27c0ac ldr 0x2bde940 (0.393550)
+  0x27beac linked max of the two channels  0x27bef0 ldr attack coef [0xd8]   0x27bc90 str gain state [0xc0]
+  setParamAttack 0x27b3f4: fmov -0.5 at 0x27b444 (coefficient uses -0.5/(RC*fs))
+Supercharger GT Rockruepel_CompXT_State::evaluate 0xf2c70:
+  0xf33dc fmul d10 = gain[0x198] * filtered input     0xf3408, 0xf348c that product enters the sidechain biquad
+  0xf360c fabs (detector)   0xf3618 floor [0x1a0]   0xf3630 attack/release coefficient select   0xf3638 str env [0x190]
+  0xf379c and #0xf (16-sample dry ring index)   0xf37ac ldr mix [0x298]
+Solid Dynamics E_Dynamics::evaluate 0xef514:
+  0xef560 x*x   0xef578 one-pole on the square   0xef5c8 fabd (inside-knee test)   0xef5e0 fmov 4.0 (divide by 4k)
+  0xef624-0xef638 linear-in-dB release   0xef68c min(compressor gain, gate gain)
+Solid Bus Comp: 0xef694-0xef6b4 gain computer, 0xef6c0-0xef710 auto path, 0xef6e8-0xef74c branching one-pole,
+  0xee168 ln(0.8) constant, 0xee5c0 62.5 multiplier, 0xee324 threshold -20 offset.

@@ -1,0 +1,7 @@
+# UADx Brigade Chorus: which channel carries dry and wet. One click frame (frame 5) of the impulse train, taps above 0.003 as delay_ms:amplitude (click = 0.5). Latency 0.646 ms not subtracted.
+# render:  $RE_STATE/bin/auhost render aufx U3BO UADx clicks480.wav br_c.wav --warmup 2 --set 54=<0 Classic|1 Dual> --set 52=0 --set 49=0.5
+# analyse: python3 $T/cx.py taps br_c.wav --period 480 --ch <ch> --thr -30 | sed -n 6p
+mode54=0 ch0: 0.6464:+0.4366 0.7065:+0.0494 0.7494:-0.0034 0.7913:-0.0033 
+mode54=0 ch1: 3.5437:+0.2468 
+mode54=1 ch0: 0.6464:+0.3080 0.7065:+0.0346 
+mode54=1 ch1: 0.6463:+0.3081 0.7065:+0.0347 

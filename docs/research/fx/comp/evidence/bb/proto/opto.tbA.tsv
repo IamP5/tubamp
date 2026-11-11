@@ -1,0 +1,25 @@
+# python3 $W/proto.py $W/sig/tb_1000_-40_-10_0.5_3.wav $W/out/proto/opto.tbA.wav --thr -24 --ratio 4 --knee 12 --att 2 --rel 60 --rel2 500 --w 0.6 --hold 8
+# python3 $W/cb.py timing $W/sig/tb_1000_-40_-10_0.5_3.wav $W/out/proto/opto.tbA.wav --freq 1000 --pre 1 --on 0.5
+metric	value
+lag_smp	0
+g_pre_db	0.000
+g_on_db	-10.500
+g_min_db	-10.500
+t_min_ms	213.062
+g_post_db	-0.012
+att_t50_ms	2.063
+att_t63_ms	2.687
+att_t90_ms	5.250
+g_on+1ms	-1.788
+g_on+3ms	-7.327
+g_on+10ms	-10.405
+g_on+30ms	-10.500
+g_on+100ms	-10.500
+rel_t10_ms	18.271
+rel_t50_ms	87.792
+rel_t63_ms	141.938
+rel_t90_ms	696.375
+g_off+10ms	-10.304
+g_off+50ms	-7.005
+g_off+200ms	-3.120
+g_off+1000ms	-0.578

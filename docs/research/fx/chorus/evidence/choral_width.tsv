@@ -1,0 +1,13 @@
+# Choral stereo width and mono compatibility. Input: mono band-limited noise 150-4000 Hz, -18 dBFS RMS, 10 s (white noise hides the low-passed wet). Voices 3, Mix 100%, other defaults.
+# gen:     bandnoise.wav = numpy default_rng(7) normal noise, FFT brick-wall 150-4000 Hz, scaled to -18 dBFS RMS (script in report section 4)
+# render:  $RE_STATE/bin/auhost render aufx 'Ni$I' -NI- bandnoise.wav ch_w.wav --warmup 2 --set 0=<mode> --set 1=1 --set 6=<width> --set 7=1
+# analyse: python3 $T/cx.py width ch_w.wav       mid=(L+R)/2, side=(L-R)/2; mono loss = mid_rms - L_rms
+mode	width	corr	L_rms_db	R_rms_db	mid_rms_db	side_rms_db	side_minus_mid_db
+0	0.5	+0.9756	-18.16	-18.15	-18.21	-37.28	-19.08
+0	1	+0.8904	-19.18	-19.15	-19.41	-31.78	-12.37
+0.3333	0.5	+0.9760	-18.15	-18.12	-18.19	-37.34	-19.15
+0.3333	1	+0.8921	-19.16	-19.12	-19.38	-31.82	-12.44
+0.6667	0.5	+0.9814	-18.01	-18.01	-18.05	-38.32	-20.27
+0.6667	1	+0.9155	-19.07	-19.08	-19.27	-32.82	-13.55
+1	0.5	+0.9742	-18.13	-18.12	-18.18	-37.03	-18.85
+1	1	+0.8848	-19.13	-19.12	-19.38	-31.52	-12.14

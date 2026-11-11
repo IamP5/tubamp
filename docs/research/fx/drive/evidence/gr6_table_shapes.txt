@@ -1,0 +1,51 @@
+# Shape statistics of Guitar Rig 6 pedal waveshaping tables (static double[256] in the binary). No table contents are reproduced.
+# Command per table: python3 $W/tools/tabstat.py "$GR6" <table vm address> 256 <name>   (address = what <Name>::getUnprocessedTable() returns)
+## TS9: getUnprocessedTable @ 0x316ee8 -> table @ 0x2c6f610
+TS9 n=256 min=-0.6662 max=0.6494 t[0]=-0.6662 t[c]=0.0000 t[-1]=0.6494 zero-cross idx=[np.int64(127), np.int64(128)]
+  max |slope| 0.04852/step at idx 127; slope at ends 0.00000, 0.00000; ratio centre/end slope 48522949000.0, 48522949000.0
+  odd-symmetry error about its zero crossing: max |f(x)+f(-x)| = 0.0965 (peak 0.6662); +side peak 0.6494 / -side peak -0.6662
+  monotonic: True; sign of slope +
+  + side: slope < 50% after 10 steps, < 10% after 23 steps
+  - side: slope < 50% after 10 steps, < 10% after 21 steps
+## Rat: getUnprocessedTable @ 0x3169d8 -> table @ 0x2c61e10
+Rat n=256 min=-0.6007 max=0.6205 t[0]=-0.6007 t[c]=0.0109 t[-1]=0.6205 zero-cross idx=[np.int64(127)]
+  max |slope| 0.02131/step at idx 127; slope at ends 0.00000, 0.00000; ratio centre/end slope 21311227000.0, 21311227000.0
+  odd-symmetry error about its zero crossing: max |f(x)+f(-x)| = 0.0209 (peak 0.6205); +side peak 0.6205 / -side peak -0.6007
+  monotonic: True; sign of slope +
+  + side: slope < 50% after 26 steps, < 10% after 41 steps
+  - side: slope < 50% after 25 steps, < 10% after 41 steps
+## BigFuzz: getUnprocessedTable @ 0x316108 -> table @ 0x2c4a610
+BigFuzz n=256 min=-0.2352 max=0.2352 t[0]=-0.2352 t[c]=0.0000 t[-1]=0.2352 zero-cross idx=[np.int64(127)]
+  max |slope| 0.01370/step at idx 0; slope at ends 0.01370, 0.01370; ratio centre/end slope 1.0, 1.0
+  odd-symmetry error about its zero crossing: max |f(x)+f(-x)| = 0.0129 (peak 0.2352); +side peak 0.2352 / -side peak -0.2352
+  monotonic: True; sign of slope +
+  + side: slope < 50% after 12 steps, < 10% after 39 steps
+  - side: slope < 50% after None steps, < 10% after None steps
+## FuzzFace: getUnprocessedTable @ 0x316138 -> table @ 0x2c4ae10
+FuzzFace n=256 min=-8.6859 max=-0.5195 t[0]=-8.6859 t[c]=-5.1862 t[-1]=-0.5195 zero-cross idx=[]
+  max |slope| 0.04551/step at idx 229; slope at ends 0.00000, 0.00000; ratio centre/end slope 45506650000.0, 45506650000.0
+  odd-symmetry error about its zero crossing: max |f(x)+f(-x)| = 10.3723 (peak 8.6859); +side peak -0.5195 / -side peak -8.6859
+  monotonic: True; sign of slope +
+  + side: slope < 50% after 9 steps, < 10% after 13 steps
+  - side: slope < 50% after 186 steps, < 10% after 207 steps
+## MT2: getUnprocessedTable @ 0x316588 -> table @ 0x2c56610
+MT2 n=256 min=-0.7842 max=0.7838 t[0]=-0.7842 t[c]=0.0201 t[-1]=0.7838 zero-cross idx=[np.int64(126)]
+  max |slope| 0.01895/step at idx 116; slope at ends 0.00000, 0.00000; ratio centre/end slope 18951416000.0, 18951416000.0
+  odd-symmetry error about its zero crossing: max |f(x)+f(-x)| = 0.0351 (peak 0.7842); +side peak 0.7838 / -side peak -0.7842
+  monotonic: True; sign of slope +
+  + side: slope < 50% after 46 steps, < 10% after 79 steps
+  - side: slope < 50% after 25 steps, < 10% after 58 steps
+## JackhammerDistortion: getUnprocessedTable @ 0x3162b8 -> table @ 0x2c4ee10
+JackhammerDistortion n=256 min=-1.0000 max=1.0000 t[0]=-1.0000 t[c]=-0.1367 t[-1]=1.0000 zero-cross idx=[np.int64(131)]
+  max |slope| 0.03769/step at idx 129; slope at ends 0.00080, 0.00024; ratio centre/end slope 46.8, 157.4
+  odd-symmetry error about its zero crossing: max |f(x)+f(-x)| = 0.0603 (peak 1.0000); +side peak 1.0000 / -side peak -1.0000
+  monotonic: True; sign of slope +
+  + side: slope < 50% after 26 steps, < 10% after 46 steps
+  - side: slope < 50% after 20 steps, < 10% after 47 steps
+## JackhammerOverdrive: getUnprocessedTable @ 0x3162e8 -> table @ 0x2c4f610
+JackhammerOverdrive n=256 min=-1.0000 max=1.0000 t[0]=-1.0000 t[c]=-0.0234 t[-1]=1.0000 zero-cross idx=[np.int64(130)]
+  max |slope| 0.01080/step at idx 63; slope at ends 0.00058, 0.00068; ratio centre/end slope 18.7, 15.8
+  odd-symmetry error about its zero crossing: max |f(x)+f(-x)| = 0.0099 (peak 1.0000); +side peak 1.0000 / -side peak -1.0000
+  monotonic: True; sign of slope +
+  + side: slope < 50% after 162 steps, < 10% after 177 steps
+  - side: slope < 50% after 26 steps, < 10% after 41 steps

@@ -1,0 +1,12 @@
+# python3 $W/cb.py gen-fsteps $W/sig/fsteps_-10.wav --db -10 --hold 1.5
+# $AUH render aumf bcfs Brwx $W/sig/fsteps_-10.wav $W/out/focusrite_sc/d_a0_r0.fsteps.wav --set 0=1 --set 4=0 --set 5=0 --set 17=0 --set 18=0 --set 19=0 --set 25=1 --set 30=0 --set 31=1 --set 32=1 --set 33=0 --set 44=0 --set 47=0 --set 11=0 --set 12=0 --set 26=0.5 --set 27=3 --set 28=0 --set 29=0
+# python3 $W/cb.py fgain $W/sig/fsteps_-10.wav $W/out/focusrite_sc/d_a0_r0.fsteps.wav --hold 1.5 --lag 0
+freq_hz	in_db	out_db	gain_db
+40	-10.00	-16.18	-6.18
+60	-10.00	-16.23	-6.23
+100	-10.00	-16.26	-6.26
+200	-10.00	-16.28	-6.28
+500	-10.00	-16.29	-6.29
+1000	-10.00	-16.30	-6.29
+3000	-10.00	-16.30	-6.30
+8000	-10.00	-15.57	-5.57

@@ -1,0 +1,27 @@
+# python3 $W/cb.py gen-tb $W/sig/tb_1000_-40_-20_0.5_6.wav --freq 1000 --lo -40 --hi -20 --pre 1 --on 0.5 --post 6
+# $AUH render aufx SHMC Brwx $W/sig/tb_1000_-40_-20_0.5_6.wav $W/out/shadow_hills/t_dis_a0p1ms_recdual.tbB.wav --set 0=1 --set 3=6 --set 9=6 --set 11=2 --set 25=1 --set 26=1 --set 29=0 --set 10=0 --set 1=0 --set 4=1 --set 5=8 --set 6=1 --set 7=0 --set 8=5
+# python3 $W/cb.py timing $W/sig/tb_1000_-40_-20_0.5_6.wav $W/out/shadow_hills/t_dis_a0p1ms_recdual.tbB.wav --freq 1000 --pre 1 --on 0.5 --lag 0
+metric	value
+lag_smp	0
+g_pre_db	0.017
+g_on_db	-0.783
+g_min_db	-0.784
+t_min_ms	500.000
+g_post_db	-0.131
+att_t50_ms	1.208
+att_t63_ms	1.583
+att_t90_ms	3.688
+g_on+1ms	-0.312
+g_on+3ms	-0.673
+g_on+10ms	-0.768
+g_on+30ms	-0.769
+g_on+100ms	-0.772
+rel_t10_ms	8.708
+rel_t50_ms	93.875
+rel_t63_ms	652.250
+rel_t90_ms	3777.229
+g_off+10ms	-0.708
+g_off+50ms	-0.531
+g_off+200ms	-0.413
+g_off+1000ms	-0.345
+g_off+3000ms	-0.228

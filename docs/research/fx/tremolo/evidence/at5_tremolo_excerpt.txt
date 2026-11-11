@@ -1,0 +1,57 @@
+AmpliTube 5 tremolo modules (binary: /Library/Audio/Plug-Ins/Components/AmpliTube 5.component/Contents/MacOS/AmpliTube 5, arm64)
+Recheck with:  python3 $RE/disasm.py "<binary>" --addr 0x<address>      tables: python3 tools/at5_tables.py
+
+--- IK::KIS::FX::AT3::Tremolo (stomp; resource 'Stomps/OptoTremolo.xml'), loop inlined in DynamicWrapper<...>::ProcessBuffer @ 0x14b3028
+  14b30e0  add w9,w8,w9 ; and w9,w9,#0x3fffffff          30-bit phase accumulator
+  14b30e8  scvtf ; fmul by 0x30800000 (2^-30)            phase 0..1
+  14b30f4  ldp s4,s2,[x22,#0x34] ; fsub ; fmul           table position = scale*(phase - x0)
+  14b3108  fcvtzs ... 14b3134                            linear interpolation in the 101-point table [x22,#0x48]
+  14b30b8  ldr s2,[x22,#0x18]                            depth
+  14b30bc  fsub s3,s0(1.0),s2 ; fmul s3,s3,s4            (1 - depth) * in
+  14b30c8  fmul s1,s1,s2 ; fmul s1,s1,s4 ; fadd          + lfo * depth * in        -> out = in * (1 - depth + depth*lfo)
+ OnSetParameter 0x18758ec  inc = rate * 2^30 / sr (0x4e800000); with sync: rate = bpm / (60 * division)  (table 0x312a9b4)
+ DefineParameters 0x187546c  Rate: fmov 0.5, 10.0, 0.5 ; Preallocate 0x14b3a24: bpm 120, defaults 3.0 Hz / depth 1.0 (0x317d340)
+ table: memcpy of 404 bytes from 0x305f904 (0x14b3a58)
+
+--- IK::KIS::FX::AT3::FenderTremolo::Module::Process @ 0xcdc7a8 (called by the stomp and by four Fender amp PreAmp wrappers:
+    0x13c47a8 stomp, 0x15d7c94 Fender65DeluxeReverb, 0x15dd4a4 Fender65TwinReverb, 0x162391c FenderVibroKing, 0x1629c48 Fender64Vibroverb)
+  cdc80c  scvtf s2,w8 ; ldr s3,[x0,#0x1c] ; fmul         x = n * (rate/sr)
+  cdc818  fcmp s2,s0(1.0) ; csinc w8,wzr,w8,ge           n = (x >= 1) ? 0 : n+1
+  cdc820  fadd s2,s2,s2 ; fadd s2,s2,s1(-1.0)            phase = 2x - 1
+  cdc82c  ...cdc888                                      interpolated lookup in the 256-point table [x0,#0x40]
+  cdc7e4  ldr s3,[x1],#4 ; fmul s2,s2,s3                 lfo * in
+  cdc7ec  ldr s4,[x0,#0x14] ; fmul ; fsub s4,s0,s4       depth ; 1 - depth
+  cdc7f8  fmul s3,s3,s4 ; fadd                           out = in * (1 - depth) + in * lfo * depth
+ table: memcpy of 1024 bytes from 0x26257c0 (0x13c50fc); Speed parameter 0.1 .. 12 (0x1620870, 0x1620884)
+ In Fender65DeluxeReverb's PreAmp ProcessBuffer the call (0x15d7c94) is the last one, after the tone-stack StateSpace (0x15d7244)
+ and SpringReverbAT3::Module::Process (0x15d76dc).
+
+--- IK::KIS::FX::AT3::SeymourDuncanShapeShifter::Module::Process @ 0xdb1a64
+  db1bb8  scvtf s16,w11 ; fdiv s18,s16,s0                x = n / period
+  db1bc0  ldr s16,[x0,#0x100]                            s = shape (0.01 .. 0.99)
+  db1bc4..db1be4                                         w = (x < s) ? 0.5*x/s : 1 + 0.5*(x - 1)/(1 - s)        phase skew
+  db1c20..db1c94                                         a = table1(w)   (object at +0x70: the 3-point triangle)
+  db1cb0..db1d28                                         b = table[index](w)   (index [0x14]: 0 = sine, 2 = square)
+  db1d2c  ldp s21,s18,[x0,#0x1c] ; ldr s19,[x0,#0xf8] ; ldr s20,[x0,#0x18]
+  db1d38  fmul s17,s20,s17 ; fmul s16,s21,s16 ; fadd     lfo = (1-m)*a + m*b
+  db1d44  fmul s16,s19,s16 ; fsub s16,s18,s16            u = [0x20] - depth*lfo
+  db1d4c..db1d8c                                         c = gainlaw(u)   (157-point table, object at +0xd0)
+  db1b78  ldp s17,s18,[x0,#0xb8] ; fmul ; ldp s20,s19,[x0,#0xc0] ; fadd ; ... str s16,[x0,#0xc4]    one-pole low-pass on c
+  db1b9c  fmul s16,s18,s17 ; str s16,[x7],#4             out = in * smoothed gain
+ OnSetParameter 0x182695c: depth -> [0xf8] = d, [0x20] = 0.957 + 0.043*d (0x3f74fdf4, 0x3d3020c5), [0xf0] = exp(0.11513*4*d) (+4 dB * d);
+   shape -> 0.01 + 0.98*s (0x3c23d70a, 0x3f7ae148); wave w -> index = (w > 0.5) ? 2 : 0, m = |2w - 1|.
+ UpdateRate 0xdb1e28: rate = 0.52 + 15.105*knob Hz (0x3f051eb8, 0x4171ae14), x1/x2/x3/x4 in ratio mode, ceiling 15.625 (0x417a0000);
+   the sample counter is rescaled by old/new rate (0xdb1f0c..0xdb1f30) so the phase is continuous.
+ Preallocate 0x1487924: low-pass coefficients built from 0x441d1463 = 628.318 = 2*pi*100 Hz (bilinear form with 2*sr).
+
+--- Silvertone 1484 amp, DynamicWrapperPreAmp<...Silvertone1484::Amp,1>::ProcessBuffer @ 0x1828f70, 0x1829a54..0x1829a48
+  1829a54..1829a74   x = inc*n ; sin(6.2831855 * x)                      (0x40c90fdb)
+  1829a78..1829a88   g = (1 - d/2) + (d/2)*sin        d = (0.4661*Strength)^0.4   (0x182b200..0x182b228: 0x3eeea212, 0x3ecccccd, powf)
+  Speed: rate = lo + Speed^2*(hi - lo) Hz (0x182b2d8..0x182b2fc), lo/hi = 4 and 10 per the helper read of 0xdb2640 (not rechecked)
+  1829a8c..1829aec   T = table(g)                      200 points at 0x301d2ac, input 0.534..1
+  1829a38..1829a48   out = in * (2T - 1)
+
+--- Vox AC30 TB amp, DynamicWrapperPreAmp<...VoxAC30TB::Amp,..>::ProcessBuffer @ 0x188a3dc, 0x188bd08..0x188bd48
+  188bd1c..188bd2c   k = 64 / (64 + rate^2)                              (0x42800000 = 64.0)
+  188bd30..188bd38   m = 0.5 * (1 + T*k)             T = 102-point sine table, phase = n/period
+  188bd3c..188bd48   out = 10 * in * m

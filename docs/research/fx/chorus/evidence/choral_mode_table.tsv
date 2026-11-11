@@ -1,0 +1,10 @@
+# Choral per-mode voice constants, decoded from ni::effektrig::dsp::choral::Choral::setModeSmoothingTargetValues @ 0x87a70 (63 float32 targets = 9 groups x 7 voices) and the
+# consumers Choral::updateModeDependentValues @ 0x86e10 and Choral::handleParameterRate @ 0x884ec. Summary of the structure, not a dump: voice 7 (output gain 0, feedback only) is left out.
+# recheck: python3 $RE/disasm.py "$C/Choral.component/Contents/MacOS/Choral" --addr 0x87a70 ; python3 $RE/disasm.py "$C/Choral.component/Contents/MacOS/Choral" --floats 0x1fed320 148
+# jump table bytes at 0x1fed57a = 47,88,131,0,0 -> mode 0 Synth = block 0x87b50, 1 Ensemble = 0x87bf4, 2 Dimension = 0x87ca0, 3 Universal = 0x87a94
+# voices are used in pairs (1,2), (3,4), (5,6); the Voices knob fades pairs 2 and 3 in with a sqrt law (lambda $_4 @ 0x8a054)
+mode	base_delay_ms (x Delay knob 0.1..5.1)	lfo1_rate_multiplier	lfo1_phase_cycles	lfo2_rate (x voice lfo1 rate)	lfo2_amount	wet_filter	lfo_shape_k (0 linear, 1 squared)	lfo_smooth_coeff
+Synth	3,3,7,7,11,11	1,1,1.43,1.43,1.72,1.73	0,.5,0,.5,0,.5	6.1 (pair 3: 0.1)	0,0,0,0,.01,.01	LP 5k,5k,5k,5k,10k,10k	.2,.21,.21,.2,.4,.4	0.4
+Ensemble	7,7,7,7,13,13	1 (all)	0,.5,.333,.833,.667,.167	4.0-4.12	1 (all)	LP 4k,4k,6k,6k,10k,10k	.010-.014	0.30-0.33
+Dimension	11 (all)	1 (all)	0,.5,.5,0,.25,.75	6.1	0	LP 12k,12k; HP 150,150; LP 20k,20k	.1,.1,.1,.1,.4,.4	0.20-0.22
+Universal	7,7,11,11,13,13	1,1,1.43,1.43,1.72,1.72	0,0,0,.25,0,.25	6.1	0,0,.3,.3,.6,.6	LP 20k (all)	0,.2,0,0,0,0	0.99

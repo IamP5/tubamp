@@ -1,0 +1,42 @@
+# TONEX 1.13.1: tremolo-related AU parameters.  $RE_STATE/bin/auhost params aufx Txmm Ikmm | grep -E 'TREM|MOD|^id|MODEL'
+id	name	min	max	default	current	unit	display	choices
+29584774	TREM RATE	0	1	0.646465	0.646465	0	6.5	
+29637441	TREM SYNC	0	1	0	0	2	Off	Off|On
+73532169	MODEL	0	1	1	1	2	On	Off|On
+171070823	MOD MODEL	0	1	0	0	0	CHORUS	
+556104857	TREM SPREAD	0	1	0	0	0	0	
+911708030	TREM LEVEL	0	1	0.6	0.6	0	6.0	
+918242203	TREM SHAPE	0	1	0	0	0	0.0	
+1257642206	CAB TYPE	0	1	0	0	0	MODEL	
+1523472304	TREM TIMESIGN	0	1	0.823529	0.823529	0	1/16	
+1759097355	MOD POSITION	0	1	1	1	2	POST AMP	PRE AMP|POST AMP
+1759670652	MODULATION	0	1	0	0	2	Off	Off|On
+
+# Guitar Rig 6: no effect parameters are exposed (auhost params aufx 'Ni$R' -NI- lists 16 macros and unused slots):
+id	name	min	max	default	current	unit	display	choices
+0	Macros Control 1	0	1	0.5	0.5	0	0.50	
+1	Macros Control 2	0	1	0.5	0.5	0	0.50	
+15	Macros Control 16	0	1	0.5	0.5	0	0.50	
+16	P017	0	1	0.5	0	0	unused	
+17	P018	0	1	0.5	0	0	unused	
+... (513 lines)
+
+# Guitar Rig 6 Tremolo component, factory INIT preset (first XML document inside
+# '/Library/Application Support/Native Instruments/Guitar Rig 6/Component Presets/Tremolo/Tremolo Factory.ngrc'; python3 tools/ngrc_xml.py <that file> ngrc_Tremolo):
+parameter id="Pwr" name="On/Off" value="1"
+parameter id="Ts" name="TempoSync" value="0"
+parameter id="Wdt" name="Width" value="0.5"
+parameter id="Rt" name="Rate" value="0.500057042"
+parameter id="Pan" name="Pan" value="0"
+parameter id="Int" name="Intensity" value="0.5"
+parameter id="Dn" name="Down" value="0.5"
+parameter id="Up" name="Up" value="0.5"
+
+# AC Box factory preset Clean (ngrc_ACBox_doc1.xml), tremolo parameters:
+parameter id="TSp" name="Tremolo Speed" value="0.447619975"
+parameter id="TDt" name="Tremolo Depth" value="0.461899996"
+
+# Twang Reverb factory preset 'Warm Tremolo' (ngrc_TwangReverb_doc4.xml), vibrato parameters:
+parameter id="ViInt" name="Vibrato Intensity" value="0.549380004"
+parameter id="ViSpd" name="Vibrato Speed" value="0.128289998"
+parameter id="ViOn" name="Vibrato" value="1"

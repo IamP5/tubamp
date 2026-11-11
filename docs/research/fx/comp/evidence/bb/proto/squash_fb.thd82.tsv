@@ -1,0 +1,15 @@
+# python3 $W/proto.py $W/sig/sine_82.4_-10.wav $W/out/proto/squash_fb.thd82.wav --thr -34 --ratio 8 --knee 6 --att 20 --rel 600 --fb 1 --hold 8
+# python3 $RE/sig.py thd $W/out/proto/squash_fb.thd82.wav --freq 82.4
+harmonic	freq_hz	level_db	rel_db
+1	82.4	-28.64	0.00
+2	164.8	-102.71	-74.07
+3	247.2	-112.46	-83.82
+4	329.6	-123.69	-95.05
+5	412.0	-137.62	-108.98
+6	494.4	-132.58	-103.94
+7	576.8	-139.63	-110.99
+8	659.2	-141.74	-113.10
+9	741.6	-138.50	-109.86
+10	824.0	-143.59	-114.95
+thd_percent	0.0209
+dc	-0.000000

@@ -1,0 +1,10 @@
+latency_s	6.80272e-05
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	Input Trim	0	1	0.5	0.5	0	0.0 dB	
+1	Sidechain	0	1	0	0	2	Off	
+2	Compress	0	1	0	0	0	1.00	
+3	Punch	0	1	0	0	2	Off	
+4	Dirt	0	1	0	0	2	Off	
+5	Mix	0	1	0	0	0	100% /   0%	
+6	Output	0	1	0.5	0.5	0	0.0 dB	

@@ -1,0 +1,48 @@
+# Guitar Rig 6 cabinet components, headless, impulse of amplitude 0.1 at 0.1 s (imp48.wav etc. from evidence/tonex_rates.tsv header). Run in $RE_STATE/work/cab/gr6bb.
+# setup: $RE_STATE/bin/auhost state aufx 'Ni$R' -NI- gr6_default.aupreset ; python3 -I evidence/bb/ngrc_xml.py '<Component Presets>/<Name>/<Name> Factory.ngrc' ngrc_<Name>
+# python3 evidence/bb/gr6cab.py mc|crp|other -> per row: python3 evidence/bb/gr6cabstate.py gr6_default.aupreset ngrc_<Name>_doc0.xml '<Name>' st_<tag>.aupreset <id>=<v>... Rack.G=0 ; auhost render aufx 'Ni$R' -NI- imp48.wav o_<tag>.wav --state st_<tag>.aupreset --tail 0.5 --warmup 2
+# mc_* = Matched Cabinet (preset AC Box; c = Crossfade, a = Air, Cab = Cabinet, MV = Master Volume, st = Stereo); mc_off = component switched off (the empty-rack reference)
+# crp_* = Control Room Pro (factory doc 0; s1 = Solo 1, ph1 = Phase 1, pi1 = PhaseInv 1, g1 = Gain 1, p1 = Pan 1, b = Bass); cr_init = Control Room INIT; cm_init = Cabinets & Mics INIT (passes the signal unchanged: no cab active in that state)
+# onset = first sample above 1 % of peak, ipk = peak index, counted from the input impulse; t60 = samples until the remaining energy is 60 dB down; <f>Hz = 1/6-octave power average, dB
+tag	sr	onset	ipk	peak	l2L_db	l2R_db	t60	pre_impulse	60Hz	100Hz	160Hz	250Hz	500Hz	1000Hz	2000Hz	4000Hz	8000Hz	12000Hz
+mc_off	48000	10	16	0.9381	-0.47	-0.47	25	0.0e+00	0.0	0.0	0.0	0.0	0.0	0.0	0.0	-0.0	0.0	0.0
+mc_c0_44100	44100	36	43	0.3583	-0.77	-0.77	1898	0.0e+00	5.6	7.4	13.5	13.4	11.4	4.1	5.1	-0.0	-26.5	-33.7
+mc_c0_48000	48000	36	44	0.3310	-1.14	-1.14	2064	0.0e+00	5.5	7.4	13.5	13.4	11.4	4.1	5.1	-0.0	-26.5	-33.7
+mc_c0_96000	96000	39	55	0.1662	-4.15	-4.15	4095	0.0e+00	5.6	7.4	13.5	13.4	11.4	4.1	5.1	-0.0	-26.5	-33.7
+mc_c0.25	48000	36	44	0.3394	-1.10	-1.10	2063	0.0e+00	3.7	5.4	13.0	13.4	11.2	5.6	5.1	0.5	-29.5	-35.2
+mc_c0.5	48000	35	44	0.3478	-0.88	-0.88	2021	0.0e+00	1.4	3.0	12.8	13.5	11.0	7.0	5.1	1.4	-32.5	-36.0
+mc_c0.75	48000	35	44	0.3562	-0.51	-0.51	2023	0.0e+00	-1.5	0.0	12.8	13.7	10.9	8.2	5.3	2.5	-32.5	-35.6
+mc_c1	48000	35	44	0.3646	-0.02	-0.02	2058	0.0e+00	-5.0	-2.8	13.2	14.0	10.9	9.3	5.5	3.6	-29.5	-34.2
+mc_air1	48000	36	44	0.3310	0.20	0.39	9045	0.0e+00	2.9	5.6	11.6	12.1	11.7	5.0	6.1	0.2	-26.4	-33.7
+mc_stereo	48000	36	44	0.3310	-1.14	-1.14	2064	0.0e+00	5.5	7.4	13.5	13.4	11.4	4.1	5.1	-0.0	-26.5	-33.7
+mc_cab0	48000	26	31	0.2083	-6.33	-6.33	1816	0.0e+00	-7.0	1.5	6.1	4.0	-0.0	-3.1	0.2	-2.1	-26.2	-25.9
+mc_cab5	48000	26	37	0.1381	-7.25	-7.25	1911	0.0e+00	-7.8	9.0	11.4	5.9	-3.0	-4.5	-5.8	-5.2	-25.7	-26.7
+mc_cab10	48000	26	31	0.1686	-7.40	-7.40	1816	0.0e+00	-3.9	-1.8	-2.3	-2.6	-2.5	-5.4	-2.2	-1.0	-22.0	-29.5
+mc_cab15	48000	34	42	0.2695	-3.44	-3.44	2064	0.0e+00	4.3	10.6	11.7	10.8	5.7	1.8	1.0	-1.7	-21.8	-38.5
+mc_cab25	48000	35	42	0.1576	-7.98	-7.98	2043	0.0e+00	-1.0	6.8	7.7	5.9	1.2	-3.2	-3.6	-5.2	-28.6	-40.8
+mc_mv0.5	48000	36	44	0.1381	-8.73	-8.73	2064	0.0e+00	-2.0	-0.2	5.9	5.8	3.8	-3.5	-2.5	-7.6	-34.1	-41.3
+mc_mv1.0	48000	36	44	0.7765	6.27	6.27	2064	0.0e+00	13.0	14.8	20.9	20.8	18.8	11.5	12.5	7.4	-19.1	-26.3
+crp_init	48000	16	20	0.1164	-11.81	-11.81	2156	0.0e+00	-1.8	-2.0	-4.3	-1.2	-2.2	-6.9	-6.0	-8.7	-29.3	-49.1
+crp_s1	48000	16	20	0.1164	-11.81	-11.81	2156	0.0e+00	-1.8	-2.0	-4.3	-1.2	-2.2	-6.9	-6.0	-8.7	-29.3	-49.1
+crp_s1_ph0.25	48000	17	21	0.1166	-11.81	-11.81	2157	0.0e+00	-1.8	-2.0	-4.3	-1.2	-2.2	-6.9	-6.0	-8.7	-28.9	-45.1
+crp_s1_ph0.5	48000	18	22	0.1146	-11.81	-11.81	2158	0.0e+00	-1.8	-2.0	-4.3	-1.2	-2.2	-6.9	-6.0	-8.7	-29.1	-46.5
+crp_s1_ph1	48000	21	26	0.1152	-11.81	-11.81	2161	0.0e+00	-1.8	-2.0	-4.3	-1.2	-2.2	-6.9	-6.0	-8.7	-29.2	-48.7
+crp_s1_inv	48000	16	20	0.1164	-11.81	-11.81	2156	0.0e+00	-1.8	-2.0	-4.3	-1.2	-2.2	-6.9	-6.0	-8.7	-29.3	-49.1
+crp_s1_g1	48000	16	20	0.4845	0.57	0.57	2156	0.0e+00	10.6	10.4	8.1	11.2	10.2	5.5	6.4	3.6	-16.9	-36.7
+crp_s1_pan0	48000	16	20	0.2328	-5.79	-300.00	2156	0.0e+00	4.2	4.1	1.8	4.8	3.8	-0.8	0.0	-2.7	-23.3	-43.0
+crp_s12	48000	16	20	0.1164	-11.81	-11.81	2156	0.0e+00	-1.8	-2.0	-4.3	-1.2	-2.2	-6.9	-6.0	-8.7	-29.3	-49.1
+crp_s1_96k	96000	0	9	0.0583	-14.82	-14.82	4279	0.0e+00	-1.8	-2.0	-4.2	-1.2	-2.2	-6.9	-6.0	-8.7	-29.3	-49.1
+crp_s1_bass1	48000	16	21	0.1416	-7.21	-7.21	2267	0.0e+00	12.5	11.5	7.5	8.3	3.2	-4.7	-5.4	-8.6	-29.2	-49.0
+cr_init	48000	34	42	0.0562	-16.93	-16.93	2029	0.0e+00	-11.4	-2.9	-1.8	-3.7	-8.4	-12.4	-12.6	-10.7	-35.4	-44.8
+cm_init	48000	10	16	0.9381	-0.47	-0.47	25	0.0e+00	0.0	0.0	0.0	0.0	0.0	0.0	0.0	-0.0	0.0	0.0
+# analysis: python3 evidence/bb/gr6cab_analysis.py
+# Control Room Pro, Phase 1 = 0.25: delay 0.62 samples at 48 kHz (0.04 m / 343.2 m/s * 48000 * phase = 1.40)
+# Control Room Pro, Phase 1 = 0.5: delay 2.19 samples at 48 kHz (0.04 m / 343.2 m/s * 48000 * phase = 2.80)
+# Control Room Pro, Phase 1 = 1: delay 5.44 samples at 48 kHz (0.04 m / 343.2 m/s * 48000 * phase = 5.59)
+# PhaseInv 1 = 1: delay 0.00 samples, polarity -1
+# empty rack (component off): energy centroid 16.0 samples, peak index 16
+# crp_s1: peak index 20 (empty rack 16)
+# mc_c0_48000: peak index 44 (empty rack 16)
+# mc_cab0: peak index 31 (empty rack 16)
+# cr_init: peak index 42 (empty rack 16)
+# Matched Cabinet crossfade 0.5 = 0.500 * (c=0) + 0.500 * (c=1), residual -139.2 dB

@@ -1,0 +1,10 @@
+# trajectory.py selftest: synthetic four-stage phaser (own code, synth_run), known per-sample notch 1.
+# Tracked and folded exactly like the Guitar Rig 6 takes; the truth is folded the same way (same period, same origin).
+# err = tracked fold against the true fold, no shift; 'shift' column: traj_error() with its free shift.
+case	rate_hz	P	M	period_err%	rms%	max%	traj_error rms%	max%	shift_cycles
+smooth	0.1429	512	8	+0.0000	0.013	+0.015	0.013	+0.015	+0.00000
+smooth	1.071	512	8	+0.0000	0.092	-0.114	0.030	-0.048	-0.00030
+smooth	1.93	512	8	-0.0000	0.156	+0.200	0.044	-0.087	-0.00060
+smooth	9.756	512	16	+0.0000	0.357	+0.638	0.050	-0.257	-0.00340
+sharp	0.3162	2048	16	+0.0000	0.129	+0.430	0.091	+0.393	-0.00010
+sharp	1.778	2048	32	+0.0000	0.718	+2.404	0.477	+1.884	-0.00080

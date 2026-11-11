@@ -1,0 +1,8 @@
+# python3 $W/cb.py gen-tb $W/sig/tb192_10k.wav --sr 192000 --freq 10000 --lo -40 --hi -10 --pre 0.5 --on 0.1 --post 1.0
+# $AUH render aufx 'U365' UADx $W/sig/tb192_10k.wav $W/out/ua_la3a/hs192.wav comp --set 49=0.5 --set 52=1 --set 53=1 --set 54=1 --set 48=0.5 --set 50=0
+# python3 $W/cb.py timing $W/sig/tb192_10k.wav $W/out/ua_la3a/hs192.wav --freq 10000 --pre 0.5 --on 0.1 --lag 
+usage: cb.py timing [-h] [--ch CH] [--freq FREQ] [--lag LAG] [--pre PRE]
+                    [--on ON] [--step-ms STEP_MS] [--t0 T0] [--t1 T1]
+                    [--freqs FREQS] [--hold HOLD]
+                    inp out
+cb.py timing: error: argument --lag: expected one argument

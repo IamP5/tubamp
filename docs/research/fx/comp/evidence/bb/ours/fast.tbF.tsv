@@ -1,0 +1,25 @@
+# (cd $W) python3 ours.py sig/tb_8000_-40_-10_0.1_3.wav out/ours/fast.tbF.wav --thr -20 --ratio 4 --att 0.1 --rel 10
+# python3 cb.py timing sig/tb_8000_-40_-10_0.1_3.wav out/ours/fast.tbF.wav --freq 8000 --pre 1 --on 0.1
+metric	value
+lag_smp	0
+g_pre_db	0.000
+g_on_db	-6.547
+g_min_db	-6.547
+t_min_ms	0.500
+g_post_db	0.000
+att_t50_ms	0.042
+att_t63_ms	0.042
+att_t90_ms	0.167
+g_on+1ms	-6.547
+g_on+3ms	-6.547
+g_on+10ms	-6.547
+g_on+30ms	-6.547
+g_on+100ms	-6.547
+rel_t10_ms	0.229
+rel_t50_ms	0.875
+rel_t63_ms	1.104
+rel_t90_ms	1.562
+g_off+10ms	0.000
+g_off+50ms	0.000
+g_off+200ms	0.000
+g_off+1000ms	0.000

@@ -1,0 +1,32 @@
+Guitar Rig 6, NI::DSP::RigTremolo  (binary: /Library/Audio/Plug-Ins/Components/Guitar Rig 6.component/Contents/MacOS/Guitar Rig 6, arm64)
+Recheck any line with:  python3 $RE/disasm.py "<binary>" --dump '^NI::DSP::RigTremolo::<function>'
+
+processBuffer @ 0x2e6580, per-sample core (annotated excerpt, 0x2e65b8..0x2e662c):
+  2e66d4  ldr  d17,[x0,#0x1b8] ; fadd d16,d16,d17      phase += inc            (phase runs -1..1, inc = 2*f/sr)
+  2e66e8  fadd d16,d16,d1 (-2.0)                       wrap when phase >= 1
+  2e65b8  ldr  d17,[x0,#0x1c0] ; fadd                  + phase offset (LFOHelper::setPhaseOffset)
+  2e65d0  ldr  s17,[x0,#0x1e0] ; fsub s16,s16,s17      phase - width threshold
+  2e65d8  fcmp s16,#0.0
+  2e65dc  fcsel s16,s7,s2,mi                           target = (phase < threshold) ? floor : 1.0     s7 = smoothed (1 - Intensity)
+  2e65e0  csel x16,x10,x9,mi ; ldr s17,[x0,x16]        coefficient = (target is floor) ? [0x1f8] "down" : [0x1f4] "up"
+  2e65e8  ldr  s18,[x0,#0x1fc]                         state
+  2e65ec  fsub s16,s16,s18 ; fmul s16,s17,s16          coef * (target - state)
+  2e65f4  fmov s17,w11 (0x2b8cbccc = 1e-12) ; fadd     + denormal guard
+  2e65fc  fadd s16,s18,s16 ; str s16,[x0,#0x1fc]       state += ...            -> one-pole slew, two rates
+  2e6604  ldr  s17,[x0,#0x1e8]                         stereo ("Pan") flag as float
+  2e6608  fadd s7,s7,s2 ; fsub s7,s7,s16               mirrored = floor + 1 - state
+  2e6610  fcmp s17,#0.0 ; fcsel s7,s7,s16,ne           channel 0 gain = Pan ? mirrored : state ; channel 1 gain = state
+  2e661c  fmul.4s v7,v7,v5[1] ; fadd.4s v5,v5[0],v7    gain = dry + wet*gain  (dry/wet = bypass crossfade pair)
+  2e6628  fmul.4s v5,v6,v5                             out = in * gain
+
+setters and set-up:
+  onInit        0x2e5f04..0x2e5f40  SyncHelper::setFrequencyRange(0x3e82d012 = 0.2555 Hz, 0x4182d012 = 16.3516 Hz); setNoteRange(13, 31);
+                                    setInputMappingMode(3, 2.0)   mode 3 -> jump-table entry 0x60bdc4: linear in pitch = exponential in Hz
+  setParamIntens 0x2e6170           [0xb8] = 1 - Intensity  (target of a 20 ms linear ramp, see onSetSampleRate 0x2e5f7c: 0x3ca3d70a = 0.02 s)
+  setParamWidth  0x2e61a4           threshold = Width*1.6 - 0.8      (0x3fcccccd, 0xbf4ccccd)
+  setParamUp     0x2e61cc           ratio = 2^((60 - 95*Up)/12)      (0xc2be0000 = -95, 0x42700000 = 60, table NI::AB::ExpTable::m_fExpTable
+                                    @ 0x47db080 = 2^(i/60 - 20), built at 0x6a9c30); coefficient [0x1f4] = min(f*ratio, 150 Hz) * 2*pi/sr
+  setParamDown   0x2e6290           same law, coefficient [0x1f8]
+  onSetSampleRate 0x2e5fd0..0x2e5fec  [0xe4] = 6.2831855/sr (0x40c90e56), [0xe8] = [0xe4]*150 (0x43160000)   -> the 150 Hz ceiling
+  setParamStereo 0x2e635c           [0x1e8] = (float) on
+  parameters (TremoloAU::registerParameters 0x19f35c): Sync 'Ts', Width 'Wdt', Rate 'Rt', Pan 'Pan', Intensity 'Int', Down 'Dn', Up 'Up', Lamp 'Lmp'

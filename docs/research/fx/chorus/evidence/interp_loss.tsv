@@ -1,0 +1,9 @@
+# Magnitude loss of a fractional-delay read against the fractional position: 2-point linear (juce::dsp::DelayLine Linear, what tubamp ships) and 4-point Catmull-Rom/Hermite (what Choral uses).
+# recheck: python3 docs/research/fx/chorus/evidence/calc.py interp
+# freq_hz	linear_worst_db	linear_spread_db	hermite4_worst_db	hermite4_spread_db	(worst case and max-min over the fractional position, fs 48 kHz)
+2000	-0.07	0.07	-0.00	0.00
+5000	-0.47	0.47	-0.04	0.04
+7000	-0.95	0.95	-0.13	0.13
+10000	-2.01	2.01	-0.53	0.53
+12000	-3.01	3.01	-1.07	1.07
+15000	-5.11	5.11	-2.53	2.53

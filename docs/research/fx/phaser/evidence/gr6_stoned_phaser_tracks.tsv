@@ -1,0 +1,19 @@
+# Guitar Rig 6 "Stoned Phaser" (NI::DSP::RigPhaserBT), 48 kHz. Same method as gr6_phaser_nine_tracks.tsv.
+# Each row:  TRACKARGS="--prom 3 --fmax 21000 --fmin 40" evidence/tools/ssrun.sh <tag> <probe> <id=value ...>   which runs
+#   python3 grstate.py gr6_default.aupreset comp_Stoned_Phaser.xml st_<tag>.aupreset Sy=0 Not=2 Rt=0.5 Cl=0 CS=0.74 DW=0.5 F1=0.5 F2=0.5 Rot=0 In=0 <overrides>
+#   auhost render aufx 'Ni$R' -NI- <probe> out_<tag>.wav --state st_<tag>.aupreset ; ptrack.py track ... ; ptrack.py summary ... --n 2
+# Parameter ids: Rt Rate, Cl Color, CS Color Strength, DW Wet, F1 Sweep Min, F2 Sweep Max, Not sections (2 = four stages).
+# Color on makes notch 1 shallow (about -5 dB), so its rows come from fewer frames and are less reliable; see gr6_snapshots.tsv.
+# In the eight batch rows column 7 is the rise fraction of the track, not a depth; the last two rows carry notch-1 depth in dB.
+# ss_r075 and ss_r100 sweep too fast for the 43 ms frame: use notch2 period only (0.5585 s and 0.1003 s).
+tag_and_overrides	notch1_min_hz	notch1_max_hz	notch2_min_hz	notch2_max_hz	period_s	notch1_depth_db	peak_db_max	peak_db_median	mean_level_db
+ss_r000 Rt=0	156	2317	842	12684	nan	nan	1.97	1.95	-0.42
+ss_r025 Rt=0.25	149	3565	793	18286	17.3924	0.48	2.19	2.01	-0.36
+ss_r075 Rt=0.75	90	1290	304	12226	1.6893	0.45	5.29	3.66	1.09
+ss_r100 Rt=1.0	105	1864	442	17328	0.1963	0.58	5.75	3.96	-0.07
+ss_on040 Cl=1 CS=0.4	43	1304	256	7452	3.1579	0.52	5.35	3.74	0.62
+ss_on085 Cl=1 CS=0.85	93	1861	442	7448	3.1581	0.50	11.22	7.76	-1.00
+ss_static F1=1.0 F2=0.0	685	764	3865	4341	3.0327	0.49	1.97	1.95	-0.27
+ss_static_on F1=1.0 F2=0.0 Cl=1	268	361	1122	1551	2.6302	0.50	7.53	7.17	0.51
+ss_off (Rt=0.5 Cl=0)	149	3891	775	20103	3.1578	-13.5	3.23	2.49	-0.49
+ss_on (Rt=0.5 Cl=1 CS=0.74)	100	1449	541	7357	3.1577	-5.2	9.57	7.46	-0.27

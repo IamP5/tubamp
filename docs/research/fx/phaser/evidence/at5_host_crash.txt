@@ -1,0 +1,13 @@
+# AmpliTube 5 cannot be measured black-box with auhost.
+#   $RE_STATE/bin/auhost params aumf Atb5 Ikmm ; echo $?        -> 139 (SIGSEGV), no output
+#   $RE_STATE/bin/auhost state  aumf Atb5 Ikmm x.aupreset ; echo $?   -> 139
+# ~/Library/Logs/DiagnosticReports/auhost-2026-11-11-010831.ips, crashed thread, top frames:
+EXC_BAD_ACCESS KERN_INVALID_ADDRESS at 0x0
+AmpliTube 5   IK::Products::AT5::SharedPluginData::SharedPluginData()
+AmpliTube 5   juce::SingletonHolder<IK::Products::AT5::SharedPluginData, juce::CriticalSection, false>::...
+AmpliTube 5   IK::Products::AT5::AudioProcessor::AudioProcessor()
+AmpliTube 5   JuceAU::JuceAU(ComponentInstanceRecord*)
+AudioToolboxCore  AudioComponentInstanceNew
+auhost        (anonymous namespace)::openUnit
+# The plugin dies in its own constructor before any state or editor exists, so `auhost edit` cannot help either.
+# All AmpliTube findings in the report are from code only.

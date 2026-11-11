@@ -1,0 +1,15 @@
+# python3 $W/proto.py $W/sig/sine_82.4_-10.wav $W/out/proto/clean_default_nohold.thd82.wav --thr -20 --ratio 4 --knee 6 --att 5 --rel 120 --hold 0
+# python3 $RE/sig.py thd $W/out/proto/clean_default_nohold.thd82.wav --freq 82.4
+harmonic	freq_hz	level_db	rel_db
+1	82.4	-14.52	0.00
+2	164.8	-201.68	-187.16
+3	247.2	-61.12	-46.60
+4	329.6	-200.23	-185.72
+5	412.0	-73.98	-59.46
+6	494.4	-204.99	-190.48
+7	576.8	-79.94	-65.42
+8	659.2	-207.69	-193.18
+9	741.6	-90.87	-76.36
+10	824.0	-208.21	-193.69
+thd_percent	0.4829
+dc	-0.000000

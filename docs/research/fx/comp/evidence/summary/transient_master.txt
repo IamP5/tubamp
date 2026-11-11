@@ -1,0 +1,7 @@
+att_up
+    CURVE g0=-0.0 thr-1dB=None GR@0=0.0 GR@-12=0.0 ratio_top=1.0 ratio_mid=1.0
+    tbA GR=0.0 over=0.0 att63=0.04 att90=0.04 rel50=44 rel63=44 rel90=44
+neutral
+    tbA GR=0.0 over=-0.0 att63=0.08 att90=0.08 rel50=1 rel63=1 rel90=1
+sus_up
+    tbA GR=-13.6 over=-3.8 att63=0.10 att90=0.12 rel50=6 rel63=8 rel90=12

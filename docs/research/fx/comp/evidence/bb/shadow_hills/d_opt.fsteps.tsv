@@ -1,0 +1,12 @@
+# python3 $W/cb.py gen-fsteps $W/sig/fsteps_-10.wav --db -10 --hold 1.5
+# $AUH render aufx SHMC Brwx $W/sig/fsteps_-10.wav $W/out/shadow_hills/d_opt.fsteps.wav --set 0=1 --set 3=6 --set 9=6 --set 11=2 --set 25=1 --set 26=1 --set 29=0 --set 10=0 --set 1=1 --set 2=16 --set 4=0
+# python3 $W/cb.py fgain $W/sig/fsteps_-10.wav $W/out/shadow_hills/d_opt.fsteps.wav --hold 1.5 --lag 0
+freq_hz	in_db	out_db	gain_db
+40	-10.00	-20.88	-10.88
+60	-10.00	-20.81	-10.81
+100	-10.00	-20.78	-10.78
+200	-10.00	-20.77	-10.77
+500	-10.00	-20.77	-10.77
+1000	-10.00	-20.83	-10.83
+3000	-10.00	-20.45	-10.45
+8000	-10.00	-15.49	-5.49

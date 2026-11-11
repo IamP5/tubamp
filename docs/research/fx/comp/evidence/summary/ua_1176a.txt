@@ -1,0 +1,78 @@
+curve_ratio0
+    CURVE g0=-0.2 thr-1dB=-1.9 GR@0=-1.7 GR@-12=-0.0 ratio_top=1.4 ratio_mid=1.0
+curve_ratio1
+    CURVE g0=-0.2 thr-1dB=-25.7 GR@0=-21.2 GR@-12=-11.2 ratio_top=6.1 ratio_mid=5.7
+curve_ratio2
+    CURVE g0=-0.2 thr-1dB=-21.9 GR@0=-20.1 GR@-12=-9.3 ratio_top=10.7 ratio_mid=10.0
+curve_ratio4
+    CURVE g0=-0.1 thr-1dB=-19.6 GR@0=-19.4 GR@-12=-7.8 ratio_top=33.3 ratio_mid=25.0
+curve_ratio6
+    CURVE g0=0.7 thr-1dB=-23.9 GR@0=-22.8 GR@-12=-11.6 ratio_top=16.2 ratio_mid=12.0
+d_a100_r100
+    thd thd=0.413% h2=-50 h3=-55 gain=-12.3 ripple=0.33
+    thd100 thd=3.526% h2=-31 h3=-36 gain=-12.0 ripple=3.54
+d_a50_r50
+    thd thd=0.097% h2=-61 h3=-68 gain=-13.1 ripple=0.29
+    thdlo thd=0.009% h2=-81 h3=-110 gain=-0.2 ripple=0.29
+    thd100 thd=0.506% h2=-48 h3=-53 gain=-13.1 ripple=3.21
+d_none
+    thd thd=0.277% h2=-55 h3=-53 gain=-0.2 ripple=0.28
+    thdlo thd=0.007% h2=-83 h3=-114 gain=-0.2 ripple=0.29
+d_sc_a50_r50
+hs192_49=0
+hs192_fastest
+hs192_mid
+hs192_slowest
+t_a0_r0
+    tbA GR=-0.1 over=-0.0 att63=0.10 att90=0.12 rel50=1 rel63=1 rel90=1
+    tbB GR=-0.0 over=-0.0 att63=0.12 att90=0.12 rel50=2998 rel63=2998 rel90=2998
+    tbL GR=-0.1 over=-0.0 att63=0.10 att90=0.12 rel50=1 rel63=1 rel90=1
+    tbF GR=-0.1 over=-0.0 att63=0.04 att90=0.04 rel50=2998 rel63=2998 rel90=2998
+t_a0_r100
+    tbA GR=-0.1 over=-0.0 att63=0.10 att90=0.12 rel50=1 rel63=1 rel90=1
+    tbB GR=-0.0 over=-0.0 att63=0.12 att90=0.12 rel50=2998 rel63=2998 rel90=2998
+    tbL GR=-0.1 over=-0.0 att63=0.10 att90=0.12 rel50=1 rel63=1 rel90=1
+    tbF GR=-0.1 over=-0.0 att63=0.04 att90=0.04 rel50=2998 rel63=2998 rel90=2998
+t_a0_r50
+    tbA GR=-0.1 over=-0.0 att63=0.10 att90=0.12 rel50=1 rel63=1 rel90=1
+    tbB GR=-0.0 over=-0.0 att63=0.12 att90=0.12 rel50=2998 rel63=2998 rel90=2998
+    tbL GR=-0.1 over=-0.0 att63=0.10 att90=0.12 rel50=1 rel63=1 rel90=1
+    tbF GR=-0.1 over=-0.0 att63=0.04 att90=0.04 rel50=2998 rel63=2998 rel90=2998
+t_a100_r0
+    tbA GR=-10.9 over=-0.0 att63=1.10 att90=111.67 rel50=825 rel63=1118 rel90=2112
+    tbB GR=-3.3 over=-0.0 att63=2.19 att90=227.81 rel50=768 rel63=1047 rel90=2009
+    tbL GR=-11.5 over=0.0 att63=1.15 att90=237.25 rel50=870 rel63=1216 rel90=2605
+    tbF GR=-8.8 over=-0.1 att63=0.25 att90=0.69 rel50=759 rel63=973 rel90=1555
+t_a100_r100
+    tbA GR=-11.5 over=-0.0 att63=0.90 att90=110.40 rel50=61 rel63=95 rel90=399
+    tbB GR=-3.8 over=-0.0 att63=1.65 att90=217.33 rel50=54 rel63=83 rel90=334
+    tbL GR=-12.1 over=0.0 att63=1.10 att90=236.38 rel50=75 rel63=123 rel90=493
+    tbF GR=-9.6 over=-0.1 att63=0.23 att90=0.62 rel50=30 rel63=43 rel90=88
+t_a100_r50
+    tbA GR=-11.2 over=-0.0 att63=1.10 att90=110.21 rel50=483 rel63=684 rel90=1485
+    tbB GR=-3.4 over=-0.0 att63=1.83 att90=223.75 rel50=439 rel63=623 rel90=1371
+    tbL GR=-11.7 over=0.0 att63=1.15 att90=234.83 rel50=495 rel63=701 rel90=1549
+    tbF GR=-9.0 over=-0.1 att63=0.23 att90=0.69 rel50=372 rel63=513 rel90=950
+t_a50_r0
+    tbA GR=-12.2 over=-0.0 att63=2.25 att90=91.15 rel50=832 rel63=1129 rel90=2123
+    tbB GR=-4.4 over=-0.0 att63=6.71 att90=205.46 rel50=780 rel63=1062 rel90=2035
+    tbL GR=-12.8 over=0.0 att63=2.44 att90=213.19 rel50=879 rel63=1228 rel90=2626
+    tbF GR=-10.1 over=-0.1 att63=1.04 att90=3.60 rel50=786 rel63=1010 rel90=1628
+t_a50_r100
+    tbA GR=-12.3 over=-0.0 att63=1.79 att90=104.17 rel50=61 rel63=96 rel90=403
+    tbB GR=-4.7 over=-0.0 att63=4.17 att90=208.38 rel50=55 rel63=85 rel90=343
+    tbL GR=-12.9 over=0.0 att63=2.10 att90=234.81 rel50=76 rel63=125 rel90=498
+    tbF GR=-10.6 over=-0.1 att63=0.92 att90=2.75 rel50=31 rel63=44 rel90=93
+t_a50_r50
+    tbA GR=-12.3 over=-0.0 att63=2.21 att90=94.31 rel50=488 rel63=690 rel90=1496
+    tbB GR=-4.5 over=-0.0 att63=6.19 att90=205.35 rel50=447 rel63=635 rel90=1395
+    tbL GR=-12.9 over=0.0 att63=2.35 att90=217.71 rel50=501 rel63=709 rel90=1563
+    tbF GR=-10.3 over=-0.1 att63=1.00 att90=3.50 rel50=386 rel63=534 rel90=1004
+t_combo_a100_r100
+    tbA GR=-12.5 over=-0.0 att63=0.40 att90=32.77 rel50=34 rel63=49 rel90=123
+    tbB GR=-3.7 over=-0.0 att63=1.29 att90=215.21 rel50=25 rel63=35 rel90=75
+    tbF GR=-10.7 over=-0.1 att63=0.17 att90=0.35 rel50=18 rel63=25 rel90=46
+t_r20_a100_r100
+    tbA GR=-9.5 over=-0.0 att63=0.33 att90=1.25 rel50=48 rel63=75 rel90=312
+    tbB GR=-0.2 over=-0.0 att63=2.27 att90=205.38 rel50=1 rel63=1 rel90=135
+    tbF GR=-8.1 over=-0.0 att63=0.12 att90=0.25 rel50=24 rel63=33 rel90=67

@@ -1,0 +1,12 @@
+# TONEX (aufx Txmm Ikmm) VIR cab, amp model off. export RE_STATE=<shared state dir>; export RE=<repo>/tools/re; scripts in evidence/bb/, run from $RE_STATE/work/cab/bb (TONEX, PA) or $RE_STATE/work/cab/ours (tubamp)
+# python3 /sig.py gen impulse imp48.wav --db -20 --secs 1   (also imp44.wav --sr 44100, imp96.wav --sr 96000; impulse at 0.1 s, amplitude 0.1)
+# python3 tonex4.py rates   -> for each row: auhost state aufx Txmm Ikmm txs_<name>.aupreset --set <id>=<v>... ; auhost render aufx Txmm Ikmm imp48.wav txo_<name>.wav --state txs_<name>.aupreset --tail 0.5
+# ids: MODEL 73532169 (0=off), CAB TYPE 1257642206 (0 MODEL, 0.5 VIR, 1 OFF), CAB MODEL 325428709, MIC 1 X 73351854, MIC 1 Z 73351856, MIC 2 X 73351885, MIC 2 Z 73351887, MIC 1 MODEL 1745627743, MIC 2 MODEL 1774256894, MIC BLEND 1249623658, CAB RESONANCE 2079943946, PRESENCE 1653443835, DEPTH 64934563
+# columns: onset = first sample above -40 dB of peak, ipk = peak index, both counted from the input impulse; l2_db = 10log10(sum h^2); t30/t60 = samples until the remaining energy is 30/60 dB down; centroid = energy centroid in samples; <f>Hz = 1/6-octave power average of |H| in dB
+name	sr	onset	ipk	peak	l2_db	t30	t60	centroid	lr_diff	40Hz	60Hz	80Hz	100Hz	125Hz	160Hz	200Hz	315Hz	500Hz	800Hz	1000Hz	1600Hz	2500Hz	3150Hz	4000Hz	5000Hz	6300Hz	8000Hz	10000Hz	12500Hz	16000Hz
+bypass_44100	44100	7	7	1.0	0.0	8	8	7.0	0.0	0.0	0.0	-0.0	-0.0	-0.0	-0.0	-0.0	-0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0
+vir_44100	44100	14	23	0.1784	-6.75	1099	2053	60.2	0.0	-16.9	-5.1	-0.8	6.9	9.2	6.8	3.5	-0.9	-4.2	-15.1	-6.9	-2.0	1.5	0.3	-0.2	-4.5	-14.5	-26.5	-30.0	-33.9	-39.2
+bypass_48000	48000	25	27	0.6269	-0.82	39	60	28.0	0.0	0.0	0.0	0.0	-0.0	-0.0	-0.0	-0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	-0.0	-0.0	-0.0	-0.2
+vir_48000	48000	34	44	0.1685	-7.12	1215	2254	85.0	0.0	-16.9	-5.1	-0.7	6.8	9.2	6.8	3.5	-0.9	-4.2	-15.1	-6.9	-2.0	1.5	0.3	-0.2	-4.5	-14.5	-26.5	-30.0	-33.9	-39.5
+bypass_96000	96000	31	36	0.3317	-3.43	91	137	39.4	0.0	-0.0	-0.0	0.0	0.0	0.0	0.0	0.0	0.0	-0.0	-0.0	-0.0	0.0	0.0	0.0	-0.0	-0.0	-0.0	-0.0	-0.0	-0.0	-0.0
+vir_96000	96000	48	68	0.084	-10.13	2410	4487	150.3	0.0	-17.1	-5.2	-0.9	6.9	9.2	6.8	3.5	-0.9	-4.2	-15.2	-6.9	-2.0	1.5	0.3	-0.2	-4.5	-14.5	-26.5	-30.0	-33.9	-39.2

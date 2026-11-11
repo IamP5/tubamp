@@ -1,0 +1,21 @@
+Guitar Rig 6.component (arm64). Annotated excerpts; full helper notes in $RE_STATE/work/eq/gr6/.
+BIN="/Library/Audio/Plug-Ins/Components/Guitar Rig 6.component/Contents/MacOS/Guitar Rig 6"
+
+--- NI::DSP::EQ_Param::setFilter() @ 0x27988c   (python3 $RE/disasm.py "$BIN" --dump '^NI::DSP::EQ_Param::setFilter\(')
+2798b0  ldr s1,[x0,#0x8] ; fadd s10,s1,s1               s10 = 2*fs
+2798cc  mov w8,#0x8000 ; movk w8,#0x483b,lsl #16 ; fcmp s1,s0       fs > 192000 ?
+2798e4  mov w8,#0x42480000 (50.0)                        -> frequency floor 50 Hz
+2798f4  movk w8,#0x47bb,lsl #16 (96000.0) ; fmov s1,#25.0 ; fmaxnm   fs > 96000 -> floor 25 Hz
+279918  mov w8,#0xfdb ; movk w8,#0x40c9,lsl #16 (6.2831855) ; fmul s1,s1,s2 ; ... fdiv s1,s1,s10
+        w = 2*pi*f/(2*fs) = pi*f/fs is stored at +0x150. No call to tan: the bilinear constant is used without pre-warping.
+27992c  fcvt d5,s3 ; fdiv d6,-1,d5 ; fadd d5,d5,d6 ; fsqrt s6,s4 ; fdiv d5,d5,d7     k = (B - 1/B)/sqrt(G), in double
+processBuffer @ 0x26fdf0..0x26fec0, per sample: D = 1 + w^2 + k*w ; a1 = 2(w^2-1)/D ; a2 = (1+w^2-k*w)/D ; N = 1 + w^2 + G*k*w ; b1 = 2(w^2-1)/N ; b2 = (1+w^2-G*k*w)/N
+onSetSampleRate @ 0x27983c: nTicks = max(1, round(0.02*fs/ctrlBlock)) ; inc = 1/(nTicks*ctrlBlock)   (20 ms linear ramp of w, k, G, volume, mix)
+
+--- NI::DSP::EQ_Graphic::setFilters() @ 0x2779c8: 8 bands, centres pMin + i*(pMax-pMin)/7 in MIDI pitch (1/7 = 0x3e124925), B = 2^(d/24), same bell as EQ_Param
+--- NI::DSP::EQ_Shelf::setShelfFilter() @ 0x27a600: two first-order shelves merged into one biquad, roots mapped with c = fs/pi (0x3ea2f983 = 0.3183099), no pre-warp
+
+--- Tortilla amp, FMVToneStack<float>: constants   (python3 $RE/disasm.py "$BIN" --floats 0x37ece50 12)
+0x37ece54 266000.0   0x37ece58 1080000.0   0x37ece5c 25800.0   0x37ece60 33000.0   0x37ece64 4.9999999e-10
+0x37ece68 -45454544.0  0x37ece6c 45454544.0  (= 1/22e-9)
+FMVToneStack<float>::updateSystemMatrices @ 0x5b398c: 3-state state-space model, trapezoidal rule, 3x3 inverse by cofactors (0x5b3ab0..0x5b3be0)

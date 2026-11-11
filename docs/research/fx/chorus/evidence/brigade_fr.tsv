@@ -1,0 +1,55 @@
+# UADx Brigade Chorus, Classic mode, chorus, intensity 0.5: response of the dry path (L) and the wet path (R) from isolated click taps, relative to the -6 dBFS click.
+# render:  $RE_STATE/bin/auhost render aufx U3BO UADx clicks480.wav br_c.wav --warmup 2 --set 54=0 --set 52=0 --set 49=0.5
+# analyse: python3 $T/cx.py tapfr br_c.wav --period 480 --ch 0 --mind 0.3   (dry, L) ; python3 $T/cx.py tapfr br_c.wav --period 480 --ch 1 --mind 1.2   (wet, R)
+# dry (L)
+50	-5.55	-5.55	-5.29
+100	-5.04	-5.04	-4.82
+200	-3.62	-3.62	-3.48
+500	-1.10	-1.10	-1.08
+1000	-1.54	-1.54	-1.53
+2000	-1.41	-1.41	-1.41
+3000	-1.51	-1.51	-1.51
+5000	-1.58	-1.58	-1.58
+7000	-1.69	-1.69	-1.69
+10000	-1.94	-1.94	-1.94
+12000	-2.18	-2.18	-2.18
+15000	-2.60	-2.60	-2.60
+18000	-3.07	-3.07	-3.07
+# wet (R)
+50	-0.94	-0.26	0.13
+100	-0.30	0.36	0.74
+200	1.42	2.07	2.41
+500	4.65	5.30	5.62
+1000	4.93	5.57	5.88
+2000	4.75	5.39	5.69
+3000	3.91	4.54	4.83
+5000	1.11	1.72	1.98
+7000	-3.21	-2.60	-2.31
+10000	-11.50	-10.72	-10.08
+12000	-17.56	-16.59	-15.54
+15000	-27.22	-25.65	-23.70
+18000	-37.31	-34.28	-31.08
+# Long-term spectrum ratio with white noise (-18 dBFS, 10 s), same settings: resolves the low end that the 3 ms tap window cannot (tap rows below 500 Hz are not reliable).
+# render:  $RE_STATE/bin/auhost render aufx U3BO UADx noise.wav br_n.wav --warmup 2 --set 54=0 --set 52=0 --set 49=0.5
+# analyse: python3 $T/cx.py spec noise.wav br_n.wav --ch <0 dry|1 wet> --points 20
+# freq_hz	dry_L_gain_db	wet_R_gain_db
+35.3	-4.75	-1.66
+48.9	-3.49	-0.35
+67.6	-2.32	0.93
+93.6	-1.46	1.92
+129.6	-0.91	2.78
+179.3	-0.61	3.43
+248.3	-0.46	4.06
+343.6	-0.37	4.64
+475.6	-0.32	5.10
+658.4	-0.30	5.43
+911.3	-0.29	5.57
+1261.4	-0.29	5.60
+1746.1	-0.29	5.43
+2416.9	-0.30	5.01
+3345.5	-0.33	4.08
+4630.7	-0.38	2.23
+6409.8	-0.48	-1.28
+8872.4	-0.67	-7.33
+12281.1	-1.06	-16.64
+16999.3	-1.75	-29.59

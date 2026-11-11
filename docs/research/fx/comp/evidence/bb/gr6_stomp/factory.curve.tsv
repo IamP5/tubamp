@@ -1,0 +1,25 @@
+# python3 $RE/sig.py gen steps $W/sig/steps1k.wav --freq 1000 --levels -60:0:3 --hold 1.0
+# $AUH render aufx 'Ni$R' -NI- $W/sig/steps1k.wav $W/out/gr6_stomp/x_default.curve.wav  --state $W/gr6/st_sc_def.aupreset
+# python3 $RE/sig.py curve $W/sig/steps1k.wav $W/out/gr6_stomp/x_default.curve.wav --hold 1.0
+in_db	out_db	gain_db
+-60.00	-44.03	15.97
+-57.00	-41.03	15.97
+-54.00	-38.03	15.97
+-51.00	-35.03	15.97
+-48.00	-32.03	15.97
+-45.00	-29.03	15.97
+-42.00	-26.03	15.97
+-39.00	-23.03	15.97
+-36.00	-20.03	15.97
+-33.00	-17.03	15.97
+-30.00	-14.03	15.97
+-27.00	-11.03	15.97
+-24.00	-9.80	14.20
+-21.00	-9.40	11.60
+-18.00	-9.17	8.83
+-15.00	-9.02	5.98
+-12.00	-8.92	3.08
+-9.00	-8.86	0.14
+-6.00	-8.81	-2.81
+-3.00	-8.78	-5.78
+-0.00	-8.75	-8.75

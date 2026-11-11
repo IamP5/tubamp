@@ -1,0 +1,8 @@
+# Audition renders regenerate with phaser/prototype/audition.py.
+phaser/audition/*.wav
+# Vendor factory-preset snippets regenerate from the installed plugin
+# (tools/re/ngrc_xml.py, phaser/evidence/tools/grstate.py). Not for the repository.
+phaser/evidence/tools/comp_*.xml
+drive/evidence/tools/gr6au/*.xml
+*.aupreset
+__pycache__/

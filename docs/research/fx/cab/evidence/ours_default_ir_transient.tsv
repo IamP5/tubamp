@@ -1,0 +1,17 @@
+# tubamp cab block before its first IR engine has arrived (0.5 s warm-up): every IR gives the same output, the JUCE default IR.
+# python3 t1.py with warmup=0.5 -> auhost render aufx Tamp Tuba imp48.wav o.wav --state st_<name>.aupreset --block 512 --tail 0.5 --warmup 0.5
+name	sr	ipk	peak	l2L_db	l2R_db	gain_1k_db	pre_impulse	note
+delta_ir	48000	0	0.52743	-3.17	-3.17	-2.30	0.00e+00	unit impulse IR, cuts 20 Hz / 20 kHz
+delta_ir_default_cuts	48000	1	0.30728	-6.97	-6.97	-2.31	0.00e+00	cuts 80 Hz / 8 kHz
+stereo_delta	48000	0	0.52743	-3.17	-3.17	-2.30	0.00e+00	L=1.0, R=0.5 impulse IR
+cab48_quiet(-40dB file)	48000	0	0.52743	-3.17	-3.17	-2.30	0.00e+00	same IR scaled -40 dB in the file
+cab44_s44100	44100	0	0.81120	-0.47	-0.47	-0.00	2.01e-08	
+cab44_s48000	48000	0	0.52743	-3.17	-3.17	-2.30	0.00e+00	
+cab44_s96000	96000	2	0.19993	-11.57	-11.57	-7.24	1.85e-09	
+cab48_s44100	44100	0	0.81120	-0.47	-0.47	-0.00	2.01e-08	
+cab48_s48000	48000	0	0.52743	-3.17	-3.17	-2.30	0.00e+00	
+cab48_s96000	96000	2	0.19993	-11.57	-11.57	-7.24	1.85e-09	
+cab96_s44100	44100	0	0.81120	-0.47	-0.47	-0.00	2.01e-08	
+cab96_s48000	48000	0	0.52743	-3.17	-3.17	-2.30	0.00e+00	
+cab96_s96000	96000	2	0.19993	-11.57	-11.57	-7.24	1.85e-09	
+cab48_predelay_s48000	48000	0	0.52743	-3.17	-3.17	-2.30	0.00e+00	

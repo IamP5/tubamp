@@ -1,0 +1,21 @@
+latency_s	0
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	Knee Type	0	1	0	0	2	Soft	
+1	Threshold Comp	0	1	0.333333	0.93002	0	-17.9 dB	
+2	Ratio	0	1	0.774	0.774	0	4.0	
+3	Atk Mode Comp	0	1	0	0	2	Off	
+4	Release Comp	0	1	0	0	0	0.10 s	
+5	Rel.Mode	0	1	0	0	2	Off	
+6	Output	0	1	0.80442	0.805	0	0.0 dB	
+7	Dry	0	1	0.80442	0	0	-Inf dB	
+8	Link L/R	0	1	1	1	2	On	
+9	Boost	0	1	0	0	2	Off	
+10	-	0	1	0	0	2	-	
+11	Mode	0	1	0	0	2	Gate	
+12	Threshold G/E	0	1	0.75	0.75	0	0.0 dB	
+13	Range	0	1	0	0	0	0.0	
+14	Atk Mode G/E	0	1	0	0	2	Off	
+15	Release G/E	0	1	0.5	0.5	0	0.63 s	
+16	SC Mode	0	1	0	0	2	Off	
+17	SC Gain	0	1	0.5	0.5	0	0.0 dB	

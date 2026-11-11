@@ -1,0 +1,29 @@
+# Guitar Rig 6 "Phaser Nine" (NI::DSP::PhaserMXR), 48 kHz unless noted. Notch tracks from a periodic flat-spectrum probe.
+# Setup (once):  cd $RE_STATE/work/phaser/bb ; export W=$RE_STATE/work/phaser   (W/tools holds the same files as evidence/tools)
+#   $RE_STATE/bin/auhost state aufx 'Ni$R' -NI- gr6_default.aupreset
+#   python3 evidence/tools/ptrack.py gen probe12.wav --secs 12   (probe20: --secs 20, probe40: --secs 40, probe8_1024: --secs 8 --period 1024)
+# Each row:  evidence/tools/p9run.sh <tag> <probe> <id=value ...>   which runs
+#   python3 grstate.py gr6_default.aupreset comp_Phaser_Nine.xml st_<tag>.aupreset n=4 c=0.4217 r=0.5 e=0.5 p=0.5 x=0.5 o=0.5 i=0 s=0 <overrides>
+#   auhost render aufx 'Ni$R' -NI- <probe> out_<tag>.wav --state st_<tag>.aupreset
+#   python3 ptrack.py track <probe> out_<tag>.wav > trk_<tag>.tsv ; python3 ptrack.py summary trk_<tag>.tsv --n 2
+# Parameter ids: p Rate, c Color, r Depth, e Frequency, n Notches(stages), x Dry/Wet, o Rotate. peak_db includes the model's 5.40 dB make-up gain.
+# period_s is an autocorrelation estimate; with fewer than three periods in the take it reads about 2.5 % short.
+tag_and_overrides	notch1_min_hz	notch1_max_hz	notch2_min_hz	notch2_max_hz	period_s	notch1_depth_db	peak_db_max	peak_db_median	mean_level_db
+r005 p=0.05	423	1596	1916	7314	17.9614	-22.6	9.22	8.97	2.08
+r025 p=0.25	428	1588	1909	7314	4.0150	-22.7	9.61	9.12	2.01
+r040 p=0.4	445	1545	2046	7059	1.0980	-23.3	10.98	9.67	2.02
+r075 p=0.75	476	1481	2254	6744	0.5151	-22.3	11.87	10.22	2.01
+r090 p=0.9	578	1387	2551	6297	0.2694	-20.5	11.57	9.80	1.96
+r100 p=1.0	712	1157	3332	5299	0.1022	-20.1	11.85	10.03	1.89
+c000 p=0.1 c=0	372	1395	2148	8150	6.8502	-24.0	6.49	6.30	2.30
+c100 p=0.1 c=1.0	469	1904	1612	6277	6.8022	-22.0	28.97	27.36	7.84
+c070 p=0.1 c=0.7	459	1727	1781	6788	6.8498	-22.0	13.22	12.73	2.62
+d100 p=0.1 r=1.0	189	2204	846	10027	6.8371	-21.9	9.70	9.10	2.28
+d000 p=0.1 r=0.0	905	905	4148	4148	nan	-22.7	8.93	8.93	1.88
+f000 p=0.1 e=0.0	111	495	516	2316	6.8727	-21.4	9.29	9.05	3.72
+f100 p=0.1 e=1.0	1474	2736	6678	12270	6.8605	-20.2	8.96	8.71	2.05
+def (no overrides, 48k)	444	1544	2091	7059	0.9363		11.26	9.80	2.02
+slow p=0.1	424	1593	1910	7307	6.8516		9.35	9.02	1.98
+sr441 (44.1 kHz host rate)	460	1562	2053	7131	0.9302		11.08	9.98	2.01
+sr96 (96 kHz host rate, --period 4096 --hop 512)	462	1544	2090	7059	0.9360		11.22	9.80	2.02
+d000c000 p=0.1 r=0.0 c=0 (static, feedback off)	797	797	4625	4625	nan		6.23	6.23	2.29

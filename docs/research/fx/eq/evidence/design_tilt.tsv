@@ -1,0 +1,8 @@
+# Reproduce: python3 docs/research/fx/eq/evidence/scripts/design.py tilt
+# first-order tilt H(s) = (A s + wp)/(s + A wp), A = 10^(tilt_dB/20): gain -> -tilt at DC, +tilt at infinity, 0 dB at the pivot.
+# bilinear with pre-warp at the pivot. dB at grid, fs 44.1 kHz, pivot 700 Hz; last column = max error against analog, 20 Hz..20 kHz
+tilt_dB	30	80	200	700	2500	6000	12000	20000	max_err_dB
+6	-5.97	-5.79	-4.87	-0.00	4.92	5.81	5.97	6.00	0.03
+3	-2.99	-2.92	-2.52	-0.00	2.54	2.92	2.99	3.00	0.01
+-3	2.99	2.92	2.52	0.00	-2.54	-2.92	-2.99	-3.00	0.01
+-6	5.97	5.79	4.87	0.00	-4.92	-5.81	-5.97	-6.00	0.03

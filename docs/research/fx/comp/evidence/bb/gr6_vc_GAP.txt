@@ -1,0 +1,3 @@
+# $W/gr6/mk.sh vc76 ngrc_VC76_doc0.xml "VC 76" A2=1 R3=1 R1=0      -> gr6state.py: AttributeError (parameter block not matched)
+# same for ngrc_VC2A_doc0.xml "VC 2A" and ngrc_VC160_doc0.xml "VC 160"; "Fast Comp" doc0 has no component-id
+Guitar Rig 6 VC 76, VC 2A, VC 160 and Fast Comp: no AU state could be built with gr6state.py as copied. Not measured.

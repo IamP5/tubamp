@@ -1,0 +1,153 @@
+# Free Ranger (aufx SPFE SPL1) evidence. Parameter values normalised 0..1 as 'auhost params' lists (ids 2..5 = Band 40/150/1k8/16k; default 0.5 = 0.00 dB).
+# Each row: python3 $W/<script>; render command form: auhost render aufx SPFE SPL1 imp_48000.wav o.wav --set <id>=<v>  (imp = sig.py gen impulse --db -6 --secs 2 --sr R; noise = sig.py gen noise --db -18 --secs 6 --sr R)
+# dense H = FFT(out)/FFT(in) of the impulse pair (0.5 Hz resolution); noise Welch (nfft 32768) cross-checked: max diff 0.08/0.14/0.01/0.001 dB per band at max
+# flat default: max |dev| 6e-6 dB 20..20k, latency 0 samples, gain 1.0000. scripts: fr2.py fr3.py fr4.py fr5.py fr6.py fr7.py fr_cramp.py
+# --- 1/3-oct response with ONE band at +max (id=1.0), dB (fr2.py)
+f	b40	b150	b1k8	b16k
+20 	5.31	1.01	0.40	0.01
+25 	7.15	1.16	0.45	0.01
+31.5 	10.37	1.36	0.50	0.01
+40 	12.29	1.69	0.57	0.01
+50 	7.82	2.17	0.66	0.01
+63 	4.15	3.00	0.80	0.01
+80 	2.19	4.52	1.02	0.01
+100 	1.25	7.12	1.33	0.01
+125 	0.73	11.57	1.78	0.01
+160 	0.42	11.49	2.47	0.01
+200 	0.26	6.73	3.32	0.01
+250 	0.17	3.89	4.39	0.01
+315 	0.11	2.25	5.75	0.01
+400 	0.07	1.33	7.35	0.02
+500 	0.05	0.83	8.94	0.02
+630 	0.03	0.52	10.46	0.02
+800 	0.02	0.33	11.46	0.03
+1000 	0.02	0.22	11.45	0.04
+1250 	0.01	0.15	10.51	0.06
+1600 	0.01	0.10	8.90	0.09
+2000 	0.01	0.07	7.32	0.14
+2500 	0.01	0.06	5.83	0.21
+3150 	0.01	0.05	4.49	0.34
+4000 	0.01	0.04	3.36	0.56
+5000 	0.01	0.03	2.53	0.92
+6300 	0.01	0.03	1.88	1.58
+8000 	0.01	0.03	1.40	2.85
+10000 	0.01	0.02	1.07	5.08
+12500 	0.00	0.02	0.82	9.11
+16000 	0.00	0.01	0.58	14.39
+20000 	0.00	0.00	0.38	10.76
+# --- band peak gain dB vs normalised value (fr4.py, taper file)
+v	b40@38	b150@141.5	b1k8@891	b16k@16175
+0.00	-12.65	-13.21	-11.59	-14.41
+0.05	-9.13	-9.19	-8.39	-10.26
+0.10	-7.11	-7.04	-6.55	-7.97
+0.20	-3.13	-3.02	-2.90	-3.54
+0.30	-1.56	-1.50	-1.45	-1.78
+0.40	-0.66	-0.63	-0.62	-0.76
+0.45	-0.31	-0.30	-0.29	-0.36
+0.50	0.00	0.00	-0.00	0.00
+0.55	0.31	0.30	0.29	0.36
+0.60	0.66	0.63	0.62	0.76
+0.70	1.56	1.50	1.45	1.78
+0.80	3.13	3.02	2.90	3.54
+0.90	7.11	7.04	6.55	7.97
+0.95	9.13	9.19	8.39	10.26
+1.00	12.65	13.21	11.59	14.41
+# --- half-gain bandwidth (flo..fhi where dB = peak_dB/2) vs v, at fc of max peak (fr3.py)
+latency/gain flat (0, 1.0000001189269083)
+b40 impulse peak 12.65 @ 38.0
+ v=0.55 gain@fc 0.313  half-gain bw 4.0..140.5 (edge False False)  oct 5.134  Q(half)=0.278
+ v=0.60 gain@fc 0.664  half-gain bw 4.0..134.5 (edge False False)  oct 5.071  Q(half)=0.291
+ v=0.70 gain@fc 1.562  half-gain bw 4.5..117.0 (edge False False)  oct 4.700  Q(half)=0.338
+ v=0.80 gain@fc 3.132  half-gain bw 6.5..93.0 (edge False False)  oct 3.839  Q(half)=0.439
+ v=0.90 gain@fc 7.110  half-gain bw 13.5..66.5 (edge False False)  oct 2.300  Q(half)=0.717
+ v=1.00 gain@fc 12.654  half-gain bw 22.5..54.5 (edge False False)  oct 1.276  Q(half)=1.188
+  noise-vs-impulse max diff dB (50..18k): 0.07983982932789235
+b150 impulse peak 13.21 @ 141.5
+ v=0.55 gain@fc 0.299  half-gain bw 17.5..605.5 (edge False False)  oct 5.113  Q(half)=0.241
+ v=0.60 gain@fc 0.634  half-gain bw 19.0..578.0 (edge False False)  oct 4.927  Q(half)=0.253
+ v=0.70 gain@fc 1.496  half-gain bw 25.5..498.5 (edge False False)  oct 4.289  Q(half)=0.299
+ v=0.80 gain@fc 3.021  half-gain bw 39.5..389.0 (edge False False)  oct 3.300  Q(half)=0.405
+ v=0.90 gain@fc 7.043  half-gain bw 69.5..262.0 (edge False False)  oct 1.914  Q(half)=0.735
+ v=1.00 gain@fc 13.212  half-gain bw 96.0..202.0 (edge False False)  oct 1.073  Q(half)=1.335
+  noise-vs-impulse max diff dB (50..18k): 0.13831450401772116
+b1k8 impulse peak 11.59 @ 891.0
+ v=0.55 gain@fc 0.291  half-gain bw 60.5..12566.5 (edge False False)  oct 7.698  Q(half)=0.071
+ v=0.60 gain@fc 0.617  half-gain bw 64.5..11949.0 (edge False False)  oct 7.533  Q(half)=0.075
+ v=0.70 gain@fc 1.448  half-gain bw 79.0..10048.5 (edge False False)  oct 6.991  Q(half)=0.089
+ v=0.80 gain@fc 2.896  half-gain bw 111.0..7277.5 (edge False False)  oct 6.035  Q(half)=0.124
+ v=0.90 gain@fc 6.547  half-gain bw 199.0..4039.0 (edge False False)  oct 4.343  Q(half)=0.232
+ v=1.00 gain@fc 11.586  half-gain bw 317.0..2517.0 (edge False False)  oct 2.989  Q(half)=0.405
+  noise-vs-impulse max diff dB (50..18k): 0.011384500533089925
+b16k impulse peak 14.41 @ 16175.5
+ v=0.55 gain@fc 0.361  half-gain bw 4457.0..24000.0 (edge False True)  oct 2.429  Q(half)=0.828
+ v=0.60 gain@fc 0.764  half-gain bw 4641.0..24000.0 (edge False True)  oct 2.371  Q(half)=0.836
+ v=0.70 gain@fc 1.782  half-gain bw 5290.5..24000.0 (edge False True)  oct 2.182  Q(half)=0.865
+ v=0.80 gain@fc 3.538  half-gain bw 6592.5..24000.0 (edge False True)  oct 1.864  Q(half)=0.929
+ v=0.90 gain@fc 7.967  half-gain bw 9240.0..24000.0 (edge False True)  oct 1.377  Q(half)=1.096
+ v=1.00 gain@fc 14.412  half-gain bw 11422.0..24000.0 (edge False True)  oct 1.071  Q(half)=1.286
+  noise-vs-impulse max diff dB (50..18k): 0.0013646903336042016
+# --- adjacent-band interaction (fr4.py/fr6.py)
+bands 2+3: combined peak 14.21 dB @ 143 ; single peaks 12.65 / 13.21 ; series-residual max 3.198 dB ; parallel-residual max 0.918 dB ; min between peaks 0.00
+bands 3+4: combined peak 14.44 dB @ 140 ; single peaks 13.21 / 11.59 ; series-residual max 3.726 dB ; parallel-residual max 0.903 dB ; min between peaks 0.00
+bands 4+5: combined peak 15.13 dB @ 16196 ; single peaks 11.59 / 14.41 ; series-residual max 1.971 dB ; parallel-residual max 0.857 dB ; min between peaks 0.00
+all four max: peak resp (dB): 16.59; series-sum-dB residual max 2.958 dB; parallel-sum residual max 2.782 dB
+2 3 worst series residual at 68 Hz: combined 3.53, series-sum 6.72, parallel-sum 3.15
+       50 comb 7.95 ser 9.96 par 7.20
+      100 comb 6.82 ser 8.39 par 6.22
+      150 comb 13.89 ser 13.24 par 12.98
+      300 comb 3.64 ser 2.64 par 3.08
+      500 comb 1.35 ser 0.87 par 1.10
+     1000 comb 0.37 ser 0.23 par 0.30
+     3000 comb 0.07 ser 0.06 par 0.06
+    10000 comb 0.03 ser 0.03 par 0.03
+    16000 comb 0.01 ser 0.02 par 0.02
+3 4 worst series residual at 231 Hz: combined 4.96, series-sum 8.69, parallel-sum 4.47
+       50 comb 3.39 ser 2.83 par 3.07
+      100 comb 9.06 ser 8.49 par 8.29
+      150 comb 13.71 ser 15.02 par 12.81
+      300 comb 5.11 ser 7.96 par 4.62
+      500 comb 9.28 ser 9.77 par 8.52
+     1000 comb 12.39 ser 11.67 par 11.53
+     3000 comb 5.54 ser 4.81 par 4.93
+    10000 comb 1.23 ser 1.09 par 1.12
+    16000 comb 0.64 ser 0.59 par 0.60
+4 5 worst series residual at 6428 Hz: combined 1.52, series-sum 3.49, parallel-sum 1.30
+       50 comb 0.72 ser 0.67 par 0.68
+      100 comb 1.55 ser 1.34 par 1.36
+      150 comb 2.66 ser 2.28 par 2.31
+      300 comb 6.18 ser 5.46 par 5.52
+      500 comb 9.82 ser 8.96 par 9.01
+     1000 comb 12.28 ser 11.49 par 11.42
+     3000 comb 4.49 ser 5.06 par 4.01
+    10000 comb 5.02 ser 6.15 par 4.33
+    16000 comb 15.11 ser 14.97 par 14.40
+# --- cut vs boost mirror (fr5.py: complex |Hcut*Hboost|, max over 5..20k)
+   cut vs 1/boost complex: max |dB| diff 0.003 ; phase diff max 0.015 deg
+   cut vs 1/boost complex: max |dB| diff 0.000 ; phase diff max 0.002 deg
+   cut vs 1/boost complex: max |dB| diff 0.000 ; phase diff max 0.000 deg
+   cut vs 1/boost complex: max |dB| diff 0.000 ; phase diff max 0.000 deg
+# --- cramping
+# cramping 16k band +max (id5=1)
+f_Hz	5000	8000	10000	12000	14000	16000	18000	20000	Nyquist
+44100	0.96	2.91	5.12	8.19	11.96	14.42	12.93	10.70	9.80
+48000	0.92	2.85	5.08	8.20	11.98	14.39	13.04	10.76	8.65
+96000	0.82	2.74	5.06	8.31	12.06	14.26	13.27	11.39	3.55
+
+# --- colour (fr7.py): THD2-10 and Hn relative to fundamental, dB
+channel	peak_db	rms_db	dc
+0	-240.00	-240.00	0.000000
+1	-240.00	-240.00	0.000000
+label	f	in_dBFS	fund_dB	H2_rel	H3_rel	H4_rel	H5_rel	THD2-10_dB
+flat	1000	-18	-18.00	-215.4	-151.8	-245.9	-150.9	-146.5
+flat	1000	-6	-6.00	-215.4	-152.3	-245.9	-153.6	-148.4
+flat	1000	0	-0.00	-215.4	-153.1	-245.9	-157.4	-150.1
+flat	100	-18	-18.00	-164.1	-159.9	-181.2	-155.6	-151.5
+flat	100	-6	-6.00	-164.1	-165.0	-181.2	-159.0	-155.4
+flat	100	0	0.00	-164.1	-160.5	-181.2	-159.8	-153.8
+b150+b1k8 max	1000	-18	-5.61	-177.5	-141.7	-164.9	-146.4	-138.4
+b150+b1k8 max	1000	-6	6.39	-167.4	-141.8	-172.6	-148.0	-139.2
+b150+b1k8 max	1000	0	12.39	-169.9	-146.5	-168.4	-139.4	-137.6
+b150+b1k8 max	100	-18	-8.94	-161.5	-111.3	-149.5	-114.5	-108.3
+b150+b1k8 max	100	-6	3.06	-164.8	-110.6	-166.1	-110.2	-107.3
+b150+b1k8 max	100	0	9.06	-151.5	-104.4	-142.0	-112.7	-103.6
+silence

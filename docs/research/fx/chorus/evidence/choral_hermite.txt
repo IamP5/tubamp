@@ -1,0 +1,15 @@
+# Choral, ni::effektrig::dsp::choral::ChorusVoice<22050>::process @ 0x8731c: the fractional delay read. Annotated excerpt.
+# recheck: python3 $RE/disasm.py "$C/Choral.component/Contents/MacOS/Choral" --addr 0x8731c | sed -n '/87554:/,/875f0:/p'
+# d0 = base[0x8] + depth[0x20] * smoothed_lfo ; x8 = int(d0) ; d0 = frac ; x10 = write pointer
+8755c:      	fcvtzs	x8, d0   ; i = (int) delay
+87564:      	fsub	d0, d0, d1   ; f = delay - i
+87568:      	fmul	d1, d0, d0   ; f^2
+8756c:      	fmul	d2, d0, d1   ; f^3
+8757c:      	ldr	q3, [x10, x9, lsl #4]   ; ym1 = buf[1-i]
+87584:      	ldr	q4, [x9]   ; y0  = buf[-i]
+8758c:      	ldr	q5, [x10, x9, lsl #4]   ; y1  = buf[-1-i]
+87598:      	ldr	q6, [x10, x8, lsl #4]   ; y2  = buf[-2-i]
+875b8:      	fsub.2d	v7, v7, v16   ; c2 = ym1 - 2.5*y0 + 2*y1 - 0.5*y2
+875cc:      	fadd.2d	v6, v16, v6   ; c3 = 1.5*(y0-y1) + 0.5*(y2-ym1)
+875d8:      	fmul.2d	v0, v0, v17   ; c1*f = 0.5*(y1-ym1)*f
+875ec:      	fadd.2d	v0, v0, v1   ; out = y0 + c1*f + c2*f^2 + c3*f^3  (Catmull-Rom / 4-point 3rd-order Hermite)

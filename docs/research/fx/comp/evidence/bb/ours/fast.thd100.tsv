@@ -1,0 +1,23 @@
+# (cd $W) python3 ours.py sig/sine_100_-10.wav out/ours/fast.thd100.wav --thr -20 --ratio 4 --att 0.1 --rel 10
+# python3 $RE/sig.py thd out/ours/fast.thd100.wav --freq 100; python3 $RE/sig.py curve sig/sine_100_-10.wav out/ours/fast.thd100.wav --hold 4.0; python3 cb.py ripple sig/sine_100_-10.wav out/ours/fast.thd100.wav --freq 100
+harmonic	freq_hz	level_db	rel_db
+1	100.0	-14.32	0.00
+2	200.0	-212.05	-197.73
+3	300.0	-33.30	-18.98
+4	400.0	-225.59	-211.27
+5	500.0	-40.85	-26.53
+6	600.0	-234.43	-220.11
+7	700.0	-48.83	-34.51
+8	800.0	-240.00	-229.35
+9	900.0	-53.88	-39.56
+10	1000.0	-240.00	-238.73
+thd_percent	12.3807
+dc	0.000000
+in_db	out_db	gain_db
+-10.00	-16.62	-6.62
+metric	value
+lag_smp	0
+gain_median_db	-7.150
+gain_p05_db	-7.499
+gain_p95_db	-3.994
+ripple_p95_p05_db	3.504

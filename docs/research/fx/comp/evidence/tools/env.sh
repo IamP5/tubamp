@@ -1,0 +1,9 @@
+export RE_STATE=/private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktrees-tubamp-effects-reverse-engineer-90c7f7/cab46780-7fe6-4ba5-87cd-2d4971b7e79d/scratchpad/re
+export REPO=/Users/tuba/Dev/projects/tubamp/.claude/worktrees/tubamp-effects-reverse-engineer-90c7f7
+export RE=$REPO/tools/re
+export W=$RE_STATE/work/comp
+export D=$REPO/docs/research/fx/comp
+export C=/Library/Audio/Plug-Ins/Components
+export AUH=$RE_STATE/bin/auhost
+export GR6="$C/Guitar Rig 6.component/Contents/MacOS/Guitar Rig 6"
+export AT5="$C/AmpliTube 5.component/Contents/MacOS/AmpliTube 5"

@@ -1,0 +1,25 @@
+# python3 $RE/sig.py gen steps $W/sig/steps1k.wav --freq 1000 --levels -60:0:3 --hold 1.0
+# $AUH render aumf bcfs Brwx $W/sig/steps1k.wav $W/out/focusrite_sc/curve_ratio1.curve.wav --set 0=1 --set 4=0 --set 5=0 --set 17=0 --set 18=0 --set 19=0 --set 25=1 --set 30=0 --set 31=1 --set 32=1 --set 33=0 --set 44=0 --set 47=0 --set 11=0 --set 12=0 --set 26=0.5 --set 27=1 --set 28=0.2 --set 29=0.2
+# python3 $RE/sig.py curve $W/sig/steps1k.wav $W/out/focusrite_sc/curve_ratio1.curve.wav --hold 1.0
+in_db	out_db	gain_db
+-60.00	-59.98	0.02
+-57.00	-56.98	0.02
+-54.00	-53.98	0.02
+-51.00	-50.98	0.02
+-48.00	-47.98	0.02
+-45.00	-44.98	0.02
+-42.00	-41.98	0.02
+-39.00	-38.98	0.02
+-36.00	-35.98	0.02
+-33.00	-32.98	0.02
+-30.00	-30.03	-0.03
+-27.00	-27.04	-0.04
+-24.00	-24.05	-0.05
+-21.00	-21.07	-0.07
+-18.00	-18.66	-0.66
+-15.00	-17.17	-2.17
+-12.00	-16.02	-4.02
+-9.00	-15.12	-6.12
+-6.00	-14.27	-8.27
+-3.00	-13.54	-10.54
+-0.00	-12.95	-12.95

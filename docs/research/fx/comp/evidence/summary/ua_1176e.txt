@@ -1,0 +1,36 @@
+curve_ratio1
+    CURVE g0=-3.5 thr-1dB=-21.7 GR@0=-18.2 GR@-12=-8.2 ratio_top=6.1 ratio_mid=5.8
+curve_ratio2
+    CURVE g0=-3.5 thr-1dB=-19.1 GR@0=-17.7 GR@-12=-6.8 ratio_top=10.9 ratio_mid=10.2
+curve_ratio4
+    CURVE g0=-3.5 thr-1dB=-15.9 GR@0=-15.9 GR@-12=-4.3 ratio_top=31.6 ratio_mid=20.0
+d_a100_r100
+    thd thd=0.383% h2=-51 h3=-55 gain=-13.1 ripple=0.41
+    thd100 thd=3.360% h2=-31 h3=-37 gain=-12.7 ripple=3.76
+d_a50_r50
+    thd thd=0.055% h2=-68 h3=-69 gain=-13.5 ripple=0.37
+    thdlo thd=0.009% h2=-81 h3=-112 gain=-3.5 ripple=0.32
+    thd100 thd=0.455% h2=-49 h3=-54 gain=-13.5 ripple=3.49
+hs192_49=0
+hs192_fastest
+hs192_slowest
+t_a100_r0
+    tbA GR=-7.7 over=-0.0 att63=0.71 att90=2.77 rel50=703 rel63=1000 rel90=2065
+    tbB GR=-0.9 over=-0.0 att63=1.77 att90=226.83 rel50=615 rel63=875 rel90=1810
+    tbL GR=-8.9 over=0.0 att63=1.12 att90=782.31 rel50=933 rel63=1343 rel90=3028
+    tbF GR=-6.2 over=-0.0 att63=0.19 att90=0.38 rel50=453 rel63=621 rel90=1104
+t_a100_r100
+    tbA GR=-8.4 over=-0.0 att63=0.44 att90=1.83 rel50=39 rel63=58 rel90=179
+    tbB GR=-1.4 over=-0.0 att63=1.35 att90=194.42 rel50=35 rel63=50 rel90=138
+    tbL GR=-9.6 over=0.0 att63=0.92 att90=758.65 rel50=74 rel63=129 rel90=1115
+    tbF GR=-7.0 over=-0.0 att63=0.19 att90=0.35 rel50=23 rel63=31 rel90=58
+t_a50_r0
+    tbA GR=-8.8 over=-0.0 att63=2.29 att90=16.27 rel50=709 rel63=1009 rel90=2076
+    tbB GR=-1.6 over=-0.0 att63=9.15 att90=181.23 rel50=644 rel63=919 rel90=1923
+    tbL GR=-10.0 over=0.0 att63=3.23 att90=713.75 rel50=945 rel63=1354 rel90=3049
+    tbF GR=-7.4 over=-0.0 att63=1.17 att90=3.35 rel50=485 rel63=668 rel90=1211
+t_a50_r100
+    tbA GR=-8.8 over=-0.0 att63=1.83 att90=7.71 rel50=40 rel63=58 rel90=181
+    tbB GR=-2.0 over=-0.0 att63=4.83 att90=173.62 rel50=35 rel63=51 rel90=145
+    tbL GR=-10.2 over=0.0 att63=2.42 att90=772.31 rel50=74 rel63=130 rel90=1123
+    tbF GR=-7.8 over=-0.0 att63=1.04 att90=2.67 rel50=24 rel63=33 rel90=61

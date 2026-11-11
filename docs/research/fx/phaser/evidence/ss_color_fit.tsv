@@ -1,0 +1,15 @@
+# Least-squares fit of  H = d + w * Sh(s) * P^4 / (1 - c * HP(s) * P^4),  P = (1 - s/wc)/(1 + s/wc), Sh = (1 + k s/wp)/(1 + s/wp), HP = s/(s + wh)
+# to gr6_snapshots.tsv column ss_on_static (70 Hz to 12 kHz, 1/f weighting, c bounded at 0.80). Script kept in $RE_STATE/work/phaser (random-restart hill climb).
+param	value
+fc_hz	610
+c	0.80
+d	0.125
+w	1.330
+fb_hp_hz	365
+shelf_pole_hz	279
+shelf_k	0.33
+rms_db_fit_band	0.40
+rms_db_100_8000_static	0.29
+rms_db_100_8000_sweep_bottom_fc105	0.68
+rms_db_100_8000_sweep_top_fc3100	1.64
+# Color off, same method on column ss_off_static with c=0, no shelf: d=0.76 w=0.50 fc=1798 Hz, rms 0.25 dB.

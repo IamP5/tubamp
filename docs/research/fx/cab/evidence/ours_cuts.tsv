@@ -1,0 +1,11 @@
+# tubamp cut filter slopes. auhost render aufx Tamp Tuba imp48.wav o_delta_defcuts.wav --state st_delta_defcuts.aupreset --block 512 --tail 0.5 --warmup 60 (t1.py), then python3 ours_cuts.py
+freq_hz	gain_db_re_1k   (cab_lowcut 80 Hz, cab_highcut 8000 Hz, session 48 kHz)
+20	-24.15
+40	-12.34
+80	-3.01
+160	-0.26
+1000	0.00
+4000	-0.20
+8000	-3.01
+16000	-19.14
+22000	-44.76

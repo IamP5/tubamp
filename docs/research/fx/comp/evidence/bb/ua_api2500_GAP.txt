@@ -1,0 +1,3 @@
+# $AUH params aufx U3BU UADx            -> works (see ../params/ua_api2500.txt)
+# $AUH render aufx U3BU UADx $W/sig/sine1k_m12.wav $W/out/t_api.wav   -> no output after 40 s (three attempts, with and without --set); process killed
+UADx API 2500 Bus Compressor: auhost render hangs. Not measured.

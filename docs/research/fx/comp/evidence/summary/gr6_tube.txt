@@ -1,0 +1,15 @@
+att50
+    tbA GR=-9.1 over=0.0 att63=18.15 att90=43.75 rel50=21 rel63=27 rel90=52
+factory
+    CURVE g0=25.5 thr-1dB=-49.4 GR@0=-28.6 GR@-12=-19.3 ratio_top=4.7 ratio_mid=3.6
+    tbA GR=-9.1 over=0.0 att63=1.25 att90=1.92 rel50=7 rel63=9 rel90=16
+    tbB GR=-4.7 over=0.0 att63=1.27 att90=1.96 rel50=5 rel63=7 rel90=11
+    thd thd=0.867% h2=-237 h3=-41 gain=17.2 ripple=0.18
+    thdlo thd=0.067% h2=-237 h3=-64 gain=26.4 ripple=0.01
+knee0
+    CURVE g0=26.7 thr-1dB=-35.2 GR@0=-29.8 GR@-12=-19.9 ratio_top=5.4 ratio_mid=6.1
+knee100
+    CURVE g0=20.9 thr-1dB=-50.7 GR@0=-26.8 GR@-12=-18.7 ratio_top=3.4 ratio_mid=2.6
+rel50
+    tbA GR=-9.2 over=0.0 att63=1.27 att90=1.92 rel50=1155 rel63=1565 rel90=2713
+    tbB GR=-4.8 over=0.0 att63=1.27 att90=1.98 rel50=819 rel63=1104 rel90=1870

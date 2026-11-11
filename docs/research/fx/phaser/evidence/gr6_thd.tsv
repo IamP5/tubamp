@@ -1,0 +1,12 @@
+# Harmonic levels of a steady sine through Guitar Rig 6 with the sweep stopped, 48 kHz.
+#   python3 $RE/sig.py gen sine sine220_m12.wav --freq 220 --db -12 --secs 4   (also --db -3, and --freq 1000 --db -12)
+#   auhost render aufx 'Ni$R' -NI- <sine>.wav out.wav --state st_d000.aupreset        (Phaser Nine, Depth 0: see gr6_phaser_nine_tracks.tsv)
+#   auhost render aufx 'Ni$R' -NI- <sine>.wav out.wav --state st_ss_static.aupreset   (Stoned Phaser, F1=1 F2=0: sweep +-6 %)
+#   python3 $RE/sig.py thd out.wav --freq <f>
+# Odd-harmonic residue near -100 dB tracks the analysis window, not the level: it falls to -155 dB at -3 dBFS input.
+model	input	fund_out_db	h2_rel_db	h3_rel_db	h5_rel_db
+phaser_nine	220 Hz -12 dBFS	-6.15	-211.3	-99.7	-105.5
+phaser_nine	220 Hz -3 dBFS	2.85	-211.3	-158.4	-155.6
+phaser_nine	1000 Hz -12 dBFS	-19.44	-125.4	-130.7	-142.2
+stoned_phaser	220 Hz -12 dBFS	-8.53	-130.1	-105.1	-101.3
+stoned_phaser	220 Hz -3 dBFS	0.47	-126.2	-120.5	-127.7

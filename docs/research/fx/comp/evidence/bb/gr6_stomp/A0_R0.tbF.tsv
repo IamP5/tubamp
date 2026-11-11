@@ -1,0 +1,26 @@
+# python3 $W/cb.py gen-tb $W/sig/tb_8000_-40_-10_0.1_3.wav --freq 8000 --lo -40 --hi -10 --pre 1 --on 0.1 --post 3
+# $AUH render aufx 'Ni$R' -NI- $W/sig/tb_8000_-40_-10_0.1_3.wav $W/out/gr6_stomp/A0_R0.tbF.wav  --state $W/gr6/st_sc_A0_R0.aupreset
+# python3 $W/cb.py timing $W/sig/tb_8000_-40_-10_0.1_3.wav $W/out/gr6_stomp/A0_R0.tbF.wav --freq 8000 --pre 1 --on 0.1 --lag 16
+metric	value
+lag_smp	16
+g_pre_db	15.968
+g_on_db	1.114
+g_min_db	1.086
+t_min_ms	100.000
+g_post_db	15.968
+att_t50_ms	1.625
+att_t63_ms	2.104
+att_t90_ms	3.542
+g_on+1ms	11.466
+g_on+3ms	3.994
+g_on+10ms	1.114
+g_on+30ms	1.114
+g_on+100ms	1.086
+rel_t10_ms	0.125
+rel_t50_ms	35.667
+rel_t63_ms	56.042
+rel_t90_ms	165.313
+g_off+10ms	4.174
+g_off+50ms	9.984
+g_off+200ms	14.945
+g_off+1000ms	15.968

@@ -1,0 +1,76 @@
+# Guitar Rig 6 'Tremolo' rack component (NI::DSP::RigTremolo), headless. Regenerate: tools/measure_gr6.sh <outdir>
+# one row = python3 tools/gr6state.py gr6_default.aupreset ngrc_Tremolo_doc0.xml Tremolo st.aupreset Rt=<r> Int=<i> Up=<u> Dn=<d> Wdt=<w> Rack.G=0
+#           $RE_STATE/bin/auhost render aufx 'Ni$R' -NI- sine3k_m18.wav out.wav --state st.aupreset
+#           python3 tools/tremenv.py out.wav --freq 3000 --refdb -18
+# probe: python3 $RE/sig.py gen sine sine3k_m18.wav --freq 3000 --db -18 --secs 12   (gain 1.0 = input level; rise/fall = 10-90 % of the swing)
+# A rate curve: Rt sweep (Int=1 Up=0 Dn=0 Wdt=0.5)
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms	mean_gain_db
+Rt=0.125	0.4297	1.0000	0.0000	179.08	0.500	25.42	25.42	-3.44
+Rt=0.25	0.7226	1.0000	0.0000	180.00	0.500	15.12	15.12	-2.94
+Rt=0.375	1.2153	1.0000	0.0000	180.00	0.500	8.98	8.98	-3.03
+Rt=0.5	2.0439	1.0000	0.0000	180.00	0.500	5.33	5.33	-3.06
+Rt=0.625	3.4374	1.0000	0.0000	180.00	0.500	3.19	3.19	-3.06
+Rt=0.75	5.7810	1.0000	0.0000	180.00	0.500	2.38	2.35	-3.08
+Rt=0.875	9.7225	1.0000	0.0000	180.00	0.500	2.35	2.35	-3.11
+Rt=1	16.3543	1.0000	0.0000	180.00	0.500	2.38	2.35	-3.17
+# B depth: Int sweep (Rt=0.5 Up=0 Dn=0)
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms	mean_gain_db
+Int=0	nan	1.0000	1.0000	0.00	nan	nan	nan	0.00
+Int=0.25	2.0439	1.0000	0.7500	2.50	0.500	5.33	5.33	-1.08
+Int=0.5	2.0439	1.0000	0.5000	6.02	0.500	5.33	5.33	-2.05
+Int=0.75	2.0439	1.0000	0.2500	12.04	0.500	5.33	5.33	-2.77
+Int=0.9	2.0439	1.0000	0.1000	20.00	0.500	5.33	5.33	-3.01
+Int=1	2.0439	1.0000	0.0000	180.00	0.500	5.33	5.33	-3.06
+# C edges: Up sweep (Rt=0.5 Int=1 Dn=0), then Dn sweep (Up=0)
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms	mean_gain_db
+Up=0	2.0439	1.0000	0.0000	180.00	0.500	5.33	5.33	-3.06
+Up=0.25	2.0439	1.0000	0.0000	180.00	0.490	21.06	5.33	-3.25
+Up=0.5	2.0439	0.9984	0.0000	179.99	0.450	82.58	5.33	-4.12
+Up=0.75	2.0439	0.8050	0.0000	178.12	0.346	179.75	5.33	-8.04
+Dn=0.25	2.0439	1.0000	0.0000	180.00	0.510	5.33	21.06	-3.00
+Dn=0.5	2.0439	1.0000	0.0016	55.94	0.550	5.33	82.58	-2.75
+Dn=0.75	2.0439	1.0000	0.1950	14.20	0.654	5.33	179.75	-1.94
+Dn=1	2.0439	1.0000	0.6605	3.60	0.720	5.33	194.08	-0.78
+# D width: Wdt sweep (Rt=0.5 Int=1 Up=0 Dn=0)
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms	mean_gain_db
+Wdt=0	2.0439	1.0000	0.0000	169.21	0.900	5.35	5.33	-0.48
+Wdt=0.25	2.0439	1.0000	0.0000	180.00	0.700	5.33	5.33	-1.58
+Wdt=0.5	2.0439	1.0000	0.0000	180.00	0.500	5.33	5.33	-3.06
+Wdt=0.75	2.0439	1.0000	0.0000	180.00	0.300	5.33	5.33	-5.30
+Wdt=1	2.0439	1.0000	0.0000	180.00	0.100	5.35	5.33	-10.22
+# E factory INIT preset (Rt=0.500057 Int=0.5 Up=0.5 Dn=0.5 Wdt=0.5), one cycle
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms	mean_gain_db
+INIT	2.0445	0.9992	0.5008	6.00	0.500	82.54	82.54	-2.18
+phase	gain
+0.000	0.5008
+0.050	0.7437
+0.100	0.8703
+0.150	0.9343
+0.200	0.9668
+0.250	0.9832
+0.300	0.9915
+0.350	0.9957
+0.400	0.9978
+0.450	0.9989
+0.500	0.8603
+0.550	0.6824
+0.600	0.5923
+0.650	0.5467
+0.700	0.5237
+0.750	0.5120
+0.800	0.5061
+0.850	0.5031
+0.900	0.5016
+0.950	0.5008
+# F input level: Rt=0.5 Int=0.75 Up=0.5 Dn=0.5 at -6, -18, -36 dBFS
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms	mean_gain_db
+in-6dBFS	2.0439	0.9988	0.2512	11.99	0.500	82.56	82.56	-3.01
+in-18dBFS	2.0439	0.9988	0.2512	11.99	0.500	82.56	82.56	-3.11
+in-36dBFS	2.0439	0.9988	0.2512	11.99	0.500	82.56	82.56	-3.01
+# G stereo: Pan=1 (Rt=0.5 Int=0.75 Up=0.5 Dn=0.5), stereo probe, channel 0 then channel 1
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms	mean_gain_db
+pan_L	2.0439	0.9988	0.2512	11.99	0.500	82.56	82.56	-3.24
+pan_R	2.0439	0.9988	0.2512	11.99	0.500	82.56	82.56	-3.01
+corr(gL,gR)	-1.0000
+gL+gR min/max	1.2500	1.2500
+gL^2+gR^2 min/max	0.7813	1.0608

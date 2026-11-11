@@ -1,0 +1,49 @@
+# Guitar Rig 6 'Twang Reverb' amp (NI::DSP::RigFender) vibrato (= tremolo), headless. Regenerate: tools/measure_gr6.sh <outdir>
+# one row = python3 tools/gr6state.py gr6_default.aupreset ngrc_TwangReverb_doc4.xml 'Twang Reverb' st.aupreset ViOn=1 RvOn=0 ViInt=<i> ViSpd=<s> Rack.G=0
+#           $RE_STATE/bin/auhost render aufx 'Ni$R' -NI- sine440_m<L>.wav out.wav --state st.aupreset
+#           python3 tools/tremenv.py out.wav --freq 440 --ref <same amp, ViOn=0, same level>.wav
+# doc4 = factory preset 'Warm Tremolo'. Gain 1.0 = the amp with ViOn=0 at that input level.
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms	mean_gain_db
+# ViOn=0, in -30 dBFS: out peak -24.00 dB, rms -27.20 dB
+in-30dB_ViInt0.25	6.8719	0.9150	0.7160	2.13	0.752	33.96	12.06	-1.28
+in-30dB_ViInt0.5	6.8719	0.9149	0.5166	4.96	0.752	33.90	12.06	-1.74
+in-30dB_ViInt0.75	6.8719	0.9147	0.3168	9.21	0.752	33.88	12.06	-2.15
+in-30dB_ViInt1	6.8719	0.9146	0.1168	17.88	0.752	33.88	12.06	-2.47
+# ViOn=0, in -18 dBFS: out peak -12.27 dB, rms -15.66 dB
+in-18dB_ViInt0.25	6.8729	0.9307	0.7249	2.17	0.757	37.45	16.33	-1.16
+in-18dB_ViInt0.5	6.8729	0.9300	0.5346	4.81	0.754	34.54	12.53	-1.61
+in-18dB_ViInt0.75	6.8719	0.9295	0.3312	8.96	0.755	33.66	12.23	-2.02
+in-18dB_ViInt1	6.8719	0.9293	0.1225	17.60	0.756	33.29	12.21	-2.34
+# ViOn=0, in -6 dBFS: out peak -7.25 dB, rms -11.34 dB
+in-6dB_ViInt0.25	3.3060	1.0799	0.8689	1.89	0.780	nan	nan	-0.08
+in-6dB_ViInt0.5	6.8679	1.0799	0.8513	2.07	0.788	nan	nan	-0.14
+in-6dB_ViInt0.75	6.8719	1.0804	0.7094	3.65	0.818	23.25	44.40	-0.37
+in-6dB_ViInt1	6.8719	1.0819	0.2992	11.16	0.830	25.61	28.81	-0.83
+# speed sweep (ViInt=1, -30 dBFS)
+ViSpd0	3.8626	0.9151	0.1102	18.39	0.774	33.96	12.44	-2.16
+ViSpd0.25	5.1497	0.9151	0.1113	18.30	0.765	33.96	12.38	-2.24
+ViSpd0.5	6.8719	0.9146	0.1168	17.88	0.752	33.88	12.06	-2.47
+ViSpd0.75	9.1778	0.9115	0.1331	16.72	0.735	33.33	11.23	-2.69
+ViSpd1	12.2480	0.9012	0.1664	14.67	0.711	31.60	9.81	-3.03
+# one cycle, ViInt=1 ViSpd=0.5, -30 dBFS (20 points, starts at the gain minimum)
+phase	gain
+0.000	0.1167
+0.050	0.3435
+0.100	0.5653
+0.150	0.6943
+0.200	0.7705
+0.250	0.8096
+0.300	0.8392
+0.350	0.8518
+0.400	0.8615
+0.450	0.8737
+0.500	0.8756
+0.550	0.8861
+0.600	0.8933
+0.650	0.8979
+0.700	0.9066
+0.750	0.9100
+0.800	0.5264
+0.850	0.2127
+0.900	0.1353
+0.950	0.1167

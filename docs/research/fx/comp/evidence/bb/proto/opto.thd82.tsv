@@ -1,0 +1,15 @@
+# python3 $W/proto.py $W/sig/sine_82.4_-10.wav $W/out/proto/opto.thd82.wav --thr -24 --ratio 4 --knee 12 --att 2 --rel 60 --rel2 500 --w 0.6 --hold 8
+# python3 $RE/sig.py thd $W/out/proto/opto.thd82.wav --freq 82.4
+harmonic	freq_hz	level_db	rel_db
+1	82.4	-18.08	0.00
+2	164.8	-90.77	-72.69
+3	247.2	-77.41	-59.32
+4	329.6	-109.32	-91.23
+5	412.0	-105.59	-87.51
+6	494.4	-116.22	-98.14
+7	576.8	-97.59	-79.51
+8	659.2	-127.33	-109.25
+9	741.6	-107.81	-89.72
+10	824.0	-128.56	-110.47
+thd_percent	0.1112
+dc	-0.000000

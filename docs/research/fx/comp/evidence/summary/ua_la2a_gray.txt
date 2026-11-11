@@ -1,0 +1,23 @@
+curve_comp_pr30
+    CURVE g0=5.0 thr-1dB=-17.8 GR@0=-14.4 GR@-12=-4.8 ratio_top=5.4 ratio_mid=3.9
+curve_comp_pr50
+    CURVE g0=5.0 thr-1dB=-28.3 GR@0=-22.5 GR@-12=-13.0 ratio_top=4.3 ratio_mid=5.4
+curve_comp_pr70
+    CURVE g0=5.0 thr-1dB=-37.7 GR@0=-29.2 GR@-12=-20.6 ratio_top=3.3 ratio_mid=4.3
+curve_limit_pr50
+    CURVE g0=5.0 thr-1dB=-28.4 GR@0=-24.5 GR@-12=-13.7 ratio_top=10.7 ratio_mid=9.0
+d_comp_pr50
+    thd thd=0.192% h2=-57 h3=-58 gain=-9.7 ripple=0.34
+    thdlo thd=0.009% h2=-81 h3=-114 gain=5.0 ripple=0.36
+    thd100 thd=1.024% h2=-58 h3=-40 gain=-9.7 ripple=0.67
+d_comp_pr50_emph
+hs192_51=1
+hs192_comp
+t_comp_pr50
+    tbA GR=-14.6 over=-0.0 att63=2.29 att90=19.31 rel50=78 rel63=132 rel90=720
+    tbB GR=-6.5 over=-0.0 att63=3.56 att90=47.90 rel50=93 rel63=171 rel90=931
+    tbL GR=-14.7 over=0.0 att63=2.29 att90=19.35 rel50=78 rel63=133 rel90=720
+    tbF GR=-13.1 over=-0.1 att63=0.88 att90=10.19 rel50=0 rel63=0 rel90=243
+t_limit_pr50
+    tbA GR=-15.5 over=-0.0 att63=2.60 att90=21.12 rel50=77 rel63=129 rel90=697
+    tbL GR=-15.5 over=0.0 att63=2.62 att90=21.19 rel50=77 rel63=129 rel90=698

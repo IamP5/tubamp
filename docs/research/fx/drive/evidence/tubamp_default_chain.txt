@@ -1,0 +1,3 @@
+# tubamp AU default state, written by: $RE_STATE/bin/auhost state aufx Tamp Tuba out.aupreset ; the jucePluginState XML root element:
+<TUBAMP modelPath="" modelPathB="" irPath="" chainOrder="amp" chainRows=""><PARAMS><PARAM 
+# The drive block is not in the default chain. evidence/tools/ours_drive_only.aupreset is the same state with chainOrder="drive"; the 'ours' model renders with it plus Drive On = 1 and Output Mode = Raw.

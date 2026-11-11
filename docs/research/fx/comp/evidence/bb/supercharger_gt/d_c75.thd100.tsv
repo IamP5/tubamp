@@ -1,0 +1,26 @@
+# python3 $RE/sig.py gen sine $W/sig/sine_100_-10.wav --freq 100 --db -10 --secs 4
+# $AUH render aufx 'Ni$A' -NI- $W/sig/sine_100_-10.wav $W/out/supercharger_gt/d_c75.thd100.wav --set 0=0.5 --set 1=1 --set 2=0 --set 3=0.5 --set 4=0 --set 5=1 --set 9=0 --set 10=1 --set 11=0 --set 12=1 --set 13=0.5 --set 6=0.75 --set 7=0.5 --set 8=0.5
+# python3 $RE/sig.py thd $W/out/supercharger_gt/d_c75.thd100.wav --freq 100
+# python3 $RE/sig.py curve $W/sig/sine_100_-10.wav $W/out/supercharger_gt/d_c75.thd100.wav --hold 4.0
+# python3 $W/cb.py ripple $W/sig/sine_100_-10.wav $W/out/supercharger_gt/d_c75.thd100.wav --freq 100 --lag 16
+harmonic	freq_hz	level_db	rel_db
+1	100.0	-12.63	0.00
+2	200.0	-81.27	-68.64
+3	300.0	-56.32	-43.69
+4	400.0	-116.95	-104.32
+5	500.0	-64.91	-52.28
+6	600.0	-126.10	-113.48
+7	700.0	-68.08	-55.45
+8	800.0	-133.04	-120.41
+9	900.0	-71.18	-58.55
+10	1000.0	-139.64	-127.01
+thd_percent	0.7284
+dc	-0.000000
+in_db	out_db	gain_db
+-10.00	-15.00	-5.00
+metric	value
+lag_smp	16
+gain_median_db	-5.070
+gain_p05_db	-5.473
+gain_p95_db	-4.474
+ripple_p95_p05_db	0.999

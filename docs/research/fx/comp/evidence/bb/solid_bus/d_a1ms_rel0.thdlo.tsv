@@ -1,0 +1,26 @@
+# python3 $RE/sig.py gen sine $W/sig/sine_1000_-40.wav --freq 1000 --db -40 --secs 4
+# $AUH render aufx 'Ni$6' -NI- $W/sig/sine_1000_-40.wav $W/out/solid_bus/d_a1ms_rel0.thdlo.wav --set 0=0.5 --set 1=0.2 --set 6=1 --set 7=0 --set 8=0 --set 10=1 --set 2=0.6 --set 4=0.4 --set 5=0
+# python3 $RE/sig.py thd $W/out/solid_bus/d_a1ms_rel0.thdlo.wav --freq 1000
+# python3 $RE/sig.py curve $W/sig/sine_1000_-40.wav $W/out/solid_bus/d_a1ms_rel0.thdlo.wav --hold 4.0
+# python3 $W/cb.py ripple $W/sig/sine_1000_-40.wav $W/out/solid_bus/d_a1ms_rel0.thdlo.wav --freq 1000 --lag 0
+harmonic	freq_hz	level_db	rel_db
+1	1000.0	-37.63	0.00
+2	2000.0	-240.00	-238.70
+3	3000.0	-202.06	-164.43
+4	4000.0	-240.00	-240.00
+5	5000.0	-199.39	-161.76
+6	6000.0	-240.00	-240.00
+7	7000.0	-197.08	-159.45
+8	8000.0	-240.00	-240.00
+9	9000.0	-208.52	-170.89
+10	10000.0	-240.00	-240.00
+thd_percent	0.0000
+dc	0.000000
+in_db	out_db	gain_db
+-40.00	-40.00	0.00
+metric	value
+lag_smp	0
+gain_median_db	0.000
+gain_p05_db	0.000
+gain_p95_db	0.000
+ripple_p95_p05_db	0.000

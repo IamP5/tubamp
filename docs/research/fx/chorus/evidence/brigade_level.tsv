@@ -1,0 +1,11 @@
+# UADx Brigade Chorus, Classic, chorus, intensity 0.5, Level default: level dependence and idle noise. L = dry output, R = wet output.
+# gen:     python3 $RE/sig.py gen sine s.wav --freq 220 --db <level> --secs 3 ; python3 $RE/sig.py gen silence sil.wav --secs 3
+# render:  $RE_STATE/bin/auhost render aufx U3BO UADx s.wav so.wav --warmup 1 --set 54=0 --set 52=0 --set 49=0.5
+# analyse: python3 $RE/sig.py stats so.wav   (rms_db per channel)
+input_peak_dbfs	dry_L_rms_db	wet_R_rms_db
+-40	-43.53	-39.24
+-30	-33.53	-29.24
+-18	-21.53	-17.24
+-6	-9.53	-5.24
+0	-3.53	0.76
+silence	-240.00	-240.00

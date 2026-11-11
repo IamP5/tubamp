@@ -1,0 +1,43 @@
+Solid EQ.component (arm64), class NI::DSP::CSL::G_EQ and NI::DSP::CSL::Biquad. Annotated disassembly excerpts.
+Reproduce: python3 $RE/disasm.py "/Library/Audio/Plug-Ins/Components/Solid EQ.component/Contents/MacOS/Solid EQ" --dump 'NI::DSP::CSL::Biquad::setPEQ\('
+Stub names from `otool -arch arm64 -Iv`: 0x56f6ac ___exp10, 0x56f6f4 ___sincos_stret, 0x570198 _sin, 0x56fc70 _log, 0x5701a4 _sinh, 0x570318 _tan.
+Biquad object: +0x00..+0x20 five doubles (b0 b1 b2 a1 a2), +0x28 sample rate (double), +0x30..+0x48 four doubles of state.
+
+--- NI::DSP::CSL::Biquad::setPEQ(double f, double dB, double Q) @ 0xed280: Orfanidis prescribed-Nyquist-gain bell
+ed2ec  fmov d0,#20 ; fdiv d0,d9,d0 ; bl ___exp10      -> d8 = G  = 10^(dB/20)
+ed2fc  mov x8,#0x4044000000000000 (40.0) ; fdiv ; bl ___exp10 -> d9 = GB = 10^(dB/40)
+ed310  ldr d0,[0x7cd628] (pi) ; fadd d0,d0,d0 ; ldr d1,[x19,#0x28] ; fdiv d1,d10,d1 ; fmul d10,d0,d1   -> w0 = 2*pi*f/fs
+ed334  bl _sin ; fdiv d13,d0,d10                       -> sin(w0)/w0
+ed33c  1/(2Q) ; x + sqrt(x*x+1) ; bl _log              -> asinh(1/(2Q))
+ed358  fmul d0,d0,d13 ; bl _sinh ; fmul d4,d0,d12      -> Dw = 2*w0*sinh( asinh(1/(2Q)) * sin(w0)/w0 )
+ed36c  fnmsub d0,d8,d8,d0 ; fabs d3,d0                 -> |G^2 - GB^2|
+ed37c  fmadd d1,d8,d8,d0 ; fabs d14,d1                 -> |G^2 - 1|          (G0 = 1)
+ed384  fmadd d0,d9,d9,d0 ; fabs d2,d0                  -> |GB^2 - 1|
+ed394  fneg d0,d1 ; fmul d0,d1,d0 ; fmadd d0,d10,d10,d0 -> (w0^2 - pi^2)
+ed3a4..ed3dc  v1 = {G^2, 1} * |GB^2-1| * pi^2 * Dw^2 / |G^2-GB^2| + (w0^2-pi^2)^2 ; ratio of the two lanes
+ed3e0  fsqrt d15,d0                                    -> G1 = gain of the analog bell at the Nyquist frequency
+ed410  fdiv d0,d8,d14 ; fsqrt d11 ; ... bl _tan(w0/2)  -> W2 = sqrt(|G^2-G1^2|/|G^2-1|) * tan^2(w0/2)
+ed42c..ed44c  DW = (1 + sqrt(|GB^2-1|/|GB^2-G1^2|)*W2) * tan(Dw/2)
+ed450..ed4ac  C, D, A = sqrt((C+D)/|G^2-GB^2|), B = sqrt((G^2*C+GB^2*D)/|G^2-GB^2|)
+ed4b0..ed4f8  b0=(G1+W2+B)/(1+W2+A) b1=-2(G1-W2)/(..) b2=(G1+W2-B)/(..) a1=-2(1-W2)/(..) a2=(1+W2-A)/(..)
+ed2b0  if f <= 2^-52 or |dB| <= 2^-52: coefficients = {1,0,0,0,0} (identity), no design.
+
+--- NI::DSP::CSL::Biquad::setLowShelfEQ(double f, double dB, double S) @ 0xed080: cookbook shelf with slope S, double
+ed0c4  A = exp10(dB/40) ; ed0d8 w0 = 2*pi*f/fs ; ed0f4 beta = sqrt((A^2+1)/S - (A-1)^2) ; ed10c sincos(w0)
+ed110..ed148  b0 = A[(A+1)-(A-1)cos+beta*sin], b1 = 2A[(A-1)-(A+1)cos], ..., a0 = (A+1)+(A-1)cos+beta*sin ; all divided by a0
+ed098  if f == 0: identity coefficients.
+
+--- processAudio<Modes 12> @ 0xfd9a4, inner loop 0xfdc00..0xfdcb4: four biquads in series, direct form I, double state
+fdc00  ldr s1,[x8],#4 ; fcvt d3,s1                     input float -> double
+fdc0c  fmul d1,d17,d1 ; fmadd d1,d3,d28,d1 ; fmadd d1,d5,d28',d1 ; fmsub d1,d7,d5',d1 ; fmsub d1,d2,d5'',d1
+        y = b1*x1 + b0*x + b2*x2 - a1*y1 - a2*y2       (same pattern repeated for stages 2..4 at fdc30, fdc54, fdc68)
+fdc7c  fcvt s2,d31 ; str s2,[x6],#4                    double -> float output
+fdd24  ldr s0,[x8] ; fmul s0,s0,s1                     one float output gain after the cascade
+processAudio @ 0xf4018 builds a 6-bit mode (five band-active bits, bit 0x20 = parameters moving) and jumps through a 64-entry table.
+
+--- smoothing
+onSetSampleRate @ 0xef930: 0xefb18 mov w8,#0xd70a ; movk w8,#0x3ca3,lsl #16 (0.02f) ; nTicks = max(1, round(0.02*fs/blockSize)) ; inc = 1/(nTicks*blockSize)
+processAudio<Modes 44> @ 0x10f768: per sample, fadd.4s x4 advances 16 parameter values by their increments (0x10f7d8..0x10f814),
+  then for each parameter whose increment is non-zero: bl calcFilters(index, value) (0x10f990..0x10fadc). Coefficients are redesigned every sample while a knob moves.
+calcFilters @ 0xeff3c: 82 calls to Spline<11>::evaluate, 9 to setPEQ, 1 to setPEQ2, 2 to setLowShelfEQ, 3 to setHighShelfEQ, setHighPassEQ + setHighPassEQ_first_order, setLowPassEQ.
+Spline tables are named per band and per model: e.g. HMF_Q_G_Curve_E / _G (0x63eea8 / 0x63ee50), HF_Q_F_Curve_44_E (0x63e808), LP1_Freq_Curve_44/_48/_96/_192 (0x63fda0...).

@@ -1,0 +1,5 @@
+# Solid EQ (aufx Ni$8 -NI-). Reproduce: RE_STATE=... RE=... python3 docs/research/fx/eq/evidence/scripts/solid_m.py interact
+# renders: $RE_STATE/bin/auhost render aufx 'Ni$8' -NI- imp_<sr>.wav o.wav --warmup 0.5 --set <id>=<v>...  (ids: 0 HPF 1 LF Gain 2 LF Freq 3 LF Mode(1=bell) 4 LMF Gain 5 LMF Freq 6 LMF Q 7 EQ Mode(1=E,0=G) 8 HMF Gain 9 HMF Freq 10 HMF Q 12 HF Gain 13 HF Freq 14 HF Mode(1=bell) 15 LPF; values normalised 0..1); curve = FFT(out)/FFT(in) of a -12 dBFS impulse, 48 kHz unless a rate column says otherwise
+# series or parallel: LMF and HMF both at max, same frequency region; compare with dB sum of the single-band curves
+E	peak LMF 20.20	peak HMF 19.89	both 29.82	max|both-(sum dB)| 0.0000
+G	peak LMF 20.20	peak HMF 19.89	both 29.82	max|both-(sum dB)| 0.0000

@@ -1,0 +1,27 @@
+# python3 $W/cb.py gen-tb $W/sig/tb_8000_-40_-10_0.1_6.wav --freq 8000 --lo -40 --hi -10 --pre 1 --on 0.1 --post 6
+# $AUH render aumf bcfs Brwx $W/sig/tb_8000_-40_-10_0.1_6.wav $W/out/focusrite_sc/t_a0_r0.tbF.wav --set 0=1 --set 4=0 --set 5=0 --set 17=0 --set 18=0 --set 19=0 --set 25=1 --set 30=0 --set 31=1 --set 32=1 --set 33=0 --set 44=0 --set 47=0 --set 11=0 --set 12=0 --set 26=0.5 --set 27=3 --set 28=0 --set 29=0
+# python3 $W/cb.py timing $W/sig/tb_8000_-40_-10_0.1_6.wav $W/out/focusrite_sc/t_a0_r0.tbF.wav --freq 8000 --pre 1 --on 0.1 --lag 0
+metric	value
+lag_smp	0
+g_pre_db	0.047
+g_on_db	-5.567
+g_min_db	-5.567
+t_min_ms	46.625
+g_post_db	0.047
+att_t50_ms	0.042
+att_t63_ms	0.875
+att_t90_ms	2.042
+g_on+1ms	-3.843
+g_on+3ms	-5.320
+g_on+10ms	-5.538
+g_on+30ms	-5.567
+g_on+100ms	-5.567
+rel_t10_ms	0.125
+rel_t50_ms	0.125
+rel_t63_ms	0.125
+rel_t90_ms	0.125
+g_off+10ms	-5.107
+g_off+50ms	-3.555
+g_off+200ms	-0.831
+g_off+1000ms	-0.002
+g_off+3000ms	0.047

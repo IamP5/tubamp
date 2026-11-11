@@ -1,0 +1,27 @@
+# python3 $W/cb.py gen-tb $W/sig/tb_8000_-40_-10_0.1_10.wav --freq 8000 --lo -40 --hi -10 --pre 1 --on 0.1 --post 10
+# $AUH render aufx U365 UADx $W/sig/tb_8000_-40_-10_0.1_10.wav $W/out/ua_la3a/t_comp_pr50.tbF.wav --set 49=0.5 --set 52=1 --set 53=1 --set 54=1 --set 48=0.5 --set 50=0
+# python3 $W/cb.py timing $W/sig/tb_8000_-40_-10_0.1_10.wav $W/out/ua_la3a/t_comp_pr50.tbF.wav --freq 8000 --pre 1 --on 0.1 --lag 31
+metric	value
+lag_smp	31
+g_pre_db	1.731
+g_on_db	-6.657
+g_min_db	-6.708
+t_min_ms	100.000
+g_post_db	1.709
+att_t50_ms	0.229
+att_t63_ms	0.438
+att_t90_ms	5.187
+g_on+1ms	-4.723
+g_on+3ms	-5.633
+g_on+10ms	-5.934
+g_on+30ms	-6.222
+g_on+100ms	-6.708
+rel_t10_ms	1.875
+rel_t50_ms	33.625
+rel_t63_ms	67.750
+rel_t90_ms	205.875
+g_off+10ms	-3.812
+g_off+50ms	-1.915
+g_off+200ms	0.823
+g_off+1000ms	1.678
+g_off+3000ms	1.687

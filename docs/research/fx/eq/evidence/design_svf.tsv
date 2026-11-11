@@ -1,0 +1,20 @@
+# Reproduce: python3 docs/research/fx/eq/evidence/scripts/design.py svf
+# TPT SVF with the bell / low-shelf / high-shelf mix against the RBJ biquad of the same f0, Q, gain.
+# max |dB difference| over 20 Hz..20 kHz, fs 48 kHz: closed-form SVF response, and SVF impulse response run in the time domain.
+kind	f0	Q	gain_dB	max_diff_closed_form_dB	max_diff_time_domain_dB
+bell	150	0.707	20	0.00000	0.00053
+bell	425	1.5	-15	0.00000	0.00012
+bell	1800	0.707	10	0.00000	0.00000
+bell	6000	2.0	12	0.00000	0.00000
+bell	425	0.7	0	0.00000	0.00000
+lowshelf	150	0.707	20	0.00000	0.00014
+lowshelf	425	1.5	-15	0.00000	0.00007
+lowshelf	1800	0.707	10	0.00000	0.00000
+lowshelf	6000	2.0	12	0.00000	0.00000
+lowshelf	425	0.7	0	0.00000	0.00000
+highshelf	150	0.707	20	0.00000	0.00014
+highshelf	425	1.5	-15	0.00000	0.00007
+highshelf	1800	0.707	10	0.00000	0.00000
+highshelf	6000	2.0	12	0.00000	0.00000
+highshelf	425	0.7	0	0.00000	0.00000
+# flat: with gain 0 dB the mix is (1, 0, 0): the output is the input sample itself, bit for bit.

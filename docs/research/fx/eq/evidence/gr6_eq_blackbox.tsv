@@ -1,0 +1,42 @@
+# Guitar Rig 6 (aufx Ni$R -NI-), headless. Reproduce: see the docstring of evidence/scripts/gr6eq.py (setup: auhost state, ngrc_xml.py; gr6state.py and ngrc_xml.py are in docs/research/fx/tremolo/evidence/tools/), then python3 gr6eq.py in $RE_STATE/work/eq/gr6bb
+# EQ Parametric, band 1: peak gain, peak frequency, half-gain Q (search limited to f < 0.42 fs). Expected from the code (no pre-warp): f_peak = (fi/pi) atan(pi f / fi), f = 8.176*2^((119.589 v + 15.487)/12)
+# fi = internal rate. At 44.1 and 48 kHz the plugin reports 16 samples of latency and rolls off above 0.45 fs (it runs the rack at twice the host rate); at 96 kHz it reports 0: fi = 2 fs below 50 kHz, else fs.
+fs	F1	G1	Q1	peak_dB	peak_Hz	Q_halfgain	nominal_Hz_from_code	predicted_peak_Hz_no_prewarp
+44100	0.0	1.0	0.5	7.78	32	2.00	20	20
+44100	0.5	1.0	0.5	19.98	635	1.37	632	632
+44100	0.8	1.0	0.5	20.00	4974	1.43	5024	4971
+44100	0.9	1.0	0.5	20.00	9631	1.54	10024	9628
+44100	1.0	1.0	0.5	20.00	17388	3.18	20000	17378
+44100	0.5	0.0	0.5	-19.99	635	1.39	632	632
+44100	0.5	0.75	0.5	9.99	635	1.39	632	632
+44100	0.5	1.0	0.0	15.03	630	23.40	632	632
+44100	0.5	1.0	1.0	19.99	635	0.67	632	632
+48000	0.0	1.0	0.5	6.75	35	2.00	20	20
+48000	0.5	1.0	0.5	19.98	633	1.37	632	632
+48000	0.8	1.0	0.5	20.00	4980	1.42	5024	4979
+48000	0.9	1.0	0.5	20.00	9686	1.51	10024	9686
+48000	1.0	1.0	0.5	20.00	17707	2.54	20000	17709
+48000	0.5	0.0	0.5	-20.00	633	1.37	632	632
+48000	0.5	0.75	0.5	10.00	633	1.37	632	632
+48000	0.5	1.0	0.0	14.95	633	21.60	632	632
+48000	0.5	1.0	1.0	20.00	633	0.67	632	632
+96000	0.0	1.0	0.5	6.98	35	2.00	20	20
+96000	0.5	1.0	0.5	19.99	633	1.37	632	632
+96000	0.8	1.0	0.5	20.00	4980	1.42	5024	4979
+96000	0.9	1.0	0.5	20.00	9691	1.51	10024	9686
+96000	1.0	1.0	0.5	20.00	17707	1.82	20000	17709
+96000	0.5	0.0	0.5	-20.00	633	1.37	632	632
+96000	0.5	0.75	0.5	10.00	633	1.37	632	632
+96000	0.5	1.0	0.0	15.11	633	21.60	632	632
+96000	0.5	1.0	1.0	20.00	633	0.67	632	632
+# EQ Graphic: defaults (Min Freq 0.5, Max Freq 0.5, Gain Range 0.5); one band at maximum: peak; then all eight at maximum: min..max between the outer centres
+fs	setting	peak_dB	peak_Hz	Q_halfgain
+48000	b1=1	15.07	129	1.69
+48000	b2=1	15.26	211	1.89
+48000	b3=1	15.41	346	1.97
+48000	b4=1	15.47	562	1.96
+48000	b5=1	15.49	920	1.96
+48000	b6=1	15.50	1512	2.00
+48000	b7=1	15.50	2473	2.00
+48000	b8=1	15.50	4043	2.02
+48000	all=1	max 25.63	min 18.17	ripple 7.46

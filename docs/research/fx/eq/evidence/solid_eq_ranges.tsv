@@ -1,0 +1,22 @@
+# Solid EQ (aufx Ni$8 -NI-). Reproduce: RE_STATE=... RE=... python3 docs/research/fx/eq/evidence/scripts/solid_m.py (inline block in the orchestrator session; same H() and bell() helpers)
+# frequency knob range per band: peak frequency of the bell at gain param 0.9, E mode, 96 kHz render; HPF/LPF -3 dB points and slope
+band	freqparam	peak_f_Hz	peak_dB
+LF bell	0.0	40	16.00
+LF bell	0.5	178	15.30
+LF bell	1.0	652	15.51
+LMF	0.0	220	17.74
+LMF	0.5	796	16.79
+LMF	1.0	2164	16.91
+HMF	0.0	692	16.71
+HMF	0.5	2620	16.98
+HMF	1.0	6892	17.13
+HF bell	0.0	1523	18.00
+HF bell	0.5	6748	20.70
+HF bell	1.0	21571	17.97
+filter	param	f_-3dB_Hz	slope_dB_per_oct
+HPF	0.25	30	0.0
+HPF	0.5	79	17.7
+HPF	1.0	464	18.1
+LPF	0.25	23514	-9.0
+LPF	0.5	12230	-13.0
+LPF	1.0	3187	-11.8

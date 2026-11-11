@@ -1,0 +1,428 @@
+# dynamics: output peak and THD against input level. One block/rows per model. Command per model: python3 $W/tools/meas.py <model> dyn
+# Rerun: source evidence/tools/env.example.sh (sets RE, RE_STATE, W), build rigcall (clang++ -std=c++17 -O1 -o $W/tools/rigcall evidence/tools/rigcall.cpp),
+# copy evidence/tools/*.py to $W/tools/, then `python3 $W/tools/meas.py <model> <what>`. Models are defined in models.py:
+#   gr6_* = Guitar Rig 6 DSP classes called in-process by vm address (rigcall); at5_* = AmpliTube 5 modules likewise;
+#   gr6au_* = the Guitar Rig 6 Audio Unit holding one rack component at its factory INIT preset (state built by gr6state.py, see evidence/tools/README.txt);
+#   ours / ni_* / pa_* = Audio Units rendered through $RE_STATE/bin/auhost. All at 48 kHz.
+# (first model's own header) meas.py ours dyn ; 1 kHz sine, input level stepped; output peak (dBFS) and THD% per drive setting
+# (first model's own header) example render: /private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktrees-tubamp-effects-reverse-engineer-90c7f7/cab46780-7fe6-4ba5-87cd-2d4971b7e79d/scratchpad/re/bin/auhost render aufx Tamp Tuba /private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktrees-tubamp-effects-reverse-engineer-90c7f7/cab46780-7fe6-4ba5-87cd-2d4971b7e79d/scratchpad/re/work/drive/wav/sine_1000_0.wav /private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktrees-tubamp-effects-reverse-engineer-90c7f7/cab46780-7fe6-4ba5-87cd-2d4971b7e79d/scratchpad/re/work/drive/wav/ours_t_out.wav --set 1549202612=1 --set 947001359=0 --set 577294612=1.0 --set 577695495=0.628388 --set 721012879=0.666667 --state /private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktrees-tubamp-effects-reverse-engineer-90c7f7/cab46780-7fe6-4ba5-87cd-2d4971b7e79d/scratchpad/re/work/drive/ours_drive_only.aupreset
+## ours	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+ours	-60	-56.42	0.0	-42.02	0.0	-24.03	0.0
+ours	-54	-50.42	0.0	-36.02	0.0	-18.06	0.1
+ours	-48	-44.42	0.0	-30.02	0.0	-12.19	0.5
+ours	-42	-38.42	0.0	-24.03	0.0	-6.69	1.7
+ours	-36	-32.42	0.0	-18.06	0.1	-2.33	5.9
+ours	-30	-26.43	0.0	-12.19	0.5	-0.19	14.9
+ours	-24	-20.44	0.1	-6.69	1.7	0.51	24.6
+ours	-18	-14.52	0.3	-2.33	5.9	0.75	29.4
+ours	-12	-8.81	1.0	-0.19	14.9	0.80	30.9
+ours	-6	-3.85	3.7	0.51	24.6	0.83	31.3
+ours	0	-0.76	10.8	0.75	29.4	0.83	31.4
+## ours_tone_open	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+ours_tone_open	-60	-56.40	0.0	-42.00	0.0	-24.01	0.0
+ours_tone_open	-54	-50.40	0.0	-36.00	0.0	-18.05	0.1
+ours_tone_open	-48	-44.40	0.0	-30.01	0.0	-12.18	0.5
+ours_tone_open	-42	-38.40	0.0	-24.01	0.0	-6.69	2.0
+ours_tone_open	-36	-32.40	0.0	-18.05	0.1	-2.37	6.7
+ours_tone_open	-30	-26.41	0.0	-12.18	0.5	-0.32	17.3
+ours_tone_open	-24	-20.43	0.1	-6.69	2.0	0.02	29.9
+ours_tone_open	-18	-14.51	0.3	-2.37	6.7	0.77	37.9
+ours_tone_open	-12	-8.81	1.2	-0.32	17.3	1.73	41.1
+ours_tone_open	-6	-3.88	4.2	0.02	29.9	2.05	42.1
+ours_tone_open	0	-0.84	12.4	0.77	37.9	2.20	42.4
+## gr6_skreamer	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_skreamer	-60	-49.18	0.0	-41.22	0.1	-31.54	0.4
+gr6_skreamer	-54	-43.18	0.0	-35.29	0.2	-26.26	1.5
+gr6_skreamer	-48	-37.23	0.1	-29.59	0.7	-22.60	4.8
+gr6_skreamer	-42	-31.42	0.5	-24.71	2.4	-20.79	8.5
+gr6_skreamer	-36	-26.15	1.6	-21.78	6.7	-19.70	10.5
+gr6_skreamer	-30	-22.46	5.1	-20.29	10.0	-18.85	11.3
+gr6_skreamer	-24	-20.64	9.1	-19.29	11.6	-18.45	12.8
+gr6_skreamer	-18	-19.49	11.1	-18.51	12.7	-18.27	13.4
+gr6_skreamer	-12	-18.55	11.9	-18.09	13.9	-18.11	13.3
+gr6_skreamer	-6	-17.89	13.2	-17.73	14.0	-17.84	13.0
+gr6_skreamer	0	-17.25	13.1	-17.20	13.3	-17.33	12.3
+## gr6_tsdeluxe	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_tsdeluxe	-60	-50.84	0.0	-46.40	0.0	-33.22	0.7
+gr6_tsdeluxe	-54	-44.84	0.0	-40.42	0.0	-28.60	2.7
+gr6_tsdeluxe	-48	-38.85	0.0	-34.46	0.1	-25.66	6.1
+gr6_tsdeluxe	-42	-32.89	0.1	-28.74	0.6	-23.78	8.7
+gr6_tsdeluxe	-36	-27.17	0.7	-24.38	3.7	-22.33	10.1
+gr6_tsdeluxe	-30	-22.93	4.0	-21.84	7.4	-21.02	10.7
+gr6_tsdeluxe	-24	-20.38	7.4	-19.95	9.2	-19.61	10.7
+gr6_tsdeluxe	-18	-18.21	8.6	-18.07	9.4	-17.90	9.9
+gr6_tsdeluxe	-12	-15.81	8.1	-15.72	8.4	-15.66	8.6
+gr6_tsdeluxe	-6	-12.77	6.6	-12.75	6.7	-12.72	6.8
+gr6_tsdeluxe	0	-9.12	5.1	-9.11	5.1	-9.10	5.1
+## gr6_distortion	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_distortion	-60	-49.09	0.0	-42.76	0.1	-28.42	29.9
+gr6_distortion	-54	-43.07	0.1	-36.75	0.1	-26.25	46.4
+gr6_distortion	-48	-37.06	0.2	-31.59	4.4	-24.68	59.5
+gr6_distortion	-42	-31.79	3.8	-29.10	24.1	-23.35	65.5
+gr6_distortion	-36	-29.23	23.1	-26.97	41.6	-22.95	67.4
+gr6_distortion	-30	-27.04	40.9	-25.25	56.5	-22.90	67.9
+gr6_distortion	-24	-25.30	55.9	-23.62	64.4	-22.90	68.0
+gr6_distortion	-18	-23.67	64.1	-23.00	67.1	-22.91	68.0
+gr6_distortion	-12	-23.01	67.0	-22.91	67.8	-22.93	68.0
+gr6_distortion	-6	-22.91	67.8	-22.90	68.0	-22.97	68.0
+gr6_distortion	0	-22.90	68.0	-22.91	68.0	-23.05	68.0
+## gr6_cat	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_cat	-60	-67.67	0.0	-38.18	1.3	-32.46	21.6
+gr6_cat	-54	-61.67	0.0	-33.97	6.4	-32.01	27.3
+gr6_cat	-48	-55.67	0.0	-32.74	18.4	-32.01	31.5
+gr6_cat	-42	-49.69	0.1	-32.05	25.1	-32.00	33.1
+gr6_cat	-36	-43.77	0.3	-32.01	30.3	-32.00	33.6
+gr6_cat	-30	-38.14	1.3	-32.00	32.7	-32.01	33.7
+gr6_cat	-24	-33.95	6.5	-31.92	33.5	-32.01	33.8
+gr6_cat	-18	-32.73	18.5	-31.81	33.6	-32.01	33.8
+gr6_cat	-12	-32.04	25.2	-31.78	33.7	-32.01	33.8
+gr6_cat	-6	-32.01	30.3	-31.78	33.7	-32.01	33.8
+gr6_cat	0	-32.00	32.7	-31.78	33.7	-32.01	33.8
+## gr6_bigfuzz	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_bigfuzz	-60	-35.52	1.6	-25.09	29.9	-18.64	58.6
+gr6_bigfuzz	-54	-30.64	6.2	-21.50	46.0	-16.83	67.0
+gr6_bigfuzz	-48	-27.12	20.0	-18.60	59.2	-14.91	75.0
+gr6_bigfuzz	-42	-23.57	37.0	-16.90	67.4	-12.93	82.7
+gr6_bigfuzz	-36	-20.47	52.0	-14.94	75.4	-12.24	87.0
+gr6_bigfuzz	-30	-17.50	63.0	-12.85	83.1	-11.04	84.4
+gr6_bigfuzz	-24	-15.51	70.7	-12.02	87.1	-10.93	74.2
+gr6_bigfuzz	-18	-14.37	78.9	-11.09	84.0	-9.79	57.9
+gr6_bigfuzz	-12	-12.77	85.6	-10.76	73.5	-10.03	39.8
+gr6_bigfuzz	-6	-11.02	86.7	-9.79	56.9	-7.01	24.5
+gr6_bigfuzz	0	-11.76	80.4	-10.05	38.8	-1.82	13.8
+## gr6_fuzzace	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_fuzzace	-60	-64.27	0.2	-54.29	0.4	-41.80	0.9
+gr6_fuzzace	-54	-58.28	0.3	-48.32	0.5	-35.99	6.3
+gr6_fuzzace	-48	-52.30	0.5	-42.31	0.8	-35.41	23.8
+gr6_fuzzace	-42	-46.32	0.5	-36.44	5.0	-35.58	35.3
+gr6_fuzzace	-36	-40.30	1.1	-35.42	22.5	-35.64	40.6
+gr6_fuzzace	-30	-35.14	10.7	-35.55	34.6	-35.38	42.2
+gr6_fuzzace	-24	-35.50	27.3	-35.62	40.3	-35.26	42.6
+gr6_fuzzace	-18	-35.66	37.2	-35.41	42.1	-35.24	42.7
+gr6_fuzzace	-12	-35.68	41.2	-35.26	42.6	-35.20	42.7
+gr6_fuzzace	-6	-35.29	42.3	-35.25	42.7	-35.20	42.8
+gr6_fuzzace	0	-35.26	42.6	-35.20	42.7	-35.20	42.8
+## gr6_demon	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_demon	-60	-91.88	0.1	-73.45	0.1	-58.30	0.1
+gr6_demon	-54	-85.88	0.1	-67.45	0.1	-52.38	0.2
+gr6_demon	-48	-79.88	0.1	-61.45	0.1	-46.71	0.6
+gr6_demon	-42	-73.88	0.1	-55.49	0.1	-41.92	1.7
+gr6_demon	-36	-67.88	0.1	-49.65	0.3	-39.06	4.3
+gr6_demon	-30	-61.88	0.1	-44.27	1.0	-37.51	6.0
+gr6_demon	-24	-55.92	0.1	-40.32	2.9	-36.51	6.8
+gr6_demon	-18	-50.06	0.3	-38.24	5.2	-35.88	7.5
+gr6_demon	-12	-44.63	0.9	-37.01	6.5	-35.68	8.2
+gr6_demon	-6	-40.52	2.7	-36.15	7.0	-35.62	8.4
+gr6_demon	0	-38.37	5.1	-35.78	7.9	-35.60	8.5
+## gr6_jackhammer	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_jackhammer	-60	-57.55	0.1	-42.65	0.4	-21.81	33.3
+gr6_jackhammer	-54	-51.54	0.2	-36.63	0.3	-20.55	50.5
+gr6_jackhammer	-48	-45.51	0.3	-30.65	0.2	-19.97	57.3
+gr6_jackhammer	-42	-39.47	0.4	-24.85	1.6	-19.70	59.2
+gr6_jackhammer	-36	-33.46	0.2	-22.12	29.6	-19.45	59.8
+gr6_jackhammer	-30	-27.49	0.2	-20.72	48.7	-19.38	59.9
+gr6_jackhammer	-24	-23.15	16.4	-20.01	56.6	-19.37	59.9
+gr6_jackhammer	-18	-21.24	41.3	-19.95	59.1	-19.50	59.9
+gr6_jackhammer	-12	-20.43	53.9	-19.43	59.8	-19.57	59.9
+gr6_jackhammer	-6	-19.79	58.3	-19.67	60.0	-19.74	59.9
+gr6_jackhammer	0	-19.52	59.6	-19.47	59.9	-19.38	59.9
+## gr6_gainboost	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_gainboost	-60	-57.00	0.0	-45.00	0.0	-30.00	0.0
+gr6_gainboost	-54	-51.00	0.0	-39.00	0.0	-24.00	0.0
+gr6_gainboost	-48	-45.00	0.0	-33.00	0.0	-18.00	0.0
+gr6_gainboost	-42	-39.00	0.0	-27.00	0.0	-12.00	0.0
+gr6_gainboost	-36	-33.00	0.0	-21.00	0.0	-6.00	0.0
+gr6_gainboost	-30	-27.00	0.0	-15.00	0.0	0.00	0.0
+gr6_gainboost	-24	-21.00	0.0	-9.00	0.0	6.00	0.0
+gr6_gainboost	-18	-15.00	0.0	-3.00	0.0	12.00	0.0
+gr6_gainboost	-12	-9.00	0.0	3.00	0.0	18.00	0.0
+gr6_gainboost	-6	-3.00	0.0	9.00	0.0	20.00	17.0
+gr6_gainboost	0	3.00	0.0	15.00	0.0	20.00	31.8
+## gr6_trebleboost	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_trebleboost	-60	-56.17	0.0	-40.33	0.0	-29.02	0.0
+gr6_trebleboost	-54	-50.17	0.0	-34.33	0.0	-23.02	0.0
+gr6_trebleboost	-48	-44.17	0.0	-28.33	0.0	-17.02	0.0
+gr6_trebleboost	-42	-38.17	0.0	-22.33	0.0	-11.02	0.0
+gr6_trebleboost	-36	-32.17	0.0	-16.33	0.0	-5.02	0.0
+gr6_trebleboost	-30	-26.17	0.0	-10.33	0.0	0.98	0.0
+gr6_trebleboost	-24	-20.17	0.0	-4.33	0.0	6.98	0.0
+gr6_trebleboost	-18	-14.17	0.0	1.67	0.0	12.98	0.0
+gr6_trebleboost	-12	-8.17	0.0	7.67	0.0	18.98	0.0
+gr6_trebleboost	-6	-2.17	0.0	13.67	0.0	24.98	0.0
+gr6_trebleboost	0	3.83	0.0	19.67	0.0	30.98	0.0
+## gr6_mulholland	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_mulholland	-60	-54.58	1.3	-8.51	88.0	-9.23	78.8
+gr6_mulholland	-54	-48.64	2.4	-5.63	117.9	-6.34	102.7
+gr6_mulholland	-48	-42.73	4.3	-3.66	145.1	-4.35	123.2
+gr6_mulholland	-42	-36.90	7.3	-2.42	166.2	-3.10	138.5
+gr6_mulholland	-36	-31.24	10.8	-1.68	180.5	-2.36	148.5
+gr6_mulholland	-30	-26.04	13.7	-1.28	189.2	-1.96	154.5
+gr6_mulholland	-24	-21.62	14.9	-1.07	194.1	-1.75	157.9
+gr6_mulholland	-18	-18.22	14.5	-0.97	196.9	-1.64	159.8
+gr6_mulholland	-12	-15.78	13.4	-0.92	198.4	-1.59	160.8
+gr6_mulholland	-6	-14.28	12.3	-0.90	199.2	-1.57	161.3
+gr6_mulholland	0	-13.39	11.5	-0.89	199.6	-1.55	161.5
+## gr6_hm2	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_hm2	-60	-32.11	0.5	-23.73	9.1	-22.06	19.7
+gr6_hm2	-54	-26.61	2.5	-21.97	20.6	-21.27	28.3
+gr6_hm2	-48	-23.27	11.4	-21.22	28.8	-20.79	32.9
+gr6_hm2	-42	-21.76	22.6	-20.75	33.2	-20.30	35.5
+gr6_hm2	-36	-21.12	29.9	-20.25	35.7	-19.75	37.1
+gr6_hm2	-30	-20.65	33.8	-19.70	37.2	-19.39	38.1
+gr6_hm2	-24	-20.14	36.0	-19.33	38.1	-19.26	38.8
+gr6_hm2	-18	-19.61	37.4	-19.16	39.0	-19.04	40.0
+gr6_hm2	-12	-19.28	38.2	-19.11	40.0	-18.79	40.8
+gr6_hm2	-6	-19.13	39.3	-19.11	40.4	-18.75	40.7
+gr6_hm2	0	-19.10	40.1	-18.78	40.8	-18.77	41.0
+## gr6_fuzzface	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6_fuzzface	-60	-42.33	0.1	-37.92	0.7	-16.16	31.6
+gr6_fuzzface	-54	-36.37	0.1	-31.92	1.2	-13.66	39.3
+gr6_fuzzface	-48	-30.36	0.3	-26.13	1.6	-11.17	46.3
+gr6_fuzzface	-42	-24.35	0.8	-20.82	5.1	-10.54	48.7
+gr6_fuzzface	-36	-18.87	9.0	-15.93	20.0	-10.52	47.3
+gr6_fuzzface	-30	-14.73	29.2	-11.93	33.8	-10.95	43.9
+gr6_fuzzface	-24	-12.31	40.6	-11.82	39.6	-11.20	43.1
+gr6_fuzzface	-18	-13.18	47.4	-12.46	44.2	-11.37	43.6
+gr6_fuzzface	-12	-12.72	53.1	-12.06	49.4	-11.71	48.0
+gr6_fuzzface	-6	-11.78	59.5	-11.06	55.9	-10.45	55.5
+gr6_fuzzface	0	-12.15	61.0	-11.21	58.4	-10.67	57.7
+## at5_tubescreamer	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+at5_tubescreamer	-60	-46.37	0.0	-37.43	0.1	-32.71	0.3
+at5_tubescreamer	-54	-40.38	0.0	-31.55	0.2	-27.39	1.3
+at5_tubescreamer	-48	-34.40	0.0	-26.13	1.2	-23.50	4.1
+at5_tubescreamer	-42	-28.49	0.2	-22.20	4.3	-21.04	7.3
+at5_tubescreamer	-36	-23.09	1.4	-19.80	7.6	-19.32	9.3
+at5_tubescreamer	-30	-19.42	5.0	-18.10	9.6	-17.89	10.4
+at5_tubescreamer	-24	-17.13	8.1	-16.59	10.3	-16.50	10.7
+at5_tubescreamer	-18	-15.18	9.2	-14.95	10.2	-14.90	10.3
+at5_tubescreamer	-12	-13.04	8.9	-12.94	9.2	-12.92	9.3
+at5_tubescreamer	-6	-10.36	7.5	-10.32	7.6	-10.31	7.6
+at5_tubescreamer	0	-6.95	5.6	-6.94	5.6	-6.94	5.6
+## at5_tubescreamer_os_off	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+at5_tubescreamer_os_off	-60	-46.37	0.0	-37.42	0.1	-32.70	0.3
+at5_tubescreamer_os_off	-54	-40.37	0.0	-31.54	0.2	-27.39	1.3
+at5_tubescreamer_os_off	-48	-34.39	0.0	-26.13	1.2	-23.50	4.1
+at5_tubescreamer_os_off	-42	-28.48	0.2	-22.20	4.3	-21.04	7.2
+at5_tubescreamer_os_off	-36	-23.08	1.4	-19.80	7.6	-19.32	9.3
+at5_tubescreamer_os_off	-30	-19.41	5.0	-18.10	9.6	-17.89	10.4
+at5_tubescreamer_os_off	-24	-17.13	8.1	-16.59	10.3	-16.50	10.6
+at5_tubescreamer_os_off	-18	-15.17	9.2	-14.96	10.2	-14.91	10.4
+at5_tubescreamer_os_off	-12	-13.04	8.9	-12.94	9.3	-12.92	9.4
+at5_tubescreamer_os_off	-6	-10.36	7.5	-10.32	7.6	-10.32	7.7
+at5_tubescreamer_os_off	0	-6.95	5.6	-6.94	5.6	-6.94	5.6
+## at5_rat	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+at5_rat	-60	-64.98	0.0	-44.83	0.0	-19.74	0.1
+at5_rat	-54	-58.98	0.0	-38.83	0.0	-15.06	3.5
+at5_rat	-48	-52.98	0.0	-32.83	0.0	-13.20	9.3
+at5_rat	-42	-46.98	0.0	-26.83	0.0	-12.26	12.3
+at5_rat	-36	-40.98	0.0	-20.85	0.1	-11.66	13.9
+at5_rat	-30	-34.98	0.0	-15.67	2.3	-11.40	15.4
+at5_rat	-24	-28.98	0.0	-13.44	8.4	-11.33	15.9
+at5_rat	-18	-22.98	0.0	-12.41	11.9	-11.32	16.1
+at5_rat	-12	-17.22	0.7	-11.74	13.5	-11.32	16.1
+at5_rat	-6	-14.02	6.4	-11.43	15.2	-11.30	16.1
+at5_rat	0	-12.71	10.9	-11.35	15.9	-11.30	16.1
+## at5_bigmuff	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+at5_bigmuff	-60	-60.19	0.0	-19.96	34.6	-13.16	66.8
+at5_bigmuff	-54	-54.19	0.0	-17.33	47.6	-12.11	73.1
+at5_bigmuff	-48	-48.19	0.0	-15.62	57.3	-11.01	78.2
+at5_bigmuff	-42	-42.20	0.0	-13.97	64.6	-10.52	81.9
+at5_bigmuff	-36	-36.23	0.2	-12.45	71.1	-10.45	84.4
+at5_bigmuff	-30	-30.40	1.0	-11.56	76.7	-9.46	86.1
+at5_bigmuff	-24	-25.52	6.8	-11.80	80.8	-8.96	87.3
+at5_bigmuff	-18	-22.20	22.9	-9.98	83.7	-9.86	88.1
+at5_bigmuff	-12	-19.43	38.3	-10.18	85.6	-10.16	88.7
+at5_bigmuff	-6	-17.03	50.4	-8.90	86.9	-9.40	89.0
+at5_bigmuff	0	-14.94	59.4	-9.48	87.9	-9.40	88.4
+## at5_ds1	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+at5_ds1	-60	-47.60	0.0	-42.85	0.0	-22.70	6.6
+at5_ds1	-54	-41.60	0.0	-36.86	0.0	-20.03	26.0
+at5_ds1	-48	-35.60	0.0	-30.86	0.0	-18.24	40.2
+at5_ds1	-42	-29.61	0.1	-25.01	0.9	-16.44	48.6
+at5_ds1	-36	-23.97	2.2	-21.35	15.7	-15.69	52.8
+at5_ds1	-30	-20.80	19.9	-18.99	33.4	-13.97	54.9
+at5_ds1	-24	-18.59	36.2	-17.21	44.7	-12.93	56.1
+at5_ds1	-18	-17.02	46.4	-15.79	50.9	-12.43	56.8
+at5_ds1	-12	-15.46	51.7	-14.64	54.0	-12.08	57.3
+at5_ds1	-6	-15.11	54.4	-14.76	55.6	-11.73	57.7
+at5_ds1	0	-13.36	55.8	-13.49	56.5	-11.99	57.9
+## at5_sd1	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+at5_sd1	-60	-42.52	0.1	-31.30	2.5	-27.21	7.0
+at5_sd1	-54	-36.54	0.2	-26.30	6.5	-23.86	9.7
+at5_sd1	-48	-30.64	0.9	-22.81	9.7	-21.90	11.0
+at5_sd1	-42	-25.20	4.5	-20.85	11.1	-20.56	11.8
+at5_sd1	-36	-21.04	9.0	-19.53	11.8	-19.42	12.2
+at5_sd1	-30	-18.75	10.6	-18.32	12.0	-18.29	12.2
+at5_sd1	-24	-17.13	11.0	-17.01	11.7	-17.00	11.8
+at5_sd1	-18	-15.40	10.5	-15.35	10.9	-15.35	10.9
+at5_sd1	-12	-13.16	9.2	-13.15	9.3	-13.15	9.4
+at5_sd1	-6	-10.21	7.2	-10.21	7.3	-10.21	7.3
+at5_sd1	0	-6.41	5.0	-6.41	5.0	-6.41	5.0
+## at5_distplus	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+at5_distplus	-60	-64.43	0.0	-51.61	0.0	-27.28	0.0
+at5_distplus	-54	-58.43	0.0	-45.61	0.0	-21.28	0.0
+at5_distplus	-48	-52.43	0.0	-39.61	0.0	-15.29	0.0
+at5_distplus	-42	-46.43	0.0	-33.61	0.0	-10.08	3.3
+at5_distplus	-36	-40.43	0.0	-27.61	0.0	-8.42	17.8
+at5_distplus	-30	-34.43	0.0	-21.61	0.0	-7.86	29.1
+at5_distplus	-24	-28.43	0.0	-15.62	0.0	-7.77	37.5
+at5_distplus	-18	-22.43	0.0	-10.26	2.7	-6.63	41.3
+at5_distplus	-12	-16.44	0.0	-8.47	17.1	-5.91	42.3
+at5_distplus	-6	-10.80	1.5	-7.86	28.5	-5.37	42.6
+at5_distplus	0	-8.61	15.2	-7.74	37.2	-5.34	42.6
+## at5_fuzzface	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+at5_fuzzface	-60	-28.43	9.5	-25.23	9.6	-18.87	24.5
+at5_fuzzface	-54	-22.40	12.8	-19.65	22.1	-13.66	36.8
+at5_fuzzface	-48	-17.14	29.3	-14.44	35.3	-11.63	40.5
+at5_fuzzface	-42	-12.05	39.3	-11.50	40.3	-11.96	43.2
+at5_fuzzface	-36	-11.87	41.2	-12.14	42.8	-11.52	44.9
+at5_fuzzface	-30	-12.11	44.0	-11.58	44.8	-11.48	45.5
+at5_fuzzface	-24	-11.32	45.2	-11.37	45.4	-11.42	45.5
+at5_fuzzface	-18	-11.31	45.5	-11.29	45.6	-11.29	45.4
+at5_fuzzface	-12	-11.15	45.5	-11.25	45.4	-11.29	45.4
+at5_fuzzface	-6	-11.18	45.3	-11.22	45.4	-11.31	45.4
+at5_fuzzface	0	-10.92	45.6	-10.89	45.6	-11.03	45.5
+## ni_driver	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+ni_driver	-60	-55.47	0.0	-55.47	0.0	-55.47	0.0
+ni_driver	-54	-49.47	0.0	-49.47	0.0	-49.47	0.0
+ni_driver	-48	-43.48	0.0	-43.48	0.0	-43.48	0.0
+ni_driver	-42	-37.50	0.1	-37.50	0.1	-37.50	0.1
+ni_driver	-36	-31.54	0.2	-31.54	0.2	-31.54	0.2
+ni_driver	-30	-25.62	0.3	-25.62	0.3	-25.62	0.3
+ni_driver	-24	-19.78	0.6	-19.78	0.6	-19.78	0.6
+ni_driver	-18	-14.10	1.3	-14.10	1.3	-14.10	1.3
+ni_driver	-12	-8.79	2.8	-8.79	2.8	-8.79	2.8
+ni_driver	-6	-4.35	6.4	-4.35	6.4	-4.35	6.4
+ni_driver	0	-2.52	18.1	-2.52	18.1	-2.52	18.1
+## ni_dirt	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+ni_dirt	-60	-60.41	0.0	-51.37	0.0	-44.97	0.0
+ni_dirt	-54	-54.41	0.0	-45.37	0.0	-38.97	0.0
+ni_dirt	-48	-48.41	0.0	-39.37	0.0	-32.97	0.0
+ni_dirt	-42	-42.41	0.0	-33.37	0.0	-26.97	0.0
+ni_dirt	-36	-36.41	0.0	-27.37	0.0	-20.99	0.1
+ni_dirt	-30	-30.41	0.0	-21.37	0.0	-15.78	3.1
+ni_dirt	-24	-24.41	0.0	-15.41	0.1	-14.12	17.3
+ni_dirt	-18	-18.41	0.0	-10.60	4.7	-14.02	31.5
+ni_dirt	-12	-12.42	0.0	-9.76	21.8	-14.00	49.0
+ni_dirt	-6	-6.49	0.3	-9.68	44.4	-14.06	106.1
+ni_dirt	0	-2.70	8.8	-9.61	125.9	-13.44	125.9
+## ni_dirt_mode_i	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+ni_dirt_mode_i	-60	-63.72	0.0	-53.97	0.0	-47.36	0.0
+ni_dirt_mode_i	-54	-57.72	0.0	-47.97	0.0	-41.36	0.0
+ni_dirt_mode_i	-48	-51.72	0.0	-41.97	0.0	-35.36	0.0
+ni_dirt_mode_i	-42	-45.72	0.0	-35.97	0.0	-29.36	0.0
+ni_dirt_mode_i	-36	-39.72	0.0	-29.97	0.0	-23.36	0.0
+ni_dirt_mode_i	-30	-33.72	0.0	-23.97	0.0	-17.38	0.1
+ni_dirt_mode_i	-24	-27.72	0.0	-17.97	0.0	-13.39	7.7
+ni_dirt_mode_i	-18	-21.72	0.0	-12.01	0.2	-12.94	23.3
+ni_dirt_mode_i	-12	-15.72	0.0	-8.91	10.8	-12.87	38.1
+ni_dirt_mode_i	-6	-9.72	0.0	-8.70	31.9	-12.82	64.3
+ni_dirt_mode_i	0	-3.86	0.5	-8.47	74.2	-12.65	291.3
+## ni_dirt_mode_iii	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+ni_dirt_mode_iii	-60	-58.99	0.0	-51.28	0.0	-45.19	0.0
+ni_dirt_mode_iii	-54	-52.99	0.0	-45.28	0.0	-39.19	0.0
+ni_dirt_mode_iii	-48	-46.99	0.0	-39.28	0.0	-33.19	0.0
+ni_dirt_mode_iii	-42	-40.99	0.0	-33.28	0.0	-27.21	0.1
+ni_dirt_mode_iii	-36	-34.99	0.0	-27.28	0.0	-21.32	0.3
+ni_dirt_mode_iii	-30	-28.99	0.0	-21.31	0.1	-16.43	3.4
+ni_dirt_mode_iii	-24	-22.99	0.0	-15.47	0.4	-14.81	13.2
+ni_dirt_mode_iii	-18	-17.00	0.0	-11.07	4.5	-14.60	24.0
+ni_dirt_mode_iii	-12	-11.04	0.1	-10.21	16.2	-14.40	39.0
+ni_dirt_mode_iii	-6	-5.33	0.7	-9.81	32.8	-14.11	83.5
+ni_dirt_mode_iii	0	-1.91	6.9	-9.15	76.2	-13.65	88.3
+## ni_supercharger	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+ni_supercharger	-60	-54.99	0.0	-45.66	0.0	-24.01	0.4
+ni_supercharger	-54	-49.00	0.0	-39.89	0.0	-21.96	0.7
+ni_supercharger	-48	-43.00	0.0	-33.99	0.0	-20.73	0.9
+ni_supercharger	-42	-37.08	0.0	-28.08	0.2	-19.90	1.1
+ni_supercharger	-36	-31.31	0.1	-22.64	0.5	-19.19	1.4
+ni_supercharger	-30	-25.46	0.3	-18.22	1.6	-18.38	1.7
+ni_supercharger	-24	-19.81	1.1	-15.31	3.9	-17.18	2.3
+ni_supercharger	-18	-15.28	3.9	-13.84	6.9	-16.25	3.0
+ni_supercharger	-12	-13.11	11.6	-13.27	9.9	-15.75	3.5
+ni_supercharger	-6	-13.00	22.1	-13.07	12.4	-15.49	3.9
+ni_supercharger	0	-12.99	27.9	-13.01	14.7	-15.38	4.3
+## pa_hg2	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+pa_hg2	-60	-60.00	0.0	-56.17	0.0	-53.56	0.0
+pa_hg2	-54	-54.00	0.0	-50.17	0.0	-47.56	0.0
+pa_hg2	-48	-48.00	0.0	-44.17	0.0	-41.56	0.0
+pa_hg2	-42	-42.00	0.0	-38.17	0.0	-35.56	0.0
+pa_hg2	-36	-36.00	0.0	-32.17	0.0	-29.56	0.1
+pa_hg2	-30	-30.00	0.1	-26.17	0.1	-23.55	0.1
+pa_hg2	-24	-23.99	0.2	-20.17	0.1	-17.56	0.2
+pa_hg2	-18	-17.98	0.3	-14.21	0.3	-11.62	0.4
+pa_hg2	-12	-11.98	0.7	-8.40	1.5	-5.93	2.1
+pa_hg2	-6	-6.01	1.4	-3.19	6.8	-1.78	10.1
+pa_hg2	0	-0.99	5.1	-0.15	12.3	0.31	17.8
+## pa_hg2_pentode	in_dbfs	peak_db_drive_0.0	thd_pct_drive_0.0	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+pa_hg2_pentode	-60	-116.84	23.7	-56.17	0.0	-40.36	0.0
+pa_hg2_pentode	-54	-112.67	14.9	-50.17	0.0	-34.36	0.0
+pa_hg2_pentode	-48	-107.06	8.1	-44.17	0.0	-28.36	0.1
+pa_hg2_pentode	-42	-101.38	4.0	-38.17	0.0	-22.35	0.1
+pa_hg2_pentode	-36	-95.80	1.5	-32.17	0.0	-16.35	0.3
+pa_hg2_pentode	-30	-89.94	0.4	-26.17	0.1	-10.35	0.6
+pa_hg2_pentode	-24	-83.93	0.6	-20.17	0.1	-4.45	1.3
+pa_hg2_pentode	-18	-78.01	0.7	-14.21	0.3	0.09	9.0
+pa_hg2_pentode	-12	-72.29	1.2	-8.40	1.5	1.29	23.8
+pa_hg2_pentode	-6	-66.85	5.4	-3.19	6.8	1.35	35.7
+pa_hg2_pentode	0	-61.51	6.4	-0.15	12.3	1.37	40.8
+## pa_hg2_triode	in_dbfs	peak_db_drive_0.0	thd_pct_drive_0.0	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+pa_hg2_triode	-60	-136.51	139.6	-56.17	0.0	-50.32	0.0
+pa_hg2_triode	-54	-128.94	62.4	-50.17	0.0	-44.32	0.0
+pa_hg2_triode	-48	-130.48	22.3	-44.17	0.0	-38.32	0.0
+pa_hg2_triode	-42	-124.47	9.7	-38.17	0.0	-32.32	0.0
+pa_hg2_triode	-36	-118.39	6.0	-32.17	0.0	-26.32	0.1
+pa_hg2_triode	-30	-112.40	2.9	-26.17	0.1	-20.31	0.2
+pa_hg2_triode	-24	-106.72	1.6	-20.17	0.1	-14.31	0.4
+pa_hg2_triode	-18	-100.80	1.2	-14.21	0.3	-8.33	0.9
+pa_hg2_triode	-12	-95.11	1.6	-8.40	1.5	-2.76	3.0
+pa_hg2_triode	-6	-89.89	4.6	-3.19	6.8	0.12	13.1
+pa_hg2_triode	0	-84.91	5.0	-0.15	12.3	0.88	25.4
+## gr6au_skreamer	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6au_skreamer	-60	-52.10	0.1	-44.32	0.1	-34.78	0.5
+gr6au_skreamer	-54	-46.10	0.1	-38.40	0.3	-29.58	1.9
+gr6au_skreamer	-48	-40.15	0.2	-32.72	0.9	-26.07	6.0
+gr6au_skreamer	-42	-34.35	0.6	-27.92	3.1	-24.53	10.7
+gr6au_skreamer	-36	-29.11	2.0	-25.20	8.6	-23.50	13.0
+gr6au_skreamer	-30	-25.52	6.3	-23.80	12.9	-22.60	13.9
+gr6au_skreamer	-24	-23.67	11.1	-22.60	14.5	-21.98	15.2
+gr6au_skreamer	-18	-22.05	12.9	-21.33	15.0	-21.26	14.9
+gr6au_skreamer	-12	-20.16	12.5	-19.94	14.7	-20.00	13.2
+gr6au_skreamer	-6	-17.88	11.5	-17.88	12.3	-17.93	10.6
+gr6au_skreamer	0	-14.80	8.7	-14.80	8.9	-14.83	7.6
+## gr6au_cat	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6au_cat	-60	-62.79	0.0	-30.86	0.7	-24.23	11.3
+gr6au_cat	-54	-56.79	0.0	-26.38	3.6	-23.54	14.0
+gr6au_cat	-48	-50.79	0.0	-24.56	9.9	-23.30	15.9
+gr6au_cat	-42	-44.80	0.0	-23.71	13.0	-23.12	16.6
+gr6au_cat	-36	-38.84	0.1	-23.35	15.5	-23.06	16.8
+gr6au_cat	-30	-33.01	0.4	-23.20	16.5	-23.05	16.9
+gr6au_cat	-24	-27.83	1.9	-23.18	16.8	-23.05	16.9
+gr6au_cat	-18	-25.03	7.7	-23.16	16.8	-23.04	16.9
+gr6au_cat	-12	-23.99	12.1	-23.14	16.9	-23.04	16.9
+gr6au_cat	-6	-23.44	14.7	-23.15	16.9	-23.04	16.9
+gr6au_cat	0	-23.22	16.2	-23.15	16.9	-23.04	16.9
+## gr6au_distortion	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6au_distortion	-60	-50.44	0.1	-44.10	0.1	-30.15	30.2
+gr6au_distortion	-54	-44.42	0.1	-38.13	0.2	-28.97	44.1
+gr6au_distortion	-48	-38.43	0.2	-33.20	7.1	-28.19	54.0
+gr6au_distortion	-42	-33.39	6.3	-30.62	25.6	-27.84	58.0
+gr6au_distortion	-36	-30.73	24.7	-29.24	40.1	-26.98	59.2
+gr6au_distortion	-30	-29.30	39.3	-28.36	51.8	nan	nan
+gr6au_distortion	-24	-28.40	51.4	-27.95	57.3	-26.61	59.6
+gr6au_distortion	-18	-27.95	57.1	-27.14	59.0	-26.55	59.6
+gr6au_distortion	-12	-27.17	59.0	-26.77	59.5	-26.52	59.6
+gr6au_distortion	-6	-26.78	59.5	-26.64	59.6	-26.51	59.6
+gr6au_distortion	0	-26.65	59.6	-26.56	59.6	-26.51	59.6
+## gr6au_bigfuzz	in_dbfs	peak_db_drive_0.1	thd_pct_drive_0.1	peak_db_drive_0.5	thd_pct_drive_0.5	peak_db_drive_1.0	thd_pct_drive_1.0
+gr6au_bigfuzz	-60	-45.97	1.4	-35.55	27.4	-29.06	55.8
+gr6au_bigfuzz	-54	-40.96	5.2	-32.21	43.2	-26.83	66.5
+gr6au_bigfuzz	-48	-37.55	17.7	-28.94	56.4	-25.03	76.2
+gr6au_bigfuzz	-42	-34.11	34.4	-26.79	67.1	-24.71	84.7
+gr6au_bigfuzz	-36	-30.74	49.2	-24.93	76.7	-22.42	91.6
+gr6au_bigfuzz	-30	-28.29	61.1	-24.76	85.1	-22.17	95.9
+gr6au_bigfuzz	-24	-26.74	71.3	-22.35	91.9	-21.51	95.5
+gr6au_bigfuzz	-18	-24.50	80.4	-22.22	96.0	-20.42	89.8
+gr6au_bigfuzz	-12	-23.52	88.3	-21.41	95.4	-20.63	78.2
+gr6au_bigfuzz	-6	-22.01	94.1	-20.41	89.3	-21.47	61.3
+gr6au_bigfuzz	0	-22.81	96.3	-20.66	77.3	-21.93	42.5

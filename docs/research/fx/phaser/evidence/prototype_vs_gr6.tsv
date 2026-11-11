@@ -1,0 +1,12 @@
+# cd docs/research/fx/phaser/prototype && python3 audition.py > out.tsv   (ours = phaser_ref.py; reference rows from gr6_*_tracks.tsv)
+# voicing	rate_hz	notch1_lo	notch1_hi	notch2_lo	notch2_hi	period_s	peak_db	reference
+phase90-script	1.071	415	1444	2374	7627	0.932	0.59	ours
+phase90-script	1.071	-	-	-	-	0.934	-	GR6 Phaser Nine, Color 0 (keeps stage-2 gain, not a true script)
+phase90-block	1.071	448	1559	1905	6866	0.931	4.74	ours
+phase90-block	1.071	444	1544	2091	7059	0.934	4.40	GR6 Phaser Nine, Color 0.4217, Rate 0.5
+phase90-block		+0.8%	+1.0%	-8.9%	-2.7%	-0.3%	+0.34 dB	difference
+smallstone	0.3167	148	3776	870	14786	3.118	2.28	ours
+smallstone	0.3167	149	3891	775	20103	3.158	2.49	GR6 Stoned Phaser, Color off, Rate 0.5
+smallstone		-0.6%	-2.9%	+12.3%	-26.5%	-1.2%	-0.21 dB	difference
+smallstone-color	0.3167	65	1470	368	6891	3.074	7.74	ours
+smallstone-color	0.3167	-	-	-	-	3.158	7.3	GR6 Stoned Phaser, Color on, strength 0.74, Rate 0.5

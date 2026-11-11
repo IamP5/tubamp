@@ -1,0 +1,25 @@
+# python3 $W/proto.py $W/sig/tb_1000_-40_-15_0.5_3.wav $W/out/proto/clean_default.tbB.wav --thr -20 --ratio 4 --knee 6 --att 5 --rel 120 --hold 8
+# python3 $W/cb.py timing $W/sig/tb_1000_-40_-15_0.5_3.wav $W/out/proto/clean_default.tbB.wav --freq 1000 --pre 1 --on 0.5
+metric	value
+lag_smp	0
+g_pre_db	0.000
+g_on_db	-3.750
+g_min_db	-3.750
+t_min_ms	387.708
+g_post_db	0.000
+att_t50_ms	4.188
+att_t63_ms	5.688
+att_t90_ms	12.229
+g_on+1ms	-0.262
+g_on+3ms	-1.411
+g_on+10ms	-3.174
+g_on+30ms	-3.739
+g_on+100ms	-3.750
+rel_t10_ms	20.854
+rel_t50_ms	91.375
+rel_t63_ms	127.667
+rel_t90_ms	284.667
+g_off+10ms	-3.696
+g_off+50ms	-2.648
+g_off+200ms	-0.759
+g_off+1000ms	-0.001

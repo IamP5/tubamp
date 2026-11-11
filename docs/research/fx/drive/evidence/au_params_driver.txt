@@ -1,0 +1,25 @@
+latency_s	0
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	Input	0	1	0.5	0.5	0	0.0	
+1	-	0	1	0	0	0	-	
+2	Resonance	0	1	0	0	0	0.0	
+3	Frequency	0	1	0.5	1	0	35.48 kHz	
+4	Distortion	0	1	0.5	0.51	0	5.1	
+5	Color	0	1	0.5	0.5	0	5.0	
+6	Filter Type	0	1	0	0	2	LPF	
+7	Output	0	1	0.5	0.5	0	0.0	
+8	ENV.Input	0	1	0	0	2	Input	
+9	-	0	1	0	0	0	-	
+10	Smooth	0	1	0.5	0	0	0.0	
+11	Release	0	1	0.5	0.23	0	2.3	
+12	F.ENV Modulation	0	1	0.5	0	0	0.0	
+13	F.ENV Polarity	0	1	0	0	2	+	
+14	D.ENV Polarity	0	1	0	0	2	+	
+15	D.ENV Modulation	0	1	0.5	0	0	0.0	
+16	AM.Mode	0	1	0	0	2	Osc	
+17	AM.ENV Modulation	0	1	0.5	0.5	0	0.0	
+18	Rate	0	1	0.5	0.26	0	0.30 Hz	
+19	Range	0	1	0	0	2	Low	
+20	F.AM Modulation	0	1	0.5	0	0	0.0	
+21	D.AM Modulation	0	1	0.5	0	0	0.0	

@@ -1,0 +1,17 @@
+AmpliTube 5 cannot be instantiated in the headless host, so it has no black-box measurement in this study.
+
+  $RE_STATE/bin/auhost params aumf Atb5 Ikmm      -> exit 139 (SIGSEGV), no output
+  $RE_STATE/bin/auhost state  aumf Atb5 Ikmm x.aupreset   -> exit 139
+  $RE_STATE/bin/auhost edit   aumf Atb5 Ikmm x.aupreset   -> exit 139 before any window opens (tried once, under the gui lock)
+
+Crash report ~/Library/Logs/DiagnosticReports/auhost-2026-11-11-005107.ips, faulting thread:
+  EXC_BAD_ACCESS KERN_INVALID_ADDRESS at 0x0
+  AmpliTube 5   IK::Products::AT5::SharedPluginData::SharedPluginData()                  +0x262f6c
+  AmpliTube 5   juce::SingletonHolder<IK::Products::AT5::SharedPluginData,...>::...      +0xcfc9c
+  AmpliTube 5   IK::Products::AT5::AudioProcessor::AudioProcessor()                      +0x179248
+  AmpliTube 5   JuceAU::JuceAU(ComponentInstanceRecord*)                                 +0xbf56c
+  AudioToolboxCore  AudioComponentInstanceNew
+  auhost        openUnit
+
+The plugin dies in its own constructor. Everything said about AmpliTube 5 in the report is from disassembly and from the
+static tables read out of the binary (tools/at5_tables.py).

@@ -1,0 +1,27 @@
+# python3 $W/cb.py gen-tb $W/sig/tb_8000_-40_-10_0.1_10.wav --freq 8000 --lo -40 --hi -10 --pre 1 --on 0.1 --post 10
+# $AUH render aufx U3A7 UADx $W/sig/tb_8000_-40_-10_0.1_10.wav $W/out/ua_la2a_gray/t_comp_pr50.tbF.wav --set 49=0.286 --set 51=1 --set 53=1 --set 54=1 --set 48=0.5 --set 50=0
+# python3 $W/cb.py timing $W/sig/tb_8000_-40_-10_0.1_10.wav $W/out/ua_la2a_gray/t_comp_pr50.tbF.wav --freq 8000 --pre 1 --on 0.1 --lag 87
+metric	value
+lag_smp	87
+g_pre_db	5.345
+g_on_db	-7.712
+g_min_db	-7.785
+t_min_ms	99.979
+g_post_db	3.895
+att_t50_ms	0.500
+att_t63_ms	0.875
+att_t90_ms	10.188
+g_on+1ms	-3.264
+g_on+3ms	-5.245
+g_on+10ms	-6.392
+g_on+30ms	-7.360
+g_on+100ms	-7.698
+rel_t10_ms	0.125
+rel_t50_ms	0.125
+rel_t63_ms	0.125
+rel_t90_ms	242.625
+g_off+10ms	-5.886
+g_off+50ms	-1.703
+g_off+200ms	2.370
+g_off+1000ms	4.605
+g_off+3000ms	5.292

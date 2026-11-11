@@ -1,0 +1,15 @@
+# 50/50 blend of two measured mic IRs: level against the power sum (0 dB = no cancellation; +3 dB = fully coherent)
+# python3 cabproto.py align $RE_STATE/work/cab/bb
+case	offset_samples	polarity	blend_db_80_5k	worst_third_octave_db	auto_delay_found	auto_polarity
+as measured	0.0	+1	2.17	-0.07		
+as measured + auto-align	0.0	+1	2.50	-0.10	-1.50	+1
+B late 12 samples (0.25 ms)	12.0	+1	0.06	-11.51		
+B late 12 samples (0.25 ms) + auto-align	12.0	+1	2.50	-0.10	-13.50	+1
+B late 24 samples (0.5 ms)	24.0	+1	0.96	-6.86		
+B late 24 samples (0.5 ms) + auto-align	24.0	+1	2.50	-0.10	-25.50	+1
+B late 48 samples (1 ms)	48.0	+1	0.30	-5.19		
+B late 48 samples (1 ms) + auto-align	48.0	+1	2.50	-0.10	-49.50	+1
+B inverted	0.0	-1	-4.54	-15.98		
+B inverted + auto-align	0.0	-1	2.50	-0.10	-1.50	-1
+B late 24 and inverted	24.0	-1	-1.24	-8.24		
+B late 24 and inverted + auto-align	24.0	-1	2.50	-0.10	-25.50	-1

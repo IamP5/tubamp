@@ -1,0 +1,12 @@
+# What tubamp ships today, from juce_Chorus.h:124 (delay = max(1, 20*lfo*0.5*depth + centre) ms, centre 7 ms set at src/dsp/FxBlocks.cpp:358). Sine LFO, so peak pitch ratio = 1 +- 2*pi*rate*D.
+# recheck: python3 docs/research/fx/chorus/evidence/calc.py ours
+# rate_hz	depth	delay_min_ms	delay_max_ms	peak_cents_up	peak_cents_down	clamped_at_1ms
+0.05	0.4	3.0	11.0	+2.2	-2.2	no
+0.25	0.4	3.0	11.0	+10.8	-10.9	no
+0.5	0.4	3.0	11.0	+21.6	-21.9	no
+1	0.4	3.0	11.0	+43.0	-44.1	no
+3	0.4	3.0	11.0	+125.8	-135.7	no
+10	0.4	3.0	11.0	+388.2	-501.1	no
+1	0.1	6.0	8.0	+10.8	-10.9	no
+1	1.0	1.0	17.0	+105.5	-112.3	yes
+10	1.0	1.0	17.0	+844.1	-1713.4	yes

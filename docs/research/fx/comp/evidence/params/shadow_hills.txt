@@ -1,0 +1,36 @@
+latency_s	0
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	Hardwire Bypass	0	1	1	1	2	In	Out|In
+1	Optical Bypass 1	0	1	1	1	2	In	Out|In
+2	Optical Threshold 1	0	23	0	0	1	1	1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24
+3	Optical Gain 1	0	23	6	6	1	7	1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24
+4	Discrete Bypass 1	0	1	1	1	2	In	Out|In
+5	Discrete Threshold 1	0	23	0	0	1	1	1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24
+6	Discrete Ratio 1	0	5	2	2	1	3:1	1.2:1|2:1|3:1|4:1|6:1|Flood
+7	Discrete Attack 1	0	5	5	5	1	30 ms	0.1 ms|0.5 ms|1 ms|5 ms|10 ms|30 ms
+8	Discrete Recover 1	0	5	0	0	1	0.1 s	0.1 s|0.25 s|0.5 s|0.8 s|1.2 s|Dual
+9	Discrete Gain 1	0	23	6	6	1	7	1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24
+10	Sidechain Filter 1	0	1	0	0	2	Out	Out|In
+11	Transformer 1	0	2	2	2	1	Nickel	Steel|Iron|Nickel
+12	Meter Select 1	0	2	0	0	1	Optical	Optical|Discrete|Output
+13	Optical Bypass 2	0	1	1	1	2	In	Out|In
+14	Optical Threshold 2	0	23	0	0	1	1	1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24
+15	Optical Gain 2	0	23	6	6	1	7	1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24
+16	Discrete Bypass 2	0	1	1	1	2	In	Out|In
+17	Discrete Threshold 2	0	23	0	0	1	1	1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24
+18	Discrete Ratio 2	0	5	2	2	1	3:1	1.2:1|2:1|3:1|4:1|6:1|Flood
+19	Discrete Attack 2	0	5	5	5	1	30 ms	0.1 ms|0.5 ms|1 ms|5 ms|10 ms|30 ms
+20	Discrete Recover 2	0	5	0	0	1	0.1 s	0.1 s|0.25 s|0.5 s|0.8 s|1.2 s|Dual
+21	Discrete Gain 2	0	23	6	6	1	7	1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24
+22	Sidechain Filter 2	0	1	0	0	2	Out	Out|In
+23	Transformer 2	0	2	2	2	1	Nickel	Steel|Iron|Nickel
+24	Meter Select 2	0	2	1	1	1	Discrete	Optical|Discrete|Output
+25	Mode	0	1	1	1	1	Stereo	Dual Mono|Stereo
+26	Mix	0	1	1	1	0	100 %	
+27	Sidechain HP Freq	0	1	0.108359	0.108359	0	90 Hz	
+28	Bank	0	3	0	0	1	A	A|B|C|D
+29	Key In	0	1	0	0	2	Out	Out|In
+30	VU Reference Level	0	1	0.199526	0.199526	0	-14.0 dB	
+31	VU Meter 1	0	1	0	0.673401	0	0.00 VU	
+32	VU Meter 2	0	1	0	0.673401	0	0.00 VU	

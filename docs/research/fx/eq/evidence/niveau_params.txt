@@ -1,0 +1,7 @@
+latency_s	0.000362812
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	EQ Gain	0	1	0.5	0.5	0	0.0 dB	
+1	Active	0	1	1	1	2	On	Off|On
+2	EQ Freq x10	0	1	0	0	2	Off	Off|On
+3	EQ Freq	0	1	0.5	0.5	0	230.0 Hz	

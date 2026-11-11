@@ -1,0 +1,221 @@
+
+== legacy ==
+# tubamp today: total gain = sqrt(1-mix) + sqrt(mix)*(1 - depth*(1-lfo)), lfo = 0.5+0.5*sin
+depth	mix	gain_max	gain_min	peak_db	depth_db
+0.4	0.35	1.3978	1.1612	+2.91	1.61
+1.0	0.35	1.3978	0.8062	+2.91	4.78
+0.4	0.5	1.4142	1.1314	+3.01	1.94
+1.0	0.5	1.4142	0.7071	+3.01	6.02
+0.4	1.0	1.0000	0.6000	+0.00	4.44
+0.75	1.0	1.0000	0.2500	+0.00	12.04
+1.0	1.0	1.0000	0.0000	+0.00	180.00
+1.0	0.0	1.0000	1.0000	+0.00	0.00
+# default patch (depth 0.4, mix 0.35) is the first row: 1.6 dB of tremolo riding on a +2.9 dB boost
+
+== refs ==
+# Guitar Rig 6 Tremolo model vs measurement (evidence/gr6_tremolo_measure.tsv)
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms
+init Rt=.5 Int=.5 Up=.5 Dn=.5	2.044	0.9992	0.5008	6.00	0.500	82.58	82.58
+Up=0 Dn=0 Int=1	2.044	1.0000	0.0000	240.00	0.500	5.31	5.31
+Up=.25	2.044	1.0000	0.0000	240.00	0.490	21.06	5.31
+Up=.75	2.044	0.8061	0.0000	238.13	0.346	180.27	5.31
+Wdt=1	2.044	1.0000	0.0000	240.00	0.100	5.31	5.31
+Rt=1 (16.35 Hz)	16.352	1.0000	0.0000	240.00	0.500	2.31	2.31
+# Guitar Rig 6 Twang Reverb model vs measurement (evidence/gr6_twang_measure.tsv): cycle at 6.872 Hz, Int=1
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms
+twang ViInt=1 ViSpd=.5	6.872	0.9995	0.1242	18.11	0.752	33.85	11.75
+phase	gain
+0.00	0.1242
+0.05	0.4666
+0.10	0.6752
+0.15	0.8022
+0.20	0.8795
+0.25	0.9266
+0.30	0.9553
+0.35	0.9728
+0.40	0.9834
+0.45	0.9899
+0.50	0.9939
+0.55	0.9963
+0.60	0.9977
+0.65	0.9986
+0.70	0.9992
+0.75	0.9995
+0.80	0.4068
+0.85	0.1904
+0.90	0.1373
+0.95	0.1242
+
+== depth ==
+# depth law of the new voices: floor = (1-depth)^2, peak make-up +3 dB * depth
+depth	floor	floor_db	peak_db	mean_power_db(sine)
+0	1.0000	0.0	+0.00	+0.00
+0.25	0.5625	-5.0	+0.75	-1.23
+0.5	0.2500	-12.0	+1.50	-1.86
+0.75	0.0625	-24.1	+2.25	-1.82
+0.9	0.0100	-40.0	+2.70	-1.53
+1.0	0.0000	-240.0	+3.00	-1.26
+
+== shapes ==
+# proposed 'Smooth' voice: wave 0 sine, 0.5 triangle, 1 pulse; shape = rise/fall split, duty of the pulse.
+# depth 1, no make-up, 120 Hz one-pole on the gain
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms
+sine	5.000	0.9996	0.0004	67.26	0.500	59.02	59.02
+triangle	5.000	0.9908	0.0092	40.65	0.500	78.52	78.52
+wave .75	5.000	0.9954	0.0046	46.71	0.500	58.52	58.52
+pulse (wave 1)	5.000	1.0000	0.0000	240.00	0.500	2.92	2.92
+sine shape .2	5.000	0.9990	0.0003	71.25	0.500	23.75	94.33
+sine shape .8	5.000	0.9997	0.0010	60.37	0.500	94.33	23.75
+pulse shape .25	5.000	1.0000	0.0000	240.00	0.250	2.92	2.92
+pulse shape .75	5.000	1.0000	0.0000	240.00	0.750	2.92	2.92
+# one cycle, 20 points from the minimum
+phase	sine	triangle	wave .75	pulse (wave 1)	sine shape .2
+0.00	0.0004	0.0092	0.0046	0.0000	0.0003
+0.05	0.0275	0.1013	0.0506	0.9996	0.1383
+0.10	0.1057	0.2065	0.1033	1.0000	0.5061
+0.15	0.2267	0.3118	0.1559	1.0000	0.8700
+0.20	0.3773	0.4170	0.2085	1.0000	0.9989
+0.25	0.5411	0.5223	0.7271	1.0000	0.9866
+0.30	0.7005	0.6275	0.8137	1.0000	0.9529
+0.35	0.8382	0.7328	0.8664	1.0000	0.8998
+0.40	0.9393	0.8380	0.9190	1.0000	0.8298
+0.45	0.9927	0.9433	0.9716	1.0000	0.7457
+0.50	0.9928	0.9512	0.9756	0.0191	0.6512
+0.55	0.9395	0.8462	0.9231	0.0000	0.5502
+0.60	0.8385	0.7410	0.8705	0.0000	0.4471
+0.65	0.7009	0.6357	0.8179	0.0000	0.3462
+0.70	0.5415	0.5305	0.7652	0.0000	0.2519
+0.75	0.3777	0.4252	0.2133	0.0000	0.1681
+0.80	0.2270	0.3200	0.1600	0.0000	0.0985
+0.85	0.1060	0.2147	0.1074	0.0000	0.0460
+0.90	0.0276	0.1095	0.0547	0.0000	0.0127
+0.95	0.0004	0.0092	0.0046	0.0000	0.0003
+
+== optical ==
+# proposed 'Optical' voice (lit 25 % of the cycle, tau 5 ms lit / 20 ms dark, floor -20 dB)
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms
+depth 1 @ 3.0 Hz	3.000	1.0000	0.1000	20.00	0.719	43.94	10.98
+depth 1 @ 5.0 Hz	5.000	0.9995	0.1000	19.99	0.698	43.83	10.98
+depth 1 @ 8.0 Hz	8.000	0.9917	0.1017	19.78	0.668	42.38	10.90
+depth 1 @ 12.0 Hz	12.000	0.9610	0.1133	18.57	0.634	37.38	10.35
+depth 0.25 @ 5 Hz	5.000	0.9999	0.7750	2.21	0.698	43.83	10.98
+depth 0.5 @ 5 Hz	5.000	0.9998	0.5500	5.19	0.698	43.83	10.98
+depth 0.75 @ 5 Hz	5.000	0.9996	0.3250	9.76	0.698	43.83	10.98
+phase	gain (5 Hz, depth 1)
+0.00	0.1000
+0.05	0.4683
+0.10	0.6859
+0.15	0.8144
+0.20	0.8903
+0.25	0.9352
+0.30	0.9617
+0.35	0.9774
+0.40	0.9866
+0.45	0.9921
+0.50	0.9953
+0.55	0.9972
+0.60	0.9984
+0.65	0.9990
+0.70	0.9994
+0.75	0.2861
+0.80	0.1227
+0.85	0.1028
+0.90	0.1003
+0.95	0.1000
+
+== chop ==
+# 'Smooth' voice as a chopper: wave 1, depth 1 (floor 0), +3 dB make-up, 120 Hz one-pole on the gain
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms
+shape 0.5 @ 4.0 Hz	4.000	1.4125	0.0000	243.00	0.500	2.92	2.92
+shape 0.25 @ 4.0 Hz	4.000	1.4125	0.0000	243.00	0.250	2.92	2.92
+shape 0.75 @ 4.0 Hz	4.000	1.4125	0.0000	243.00	0.750	2.92	2.92
+shape 0.5 @ 16.0 Hz	16.000	1.4125	0.0000	204.66	0.500	2.92	2.92
+shape 0.5 @ 20.0 Hz	20.000	1.4125	0.0000	163.73	0.500	2.92	2.92
+# splatter of a 1 kHz carrier, unsmoothed pulse: 3-6 kHz -41.9 dBc, 6-12 kHz -50.9 dBc, 12-24 kHz -57.4 dBc
+# splatter of a 1 kHz carrier, 120 Hz one-pole: 3-6 kHz -64.8 dBc, 6-12 kHz -80.2 dBc, 12-24 kHz -92.0 dBc
+# largest sample-to-sample gain step, depth stepped, before the 120 Hz one-pole: 0.94235; after it: 0.01469
+# largest sample-to-sample gain step, depth ramped over 20 ms, before the 120 Hz one-pole: 0.00164; after it: 0.00138
+
+== bias ==
+# push-pull 3/2-law pair, numerical: tremolo depth (dB) between bias 1 and bias 0.25 versus sine amplitude A,
+# against the closed form 10*log10((1 + c*A)/(0.25 + c*A)), c = 0.20
+A/bias	exact_db	closed_db
+0.05	6.03	5.89
+0.5	7.07	4.97
+2	4.33	3.33
+5	2.08	2.04
+12.5	0.90	1.05
+25	0.46	0.58
+50	0.23	0.31
+100	0.12	0.16
+# 'Bias' voice: tremolo depth (dB, crest to trough) versus input level, knee -12.0 dBFS
+level_dbfs	depth=0.5	depth=0.75	depth=0.9	depth=1.0
+-60	2.99	5.97	9.85	24.02
+-40	2.85	5.55	8.71	14.17
+-30	2.55	4.76	6.98	9.51
+-24	2.22	3.97	5.52	6.97
+-18	1.76	3.01	3.97	4.76
+-12	1.25	2.04	2.60	3.01
+-6	0.79	1.25	1.55	1.76
+0	0.46	0.71	0.87	0.97
+# one cycle of the gain at depth 0.9 for a quiet (-40 dBFS) and a loud (-6 dBFS) note
+phase	quiet	loud
+0.00	0.3667	0.8361
+0.05	0.3945	0.8405
+0.10	0.4660	0.8531
+0.15	0.5593	0.8724
+0.20	0.6584	0.8961
+0.25	0.7531	0.9217
+0.30	0.8372	0.9466
+0.35	0.9064	0.9685
+0.40	0.9578	0.9855
+0.45	0.9894	0.9963
+0.50	1.0000	1.0000
+0.55	0.9894	0.9963
+0.60	0.9578	0.9855
+0.65	0.9064	0.9685
+0.70	0.8372	0.9466
+0.75	0.7531	0.9217
+0.80	0.6584	0.8961
+0.85	0.5593	0.8724
+0.90	0.4660	0.8531
+0.95	0.3945	0.8405
+# exact pair, harmonic content at the crest (b = 1) and the trough (b = 0.25), A = 0.5: H3, H5 re H1 dB
+b=1.0	H3 -51.1	H5 -88.7
+b=0.25	H3 -31.7	H5 -36.8
+
+== harmonic ==
+# circuit topology (LP 145 Hz and HP 640 Hz, antiphase): magnitude in dB
+u	60	82	145	220	300	440	640	1000	2000	4000	8000
+0.0	-0.7	-1.2	-3.0	-5.2	-7.2	-10.1	-13.1	-16.9	-22.8	-28.8	-34.8
+0.5	-6.9	-7.6	-10.2	-13.2	-14.7	-12.9	-10.2	-8.0	-6.6	-6.2	-6.1
+1.0	-20.6	-17.9	-13.1	-9.8	-7.4	-4.9	-3.0	-1.5	-0.4	-0.1	-0.0
+# proposed 'Harmonic' voice (complementary split at 300 Hz, power-law gains), depth 1: magnitude in dB
+u	60	82	145	220	300	440	640	1000	2000	4000	8000
+0.0	+2.8	+2.7	+2.1	+1.1	+0.0	-2.0	-4.4	-7.8	-13.6	-19.5	-25.5
+0.25	+1.6	+1.6	+1.2	+0.6	-0.0	-0.9	-1.7	-2.3	-2.8	-3.0	-3.0
+0.5	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0
+0.75	-2.7	-2.4	-1.6	-0.7	-0.0	+0.7	+1.2	+1.5	+1.7	+1.7	+1.8
+1.0	-11.1	-8.6	-4.2	-1.6	+0.0	+1.4	+2.1	+2.6	+2.9	+3.0	+3.0
+# proposed: swing per frequency (dB, u=0 minus u=1) for depth 0.5 / 0.75 / 1; depth 0 is exactly 0 dB everywhere
+depth 0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0	+0.0
+depth 0.5	+2.8	+2.6	+1.8	+0.9	+0.0	-1.1	-1.9	-2.5	-2.9	-3.0	-3.0
+depth 0.75	+5.4	+5.0	+3.4	+1.6	+0.0	-1.9	-3.5	-4.8	-5.7	-5.9	-6.0
+depth 1.0	+14.0	+11.3	+6.3	+2.7	+0.0	-3.3	-6.6	-10.5	-16.5	-22.5	-28.5
+# power average over 80 Hz..5 kHz (flat per octave), depth 1: proposed / circuit topology
+u=0.0	-1.83 dB	-7.54 dB
+u=0.25	-0.82 dB	-9.68 dB
+u=0.5	+0.00 dB	-8.59 dB
+u=0.75	+0.69 dB	-5.72 dB
+u=1.0	+1.28 dB	-3.03 dB
+
+== stereo ==
+# spread: right LFO leads by spread degrees. Sum of channel powers over a cycle (dB), depth 1, no make-up
+law	spread	power_min_db	power_max_db	corr(gL,gR)
+linear	0	-123.01	+0.00	+1.000
+linear	90	-16.69	-1.38	+0.000
+linear	180	-6.02	-3.01	-1.000
+proposed	0	-123.01	+0.00	+1.000
+proposed	90	-12.51	-1.03	-0.008
+proposed	180	-3.01	-3.01	-0.918
+# proposed law: shape raised to the power (1 - spread/360). At 180 degrees it is a square root and the summed power is constant.

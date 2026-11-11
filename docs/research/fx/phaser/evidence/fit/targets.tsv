@@ -1,0 +1,63 @@
+# Guitar Rig 6 notch trajectories, 48 kHz, measured with evidence/fit/track.py (multitone, per-cycle extremes, median over cycles).
+# Reproduce:  export RE_STATE=<scratch>/re W=$RE_STATE/work/phaser-fix
+#   $RE_STATE/bin/auhost state aufx 'Ni$R' -NI- $W/gr6_default.aupreset
+#   python3 evidence/fit/measure.py probes && python3 evidence/fit/measure.py run   (or: render, then analyse)
+# which runs, per take:
+#   track.py gen $W/probe<secs> --secs <secs>      (268 tones, 60 Hz-12 kHz, ratio 1.02, 36 files, -36 dBFS each)
+#   render_gr6.sh <p9|ss> $W/probe<secs> $W/gr/<tag> <overrides>   (grstate.py + auhost render aufx 'Ni$R' -NI- per file)
+#   track.py ana $W/probe<secs> $W/gr/<tag> --lo <lo> --gain-db <gain>   (q 8, hop 16, skip 1 s, prom 3 dB)
+# Takes (tag: secs, overrides, lo, gain):
+#   p9_block_p010: p9 16 s, p=0.1, lo 300, gain -5.4
+#   p9_block_p025: p9 14 s, p=0.25, lo 300, gain -5.4
+#   p9_block_p050: p9 6 s, p=0.5, lo 300, gain -5.4
+#   p9_block_p075: p9 4 s, p=0.75, lo 300, gain -5.4
+#   p9_block_p090: p9 3 s, p=0.9, lo 300, gain -5.4
+#   p9_block_p100: p9 3 s, p=1.0, lo 300, gain -5.4
+#   p9_c0_p010: p9 16 s, p=0.1 c=0, lo 300, gain -5.4
+#   p9_c0_p050: p9 6 s, p=0.5 c=0, lo 300, gain -5.4
+#   p9_c0_p100: p9 3 s, p=1.0 c=0, lo 300, gain -5.4
+#   ss_off_r040: ss 14 s, Rt=0.4, lo 60, gain 0.0
+#   ss_off_r050: ss 11 s, Rt=0.5, lo 60, gain 0.0
+#   ss_off_r075: ss 4 s, Rt=0.75, lo 60, gain 0.0
+#   ss_on_r040: ss 14 s, Rt=0.4 Cl=1, lo 60, gain 0.0
+#   ss_on_r050: ss 11 s, Rt=0.5 Cl=1, lo 60, gain 0.0
+#   ss_on_r075: ss 4 s, Rt=0.75 Cl=1, lo 60, gain 0.0
+# Color-on additions (python3 measure.py color, after analyse): the three ss_on rows re-rendered (identical values),
+#   ss_on_r000 = Rate 0 (0.01 Hz) quasi-static take through the periodic probe $W/pprobe.wav (static.py gen --secs 212),
+#   analysed with static.py (5-frame average, 1.01 log grid, same notch rules), and the `static` block at the end:
+#   |H| of six frozen frames (sweep bottom/top of three Sweep Min/Max windows) used by fit.py for the Color-on structure.
+# Columns: depth_db = median notch-1 level; peak_db = median over frames of the highest |H| in band; peak_max_db = its maximum.
+# Phaser Nine levels have its x1.862 (+5.40 dB) input make-up removed (gain_removed_db). Stoned Phaser notch 2 leaves the
+# 12 kHz probe band at the sweep top, so its n2 columns are not sweep extremes. Stoned Phaser Color on: notch 1 loses
+# prominence (< 3 dB) at the sweep bottom, so n1_min is the last resolved value; the period comes from notch 2 there.
+tag	n1_min_hz	n1_max_hz	n2_min_hz	n2_max_hz	period_s	rate_hz	depth_db	peak_db	peak_max_db	cycles	frames	gain_removed_db	reference
+p9_block_p010	423.6	1590.2	1946	7259	7.0000	0.1429	-28.89	3.53	3.58	2	44616/44616	-5.40	GR6 Phaser Nine (n=4 r=0.5 e=0.5 x=0.5 o=0.5) Color 0.4217 Rate 0.10
+p9_block_p025	428.0	1580.8	1966	7218	4.0500	0.2469	-28.70	3.52	3.58	2	38616/38616	-5.40	GR6 Phaser Nine (n=4 r=0.5 e=0.5 x=0.5 o=0.5) Color 0.4217 Rate 0.25
+p9_block_p050	464.1	1522.8	2132	6956	0.9337	1.0710	-28.89	3.53	3.58	5	14616/14616	-5.40	GR6 Phaser Nine (n=4 r=0.5 e=0.5 x=0.5 o=0.5) Color 0.4217 Rate 0.50 (defaults)
+p9_block_p075	504.0	1461.4	2314	6679	0.5181	1.9300	-28.90	3.53	3.58	5	8616/8616	-5.40	GR6 Phaser Nine (n=4 r=0.5 e=0.5 x=0.5 o=0.5) Color 0.4217 Rate 0.75
+p9_block_p090	585.0	1351.5	2686	6182	0.2688	3.7209	-28.85	3.52	3.57	6	5616/5616	-5.40	GR6 Phaser Nine (n=4 r=0.5 e=0.5 x=0.5 o=0.5) Color 0.4217 Rate 0.90
+p9_block_p100	737.8	1105.9	3384	5068	0.1025	9.7561	-28.86	3.52	3.56	17	5616/5616	-5.40	GR6 Phaser Nine (n=4 r=0.5 e=0.5 x=0.5 o=0.5) Color 0.4217 Rate 1.00 (fastest)
+p9_c0_p010	371.4	1395.6	2176	8023	7.0000	0.1429	-29.92	0.83	0.87	2	44616/44616	-5.40	GR6 Phaser Nine (n=4 r=0.5 e=0.5 x=0.5 o=0.5) Color 0 Rate 0.10
+p9_c0_p050	407.0	1336.6	2384	7696	0.9337	1.0710	-29.93	0.83	0.87	5	14616/14616	-5.40	GR6 Phaser Nine (n=4 r=0.5 e=0.5 x=0.5 o=0.5) Color 0 Rate 0.50
+p9_c0_p100	647.2	970.3	3778	5637	0.1025	9.7561	-29.99	0.83	0.85	17	5616/5616	-5.40	GR6 Phaser Nine (n=4 r=0.5 e=0.5 x=0.5 o=0.5) Color 0 Rate 1.00
+ss_off_r040	149.6	3783.0	805	10318	6.3095	0.1585	-12.09	1.94	1.94	1	38616/38616	0.00	GR6 Stoned Phaser (Not=2 CS=0.74 DW=0.5 F1=0.5 F2=0.5) Color off Rate 0.40
+ss_off_r050	150.5	3780.9	806	10314	3.1623	0.3162	-12.08	1.94	1.94	2	29616/29616	0.00	GR6 Stoned Phaser (Not=2 CS=0.74 DW=0.5 F1=0.5 F2=0.5) Color off Rate 0.50 (defaults)
+ss_off_r075	157.0	3759.1	812	10313	0.5623	1.7783	-12.11	1.94	1.97	4	8607/8616	0.00	GR6 Stoned Phaser (Not=2 CS=0.74 DW=0.5 F1=0.5 F2=0.5) Color off Rate 0.75
+ss_on_r040	139.5	1305.1	428	7176	6.3087	0.1585	-6.73	6.84	7.42	1	28863/38616	0.00	GR6 Stoned Phaser (Not=2 CS=0.74 DW=0.5 F1=0.5 F2=0.5) Color on Rate 0.40
+ss_on_r050	140.0	1299.3	433	7173	3.1622	0.3162	-7.38	6.78	7.38	2	22248/29616	0.00	GR6 Stoned Phaser (Not=2 CS=0.74 DW=0.5 F1=0.5 F2=0.5) Color on Rate 0.50
+ss_on_r075	154.5	1284.0	437	7136	0.5623	1.7784	-7.24	6.29	7.18	4	5996/8616	0.00	GR6 Stoned Phaser (Not=2 CS=0.74 DW=0.5 F1=0.5 F2=0.5) Color on Rate 0.75
+ss_on_r000	140.4	1305.9	427	7128	100.010	0.01000	-6.67	6.79	7.47	1	2284/4938	0.00	GR6 Stoned Phaser (Not=2 CS=0.74 DW=0.5 F1=0.5 F2=0.5) Color on Rate 0 (0.01 Hz) [static.py: periodic probe, 5-frame average, 1.01 log grid, same notch rules; period from the unaveraged track]
+# Columns: static, frame, frame centre time (s), sweep window (F1,F2), |H| in dB at the frequencies of the static_hz row.
+# Frames sit on the LFO turning points: t 100 s = sweep bottom, 50 s = sweep top. Reproduce: python3 measure.py color.
+# Columns: static, frame, frame centre time (s), sweep window (F1,F2), |H| in dB at the frequencies of the static_hz row.
+# Frames sit on the LFO turning points: t 100 s = sweep bottom, 50 s = sweep top. Reproduce: python3 measure.py color.
+# static: Stoned Phaser Color on (CS 0.74, DW 0.5), Rate 0, periodic probe (static.py gen, 8192-sample period).
+# Columns: static, frame, frame centre time (s), sweep window (F1,F2), |H| in dB at the frequencies of the static_hz row.
+# Frames sit on the LFO turning points: t 100 s = sweep bottom, 50 s = sweep top. Reproduce: python3 measure.py color.
+static_hz				50	55	60.5	66.6	73.2	80.5	88.6	97.4	107.2	117.9	129.7	142.7	156.9	172.6	189.9	208.9	229.7	252.7	278	305.8	336.4	370	407	447.7	492.5	541.7	595.9	655.5	721	793.2	872.5	959.7	1055.7	1161.3	1277.4	1405.1	1545.6	1700.2	1870.2	2057.2	2263	2489.3	2738.2	3012	3313.2	3644.5	4009	4409.9	4850.9	5335.9	5869.5	6456.5	7102.1	7812.4	8593.6	9453
+static	ss_on_full_bot	99.987	F1=0.5,F2=0.5	-1.28	-1.07	-0.78	-0.39	0.08	0.64	1.31	2.11	3.05	4.06	4.94	5.13	4.19	2.39	0.44	-1.26	-2.59	-3.57	-4.26	-4.71	-4.99	-5.15	-5.23	-5.23	-5.18	-5.08	-4.94	-4.76	-4.54	-4.28	-4.00	-3.67	-3.31	-2.92	-2.50	-2.06	-1.59	-1.11	-0.62	-0.13	0.36	0.85	1.32	1.78	2.21	2.62	2.99	3.34	3.65	3.94	4.19	4.41	4.60	4.76	4.90	5.02
+static	ss_on_full_top	49.981	F1=0.5,F2=0.5	0.93	1.24	1.53	1.80	2.05	2.30	2.53	2.75	2.98	3.22	3.47	3.74	4.04	4.39	4.79	5.24	5.75	6.30	6.82	7.15	7.03	6.26	4.82	2.91	0.82	-1.30	-3.36	-5.35	-7.24	-9.02	-10.66	-12.10	-13.27	-14.05	-14.37	-14.22	-13.61	-12.62	-11.30	-9.65	-7.58	-4.91	-1.15	4.18	3.88	-1.96	-6.28	-9.57	-12.29	-14.61	-16.52	-17.84	-18.35	-18.04	-17.17	-16.02
+static	ss_on_mid_bot	99.987	F1=0.75,F2=0.25	1.30	1.54	1.66	1.64	1.44	1.07	0.55	0.00	-0.49	-0.84	-0.99	-0.91	-0.61	-0.05	0.80	2.02	3.71	5.82	6.93	4.68	0.97	-2.27	-4.81	-6.67	-7.95	-8.74	-9.18	-9.36	-9.36	-9.23	-9.00	-8.70	-8.35	-7.94	-7.50	-7.01	-6.50	-5.95	-5.38	-4.78	-4.18	-3.56	-2.93	-2.30	-1.68	-1.06	-0.46	0.13	0.70	1.23	1.74	2.22	2.66	3.06	3.43	3.76
+static	ss_on_mid_top	49.981	F1=0.75,F2=0.25	1.09	1.43	1.75	2.07	2.38	2.69	3.01	3.33	3.68	4.06	4.47	4.92	5.38	5.82	6.14	6.16	5.67	4.57	2.95	1.06	-0.93	-2.88	-4.69	-6.31	-7.68	-8.73	-9.39	-9.67	-9.56	-9.10	-8.29	-7.11	-5.47	-3.14	0.35	5.25	3.77	-2.18	-6.56	-9.94	-12.69	-14.92	-16.58	-17.49	-17.63	-17.16	-16.32	-15.32	-14.27	-13.21	-12.18	-11.17	-10.18	-9.22	-8.28	-7.35
+static	ss_on_narrow_bot	99.987	F1=1,F2=0	1.48	1.88	2.29	2.69	3.07	3.44	3.77	3.98	4.03	3.81	3.23	2.30	1.13	-0.14	-1.36	-2.40	-3.18	-3.67	-3.84	-3.71	-3.25	-2.45	-1.20	0.70	3.61	7.05	4.82	-0.56	-4.85	-8.13	-10.62	-12.39	-13.45	-13.91	-13.92	-13.62	-13.13	-12.54	-11.88	-11.18	-10.46	-9.73	-8.98	-8.23	-7.47	-6.71	-5.95	-5.20	-4.45	-3.71	-2.97	-2.25	-1.55	-0.87	-0.20	0.43
+static	ss_on_narrow_top	49.981	F1=1,F2=0	1.38	1.77	2.16	2.55	2.94	3.33	3.73	4.10	4.42	4.61	4.56	4.14	3.32	2.13	0.71	-0.76	-2.13	-3.31	-4.21	-4.78	-5.03	-4.95	-4.55	-3.80	-2.62	-0.83	1.91	5.87	5.83	0.10	-4.61	-8.19	-10.98	-13.06	-14.42	-15.07	-15.15	-14.82	-14.26	-13.57	-12.80	-12.01	-11.21	-10.39	-9.58	-8.77	-7.96	-7.16	-6.36	-5.57	-4.79	-4.01	-3.25	-2.50	-1.77	-1.06

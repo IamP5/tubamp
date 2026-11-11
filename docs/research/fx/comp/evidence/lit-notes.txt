@@ -1,0 +1,150 @@
+# Compressor literature notes
+
+Convention: [literature: URL] = page opened and read this session. [unverified] = seen only in search snippets or not openable.
+"Secondary" = a source that restates a primary paper. Notes marked (my arithmetic) are derived by me, not stated by the source.
+The Giannoulis/Massberg/Reiss JAES 2012 PDF itself could not be opened (qmul.ac.uk TLS error; AES 403; academia.edu 403; researchgate 403; scribd text truncated). Topic 1 is therefore reconstructed from secondary sources that cite it, flagged accordingly.
+
+## 1. Digital compressor design (Giannoulis, Massberg, Reiss, JAES 60(6), 2012)
+
+Source status: primary paper NOT opened. Facts below come from a thesis that restates it with citation [GMR12], a MathWorks doc page, and two repo/issue pages.
+
+- Recommended topology: feed-forward. A feedback topology cannot do lookahead, cannot act as a limiter, and needs infinite negative gain at R=inf. Modern compressors are feed-forward because they are stable and predictable. [literature: https://phaidra.kug.ac.at/api/object//o:104573/download]
+- Feedback gain law (dB, above threshold): g = (1-R)(y-T). Feed-forward: g = (1/R - 1)(x-T). [literature: https://phaidra.kug.ac.at/api/object//o:104573/download]
+- A feedback variant that uses the previous gain value allows an external sidechain input. [literature: https://phaidra.kug.ac.at/api/object//o:104573/download]
+- Soft-knee gain computer (dB, T threshold, W knee width, R ratio, x input level, y target output level): [literature: https://phaidra.kug.ac.at/api/object//o:104573/download] and [literature: https://www.mathworks.com/help/audio/ug/dynamic-range-control.html]
+  - y = x                                   if 2(x-T) < -W
+  - y = x + (1/R - 1)(x - T + W/2)^2 / (2W)  if 2|x-T| <= W
+  - y = T + (x-T)/R                          if 2(x-T) > W
+  - Gain computer output g_c = y - x. The knee is split equally either side of T and is second-order (quadratic).
+- Equivalent gain-reduction form from a repo write-up: GR = 0.5*(1-1/R)*(over+W/2)^2/W inside the knee, (1-1/R)*over above it, 0 below. [literature: https://github.com/Rui-727/OTT/blob/main/RESEARCH.md] (the page says it is not checked against the paper).
+- Attack/release coefficient: alpha = exp(-1/(tau*fs)). A tau is the time for a one-pole step response to reach 1-1/e (about 63%). [literature: https://phaidra.kug.ac.at/api/object//o:104573/download]
+- A 90% convention differs from the 63% one by a factor ln(10) = 2.3. [literature: https://github.com/Rui-727/OTT/blob/main/RESEARCH.md]
+- MathWorks defines attack and release as 10%-90% times and uses alpha = exp(-ln(9)/(fs*T)); the page's fraction rendering was ambiguous, so the exact form is my reading. [literature: https://www.mathworks.com/help/audio/ug/dynamic-range-control.html]
+- Smoothing in MathWorks form: g_s[n] = alpha_A*g_s[n-1] + (1-alpha_A)*g_c[n] if g_c <= g_s[n-1], else alpha_R version (g_c is a negative gain in dB). [literature: https://www.mathworks.com/help/audio/ug/dynamic-range-control.html]
+- Auto make-up gain (MathWorks, citing GMR 2012): make-up equals the negative of the static curve at 0 dB input. Piecewise: 0 if W/2 < T; -(1/R-1)(T-W/2)^2/(2W) if -W/2 <= T <= W/2; -T + T/R if -W/2 > T. For a hard knee with T < 0 this is -(T - T/R) = -T(1-1/R). [literature: https://www.mathworks.com/help/audio/ug/dynamic-range-control.html]
+- Detector ballistics placement options discussed in the thesis (timing block T, gain computer G, linear vs log): [literature: https://phaidra.kug.ac.at/api/object//o:104573/download]
+  - Level detection and timing in linear domain, then dB gain computer: the timing stage runs over the full dynamic range, so it lags before reaching threshold and gives a discontinuity in the release envelope.
+  - Smoothing the gain (after the gain computer) in the linear domain: exponential decay is a constant dB/s release rate, so release time depends on the amount of compression.
+  - Smoothing in the log domain after the gain computer (x_T = x_G - y_G, gain = M - y_T): envelope trajectory is independent of the amount of compression, and the effect is smoother. This is the placement a third-party engine note attributes to GMR ("log-domain peak detection, soft knee, smooth branching"). [literature: https://github.com/Patrick-M-Bourget/comp1/issues/4]
+- A CTAG DRC page restates the same recommendation: feed-forward, gain computer in dB with the quadratic knee, ballistics after the gain computer so they need not handle the full input range. [literature: https://github.com/p-hlp/CTAGDRC]
+- Peak detector variants (thesis equations, a = alpha): [literature: https://phaidra.kug.ac.at/api/object//o:104573/download]
+  - Decoupled: y1 = max(x, aR*y1_prev); yT = aA*yT_prev + (1-aA)*y1. Effective release is about tauA + tauR.
+  - Branching: yT = aA*yT_prev + (1-aA)*x if x > yT_prev, else aR*yT_prev. Attack and release take the intended values.
+  - Smooth decoupled: y1 = max(x, aR*y1_prev + (1-aR)*x); yT as before. Smooth branching: release branch also has (1-aR)*x. The smooth versions use the full release envelope when the level settles at an intermediate value.
+  - THD: decoupled slightly beats branching because branching has a discontinuity at release onset. Effective ratio is slightly higher for decoupled. The cost of decoupled is an effective release longer than the set one.
+- The same distinction in another source: smooth-branching is eq. 12 of the paper and smooth-decoupled is eq. 17 (the thread numbering differs from the thesis numbering). The decoupled form sends release through the attack pole, so the measured 63% release is longer than the setting. [literature: https://github.com/Patrick-M-Bourget/comp1/issues/4]
+- JUCE forum summary: with the smooth branching detector the release can never be shorter than the attack (quote attributed to the paper). [literature: https://forum.juce.com/t/peak-follower-with-independent-attack-release-and-level/55455]
+- Peak vs RMS: the thesis says studies suggest peak and RMS behaviour are alike apart from scaling of time constants, and an RMS estimate costs latency N/2 for a window of N. RMS in real time is a leaky integrator y = sqrt(a*y_prev^2 + (1-a)*x^2). [literature: https://phaidra.kug.ac.at/api/object//o:104573/download]
+- CTAG states RMS was rejected for the added delay; it uses crest factor over a 200 ms window (attributed to GMR 2013 "parameter automation") to auto-adjust time constants. [literature: https://github.com/p-hlp/CTAGDRC]
+- Stereo linking and sidechain filtering in the GMR paper: not verified. [unverified]
+
+## 2. Zolzer DAFX / RMS detector time constants / auto make-up
+
+- DAFX book itself not opened. [unverified]
+- THAT Corp (Floru, AES preprint 4054, 1995): standard RMS detector time constant is tau = 35 ms. The detector is a squarer into a first-order low-pass, or in log form a log-domain first-order filter with output subtracted from the squared input. Floru calls tau = 35 ms "commonly used". Ripple at the detector output is a pure second harmonic of the input frequency and falls 6 dB/octave above about 22 Hz for tau = 35 ms. [literature: https://thatcorp.com/datashts/AES4054_Attack_and_Release_Time_Constants_II.pdf] (scanned PDF read with a text layer extracted locally).
+- Feed-forward compressor distortion from detector ripple (tau = 35 ms, infinite compression): 0.057% at 1 kHz, 0.95% at 60 Hz; distortion falls 6 dB/octave and rises linearly with compression ratio. [literature: https://thatcorp.com/datashts/AES4054_Attack_and_Release_Time_Constants_II.pdf]
+- Same paper: a fast release gives "pumping" and noise modulation; slow release hides gain changes but leaves gain reduction for possibly seconds; release is more critical to set by ear than attack. [literature: https://thatcorp.com/datashts/AES4054_Attack_and_Release_Time_Constants_II.pdf]
+- Compression ratio definition (THAT 1998): ratio = d(dB in)/d(dB out). [literature: https://thatcorp.com/datashts/AES4703_Attack_and_Release_Time_Constants_I.pdf]
+- THAT AES 4703 (Floru, 1998) feedback result: with the same detector, a feedback compressor's time constant is divided by (k+1) (equals ratio Cr), so for equal transient response the detector tau must be multiplied by the ratio. Linear-domain feedback with k=1 has tau halved. Feedback THD is Cr times feed-forward THD. At 20:1, 1 kHz THD is 1.4% feedback vs 0.07% feed-forward. [literature: https://thatcorp.com/datashts/AES4703_Attack_and_Release_Time_Constants_I.pdf]
+- Same paper: feedback detector sees a smaller dynamic range (output already compressed); infinite ratio is theoretically impossible in feedback; a ratio of 20 or more approximates infinite. Feed-forward is judged better for a compressor, feedback fits expanders. Log-domain and linear-domain (VCA control raised to power k) compressors give the same transfer function. [literature: https://thatcorp.com/datashts/AES4703_Attack_and_Release_Time_Constants_I.pdf]
+- Auto makeup formula: see topic 1 (MathWorks, citing GMR). The "-(T - T/R)/2" half-scaled form is not in any opened source. [unverified]
+
+## 3. MXR Dyna Comp / Ross
+
+- ElectroSmash page could not be opened (DNS failure for electrosmash.com on every attempt; archive.org blocked). All ElectroSmash facts are [unverified]. Search snippets say it divides the circuit into input buffer, OTA amplifier, envelope detector, output stage, power supply, and that gain is set by bias current into pin 5 of the CA3080. [unverified]
+- Substitute primary: Kroning, Dempwolf, Zolzer, "Analysis and Simulation of an Analog Guitar Compressor", DAFx-11. [literature: https://www.dafx.de/paper-archive/2011/Papers/22_e.pdf] (PDF text extracted locally).
+  - Topology: OTA (the paper models an LM13700 equivalent) with input buffer stage, output stage, and a feedback loop: the OTA output drives Q2, a buffer/phase inverter, which feeds a rectifier-filter (Q4, Q5, diodes, C10) whose voltage controls the OTA bias current I_ABC. This is feedback: the envelope detector sees the OTA output.
+  - Supply: Vbatt = 9 V, Vbias = 2.93 V.
+  - Component values listed: R14 150 kOhm, C10 10 uF (envelope capacitor), C9 50 nF, R2 470 kOhm, R8 150 kOhm with C4 1 nF (HF roll-off at OTA output), sensitivity pot 470 kOhm, volume pot 47 kOhm, R16 1 MOhm, R17 1 MOhm, R15 10 kOhm, diodes 1N914, transistors 2N3904, C2 1 uF, C3 10 nF.
+  - Envelope behaviour: with no signal C10 rises nearly to Vbatt = 9 V (maximum OTA bias, maximum gain). Signal peaks pull C10 down through Q4/Q5 with current flowing out of R14, which lowers bias and gain. Higher OTA output gives higher base currents of Q4/Q5.
+  - The OTA gain is set by I_ABC, I_OTA = -I_ABC*tanh((V- - V+)/(2VT)); the paper keeps the nonlinear tanh and the delay-free loop (solved with a one-sample delay).
+  - Time constants: the paper compares simulated and measured attack and release envelopes and reports "differences" attributed to component tolerance; no ms values extracted. If the release is dominated by R14 charging C10: R14*C10 = 150k*10uF = 1.5 s (my arithmetic, not stated). No attack figure derived.
+- Feedback behaviour (general): the detector sees the already-compressed output, so effective detector time constant shortens with ratio (THAT result, topic 2) and the ratio is bounded; this gives the "squash and sustain" gain lift as notes decay until maximum gain. A DIY page says the single C10-type capacitor sets attack, decay and recovery together. [unverified] (search snippet only).
+- Ross vs Dyna Comp: Premier Guitar calls the Ross a near-clone of the Dyna Comp; Keeley Compressor Plus is based on the 1970s Ross. [literature: https://www.premierguitar.com/gear/keeley-compressor-plus-review] Other Ross difference details: [unverified].
+- Dyna Comp has two controls (output, sensitivity), introduced 1972. [literature: https://www.premierguitar.com/pro-advice/state-of-the-stomp/a-guitarists-guide-to-compression]
+- ovnilab: OTA compressors sit between VCA (fast, precise) and optical (slow) in release; most boutique pedals (Ross, Dynacomp, Keeley, Wampler) are OTA variants; no numbers. [literature: https://ovnilab.com/articles/comptypes.shtml]
+- Max gain, frequency response, noise of the Dyna Comp: not extracted. [unverified]
+
+## 4. UREI/UA 1176
+
+- Attack range about 20 us (fastest) to 800 us; release 50 ms (fastest) to 1.1 s. Higher knob values give shorter times. 1176AE adds a fixed 10 ms slow attack and a 2:1 ratio. [literature: https://www.uaudio.com/blogs/ua/1176-collection-tips]
+- Moore (JARP 2012) quotes the UA manual as attack 200-800 us, release 50 ms-1.1 s (note: 200 not 20 us; the two sources differ). [literature: https://eprints.hud.ac.uk/id/eprint/27391/1/Journal%20on%20the%20Art%20of%20Record%20Production%20%C2%BB%20All%20Buttons%20In_%20An%20investigation%20into%20the%20use%20of%20the%201176%20FET%20compressor%20in%20popular%20music%20production.pdf]
+- Ratios 4:1 and 8:1 compression, 12:1 and 20:1 limiting. In multi-button combinations only outer buttons affect the sound. [literature: https://www.uaudio.com/blogs/ua/1176-collection-tips]
+- Topology: feedback (control sidechain fed from the output end). FET used as a voltage-controlled resistor: the higher the gate voltage, the lower the drain-source resistance. [literature: https://eprints.hud.ac.uk/id/eprint/27391/1/Journal%20on%20the%20Art%20of%20Record%20Production%20%C2%BB%20All%20Buttons%20In_%20An%20investigation%20into%20the%20use%20of%20the%201176%20FET%20compressor%20in%20popular%20music%20production.pdf] (same file as above, PDF text extracted locally)
+- Threshold is not fixed: UA manual quoted as "selecting higher ratios also raises the threshold level"; the knee is harder at higher ratio/threshold and softer at low ratio. [literature: same Moore PDF]
+- Program dependent: attack, release and ratio are source dependent; the ratio rises a bit after a transient at every ratio setting. [literature: same Moore PDF]
+- All-buttons-in: ratio "somewhere between 12:1 and 20:1" per UA manual; lag on initial transients ("plateau" compression curve); attack/release change; release "drops off in a severe and sudden way"; low frequencies show more distortion. [literature: https://pulsar.audio/blog/the-history-of-all-buttons-in-mode/] and [literature: Moore PDF above]. UA: "compression distortion increases radically" in this mode; fastest attack/release adds gritty distortion. [literature: https://www.uaudio.com/blogs/ua/1176-collection-tips]
+- Bias changes in all-buttons mode: not stated in any opened source. [unverified]
+- LF distortion mechanism quoted in Moore: when attack/release are faster than a fraction of the period of a low sine, the compressor attenuates on the peaks and releases between them. Slower release cures it. [literature: Moore PDF above]
+- Cali76 (1176 topology in a pedal) per SOS: same circuit topology as the 1176. [literature: https://www.soundonsound.com/reviews/origin-effects-cali76-compact-compact-deluxe]
+- UA official 1176 manual (help.uaudio.com) returned 403. [unverified as a direct page]
+
+## 5. Teletronix LA-2A
+
+- Specs listing (UA product, reseller page): attack 10 ms; release about 60 ms for 50%, full release 0.5 to 5 s; gain 40 dB; THD under 0.5% (0.25% typical); noise 70 dB below +10 dBm; response +0/-1 dB 30 Hz-15 kHz; compressor/limiter, gain-limiting range 0-40 dB. [literature: https://www.soundpure.com/p/universal-audio-teletronix-la-2a/47]
+- "1-15 s" tail variant: appears in search snippets (Computer Music; an LA-2A manual quote). Not opened. [unverified]
+- T4 as electroluminescent panel plus photoresistors, memory effect (longer release after long/hard compression): search snippets only; Eichas confirms the T4 is the LA-2A's analog optical isolator. [literature: https://www.hsu-hh.de/ant/wp-content/uploads/sites/699/2017/10/Eichas-Modeling-of-an-optocoupler-based-audio-dynamic-range-control-circuit-99480W.pdf] (PDF text extracted locally).
+- Eichas/Zolzer (SPIE 9948): for an LDR+LED optocoupler (VTL5C2) guitar compressor, the optocoupler dominates release; the capacitor parallel to the LED sets attack (steady state after >100 ms, 10x the optocoupler's own reaction time); the LDR turn-off resistance rises nonlinearly with time. Model: separate attack/release one-pole coefficients, in level detector and a low-pass stage. [literature: same Eichas PDF]
+- R37 HF pre-emphasis, feedback sidechain, compress/limit ratio values: search snippets only (manual page blocked by bot wall). [unverified]
+- UA reseller page gives no ratio. Compress ~3:1 and limit values: [unverified].
+
+## 6. LA-3A
+
+- Solid state; same T4 electro-optical cell as LA-2A; same controls (Gain, Peak Reduction, Comp/Limit); "much faster attack" per UA's Will Shanks; borrowed concepts and components from the 1176; LA-2A 1958, LA-3A 1969. No ms figures given. [literature: https://www.uaudio.com/blog/teletronix-la-3a-origins/]
+- Numeric spec "attack 1.5 ms or less, first-stage release about 60 ms to 50%": search snippet from a B&H listing only. [unverified]
+
+## 7. SSL G-series bus compressor
+
+- SOS review of an SSL G-series compressor unit: attack 0.1, 0.3, 1, 3, 10, 30 ms; ratio 2:1, 4:1, 10:1; release 0.1, 0.3, 0.6, 1.2 s plus Auto; threshold -15 to +15 dBu; make-up -5 to +15 dB; meter to 20 dB. VCA design, knee, feed-forward/feedback: not stated there. [literature: https://www.soundonsound.com/reviews/ssl-xlogic-g-series-compressor]
+- Waves page: VCA-style compressor from the SSL 4000 G console; auto release adapts to program, larger peaks give longer release; attack medium 1-3 ms, slow 10-30 ms. Page lists drum buss release "0.1 - 0.3 ms", which looks like a unit error. [literature: https://www.waves.com/how-to-use-ssl-bus-compressor-classic-mix-glue]
+- Knee: SSL G-Bus uses a soft knee whose width is computed automatically from threshold and ratio; hard knee fits worse; dataset ranges attack 0.1-30 ms, release 0.1-1.6 s, ratio 1.5-10 (in the plugin dataset, not the hardware). [literature: https://arxiv.org/pdf/2504.04589] (PDF text extracted locally).
+- Auto release dual time constant and feed-forward-vs-feedback of the G bus: not verified. [unverified]
+
+## 8. API 2500
+
+- Old = feedback sensing (output level, closed loop; a high transient can overload the gain element before sensing reacts); New = feed-forward (input sensed directly, quicker). Knee Hard/Medium/Soft. Thrust: Norm no filter, Med 2 dB/octave high-pass, Loud 4 dB/octave slope (SOS). [literature: https://www.soundonsound.com/reviews/api-2500]
+- API: Thrust is a patented selectable high-pass filter placed before the RMS detector; Old is the 525 style; New feeds the sidechain from the input. [literature: https://apiaudio.com/product/2500-stereo-compressor]
+- SOS ranges: attack 0.03-30 ms (7 steps), ratio 1.5:1 to 10:1 plus infinity, release 0.05-2 s presets plus variable 0.05-3 s, threshold +10 to -20 dBu; four 2180 VCAs and one 2252 detector per channel. [literature: https://www.soundonsound.com/reviews/api-2500]
+- A search snippet quoted a different Thrust description ("10 dB/decade" Loud) from a 2500+ manual; not opened, conflicts with SOS only in unit (4 dB/oct is about 13 dB/decade). [unverified]
+
+## 9. dbx 160 / THAT notes
+
+- dbx 160 family: true RMS detection with feed-forward gain reduction; OverEasy soft knee came in later models; search snippets only (manual pages 403). [unverified]
+- THAT RMS detector scaling: 6 mV/dB at the detector output, VCA control also 6 mV/dB; detector tau about 3467*C (THAT4320 datasheet, snippet) [unverified]. In DN00A, a 2252 with RT = 2.21 MOhm and CT = 10 uF, "time constants are handled automatically by the 2252", 6 mV per dB, detector output 0 V at 316 mV rms (-10 dBV). Feed-forward, hard-knee above-threshold compressor with variable ratio, threshold and gain; second design adds soft knee. [literature: https://thatcorp.com/datashts/dn00A.pdf] (PDF text extracted locally).
+- DN114 (non-linear capacitor): a fast detector causes low-frequency distortion because the rectified audio on the VCA control port multiplies the audio in the gain cell. A non-linear capacitor acts as a large timing cap for slow signals and a small one for fast signals. Example numbers: C3 1 uF, C5 100 nF effective x100 = 10 uF, total 11 uF steady state; allows 3 dB short-term variation before switching to fast mode; gain Av about 102 (0.0065 V/dB x 3 dB). [literature: https://thatcorp.com/datashts/dn114.pdf] (PDF text extracted locally).
+- Explicit dB/s attack/release rate table in THAT notes: not found. Floru shows the log-domain release is a constant-slope dB/s then exponential tail (plots only). [unverified]
+- Floru AES 4054: a log detector (output proportional to dB) with a log-domain low-pass makes the release start as a straight line in dB; attack start follows ln(1+t). [literature: https://thatcorp.com/datashts/AES4054_Attack_and_Release_Time_Constants_II.pdf]
+
+## 10. Guitar practice
+
+- Placement: compressor before gain stages keeps level even into the drive; after gain stages it is an effect (fatter, wider) but noise from dirt pedals is amplified; noise floor from pedals before a compressor is brought up. [literature: https://www.wamplerpedals.com/wamplerblog/item/2324-compressors-for-guitar-a-simple-guide]
+- Release "anywhere from about 50 ms up to several seconds, depending on the unit"; ratio guide 3:1 light, 5:1 medium, 10:1 strong, 20:1 severe. Vintage country "squish" from fast attack; modern country slower attack. Many pedals attack faster at CCW. [literature: https://www.wamplerpedals.com/wamplerblog/item/2324-compressors-for-guitar-a-simple-guide]
+- Blend (parallel compression): once set, the initial squish is not heard, you get more sustain and stability. [literature: same Wampler page]
+- Keeley Compressor Plus (Ross-based per Premier): Blend preserves note attack and sustain; Tone adds HF shimmer to restore presence; the single-coil/humbucker toggle is a release-time switch (humbucker shorter release, louder). [literature: https://www.premierguitar.com/gear/keeley-compressor-plus-review] (search snippet claimed the opposite for the switch positions; Premier page is the one opened.)
+- Cali76 Compact Deluxe: separate ratio, attack and release knobs plus a dry level for parallel compression; Compact has one combined attack/release control (fast attack/slow release to slow attack/fast release) and a hi/lo ratio switch. No ms values in the review. [literature: https://www.soundonsound.com/reviews/origin-effects-cali76-compact-compact-deluxe]
+- Strymon OB.1 (optical): one COMP knob sets threshold; below 50% transparent, above 50% more apparent; zero takes it out of circuit; no attack/release controls; optical circuit derived from vintage studio compressors; max input +8 dBu, input Z 1 MOhm, output Z 100 Ohm. [literature: https://www.strymon.net/manuals/OB1_UserManual.pdf] (PDF text extracted locally).
+- Xotic SP and Wampler Ego manuals returned 403; blend/tone facts there are search snippets. [unverified]
+- Chicken-picking specific attack/release in ms: not found in any opened source; Wampler gives only qualitative fast attack for vintage country. [unverified]
+- Orange Squeezer JFET: no source opened. [unverified]
+
+## 11. Lookahead and sidechain high-pass
+
+- FabFilter Pro-C 2 manual: lookahead up to 20 ms (helps preserve transients, more transparent gain reduction, costs latency); hold up to 500 ms (prolongs gain-reduction peaks; longer hold gives pumping); attack 0.005-250 ms; style Clean is feed-forward program-dependent, Classic is feedback and very program dependent; Auto Release adjusts release by current gain reduction; three-band sidechain EQ (low cut, high cut, bell). [literature: https://www.fabfilter.com/help/ffproc2-manual.pdf] (PDF text extracted locally).
+- FabFilter learn page: high-pass in the detector keeps the compressor from triggering on low-end energy; bass dominates the trigger because it has more energy; low waveforms distort when attack/release react to single cycles ("gain reduction then effectively changes the waveform shape"); attack under 50 ms can attenuate too much low end. No cutoff given. [literature: https://www.fabfilter.com/learn/compression/side-chain-compression/]
+- Sidechain HPF frequencies (60-150 Hz; Sweetwater cites 150-200 Hz): the Sweetwater page was blocked (403); the 150-200 Hz figure is a search snippet. [unverified]
+- Cures for low-frequency gain modulation: slower release (Moore, 1176 LF distortion) [literature: Moore PDF, topic 4 URL]; non-linear timing capacitor (DN114, topic 9); longer RMS time constant ~35 ms (Floru, topic 2); hold and auto release (FabFilter manual, above).
+
+## 12. Anti-aliasing
+
+- FabFilter Pro-C help: fast gain changes add a small amount of aliasing (distortion); oversampling runs the whole internal process at 2x or 4x host rate; it matters most for short attack/release, high ratio/range, or Character driven hard; higher factors cost CPU; adds a small latency on top of lookahead latency. [literature: https://www.fabfilter.com/help/pro-c/using/oversampling]
+- FabFilter does not say whether the sidechain or the nonlinearity alone is oversampled; "the internal process" is oversampled as a whole. No DAFx source on sidechain-only oversampling found. [unverified]
+
+## Could not verify
+
+- Giannoulis JAES 2012 primary text (equations quoted via secondary sources only); its statements on stereo linking, sidechain filtering, and make-up automation.
+- ElectroSmash MXR Dyna Comp page (DNS failure): attack/release ms, RC values analysis, ratio/gain range, frequency response, noise, max gain; Ross differences.
+- UA 1176 and LA-2A official manuals/pages (403/404/bot wall): LA-2A R37 pre-emphasis, feedback sidechain details, compress/limit ratio numbers; "1-15 s" tail; 1176 all-buttons bias details; 1176 attack lower bound 20 vs 200 us conflict.
+- SSL G bus: auto release dual time constant, feed-forward vs feedback, knee-by-ratio numbers; SSL's own user guide (the opened file was a label, not the manual).
+- dbx 160 manuals, OverEasy and log-domain detail (403); THAT dB/s rate tables; THAT 4320/4305 datasheet 3467*C formula (snippet only).
+- Keeley, Xotic SP, Wampler Ego, Cali76 manuals (403): numeric attack/release ranges for any guitar pedal.
+- Sweetwater/SOS sidechain HPF 150-200 Hz recommendation; Zolzer DAFX book text.

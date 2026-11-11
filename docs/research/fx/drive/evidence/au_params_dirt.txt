@@ -1,0 +1,18 @@
+latency_s	0.000385488
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	Mode A	0	1	0.5	0.5	0	II	
+1	Amount A	0	1	0.5	0.5	0	50.0 %	
+2	Safety A	0	1	1	1	2	On	
+3	Drive A	0	1	0	0	0	0.0 %	
+4	Bias A	0	1	0	0	0	0.0 %	
+5	Tilt A	0	1	0.5	0.5	0	0.0 %	
+6	Mode B	0	1	0.5	0.5	0	II	
+7	Amount B	0	1	0.5	0.5	0	50.0 %	
+8	Safety B	0	1	1	1	2	On	
+9	Drive B	0	1	0	0	0	0.0 %	
+10	Bias B	0	1	0	0	0	0.0 %	
+11	Tilt B	0	1	0.5	0.5	0	0.0 %	
+12	FX Trim	0	1	0.75	0.75	0	0.00 dB	
+13	Routing	0	1	0	0	0	A > B	
+14	Mix	0	1	1	1	0	100.0 %	

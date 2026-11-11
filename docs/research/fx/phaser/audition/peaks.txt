@@ -1,0 +1,12 @@
+# python3 prototype/audition.py $RE_STATE/work/phaser-round3/audition --copy audition   (48 kHz mono float)
+# file	length	peak	rms
+dry_noise.wav	10.00 s	peak -8.33 dBFS	rms -22.00 dBFS
+dry_riff.wav	7.62 s	peak -6.02 dBFS	rms -30.41 dBFS
+phase90-script_noise.wav	10.00 s	peak -9.81 dBFS	rms -23.70 dBFS
+phase90-script_riff.wav	7.62 s	peak -7.24 dBFS	rms -33.42 dBFS
+phase90-block_noise.wav	10.00 s	peak -8.76 dBFS	rms -22.62 dBFS
+phase90-block_riff.wav	7.62 s	peak -5.34 dBFS	rms -32.33 dBFS
+smallstone_noise.wav	10.00 s	peak -7.08 dBFS	rms -21.49 dBFS
+smallstone_riff.wav	7.62 s	peak -5.19 dBFS	rms -31.11 dBFS
+smallstone-color_noise.wav	10.00 s	peak -4.24 dBFS	rms -19.52 dBFS
+smallstone-color_riff.wav	7.62 s	peak -3.69 dBFS	rms -31.31 dBFS

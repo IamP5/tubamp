@@ -1,0 +1,36 @@
+# Is the flat setting a bit-exact pass-through? Model of ToneStackEQ, white noise +-0.5, 480000 samples per band.
+# Reproduce: clang++ -O2 -std=c++17 flat.cpp -o flat_fma && ./flat_fma ; clang++ -O2 -ffp-contract=off -std=c++17 flat.cpp -o flat_nofma && ./flat_nofma  (flat.cpp in evidence/scripts)
+# default contraction (fma on arm64)
+fs	band	b0	b1==a1	b2==a2	samples_differing_of_480000	max_abs_diff
+44100	bass	1	1	1	478799	1.2e-05
+44100	middle	1	1	1	474175	2.81e-06
+44100	treble	0.99999994	1	1	449334	5.96e-07
+48000	bass	1	1	1	478979	1.58e-05
+48000	middle	1	1	1	474814	3.34e-06
+48000	treble	1	1	1	437251	4.17e-07
+88200	bass	1	1	1	479578	3.41e-05
+88200	middle	1	1	1	477865	7.44e-06
+88200	treble	0.99999994	1	1	468404	1.37e-06
+96000	bass	1	1	1	479607	3.68e-05
+96000	middle	1	1	1	478131	8.82e-06
+96000	treble	1	1	1	464616	1.19e-06
+192000	bass	1	1	1	479868	0.000114
+192000	middle	1	1	1	479298	2.22e-05
+192000	treble	1	1	1	474483	3.08e-06
+# -ffp-contract=off
+fs	band	b0	b1==a1	b2==a2	samples_differing_of_480000	max_abs_diff
+44100	bass	1	1	1	0	0
+44100	middle	1	1	1	0	0
+44100	treble	0.99999994	1	1	454728	7.15e-07
+48000	bass	1	1	1	0	0
+48000	middle	1	1	1	0	0
+48000	treble	1	1	1	0	0
+88200	bass	1	1	1	0	0
+88200	middle	1	1	1	0	0
+88200	treble	0.99999994	1	1	470541	2.04e-06
+96000	bass	1	1	1	0	0
+96000	middle	1	1	1	0	0
+96000	treble	1	1	1	0	0
+192000	bass	1	1	1	0	0
+192000	middle	1	1	1	0	0
+192000	treble	1	1	1	0	0

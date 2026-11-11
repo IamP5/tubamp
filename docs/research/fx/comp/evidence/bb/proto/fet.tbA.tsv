@@ -1,0 +1,25 @@
+# python3 $W/proto.py $W/sig/tb_1000_-40_-10_0.5_3.wav $W/out/proto/fet.tbA.wav --thr -24 --ratio 6 --knee 4 --att 0.3 --rel 55 --rel2 350 --w 0.7 --hold 8
+# python3 $W/cb.py timing $W/sig/tb_1000_-40_-10_0.5_3.wav $W/out/proto/fet.tbA.wav --freq 1000 --pre 1 --on 0.5
+metric	value
+lag_smp	0
+g_pre_db	0.000
+g_on_db	-11.667
+g_min_db	-11.667
+t_min_ms	81.562
+g_post_db	-0.001
+att_t50_ms	0.813
+att_t63_ms	1.167
+att_t90_ms	1.375
+g_on+1ms	-6.379
+g_on+3ms	-11.661
+g_on+10ms	-11.667
+g_on+30ms	-11.667
+g_on+100ms	-11.667
+rel_t10_ms	16.208
+rel_t50_ms	65.833
+rel_t63_ms	97.729
+rel_t90_ms	394.771
+g_off+10ms	-11.393
+g_off+50ms	-6.929
+g_off+200ms	-2.274
+g_off+1000ms	-0.206

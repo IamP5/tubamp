@@ -1,0 +1,12 @@
+# Plugin Alliance black-box. export RE_STATE=<shared state dir>; export RE=<repo>/tools/re; scripts in evidence/bb/, run from $RE_STATE/work/cab/bb (TONEX, PA) or $RE_STATE/work/cab/ours (tubamp)
+# python3 pa.py -> auhost render aumf AMVC Brwx imp48.wav pa_<name>.wav --set 4=<RecChain> --tail 0.5 ; auhost render aufx bxrp Brwx imp48.wav ... --set 2=<Preset>
+# Ampeg SVTVR Classic RecChain: 0 = 8x10 563, 1 = 4x10+1x15, 2 = EMPTY PLAY REAL CAB. bx_rockrack presets 4 Brit Clean, 5 ENGL Clean, 24 Bass Amp
+# The amp is in the path: the cab cannot be isolated. Use onset and reported latency only.
+name	onset	ipk	peak	l2_db	t30	t60	centroid	lr	40Hz	60Hz	80Hz	100Hz	125Hz	160Hz	200Hz	315Hz	500Hz	800Hz	1000Hz	1600Hz	2500Hz	3150Hz	4000Hz	5000Hz	6300Hz	8000Hz	10000Hz	12500Hz	16000Hz
+ampeg_recchain0	8	13	0.0016	-47.95	950	2867	74.5	0.0	-41.8	-34.5	-30.6	-30.4	-31.7	-33.4	-34.7	-38.1	-45.3	-49.7	-46.0	-46.2	-41.0	-39.9	-43.7	-44.5	-51.1	-67.3	-74.0	-81.3	-76.7
+ampeg_recchain1	10	18	0.0011	-48.1	1025	2139	116.8	0.0	-44.2	-33.5	-29.1	-28.6	-29.8	-32.4	-34.9	-39.4	-42.5	-44.6	-47.9	-42.7	-44.9	-41.6	-45.7	-46.7	-64.1	-58.7	-61.6	-77.0	-102.1
+ampeg_recchain2	1	3	0.0063	-41.78	431	2221	5.3	0.0	-35.0	-35.4	-35.9	-36.3	-36.7	-37.0	-37.2	-37.4	-37.5	-37.5	-37.5	-37.5	-37.4	-37.5	-37.6	-38.0	-38.8	-40.1	-42.3	-45.7	-51.9
+ampeg_recchain0_lowlevel	8	13	0.001	-51.87	955	2858	77.2	0.0	-45.5	-38.3	-34.3	-34.1	-35.5	-37.1	-38.4	-41.8	-49.1	-53.5	-49.7	-50.0	-44.9	-43.8	-47.8	-48.8	-55.7	-72.4	-79.8	-88.1	-84.1
+rockrack_preset4	7	24	0.0053	-36.38	26423	53198	67.6	0.0	-75.5	-60.7	-45.1	-33.9	-30.8	-29.3	-28.2	-28.2	-31.7	-30.1	-30.2	-32.3	-29.1	-26.7	-29.1	-35.2	-44.5	-72.0	-66.0	-74.6	-96.4
+rockrack_preset5	21	35	0.0056	-35.33	495	1410	42.1	0.0	-46.7	-42.3	-37.0	-31.6	-28.0	-29.7	-31.8	-36.3	-41.2	-32.7	-31.2	-30.5	-24.8	-25.6	-30.9	-40.4	-55.0	-59.3	-73.4	-89.0	-103.0
+rockrack_preset24	9	16	0.0028	-42.21	655	2210	47.8	0.0	-43.2	-36.1	-31.4	-29.2	-29.2	-31.4	-35.3	-47.7	-44.1	-38.7	-38.5	-35.8	-31.4	-32.5	-37.2	-42.1	-50.3	-66.6	-77.8	-95.7	-101.2

@@ -1,0 +1,34 @@
+Compressor study: evidence index
+
+Environment used by every command quoted in these files:
+  export RE_STATE=<shared state dir>         # holds bin/auhost, symbols, thin slices
+  export RE=<repo>/tools/re
+  export W=$RE_STATE/work/comp                # scratch: WAVs, dumps, the scripts below
+  export AUH=$RE_STATE/bin/auhost
+  export C=/Library/Audio/Plug-Ins/Components
+  GR6="$C/Guitar Rig 6.component/Contents/MacOS/Guitar Rig 6"
+  AT5="$C/AmpliTube 5.component/Contents/MacOS/AmpliTube 5"
+$W/cb.py, $W/run.py, $W/ours.py, $W/proto.py, $W/summ.py, $W/consts.py are the files in tools/ here.
+
+bb/<unit>/<label>.<test>.tsv   black-box results. The first lines (#) are the exact generate, render and analyse commands.
+    tests: curve (sig.py curve), tbA/tbB/tbL/tbF (cb.py timing), hs192_* (192 kHz attack probe),
+           thd/thdlo/thd100/thd82 (sig.py thd), fsteps/fstepslo (cb.py fgain), fr (sig.py fr)
+    units: ours = model of juce::dsp::Compressor as tubamp ships it (tools/ours.py)
+           proto = prototype of the proposed engine (tools/proto.py)
+           solid_bus, solid_dyn, supercharger, supercharger_gt, transient_master (NI)
+           shadow_hills, focusrite_sc (Plugin Alliance)
+           ua_1176a, ua_1176e, ua_1176ae, ua_la2, ua_la2a_gray, ua_la2a_silver, ua_la2a_tc, ua_la3a (UADx, black-box only)
+    bb/ua_api2500_GAP.txt       render hangs, not measured
+summary/<unit>.txt             one line per test, made by tools/summ.py
+params/<unit>.txt              `auhost params` listings
+static-notes.txt               address-tagged notes from the disassembly (disasm.py only)
+lit-notes.txt                  literature digest with the URLs that were opened
+
+To rerun one black-box case: tools/run.py <unit> <type,subtype,manu> <label> --set id=value ... --tests curve,tbA,...
+
+Guitar Rig 6 components (added after the first pass), measured headless:
+  bb/gr6_stomp, bb/gr6_tube   state built by tools/gr6_mk.sh (wraps tools/gr6state.py and tools/ngrc_xml.py, both copied
+                              from docs/research/fx/tremolo/evidence/tools) then tools/run.py ... --state <file>
+  one-time setup in $W/gr6:   $AUH state aufx 'Ni$R' -NI- gr6_default.aupreset
+                              python3 -I ngrc_xml.py "<Component Presets>/Stomp Compressor/Stomp Compressor Factory.ngrc" ngrc_StompCompressor
+  bb/gr6_vc_GAP.txt           VC 76 / VC 2A / VC 160 / Fast Comp could not be built

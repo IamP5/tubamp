@@ -1,0 +1,12 @@
+# python3 $W/cb.py gen-fsteps $W/sig/fsteps_-10.wav --db -10 --hold 1.5
+# $AUH render aufx 'Ni$A' -NI- $W/sig/fsteps_-10.wav $W/out/supercharger_gt/d_c75_hp0.fsteps.wav --set 0=0.5 --set 1=1 --set 2=0 --set 3=0.5 --set 4=0 --set 5=1 --set 9=0 --set 10=1 --set 11=0 --set 12=1 --set 13=0.5 --set 6=0.75 --set 7=0.5 --set 8=0.5 --set 1=0
+# python3 $W/cb.py fgain $W/sig/fsteps_-10.wav $W/out/supercharger_gt/d_c75_hp0.fsteps.wav --hold 1.5 --lag 16
+freq_hz	in_db	out_db	gain_db
+40	-10.00	-3.82	6.18
+60	-10.00	-6.21	3.79
+100	-10.00	-9.60	0.40
+200	-10.00	-13.77	-3.77
+500	-10.00	-17.05	-7.05
+1000	-10.00	-17.89	-7.89
+3000	-10.00	-18.09	-8.09
+8000	-10.00	-17.85	-7.85

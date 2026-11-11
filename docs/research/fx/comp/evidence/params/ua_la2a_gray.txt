@@ -1,0 +1,10 @@
+latency_s	0
+tail_s	86401
+id	name	min	max	default	current	unit	display	choices
+48	Peak Reduct	0	1	0.231995	0.231995	0	20	
+49	Gain	0	1	0.286255	0.286255	0	26	
+50	Comp/Limit	0	1	0	0	1	Comp	Comp|Limit
+51	Emphasis	0	1	1	1	0	0	
+52	Meter	0	2	1	1	1	GR	+10dB|GR|+4dB
+53	Mix	0	1	1	1	0	100	
+54	Power	0	1	1	1	2	On	Off|On

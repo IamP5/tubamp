@@ -1,0 +1,20 @@
+# auhost params aufx 'Ni$J' -NI-
+latency_s	0.000362812
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	Mode	0	1	0	0	2	Classic	
+1	Notches	0	1	0.2	0	0	2	
+2	Invert	0	1	0	0	2	Off	
+3	-	0	1	0	0	0	-	
+4	Center	0	1	0.5	0.5	0	622 Hz	
+5	Spread	0	1	0.5	0.5	0	50.0 %	
+6	Feedback	0	1	0	0.210526	0	20.0 %	
+7	Mix	0	1	1	1	0	100.0 %	
+8	LFO Sync	0	1	0	0	2	Off	
+9	-	0	1	0	0	0	-	
+10	-	0	1	0	0	0	-	
+11	Rate	0	1	0.5	0.391094	0	0.19 Hz	
+12	Amount	0	1	0	1	0	100.0 %	
+13	Mod Mix	0	1	0	0	0	0.0 %	
+14	Spread Mod Polarity	0	1	1	0	2	Negative	
+15	Stereo	0	1	0.5	0.5	0	0.0 %	

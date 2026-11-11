@@ -1,0 +1,15 @@
+# Reproduce: python3 docs/research/fx/eq/evidence/scripts/design.py graphic
+# seven octave bands 100 Hz..6.4 kHz, series RBJ bells, +12 dB each. ripple = max-min of the summed response between the outer centres;
+# single = width of one band alone at +12 dB between its +6 dB points, in octaves; neighbour = gain a single +12 dB band adds one octave away
+Q	all_up_peak_dB	all_up_ripple_dB	single_width_oct	neighbour_dB	alternate_up_down_swing_dB
+0.7	28.0	8.37	1.90	5.72	11.1
+0.9	23.9	6.29	1.52	4.45	13.6
+1.0	22.4	5.51	1.37	3.94	14.7
+1.2	20.1	5.32	1.16	3.14	16.5
+1.41	18.3	5.68	0.99	2.51	17.9
+1.7	16.7	6.34	0.83	1.90	19.3
+2.0	15.6	7.04	0.70	1.46	20.4
+2.5	14.4	8.05	0.57	1.00	21.5
+# top band 6.4 kHz +12 dB Q 1.41 at 44.1 kHz: error against analog at 10k / 15k / 20k, RBJ then Orfanidis
+RBJ	-1.21	-1.11	-0.87
+ORF	-0.14	-0.26	-0.12

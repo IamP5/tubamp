@@ -1,0 +1,18 @@
+# tubamp loader (juce ResamplingAudioSource: linear interpolation + one 2nd-order Butterworth) against an ideally resampled copy, session 48 kHz
+# IR: measured cab IR plus decaying 9 kHz and 14 kHz bursts (ir_bright44.wav), also ideal-resampled to 48k (reference) and 96k
+# render aufx Tamp Tuba $RE_STATE/work/cab/ours/../bb/imp48.wav $RE_STATE/work/cab/ours/o_bright96.wav --state $RE_STATE/work/cab/ours/st_bright96.aupreset --block 512 --tail 0.5 --warmup 60
+freq_hz	file_44k1_error_db	file_96k_error_db
+100	0.45	0.03
+1000	0.53	0.13
+2000	0.41	0.08
+4000	0.19	0.05
+6000	0.28	0.11
+8000	-0.47	0.29
+9000	-0.71	-0.00
+10000	-0.71	-0.57
+12000	-1.83	1.09
+14000	-2.51	-0.23
+16000	-3.72	-1.03
+18000	9.09	-2.12
+# time-domain residual, 44.1k file: -17.0 dB
+# time-domain residual, 96k file: -10.4 dB

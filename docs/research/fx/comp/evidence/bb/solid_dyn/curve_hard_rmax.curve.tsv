@@ -1,0 +1,25 @@
+# python3 $RE/sig.py gen steps $W/sig/steps1k.wav --freq 1000 --levels -60:0:3 --hold 1.0
+# $AUH render aufx 'Ni$7' -NI- $W/sig/steps1k.wav $W/out/solid_dyn/curve_hard_rmax.curve.wav --set 1=0.6 --set 6=0.80442 --set 7=0 --set 8=1 --set 9=0 --set 11=0 --set 12=0.75 --set 13=0 --set 14=0 --set 16=0 --set 0=1 --set 2=1.0 --set 3=1 --set 4=0 --set 5=0
+# python3 $RE/sig.py curve $W/sig/steps1k.wav $W/out/solid_dyn/curve_hard_rmax.curve.wav --hold 1.0
+in_db	out_db	gain_db
+-60.00	-56.67	3.33
+-57.00	-53.67	3.33
+-54.00	-50.67	3.33
+-51.00	-47.67	3.33
+-48.00	-44.67	3.33
+-45.00	-41.67	3.33
+-42.00	-38.67	3.33
+-39.00	-35.67	3.33
+-36.00	-32.67	3.33
+-33.00	-29.70	3.30
+-30.00	-27.13	2.87
+-27.00	-25.13	1.87
+-24.00	-23.73	0.27
+-21.00	-22.91	-1.91
+-18.00	-22.32	-4.32
+-15.00	-21.75	-6.75
+-12.00	-21.20	-9.20
+-9.00	-20.67	-11.67
+-6.00	-20.15	-14.15
+-3.00	-19.64	-16.64
+-0.00	-19.12	-19.12

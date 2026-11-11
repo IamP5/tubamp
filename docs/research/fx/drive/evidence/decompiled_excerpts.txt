@@ -1,0 +1,119 @@
+# Short annotated excerpts (annotated by evidence/tools/ann.py: literal pools and float immediates resolved). Addresses are arm64-slice vm addresses.
+# Each excerpt is under 30 lines. Reproduce any of them with: python3 $W/tools/ann.py <binary> <0xaddr of the function>
+
+## 1. Guitar Rig 6, NI::DSP::Skreamer::setParamTone @ 0x2f47f8: knob -> MIDI pitch 67 + 45*t^2 -> table index 5*pitch + 1381.88 into a global exp2 table
+2f47f8 str s0, [x0, #0x9c]
+2f47fc fmul s0, s0, s0
+2f4800 mov w8, #0x42340000
+2f4804 fmov s1, w8  ; = 45
+2f4808 fmul s0, s0, s1
+2f480c mov w8, #0x42860000
+2f4810 fmov s1, w8  ; = 67
+2f4814 fadd s0, s0, s1
+2f4818 fmov s1, #5.00000000
+2f481c fmul s0, s0, s1
+2f4820 mov w8, #0xbc36
+2f4824 movk w8, #0x44ac, lsl #16
+2f4828 fmov s1, w8  ; = 1381.88159
+   (the table at 0x47db080 holds (value, slope) pairs with value[i] = 2^((i-1200)/60); result * 6.283/sr, clamped to 1, is the one-pole coefficient at +0x154)
+
+## 2. Guitar Rig 6, NI::DSP::Skreamer::onInit @ 0x2f4418: table object and the 4-phase cubic interpolation / 15-tap decimation constants
+2f444c bl 0x2755dc4  ; boost::filesystem::filesystem_error::filesystem_error(char const*, boost::filesystem::p...+0x2078
+2f4450 mov x20, x0
+2f4454 bl 0x316ec4  ; NI::DSP::WaveShapingTables::TS9::TS9()
+2f4470 mov w1, #0x1
+2f4480 bl 0x614c14  ; NI::DSP::WaveShapingTables::TableBase::setupTable(bool, float, float, float, bool)
+2f44e8 ldr d0, [x10, #0x8e0]  ; [0x2bde8e0] = 4.47035045e-08 (f64) | f32[-0.0234375, 0.2265625]
+2f44f4 ldr d0, [x10, #0x858]  ; [0x2bde858] = -2.7755595e-17 (f64) | f32[-0.005859375, -0.015625]
+2f4500 ldr d0, [x10, #0x8e8]  ; [0x2bde8e8] = 6.10351993e-05 (f64) | f32[-0.0625, 0.5625]
+2f450c ldr d0, [x10, #0x868]  ; [0x2bde868] = 9.31322788e-10 (f64) | f32[0.056640625, 0.140625]
+2f4518 ldr d0, [x10, #0x8f0]  ; [0x2bde8f0] = 0.00183105538 (f64) | f32[-0.0703125, 0.8671875]
+2f4524 ldr d0, [x10, #0x878]  ; [0x2bde878] = 9.31322791e-10 (f64) | f32[0.216796875, 0.140625]
+   (0x2bde8e0.. = Catmull-Rom weights for phases 0.25/0.5/0.75; 0x2bde858.. = symmetric decimation FIR taps, sum 1.0)
+
+## 3. Guitar Rig 6, TubescreamerOverdrive::compute_solver_step @ 0x5f4d78: sign(v)*ln(1+2|v|) with a mantissa polynomial for log2, then a clamped higher-order step
+5f4d7c fcmp d0, #0.0
+5f4d80 fmov d2, #1.00000000
+5f4d84 fmov d3, #-1.00000000
+5f4d88 fcsel d3, d3, d2, mi
+5f4d8c fadd d4, d3, d3
+5f4d90 fmul d4, d4, d0
+5f4d94 fadd d4, d4, d2
+5f4d98 fdiv d5, d2, d4
+5f4d9c fmov x8, d4
+5f4db8 ldr d6, [x8, #0xb10]  ; [0x37f6b10] = 0.164042561 (f64) | f32[-0.134902656, 1.53904247]
+5f4dc4 ldr d7, [x8, #0xb18]  ; [0x37f6b18] = -1.09886529 (f64) | f32[-706.327332, -1.88735807]
+5f4dd4 ldr d7, [x8, #0xb20]  ; [0x37f6b20] = 3.14829793 (f64) | f32[-7.06249032e+11, 2.14353704]
+5f4de4 ldr d6, [x8, #0xb28]  ; [0x37f6b28] = -2.2134752 (f64) | f32[9.83542403e+36, -2.02668428]
+5f4df8 ldr d6, [x8, #0xb30]  ; [0x37f6b30] = 0.693147181 (f64) | f32[-1.66303873e+38, 1.79828668]
+5f4e2c fmov d5, #-4.00000000
+5f4e34 fmov d5, #16.00000000
+5f4e6c mov x8, #0x5555555555555555
+5f4e74 fmov d4, x8  ; = 0.166666667
+5f4eac fmov d2, #8.00000000
+
+## 4. Guitar Rig 6, TubescreamerOverdrive::process @ 0x5efac4: iteration exit test, repeated 20 times
+5efb38 bl 0x5f4d78  ; ni::effektrig::dsp::tubescreamer::TubescreamerOverdrive::compute_solver_step(double, do...
+5efb3c fadd d10, d10, d0
+5efb40 fabs d0, d0
+5efb44 adrp x8, 0x3bd8000
+5efb48 ldr d12, [x8, #0x78]  ; [0x3bd8078] = 0.0001 (f64) | f32[-1.88909657e+26, 0.602399945]
+5efb4c fcmp d0, d12
+5efb50 b.mi 0x5efda8
+
+## 5. Guitar Rig 6, NI::AB::SampleRateConverter::init_intrat @ 0x245bb68: Kaiser window, beta 8, taps -8..+7 per phase
+245bc30 ldr d11, [x8, #0xe00]  ; [0x412de00] = 3.14159265 (f64) | f32[3.37027872e+12, 2.142699]
+245bc74 ldr d2, [x8, #0xe78]  ; [0x412de78] = 3.5156229 (f64) | f32[-1.9426567e+23, 2.18945265]
+245bc88 fmov d12, #3.75000000
+245bc90 ldr d13, [x8, #0xe80]  ; [0x412de80] = 427.564147 (f64) | f32[-0.386370629, 3.91754293]
+245bd14 mov w26, #-0x8
+245bda4 add w26, w26, #0x1
+245bda8 cmp w26, #0x8
+245bdac b.eq 0x245bd04
+245bdf0 fsub d0, d3, d0
+245bdf4 fsqrt d0, d0
+245bdf8 fmov d1, #8.00000000
+245bdfc fmul d8, d0, d1
+245be00 fcmp d8, d12
+
+## 6. AmpliTube 5, IK::KIS::FX::AT3::TubeScreamer::Module::SetSampleRate @ 0xdc7f10: continuous-time state matrix from component values, then bilinear at 4x
+dc7f3c movk w8, #0x42c7, lsl #16
+dc7f40 fmov s3, w8  ; = 99.965477
+dc7fb4 mov w9, #0x777b
+dc7fb8 movk w9, #0xc58d, lsl #16
+dc7fbc str w9, [x8]  ; imm 0xc58d777b f32=-4526.93506
+dc7fcc mov w9, #0xa1a6
+dc7fd0 movk w9, #0xca7e, lsl #16
+dc7fd4 str w9, [x8, #0x10]  ; imm 0xca7ea1a6 f32=-4171881.5
+dc7fd8 mov w8, #0x2400
+dc7fdc movk w8, #0x48f4, lsl #16
+dc7fe0 fmov s2, w8  ; = 500000
+dc7fe8 mov w8, #0x3800
+dc7fec movk w8, #0x4747, lsl #16
+dc7ff0 fmov s2, w8  ; = 51000
+dc7ff8 mov w8, #0x4ce5
+dc7ffc movk w8, #0x2e60, lsl #16
+dc8000 fmov s2, w8  ; = 5.09999994e-11
+dc8004 fmul s1, s1, s2
+dc8008 fmov s2, #-1.00000000
+dc800c fdiv s1, s2, s1
+dc8064 cmp w21, #0x0
+dc8068 fmov s1, #4.00000000
+dc806c fcsel s1, s8, s1, eq
+dc8070 fmul s0, s1, s0
+dc8078 bl 0xcc70cc  ; IK::KIS::TK::KMethod::KMethod32<2, 1, 1, 1, 0>::Bilinearize(float)
+   (4526.935 = 1/(4.7k*47nF) -> 720.5 Hz; 4171881.5 = 1/(4.7k*51pF); feedback pole -1/((500k*drive + 51k)*51pF); 99.965 rad/s -> 15.9 Hz input high-pass)
+
+## 7. AmpliTube 5, FillCurve<TubeScreamer KMethodFunctor> @ 0xdc6ebc: the diode pair that gets tabulated
+dc6f9c mov w8, #0x5e36
+dc6fa0 movk w8, #0x3d3a, lsl #16
+dc6fa4 fmov s0, w8  ; = 0.0455000028
+dc6fa8 fdiv s0, s11, s0
+dc6fac bl 0x2165d18  ; ___isPlatformOrVariantPlatformVersionAtLeast.cold.1+0x1488
+dc6fb0 fmov s1, #-1.00000000
+dc6fb4 fadd s0, s0, s1
+dc6fb8 mov w8, #0x3c13
+dc6fbc movk w8, #0x312f, lsl #16
+dc6fc0 fmov s14, w8  ; = 2.54999999e-09
+dc6fc4 fmul s0, s0, s14
+   (i = 2.55e-9 * (exp(v/0.0455) - 1), minus the same with -v: an antiparallel Shockley pair)

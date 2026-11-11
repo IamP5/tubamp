@@ -1,0 +1,39 @@
+# CPU of tubamp's cab block (juce::dsp::Convolution, zero-latency uniform partitions) against IR length and host block size
+# auhost render aufx Tamp Tuba noise120.wav o.wav --state st_cpu_*.aupreset --block B --tail 0 --warmup 30 ; wall time minus the cab-off baseline, / 150 s of audio
+# python3 t2.py in $RE_STATE/work/cab/ours (Apple Silicon, offline render, both channels)
+ir_file	ir_samples	block	wall_s	baseline_s	cpu_percent_of_realtime
+ir_delta48.wav	1	32	0.620	0.283	0.224
+ir_delta48.wav	1	64	0.617	0.288	0.219
+ir_delta48.wav	1	128	0.558	0.256	0.201
+ir_delta48.wav	1	512	0.445	0.259	0.124
+ir_delta48.wav	1	1024	0.468	0.224	0.163
+ir_cab48.wav	2229	32	1.011	0.283	0.485
+ir_cab48.wav	2229	64	0.766	0.288	0.319
+ir_cab48.wav	2229	128	0.619	0.256	0.242
+ir_cab48.wav	2229	512	0.469	0.259	0.140
+ir_cab48.wav	2229	1024	0.483	0.224	0.173
+ir_noise_0.05.wav	2400	32	1.021	0.283	0.492
+ir_noise_0.05.wav	2400	64	0.770	0.288	0.321
+ir_noise_0.05.wav	2400	128	0.618	0.256	0.241
+ir_noise_0.05.wav	2400	512	0.465	0.259	0.137
+ir_noise_0.05.wav	2400	1024	0.476	0.224	0.168
+ir_noise_0.2.wav	9600	32	2.457	0.283	1.449
+ir_noise_0.2.wav	9600	64	1.308	0.288	0.680
+ir_noise_0.2.wav	9600	128	0.882	0.256	0.417
+ir_noise_0.2.wav	9600	512	0.552	0.259	0.196
+ir_noise_0.2.wav	9600	1024	0.503	0.224	0.186
+ir_noise_0.5.wav	24000	32	5.460	0.283	3.451
+ir_noise_0.5.wav	24000	64	2.490	0.288	1.468
+ir_noise_0.5.wav	24000	128	1.386	0.256	0.754
+ir_noise_0.5.wav	24000	512	0.729	0.259	0.313
+ir_noise_0.5.wav	24000	1024	0.593	0.224	0.246
+ir_noise_1.0.wav	48000	32	10.302	0.283	6.679
+ir_noise_1.0.wav	48000	64	4.395	0.288	2.738
+ir_noise_1.0.wav	48000	128	2.212	0.256	1.304
+ir_noise_1.0.wav	48000	512	0.991	0.259	0.488
+ir_noise_1.0.wav	48000	1024	0.737	0.224	0.342
+ir_noise_2.0.wav	96000	32	24.447	0.283	16.109
+ir_noise_2.0.wav	96000	64	8.930	0.288	5.761
+ir_noise_2.0.wav	96000	128	3.906	0.256	2.433
+ir_noise_2.0.wav	96000	512	1.525	0.259	0.844
+ir_noise_2.0.wav	96000	1024	0.958	0.224	0.490

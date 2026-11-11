@@ -1,0 +1,25 @@
+# python3 $RE/sig.py gen steps $W/sig/steps1k.wav --freq 1000 --levels -60:0:3 --hold 1.0
+# $AUH render aufx SHMC Brwx $W/sig/steps1k.wav $W/out/shadow_hills/curve_opt_th16.curve.wav --set 0=1 --set 3=6 --set 9=6 --set 11=2 --set 25=1 --set 26=1 --set 29=0 --set 10=0 --set 1=1 --set 2=16 --set 4=0
+# python3 $RE/sig.py curve $W/sig/steps1k.wav $W/out/shadow_hills/curve_opt_th16.curve.wav --hold 1.0
+in_db	out_db	gain_db
+-60.00	-61.96	-1.96
+-57.00	-58.96	-1.96
+-54.00	-55.96	-1.96
+-51.00	-52.96	-1.96
+-48.00	-49.96	-1.96
+-45.00	-46.96	-1.96
+-42.00	-43.96	-1.96
+-39.00	-40.96	-1.96
+-36.00	-37.96	-1.96
+-33.00	-34.96	-1.96
+-30.00	-31.96	-1.96
+-27.00	-28.96	-1.96
+-24.00	-26.02	-2.02
+-21.00	-24.69	-3.69
+-18.00	-23.58	-5.58
+-15.00	-22.54	-7.54
+-12.00	-21.38	-9.38
+-9.00	-20.44	-11.43
+-6.00	-19.37	-13.37
+-3.00	-18.40	-15.40
+-0.00	-17.16	-17.16

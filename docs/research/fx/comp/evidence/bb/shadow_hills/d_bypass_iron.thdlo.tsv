@@ -1,0 +1,26 @@
+# python3 $RE/sig.py gen sine $W/sig/sine_1000_-40.wav --freq 1000 --db -40 --secs 4
+# $AUH render aufx SHMC Brwx $W/sig/sine_1000_-40.wav $W/out/shadow_hills/d_bypass_iron.thdlo.wav --set 0=1 --set 3=6 --set 9=6 --set 25=1 --set 26=1 --set 1=0 --set 4=0 --set 11=1
+# python3 $RE/sig.py thd $W/out/shadow_hills/d_bypass_iron.thdlo.wav --freq 1000
+# python3 $RE/sig.py curve $W/sig/sine_1000_-40.wav $W/out/shadow_hills/d_bypass_iron.thdlo.wav --hold 4.0
+# python3 $W/cb.py ripple $W/sig/sine_1000_-40.wav $W/out/shadow_hills/d_bypass_iron.thdlo.wav --freq 1000 --lag 0
+harmonic	freq_hz	level_db	rel_db
+1	1000.0	-37.84	0.00
+2	2000.0	-164.72	-126.88
+3	3000.0	-185.31	-147.47
+4	4000.0	-180.54	-142.69
+5	5000.0	-194.48	-156.63
+6	6000.0	-182.65	-144.81
+7	7000.0	-174.90	-137.06
+8	8000.0	-181.04	-143.19
+9	9000.0	-174.79	-136.94
+10	10000.0	-177.72	-139.88
+thd_percent	0.0001
+dc	0.000000
+in_db	out_db	gain_db
+-40.00	-40.22	-0.22
+metric	value
+lag_smp	0
+gain_median_db	-0.215
+gain_p05_db	-0.239
+gain_p95_db	-0.191
+ripple_p95_p05_db	0.048

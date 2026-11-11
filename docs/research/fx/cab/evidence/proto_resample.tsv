@@ -1,0 +1,22 @@
+# Kaiser windowed-sinc (32 zero crossings, beta 9) against FFT band-limited resampling, 44100 -> 48000 Hz
+freq_hz	error_db
+100	0.001
+1000	0.015
+4000	0.001
+8000	0.026
+12000	0.073
+15000	-0.034
+18000	-0.056
+20000	-0.035
+# time-domain residual -40.9 dB
+# Kaiser windowed-sinc (32 zero crossings, beta 9) against FFT band-limited resampling, 44100 -> 96000 Hz
+freq_hz	error_db
+100	-0.001
+1000	0.004
+4000	0.001
+8000	0.012
+12000	0.036
+15000	-0.016
+18000	-0.022
+20000	0.084
+# time-domain residual -41.1 dB

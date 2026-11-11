@@ -1,0 +1,20 @@
+# TONEX VIR: blend linearity, inter-mic timing, minimum-phase check, resonance span
+# python3 tonex_analysis.py in $RE_STATE/work/cab/bb after 'python3 tonex4.py mic' and 'python3 tonex4.py res' (see tonex_mic.tsv for the auhost commands)
+MIC BLEND 0.5  = 0.5000 * mic1 + 0.5000 * mic2, residual -79.8 dB
+MIC BLEND 0.25 = 0.7500 * mic1 + 0.2500 * mic2, residual -83.2 dB
+delay of mic1 (414, Z=0) against mic2 (57, Z=1), cross-correlation peak: -1.69 samples at 48 kHz
+MIC 1 Z = 0: delay against Z = 0: 0.00 samples
+MIC 1 Z = 0.5: delay against Z = 0: 0.94 samples
+MIC 1 Z = 1: delay against Z = 0: 1.12 samples
+MIC 1 X = 0: delay against X = 0: 0.00 samples
+MIC 1 X = 0.25: delay against X = 0: 0.50 samples
+MIC 1 X = 0.5: delay against X = 0: 0.44 samples
+MIC 1 X = 0.75: delay against X = 0: -0.31 samples
+MIC 1 X = 1: delay against X = 0: -0.81 samples
+energy in the first k samples after onset, measured IR against its minimum-phase equivalent:
+  k=16  measured 0.527  minimum-phase 0.614
+  k=32  measured 0.649  minimum-phase 0.695
+  k=64  measured 0.726  minimum-phase 0.747
+  k=128  measured 0.816  minimum-phase 0.828
+  k=256  measured 0.890  minimum-phase 0.909
+CAB RESONANCE 1 against 0: low peak 10.3 dB at 109 Hz, half-gain band 84..143 Hz

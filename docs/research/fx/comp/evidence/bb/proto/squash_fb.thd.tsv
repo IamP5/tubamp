@@ -1,0 +1,15 @@
+# python3 $W/proto.py $W/sig/sine_1000_-10.wav $W/out/proto/squash_fb.thd.wav --thr -34 --ratio 8 --knee 6 --att 20 --rel 600 --fb 1 --hold 8
+# python3 $RE/sig.py thd $W/out/proto/squash_fb.thd.wav --freq 1000
+harmonic	freq_hz	level_db	rel_db
+1	1000.0	-28.63	0.00
+2	2000.0	-240.00	-225.42
+3	3000.0	-200.80	-172.18
+4	4000.0	-240.00	-229.05
+5	5000.0	-184.86	-156.23
+6	6000.0	-240.00	-232.69
+7	7000.0	-186.16	-157.53
+8	8000.0	-240.00	-232.84
+9	9000.0	-198.41	-169.78
+10	10000.0	-240.00	-228.87
+thd_percent	0.0000
+dc	-0.000000

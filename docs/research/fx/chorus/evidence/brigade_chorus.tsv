@@ -1,0 +1,24 @@
+# UADx Brigade Chorus (aufx U3BO UADx, Boss CE-1 model, PACE: black-box only). Wet delay trajectory from an impulse train (one -6 dBFS click every 10 ms, 48 kHz, 6 s). Reported latency 31 samples (0.646 ms) is subtracted.
+# gen:     python3 $T/cx.py gen clicks clicks480.wav --period 480 --secs 6 --db -6
+# render:  $RE_STATE/bin/auhost render aufx U3BO UADx clicks480.wav br.wav --warmup 2 --set 54=<0 Classic|1 Dual> --set 52=<0 Chorus|1 Vibrato> --set 49=<chorus intensity 0..1> --set 50=<vib depth> --set 51=<vib rate>
+# analyse: python3 $T/cx.py trk br.wav --period 480 --ch <ch> --mind 1.2 --lat 0.646 --short ; python3 $T/cx.py lr br.wav --period 480 --mind 1.2 --lat 0.646
+# Classic mode: L carries only the dry tap, R only the wet tap (see brigade_taps.txt). Dual mode: both channels carry dry + wet.
+mode	select	intensity/vib_depth	vib_rate	ch	result
+classic	chorus	0	-	R	delay_min_ms 1.701	delay_max_ms 4.378	pp_ms 2.677	lfo_hz 0.428	delay_crest 1.90	cents_p95 4.5	cents_max 4.6	cents_crest 1.29	tap_amp 0.2439+
+classic	chorus	0.25	-	R	delay_min_ms 1.701	delay_max_ms 4.367	pp_ms 2.667	lfo_hz 1.054	delay_crest 1.79	cents_p95 11.0	cents_max 11.3	cents_crest 1.21	tap_amp 0.2446+
+classic	chorus	0.5	-	R	delay_min_ms 1.701	delay_max_ms 4.375	pp_ms 2.673	lfo_hz 1.847	delay_crest 1.78	cents_p95 19.0	cents_max 19.4	cents_crest 1.14	tap_amp 0.2446+
+classic	chorus	0.75	-	R	delay_min_ms 1.714	delay_max_ms 4.373	pp_ms 2.659	lfo_hz 2.535	delay_crest 1.79	cents_p95 25.9	cents_max 26.3	cents_crest 1.15	tap_amp 0.2447+
+classic	chorus	1	-	R	delay_min_ms 1.748	delay_max_ms 4.323	pp_ms 2.575	lfo_hz 2.859	delay_crest 1.72	cents_p95 29.3	cents_max 29.7	cents_crest 1.15	tap_amp 0.2446+
+classic	vibrato	0	0	R	delay_min_ms 2.220	delay_max_ms 2.437	pp_ms 0.217	lfo_hz 3.402	delay_crest 1.43	cents_p95 4.0	cents_max 4.1	cents_crest 1.44	tap_amp 0.2398+
+classic	vibrato	0	0.5	R	delay_min_ms 2.139	delay_max_ms 2.519	pp_ms 0.380	lfo_hz 5.353	delay_crest 1.41	cents_p95 10.9	cents_max 11.1	cents_crest 1.43	tap_amp 0.2398+
+classic	vibrato	0	1	R	delay_min_ms 2.212	delay_max_ms 2.472	pp_ms 0.260	lfo_hz 12.437	delay_crest 1.42	cents_p95 17.1	cents_max 17.4	cents_crest 1.43	tap_amp 0.2391+
+classic	vibrato	0.5	0	R	delay_min_ms 2.596	delay_max_ms 3.966	pp_ms 1.370	lfo_hz 3.402	delay_crest 1.43	cents_p95 25.5	cents_max 25.9	cents_crest 1.44	tap_amp 0.2476+
+classic	vibrato	0.5	0.5	R	delay_min_ms 2.761	delay_max_ms 3.764	pp_ms 1.003	lfo_hz 5.353	delay_crest 1.42	cents_p95 29.4	cents_max 29.9	cents_crest 1.45	tap_amp 0.2479+
+classic	vibrato	0.5	1	R	delay_min_ms 3.080	delay_max_ms 3.433	pp_ms 0.353	lfo_hz 12.437	delay_crest 1.42	cents_p95 23.4	cents_max 23.8	cents_crest 1.43	tap_amp 0.2485+
+classic	vibrato	1	0	R	delay_min_ms 1.580	delay_max_ms 4.741	pp_ms 3.160	lfo_hz 3.402	delay_crest 1.43	cents_p95 60.6	cents_max 61.6	cents_crest 1.48	tap_amp 0.2435+
+classic	vibrato	1	0.5	R	delay_min_ms 1.991	delay_max_ms 4.255	pp_ms 2.264	lfo_hz 5.353	delay_crest 1.41	cents_p95 68.4	cents_max 69.5	cents_crest 1.48	tap_amp 0.2453+
+classic	vibrato	1	1	R	delay_min_ms 2.556	delay_max_ms 3.640	pp_ms 1.084	lfo_hz 12.437	delay_crest 1.42	cents_p95 74.9	cents_max 76.1	cents_crest 1.48	tap_amp 0.2467+
+dual	chorus	0	-	L/R	lfo_hz 0.433	R_minus_L_phase_deg +88.6	L_pp_ms 2.676	R_pp_ms 2.677	L_range_ms 1.702-4.378	R_range_ms 1.702-4.379
+dual	chorus	0.5	-	L/R	lfo_hz 1.847	R_minus_L_phase_deg +94.6	L_pp_ms 2.673	R_pp_ms 2.671	L_range_ms 1.702-4.375	R_range_ms 1.703-4.374
+dual	chorus	1	-	L/R	lfo_hz 2.859	R_minus_L_phase_deg +94.6	L_pp_ms 2.574	R_pp_ms 2.622	L_range_ms 1.749-4.323	R_range_ms 1.715-4.337
+dual	vibrato	0.5	0.67	L/R	lfo_hz 6.646	R_minus_L_phase_deg +89.8	L_pp_ms 0.815	R_pp_ms 0.815	L_range_ms 2.853-3.668	R_range_ms 2.853-3.668

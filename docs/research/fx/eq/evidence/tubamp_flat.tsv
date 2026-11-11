@@ -1,0 +1,7 @@
+# Installed tubamp AU (aufx Tamp Tuba), amp block tone stack = class ToneStackEQ. Reproduce: cd $RE_STATE/work/eq/ours && python3 <repo>/docs/research/fx/eq/evidence/scripts/tb.py flat   (needs tubamp_params.txt from: $RE_STATE/bin/auhost params aufx Tamp Tuba > tubamp_params.txt)
+# Amp EQ on with Bass=Middle=Treble=5 (flat) against Amp EQ off; white noise -12 dBFS peak
+fs	samples_differing	total	diff_rms_dBFS	diff_rms_rel_signal_dB	diff_peak
+44100	175929	176400	-116.2	-99.5	6.3e-06
+48000	191529	192000	-115.1	-98.3	6.97e-06
+96000	383681	384000	-106.2	-89.4	1.84e-05
+192000	767803	768000	-97.3	-80.6	5.61e-05

@@ -1,0 +1,12 @@
+-- open_binary {'path': '/private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktrees-tubamp-effects-reverse-engineer-90c7f7/cab46780-7fe6-4ba5-87cd-2d4971b7e79d/scratchpad/re/thin/dd940ce0d8f09191-Driver', 'provider_id': 'hopper'} : 0.7s isError=None len=351
+{"result":{"path":"/private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktrees-tubamp-effects-reverse-engineer-90c7f7/cab46780-7fe6-4ba5-87cd-2d4971b7e79d/scratchpad/re/thin/dd940ce0d8f09191-Driver","format":"mach-o","kind":"executable","sha256":"c8f9681e81a4398e7fcabac6ef3aa598b9827960610c72712274950ed7220f8c","architecture":"arm64"}}
+-- procedure_pseudo_code {'procedure': '0x19980'} : 55.4s isError=None len=6944
+{"evidence_id":"ev_2f6ed0b71f3a5c879eaa6828ad065faf4ad440bbe7714af7f804bb5ea7cf6fbf","subject":{"name":"dd940ce0d8f09191-Driver","digest":{"sha256":"c8f9681e81a4398e7fcabac6ef3aa598b9827960610c72712274950ed7220f8c"},"local_path":"/private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktr
+-- procedure_pseudo_code {'procedure': '0x1c620'} : 0.1s isError=None len=11547
+{"evidence_id":"ev_e2f1081d270381beeae39bd37a019756f7081576f89da258f0d34d92c4aebe37","subject":{"name":"dd940ce0d8f09191-Driver","digest":{"sha256":"c8f9681e81a4398e7fcabac6ef3aa598b9827960610c72712274950ed7220f8c"},"local_path":"/private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktr
+-- procedure_pseudo_code {'procedure': '0x19b68'} : 0.2s isError=None len=28814
+{"evidence_id":"ev_868cbfb3c24d5d6af400e7e1b1a5e775504dc3818190f5269e0fc38f831ed7b3","subject":{"name":"dd940ce0d8f09191-Driver","digest":{"sha256":"c8f9681e81a4398e7fcabac6ef3aa598b9827960610c72712274950ed7220f8c"},"local_path":"/private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktr
+-- procedure_assembly {'procedure': '0x19980'} : 0.0s isError=None len=5992
+{"evidence_id":"ev_f88f1e1b80aa7e0e580f942943e5f93d3419cb7868da0f41a23348702c4bcded","subject":{"name":"dd940ce0d8f09191-Driver","digest":{"sha256":"c8f9681e81a4398e7fcabac6ef3aa598b9827960610c72712274950ed7220f8c"},"local_path":"/private/tmp/claude-501/-Users-tuba-Dev-projects-tubamp--claude-worktr
+-- close_binary {} : 0.6s isError=None len=15
+{"result":null}

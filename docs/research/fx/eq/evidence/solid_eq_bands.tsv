@@ -1,0 +1,52 @@
+# Solid EQ (aufx Ni$8 -NI-). Reproduce: RE_STATE=... RE=... python3 docs/research/fx/eq/evidence/scripts/solid_m.py bands
+# renders: $RE_STATE/bin/auhost render aufx 'Ni$8' -NI- imp_<sr>.wav o.wav --warmup 0.5 --set <id>=<v>...  (ids: 0 HPF 1 LF Gain 2 LF Freq 3 LF Mode(1=bell) 4 LMF Gain 5 LMF Freq 6 LMF Q 7 EQ Mode(1=E,0=G) 8 HMF Gain 9 HMF Freq 10 HMF Q 12 HF Gain 13 HF Freq 14 HF Mode(1=bell) 15 LPF; values normalised 0..1); curve = FFT(out)/FFT(in) of a -12 dBFS impulse, 48 kHz unless a rate column says otherwise
+# each band at min/max gain, freq and Q at default (0.5); bell/shelf modes; E and G
+mode	band	gainparam	peak_or_plateau_dB	peak_f_Hz	Q_halfgain	Q_3dB	dB@20	dB@20k
+E	LF shelf	0.0	-19.82	20	0.07	0.24	-19.82	-0.00
+E	LF shelf	0.25	-8.71	20	0.06	0.08	-8.71	-0.00
+E	LF shelf	0.75	8.66	20	0.06	0.08	8.66	0.00
+E	LF shelf	1.0	19.82	20	0.07	0.24	19.82	0.00
+E	LF bell	0.0	-18.65	184	1.07	3.11	-0.37	-0.00
+E	LF bell	0.25	-7.12	170	0.66	0.78	-0.24	-0.00
+E	LF bell	0.75	7.09	170	0.66	0.78	0.24	0.00
+E	LF bell	1.0	18.65	184	1.07	3.11	0.37	0.00
+E	LMF	0.0	-20.05	809	0.40	1.26	-0.16	-0.35
+E	LMF	0.25	-6.16	789	0.43	0.45	-0.02	-0.04
+E	LMF	0.75	6.14	789	0.43	0.44	0.02	0.04
+E	LMF	1.0	20.05	809	0.40	1.26	0.16	0.35
+E	HMF	0.0	-20.22	2620	0.43	1.33	-0.01	-2.57
+E	HMF	0.25	-6.36	2574	0.48	0.50	-0.00	-0.40
+E	HMF	0.75	6.34	2574	0.48	0.50	0.00	0.40
+E	HMF	1.0	20.22	2620	0.43	1.33	0.01	2.57
+E	HF shelf	0.0	-19.95	20000	1.10	1.38	-0.01	-19.95
+E	HF shelf	0.25	-8.21	20000	1.06	1.09	-0.00	-8.21
+E	HF shelf	0.75	8.20	20000	1.06	1.09	0.00	8.20
+E	HF shelf	1.0	19.95	20000	1.10	1.38	0.01	19.95
+E	HF bell	0.0	-23.57	6820	1.38	5.29	-0.00	-2.87
+E	HF bell	0.25	-9.46	6672	0.84	1.25	-0.00	-1.48
+E	HF bell	0.75	9.45	6672	0.84	1.25	0.00	1.47
+E	HF bell	1.0	23.57	6820	1.38	5.29	0.00	2.87
+G	LF shelf	0.0	-21.10	44	0.17	0.49	-20.50	0.04
+G	LF shelf	0.25	-9.00	46	0.14	0.21	-8.85	0.02
+G	LF shelf	0.75	8.95	46	0.14	0.21	8.80	-0.02
+G	LF shelf	1.0	21.10	44	0.17	0.49	20.50	-0.04
+G	LF bell	0.0	-18.65	184	1.07	3.11	-0.37	-0.00
+G	LF bell	0.25	-7.12	170	0.71	0.84	-0.21	-0.00
+G	LF bell	0.75	7.09	170	0.71	0.83	0.21	0.00
+G	LF bell	1.0	18.65	184	1.07	3.11	0.37	0.00
+G	LMF	0.0	-20.05	809	0.40	1.26	-0.16	-0.35
+G	LMF	0.25	-7.71	774	0.24	0.31	-0.10	-0.18
+G	LMF	0.75	7.68	774	0.24	0.31	0.10	0.18
+G	LMF	1.0	20.05	809	0.40	1.26	0.16	0.35
+G	HMF	0.0	-20.22	2620	0.43	1.33	-0.01	-2.57
+G	HMF	0.25	-8.37	2572	0.30	0.40	-0.01	-1.26
+G	HMF	0.75	8.35	2572	0.30	0.40	0.01	1.26
+G	HMF	1.0	20.22	2620	0.43	1.33	0.01	2.57
+G	HF shelf	0.0	-19.85	20000	1.23	1.84	0.00	-19.85
+G	HF shelf	0.25	-8.19	20000	1.13	1.18	0.00	-8.19
+G	HF shelf	0.75	8.19	20000	1.13	1.18	-0.00	8.19
+G	HF shelf	1.0	19.85	20000	1.23	1.84	-0.00	19.85
+G	HF bell	0.0	-23.57	6820	1.38	5.29	-0.00	-2.87
+G	HF bell	0.25	-9.46	6672	0.84	1.25	-0.00	-1.48
+G	HF bell	0.75	9.45	6672	0.84	1.25	0.00	1.47
+G	HF bell	1.0	23.57	6820	1.38	5.29	0.00	2.87

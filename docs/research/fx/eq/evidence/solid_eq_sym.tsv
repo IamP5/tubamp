@@ -1,0 +1,24 @@
+# Solid EQ (aufx Ni$8 -NI-). Reproduce: RE_STATE=... RE=... python3 docs/research/fx/eq/evidence/scripts/solid_m.py sym
+# renders: $RE_STATE/bin/auhost render aufx 'Ni$8' -NI- imp_<sr>.wav o.wav --warmup 0.5 --set <id>=<v>...  (ids: 0 HPF 1 LF Gain 2 LF Freq 3 LF Mode(1=bell) 4 LMF Gain 5 LMF Freq 6 LMF Q 7 EQ Mode(1=E,0=G) 8 HMF Gain 9 HMF Freq 10 HMF Q 12 HF Gain 13 HF Freq 14 HF Mode(1=bell) 15 LPF; values normalised 0..1); curve = FFT(out)/FFT(in) of a -12 dBFS impulse, 48 kHz unless a rate column says otherwise
+# boost/cut symmetry: max |dB(boost)+dB(cut)| over 20 Hz..20 kHz, gain param v and 1-v
+mode	band	v	residual_dB
+E	LF shelf	1.0	0.000
+E	LF shelf	0.75	0.045
+E	LMF	1.0	0.000
+E	LMF	0.75	0.019
+E	HMF	1.0	0.000
+E	HMF	0.75	0.020
+E	HF shelf	1.0	0.000
+E	HF shelf	0.75	0.006
+E	HF bell	1.0	0.000
+E	HF bell	0.75	0.015
+G	LF shelf	1.0	0.000
+G	LF shelf	0.75	0.055
+G	LMF	1.0	0.000
+G	LMF	0.75	0.026
+G	HMF	1.0	0.000
+G	HMF	0.75	0.015
+G	HF shelf	1.0	0.000
+G	HF shelf	0.75	0.006
+G	HF bell	1.0	0.000
+G	HF bell	0.75	0.015

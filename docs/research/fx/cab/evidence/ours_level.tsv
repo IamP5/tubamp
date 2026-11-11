@@ -1,0 +1,21 @@
+# tubamp cab block alone (chainOrder=cab), installed AU aufx Tamp Tuba, IR loaded and engine installed (60 s warm-up of silence).
+# export RE_STATE=<shared state dir>; export RE=<repo>/tools/re; scripts in evidence/bb/, run from $RE_STATE/work/cab/bb (TONEX, PA) or $RE_STATE/work/cab/ours (tubamp)
+# python3 t1.py -> auhost render aufx Tamp Tuba imp48.wav o_<name>.wav --state st_<name>.aupreset --block 512 --tail 0.5 --warmup 60
+# state: ours.make_state() patches the JUCE state XML of a default preset: chainOrder="cab", irPath=<wav>, cab_lowcut=20, cab_highcut=20000 unless noted
+# name = <IR file>_s<session rate>. ir_cab44/48/96.wav are the same response stored at 44.1, 48 and 96 kHz (FFT band-limited resampling).
+# ipk = output peak index after the input impulse; l2 = 10log10(sum h^2) per channel; gain_1k_db = |H| at 1 kHz
+name	sr	ipk	peak	l2L_db	l2R_db	gain_1k_db	pre_impulse	note
+delta_ir	48000	0	0.08596	-18.93	-18.93	-18.06	2.15e-09	unit impulse IR, cuts 20 Hz / 20 kHz
+delta_ir_default_cuts	48000	1	0.05008	-22.73	-22.73	-18.06	1.25e-09	cuts 80 Hz / 8 kHz
+stereo_delta	48000	0	0.08596	-18.93	-24.95	-18.06	2.15e-09	L=1.0, R=0.5 impulse IR
+cab48_quiet(-40dB file)	48000	9	0.04604	-18.06	-18.06	-17.14	1.49e-09	same IR scaled -40 dB in the file
+cab44_s44100	44100	9	0.04837	-18.06	-18.06	-18.07	2.33e-09	
+cab44_s48000	48000	10	0.04594	-18.06	-18.06	-17.55	1.62e-09	
+cab44_s96000	96000	20	0.03294	-18.06	-18.06	-14.49	1.55e-09	
+cab48_s44100	44100	9	0.04840	-18.06	-18.06	-17.90	4.09e-09	
+cab48_s48000	48000	9	0.04603	-18.06	-18.06	-17.73	2.05e-09	
+cab48_s96000	96000	20	0.03314	-18.06	-18.06	-14.54	1.55e-09	
+cab96_s44100	44100	9	0.04911	-18.06	-18.06	-18.03	1.73e-09	
+cab96_s48000	48000	10	0.04709	-18.06	-18.06	-17.71	2.02e-09	
+cab96_s96000	96000	20	0.03313	-18.06	-18.06	-14.61	1.41e-09	
+cab48_predelay_s48000	48000	9	0.04603	-18.06	-18.06	-17.73	2.05e-09	

@@ -1,0 +1,22 @@
+latency_s	0.000725624
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	Power	0	1	1	1	2	On	Off|On
+1	Saturation Frequency	0	2	1	1	1	Flat	Low|Flat|High
+2	Saturation In	0	1	0	0	2	Off	Off|On
+3	Saturation	0	1	0.5	0.5	0	50 %	
+4	Alt Tube	0	1	0	0	2	Off	Off|On
+5	Pentode	0	1	0.5	0.5	0	50 %	
+6	Triode	0	1	0.5	0.5	0	50 %	
+7	Air In	0	1	0	0	2	Off	Off|On
+8	Air	0	1	0.5	0.5	0	50 %	
+9	Cal.	0	2	1	1	1	Norm	Dark|Norm|Bright
+10	Density	0	1	0.5	0.5	0	0.0 %	
+11	Input Gain	0	1	0.5	0.5	0	0.0 dB	
+12	Output	0	1	0.5	0.5	0	50 %	
+13	Mix	0	1	1	1	0	100 %	
+14	Meter Mode	0	1	0	0	1	VU	VU|PPM
+15	Bypass	0	1	0	0	2	Off	Off|On
+16	Bank	0	3	0	0	1	A	A|B|C|D
+17	Meter L	0	1	0	0	0		
+18	Meter R	0	1	0	0	0		

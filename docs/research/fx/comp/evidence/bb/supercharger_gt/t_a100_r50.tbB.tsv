@@ -1,0 +1,26 @@
+# python3 $W/cb.py gen-tb $W/sig/tb_1000_-40_-20_0.5_3.wav --freq 1000 --lo -40 --hi -20 --pre 1 --on 0.5 --post 3
+# $AUH render aufx 'Ni$A' -NI- $W/sig/tb_1000_-40_-20_0.5_3.wav $W/out/supercharger_gt/t_a100_r50.tbB.wav --set 0=0.5 --set 1=1 --set 2=0 --set 3=0.5 --set 4=0 --set 5=1 --set 9=0 --set 10=1 --set 11=0 --set 12=1 --set 13=0.5 --set 6=0.75 --set 7=1 --set 8=0.5
+# python3 $W/cb.py timing $W/sig/tb_1000_-40_-20_0.5_3.wav $W/out/supercharger_gt/t_a100_r50.tbB.wav --freq 1000 --pre 1 --on 0.5 --lag 16
+metric	value
+lag_smp	16
+g_pre_db	7.958
+g_on_db	-5.112
+g_min_db	-5.113
+t_min_ms	500.000
+g_post_db	7.884
+att_t50_ms	37.896
+att_t63_ms	51.187
+att_t90_ms	106.750
+g_on+1ms	7.862
+g_on+3ms	7.495
+g_on+10ms	6.165
+g_on+30ms	2.638
+g_on+100ms	-3.586
+rel_t10_ms	18.208
+rel_t50_ms	125.688
+rel_t63_ms	189.667
+rel_t90_ms	496.854
+g_off+10ms	-4.361
+g_off+50ms	-1.842
+g_off+200ms	3.293
+g_off+1000ms	7.781

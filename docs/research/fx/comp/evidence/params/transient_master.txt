@@ -1,0 +1,8 @@
+latency_s	0
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	Attack	0	1	0.5	0.5	0	0.0 %	
+1	Sustain	0	1	0.5	0.5	0	0.0 %	
+2	Gain	0	1	0.5	0.5	0	0.0 dB	
+3	Limit	0	1	0	1	2	On	
+4	Smooth	0	1	0	0	2	Off	

@@ -1,0 +1,33 @@
+# Choral (aufx Ni$I -NI-) per-mode first voice pair, measured with an impulse train (one -6 dBFS click every 50 ms, 48 kHz, 8 s).
+# setup:   export RE_STATE=<shared state>; export RE=<repo>/tools/re; T=$RE_STATE/work/chorus/tools; cd $RE_STATE/work/chorus/bb
+# gen:     python3 $T/cx.py gen clicks clicks.wav --period 2400 --secs 8 --db -6
+# render:  $RE_STATE/bin/auhost render aufx 'Ni$I' -NI- clicks.wav ch_m<mode>_v0.wav --warmup 2 --set 0=<mode> --set 1=0 --set 6=1 --set 7=1
+#          param 0 Mode: 0 Synth, 0.3333 Ensemble, 0.6667 Dimension, 1 Universal; 1 Voices=1.00; 6 Width=100% (voice 1 -> L, voice 2 -> R); 7 Mix=100%; Rate 0.25 Hz, Amount 50% = plugin defaults
+# analyse: python3 $T/cx.py trk <wav> --ch <0|1> --short      strongest wet tap per click; cents = 1200*log2(1 - d(delay)/dt); crest: sine 1.41, triangle 1.73, square 1.0
+mode	ch	result
+0	0	taps/frame 1-1	delay_min_ms 3.092	delay_max_ms 11.681	pp_ms 8.588	lfo_hz 0.252	delay_crest 1.82	cents_p95 8.9	cents_max 9.1	cents_crest 1.21	tap_amp 0.0715+
+0	1	taps/frame 1-1	delay_min_ms 3.092	delay_max_ms 11.680	pp_ms 8.588	lfo_hz 0.244	delay_crest 1.80	cents_p95 8.9	cents_max 9.2	cents_crest 1.20	tap_amp 0.0719+
+0.3333	0	taps/frame 1-1	delay_min_ms 8.437	delay_max_ms 17.849	pp_ms 9.412	lfo_hz 0.252	delay_crest 1.95	cents_p95 19.1	cents_max 19.8	cents_crest 1.75	tap_amp 0.0584+
+0.3333	1	taps/frame 1-1	delay_min_ms 8.244	delay_max_ms 18.064	pp_ms 9.819	lfo_hz 0.252	delay_crest 2.01	cents_p95 19.1	cents_max 19.8	cents_crest 1.72	tap_amp 0.0585+
+0.6667	0	taps/frame 1-1	delay_min_ms 11.043	delay_max_ms 19.730	pp_ms 8.687	lfo_hz 0.252	delay_crest 1.79	cents_p95 8.3	cents_max 8.4	cents_crest 1.12	tap_amp 0.1352+
+0.6667	1	taps/frame 1-1	delay_min_ms 11.043	delay_max_ms 19.730	pp_ms 8.686	lfo_hz 0.252	delay_crest 1.76	cents_p95 8.3	cents_max 8.4	cents_crest 1.12	tap_amp 0.1352+
+1	0	taps/frame 1-2	delay_min_ms 7.017	delay_max_ms 15.748	pp_ms 8.731	lfo_hz 0.252	delay_crest 1.74	cents_p95 7.8	cents_max 7.8	cents_crest 1.04	tap_amp 0.1619+
+1	1	taps/frame 1-2	delay_min_ms 7.016	delay_max_ms 15.744	pp_ms 8.728	lfo_hz 0.252	delay_crest 1.85	cents_p95 8.9	cents_max 9.2	cents_crest 1.22	tap_amp 0.1629+
+# Voices=3.00 (render with --set 1=1, files ch_m<mode>_v1.wav): wet taps in delay order, python3 $T/cx.py trk <wav> --ch 0 --k <0|1|2> --thr -14 --short  (tracks swap when taps cross, so only min delay and count are reliable)
+0	L tap 0	taps/frame 3-5	delay_min_ms 3.093	delay_max_ms 11.409
+0	L tap 1	taps/frame 3-5	delay_min_ms 7.105	delay_max_ms 13.243
+0	L tap 2	taps/frame 3-5	delay_min_ms 10.163	delay_max_ms 15.361
+0.3333	L tap 0	taps/frame 3-5	delay_min_ms 8.437	delay_max_ms 15.784
+0.3333	L tap 1	taps/frame 3-5	delay_min_ms 11.232	delay_max_ms 18.438
+0.3333	L tap 2	taps/frame 3-5	delay_min_ms 13.897	delay_max_ms 24.858
+0.6667	L tap 0	taps/frame 4-7	delay_min_ms 11.040	delay_max_ms 12.725
+0.6667	L tap 1	taps/frame 4-7	delay_min_ms 11.115	delay_max_ms 15.070
+0.6667	L tap 2	taps/frame 4-7	delay_min_ms 12.836	delay_max_ms 17.022
+1	L tap 0	taps/frame 3-8	delay_min_ms 7.017	delay_max_ms 14.730
+1	L tap 1	taps/frame 3-8	delay_min_ms 7.313	delay_max_ms 15.600
+1	L tap 2	taps/frame 3-8	delay_min_ms 11.303	delay_max_ms 18.143
+# L/R phase of the first pair (same renders): python3 $T/cx.py lr ch_m<mode>_v0.wav
+0	L/R	lfo_hz 0.248	R_minus_L_phase_deg -180.0	L_pp_ms 8.588	R_pp_ms 8.588
+0.3333	L/R	lfo_hz 0.248	R_minus_L_phase_deg -179.5	L_pp_ms 9.412	R_pp_ms 9.819
+0.6667	L/R	lfo_hz 0.248	R_minus_L_phase_deg -180.0	L_pp_ms 8.687	R_pp_ms 8.686
+1	L/R	lfo_hz 0.248	R_minus_L_phase_deg -0.0	L_pp_ms 8.731	R_pp_ms 8.728

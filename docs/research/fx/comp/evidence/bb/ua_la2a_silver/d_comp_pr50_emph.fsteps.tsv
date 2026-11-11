@@ -1,0 +1,12 @@
+# python3 $W/cb.py gen-fsteps $W/sig/fsteps_-10.wav --db -10 --hold 1.5
+# $AUH render aufx U3A9 UADx $W/sig/fsteps_-10.wav $W/out/ua_la2a_silver/d_comp_pr50_emph.fsteps.wav --set 49=0.286 --set 51=1 --set 53=1 --set 54=1 --set 48=0.5 --set 50=0 --set 51=0
+# python3 $W/cb.py fgain $W/sig/fsteps_-10.wav $W/out/ua_la2a_silver/d_comp_pr50_emph.fsteps.wav --hold 1.5 --lag 87
+freq_hz	in_db	out_db	gain_db
+40	-10.00	-14.00	-4.00
+60	-10.00	-12.43	-2.43
+100	-10.00	-10.60	-0.60
+200	-10.00	-8.82	1.18
+500	-10.00	-8.10	1.90
+1000	-10.00	-9.55	0.45
+3000	-10.00	-14.38	-4.38
+8000	-10.00	-15.39	-5.39

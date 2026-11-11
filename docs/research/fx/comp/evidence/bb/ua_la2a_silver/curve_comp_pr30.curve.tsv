@@ -1,0 +1,25 @@
+# python3 $RE/sig.py gen steps $W/sig/steps1k.wav --freq 1000 --levels -60:0:3 --hold 1.0
+# $AUH render aufx U3A9 UADx $W/sig/steps1k.wav $W/out/ua_la2a_silver/curve_comp_pr30.curve.wav --set 49=0.286 --set 51=1 --set 53=1 --set 54=1 --set 48=0.3 --set 50=0
+# python3 $RE/sig.py curve $W/sig/steps1k.wav $W/out/ua_la2a_silver/curve_comp_pr30.curve.wav --hold 1.0
+in_db	out_db	gain_db
+-60.00	-56.72	3.28
+-57.00	-53.72	3.28
+-54.00	-50.72	3.28
+-51.00	-47.72	3.28
+-48.00	-44.72	3.28
+-45.00	-41.72	3.28
+-42.00	-38.72	3.28
+-39.00	-35.72	3.28
+-36.00	-32.72	3.28
+-33.00	-29.72	3.28
+-30.00	-26.72	3.28
+-27.00	-23.72	3.28
+-24.00	-20.72	3.28
+-21.00	-17.73	3.27
+-18.00	-14.76	3.24
+-15.00	-12.28	2.72
+-12.00	-10.79	1.21
+-9.00	-9.87	-0.87
+-6.00	-9.17	-3.17
+-3.00	-8.56	-5.56
+-0.00	-7.98	-7.98

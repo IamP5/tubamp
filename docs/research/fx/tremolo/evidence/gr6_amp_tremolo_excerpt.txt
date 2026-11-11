@@ -1,0 +1,33 @@
+Guitar Rig 6 amp models with built-in tremolo (same binary as gr6_rigtremolo_excerpt.txt)
+
+--- NI::DSP::RigFender ("Twang Reverb"), processBuffer @ 0x2c739c, inside the 4x oversampled loop, 0x2c79ec..0x2c7a54
+  2c79ec  ldr s26,[x0,#0x910] ; ldr s30,[x0,#0x90c] ; fadd      phase += inc
+  2c79fc  fcmp s26,s31(1.0) ; fcsel ; fsub                      wrap at 1
+  2c7a10  fmov s30,w16 (0xbf4ccccd = -0.8) ; fadd               phase - 0.8
+  2c7a18  fcmp s26,#0.0 ; fcsel s26,s31,s8,gt                   lit = (phase > 0.8) ? 1 : 0        -> 20 % of the cycle
+  2c7a20  ldr s30,[x0,#0x91c] ; fmul ; fsub s30,s31,s30         target = 1 - depth*lit
+  2c7a2c  str s30,[x0,#0x390]
+  2c7a30  ldr s30,[x0,#0x914] ; (1-lit)*[0x914]                 coefficient while dark
+  2c7a3c  ldr s31,[x0,#0x918] ; lit*[0x918] ; fadd              coefficient while lit
+  2c7a48  str s26,[x0,#0x384]                                   -> lane 1 of the one-pole bank updated at 0x2c7820..0x2c7858
+  2c7a4c  ldr s26,[x0,#0x4e4] ; fmul s26,s26,s28                signal * smoothed gain
+  2c7a54  str s26,[x0,#0x420]                                   -> input of the following stage group
+ setParamVibIntens 0x2c5ed0   depth [0x91c] = Intensity * 0.88                 (0x3f6147ae)
+ setParamVibSpeed  0x2c5f2c   pitch = 20*Speed - 13 ; setVibratoRate 0x2c6c7c: Hz = 2^((pitch + 36.376)/12)   -> 3.86 .. 12.25 Hz
+ onSetSampleRate   0x2c67c0..0x2c67f4   [0x914] = 2*pi/sr_os * ExpTable[1401.88] (10.30 Hz), [0x918] = 2*pi/sr_os * ExpTable[1491.88] (29.14 Hz)
+                   (table offsets 0x2bc8 and 0x2e98, fraction 0x3f61b000 = 0.8816; index = 5*semitone + 1381.88)
+
+--- NI::DSP::RigAC30 ("AC Box"), processBuffer @ 0x2bc794, inside the 4x oversampled loop
+  2bce08  cbz w4,...                                            tremolo enabled ([0x538])
+  2bce0c  ldr s23,[x0,#0x540] ; ldr s26,[x0,#0x53c] ; fadd      p += inc                 inc = 4*f/sr_os
+  2bce20  fcmp s23,#1.0 ; b.gt 0x2bc94c
+  2bc94c  fmov s26,#-2.0 ; fadd ; str s23,[x0,#0x53c]           p -= 2 when p > 1
+  2bc958  ldr s26,[x0,#0x544] ; fneg ; str                      and the amplitude changes sign
+  2bc964  fmul s23,s23,s23 ; fsub s23,s27(1.0),s23              1 - p^2
+  2bc970  fmul s23,s26,s23                                      lfo = A*(1 - p^2)        -> parabolic sine
+  2bc974  mov.s v26[0],v23[0] ; mov.s v26[1],v23[0]             lanes 0 and 1 only
+  2bc980  fadd.4s v25,v25,v26                                   ADDED to the two push-pull grid signals (a bias shift, not a gain)
+  2bc994  fmul.4s v25,v13,v25 ... 2bca08 ldr d26,[x5,x7]        scale, clamp, interpolated lookup in the valve table ([0x3a0])
+  2bca50  dup.4s v26,v25[1] ; fsub.4s v25,v25,v26               output = lane 0 - lane 1 (push-pull difference: the LFO itself cancels)
+ setParamTremoloSpeed 0x2bb234   f = 2 + 5*Speed Hz          (fmov #5.0, #2.0); [0x540] = 4*f*[0xac]
+ setParamTremoloDepth 0x2bb3c4   A = Depth * (GR5 mode ? 10 : 50), sign kept   (0x42480000 = 50, fmov #10.0)

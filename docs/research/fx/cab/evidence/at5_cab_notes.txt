@@ -1,0 +1,305 @@
+AmpliTube 5 guitar CABINET section: static reading notes
+=========================================================
+Binary: /Library/Audio/Plug-Ins/Components/AmpliTube 5.component/Contents/MacOS/AmpliTube 5 (arm64 slice)
+Tag "D:" = [decompiled: AmpliTube 5 <symbol/addr>]. [inferred]/[guess] as stated.
+Work files in this dir: d_*.txt dumps (stub names annotated by annot.py + stubmap.tsv),
+params_maf.tsv (parameter table), xref.py (BL-caller scanner), params.py, rd.py.
+
+0. ARCHITECTURE (who does what)
+-------------------------------
+- Real host of the cab DSP is IK::MAF::AT3::Cabinet (not Comp::CabAT5; the Comp:: classes are
+  model/GUI metadata). Functions: DefineParameters 0x154c55c, OnSampleFrequencyChange 0x154a96c
+  (prepare), ProcessBuffer 0x1551d2c (render), SetParameter 0x15406dc (41 KB), CompleteBuild 0x154f0cc.
+  D: xref scan of callers of Conv::IR::IR 0x102bc50 and Conv::Module::Initialize 0x102cc58.
+- The cab state object (at Cabinet+0x210) holds: two IK::KIS::TK::Conv::Module (mic1 @+0x260,
+  mic2 @+0x268) with their Conv::IR (+0x250/+0x258), the FlexiCab IR builder
+  FX::AT5::CabinetModuleAT5::Cab (TryUpdateFlexiCabIR 0xf1128c), Vibratone DynamicConv x2,
+  LeslieII x2, 2x Convolver::Convolver for ambience (+0x4de0/+0x5188),
+  2x ConvolverAutoResampling2 for the Custom IR loader (+0x5610/+0x60f8).
+  D: OnSampleFrequencyChange 0x154b728..0x154b95c, CompleteBuild 0x1550f04..0x1550f94.
+- Cab IR = synthesized offline (non-RT) from measured per-position IRs, then loaded into a
+  zero-latency partitioned convolver. Mic position is NOT a filter; it is IR interpolation.
+
+1. CONVOLUTION ENGINE
+---------------------
+Conv::IR::IR(data, len, bool zeroLatency, int block) 0x102bc50 picks one of 4 engines (IR+8 = type):
+  len <  8192, !ZL -> type 0 UniformSegmented, partition = min(len, block)
+  len <  8192,  ZL -> type 2 head = min(len,block) taps direct-form FIR (Impl::TimeDomain) +
+                      UniformSegmented tail from sample `head`             D: 0x102bc78..0x102bce4
+  len >= 8192, !ZL -> type 1 MultiSegmented (non-uniform)
+  len >= 8192,  ZL -> type 3 head `block` taps direct FIR + MultiSegmented tail D: 0x102bcf0..0x102bd4c
+Module::SetIR 0x102c374 stores a pointer-to-member process fn per type; ZL variants run
+TimeDomain::Process + partitioned tail and sum (ProcessMultiSegmentedZeroLatency 0x102c514,
+fadd loop 0x102c5e4). FFT = Apple vDSP (vDSP_create_fftsetup / ctoz / fft_zrip / ztoc / vsmul
+by 1/N, D: MultiSegmentedIR ctor 0x1029fe8..0x102a068; stubs resolved via indirect symbols).
+Non-uniform schedule (MultiSegmentedIR ctor 0x1029d80, only built when base block == 64,
+`cmp w3,#0x40` 0x1029dc0): first 320 taps in a 512-pt FFT; then DoSegmented(N,start,end) with
+partition N/2, count=(end-start)/(N/2)+1 (D: DoSegmented 0x1029908..0x1029918):
+  FFT 512 for taps 320..575, 1024 for 576..1087, 2048 for 1088..2111, 4096 for 2112..4159,
+  8192 (partition 4096) from 4160 to end (len >= 32768); shorter IRs stop at the 2048/1024 stage.
+  => Gardner-style doubling segments.
+CAB USES: IR(len, ZL=true, block=128) -> type 2 for both mic convolvers
+  (D: 0x154b768 `mov w3,#1`, 0x154b76c `mov w4,#0x80`, also 0x154b804/0x154b808).
+  len = 2048 if fs < 88200 else 4096 (D: 0x154a9e0..0x154a9f8, 88200.0 = 0x47ac4400).
+  => 128 direct-form taps + 15 (or 31) uniform partitions of 128 (FFT 256). LATENCY 0 samples
+  [inferred from TimeDomain head = partition size, consistent with ZL naming].
+  A third small IR (len 128 / 256 by fs, block 128) at +0x6c18/+0x6c20 [purpose not determined].
+Scheduling: no thread/semaphore primitives in TK::Conv / TK::Convolver code (grep of dumps);
+  all convolution runs per audio block on the render thread [inferred]. Big-FFT spreading:
+  separate class Convolver::FFTUniformDistributed (0x1030758/0x1030948) used by
+  Convolver::Convolver (ambience/custom IR), which picks stage sizes by thresholds 1024/2048 and a
+  96-tap figure (D: 0x102ce8c..0x102cf58); NOT fully decoded.
+IR building/loading runs on a std::thread (IRPool::LoadCabinetImmediate via std::thread ctor
+  0xf176e8, joined in TryUpdateFlexiCabIR 0xf1136c), with atomic load-state flags (ldar/stlr at
+  pool+0x4b08 per cabinet).
+
+2. IR LENGTH, TRUNCATION, FADE, DECIMATION
+------------------------------------------
+- Runtime cab IR length: 2048 samples at 44.1/48 kHz, 4096 at 88.2/96 kHz (~43-46 ms) (see 1).
+- Per-position source IRs: resampled to session rate by DiskRawIRFactory with length
+  IRPool+0x7c and fade fraction 0 (descriptor built 0xf16c60..0xf16c68: rate, len, `str xzr`).
+- Composition buffers are 8192 floats (Convolve(...,8192,...,8192,...,8192) 0xf11c80..0xf11c8c,
+  memcpy 0x8000 bytes) [their exact role = cabinet x speaker variant composition, inferred].
+- DiskRawIRFactory::Create 0x103623c generic loader: WAV parse -> if file rate != target and
+  target != 0: ResamplerOneShotHQ(srcRate,dstRate,16,...) (0x10365c4..0x10365e4); target length
+  default = srcLen*dst/src (0x10363dc..0x10363ec); optional raised-cosine fade-out
+  0.5+0.5*cos(pi*n/N) over the last `fade*len` samples (0x1036658..0x10367dc); zero pad
+  (0x10367fc). No normalisation in this path.
+- IR "decimation" (param gcIRDecimation, 2 states; AT5NewFeaturesGUID::scIRDecimation is only a
+  feature/preset GUID): MicPlacementMixer::Generate takes a DecimationLevel (stack arg
+  [x29+0x20], test 0xf17ecc). Level==1: full-grid bilinear (see 5). Otherwise: the 4 CORNER IRs
+  (indices 0/14 and 0/4) are used with the raw 0..1 position as weights (0xf17f44..0xf17f58).
+  => Decimation = reduce the measured grid to 2x2 corners (less memory/loading)
+  [function decompiled; purpose inferred].
+
+3. RESAMPLING
+-------------
+- FlexiCab IRs: resampled ONCE at load to the session rate (DiskRawIRFactory, ResamplerOneShotHQ,
+  arg 16 = filter size parameter, probably half-length in zero crossings [guess]); convolver then
+  runs at session rate. Convolver re-created on rate change (OnSampleFrequencyChange).
+- TONEX CabVIRLight IRs stored/requested at 44100 Hz, 2048 samples (LoadIR 0xfb9198, descriptor
+  rate 0x472c4400 = 44100.0 at 0xfb930c, memcpy 8192 bytes 0xfb933c).
+- ConvolverAutoResampling2 (custom IR): SetSampleRate 0x102fca4 computes max IR length
+  ceil(maxLen*fs/minIRRate) (cap 2*maxLen in modes != 0), GCD of the two rates (binary GCD in
+  Update 0x102fe94..), and an SSRC<WindowedSinc 32 taps x 64 phases Blackman-Nuttall, HalfBand>
+  rational resampler (Initialize 0x102fac4). Modes 1/2 allocate n/2, n/4, n/8 buffers
+  (SetMaxBufferSize 0x102fbe0..0x102fc90) => it can also run the convolution at a decimated rate
+  with audio resampled around it [inferred]; the cab custom IR initialises mode 0 (w2=0 at
+  0x1550f64). Initialize(9600, 33075.0, 240000.0, 0, 0): 33075 = 44100*0.75, 240000 = 192000*1.25,
+  matching IR Size 0.75..1.25 (size = playback-rate stretch of the IR) [inferred].
+
+4. NORMALISATION / LEVEL
+------------------------
+- No peak/energy normalisation found in DiskRawIRFactory, CustomIRLoader::Utils::CreateCroppedBuffer
+  (only vclr/memmove/memcpy, 0x1bde6c) or the IR composition.
+- Static per-cabinet dB trim table gcCabTrim @0x30fc6c0, 36-byte records {id, several floats};
+  first records hold values of order +4..+21 dB. Applied as exp(dB*ln10/20) (0x3debc8e3 =
+  0.11513) to the generated IR; alternate path multiplies two trims and 0.316 (=-10 dB,
+  0x3ea1cac1) when gcSpeakerInfo flag +0x15 is set (TryUpdateFlexiCabIR 0xf121ec..0xf12310).
+- Multiple speakers summed with weight 1/numSpeakers (fdiv 1/count 0xf11f6c, Mix weights 1.0 and
+  1/n 0xf11ff4..0xf1200c).
+- Custom IR: Volume -201..+6 dB, default -20 dB (instead of normalisation), applied via expf
+  in CustomIRLoader::Module::Process 0xf13874.
+- ProcessBuffer applies fixed trims for other cab types: x0.0706 (0x3d9096bc, ~-23 dB),
+  x1.4125 (0x3fb4cccd, +3 dB), x0.1 (0x3dcccccd) (0x1552764, 0x15527b8, 0x1553168) [which
+  cab types: not mapped].
+
+5. MICROPHONE POSITION MODEL (FlexiCab "VIR")
+---------------------------------------------
+- Measured IR per grid position, file name "KISResAT5/FlexiCabAT5/AT5/%s%s%s_%02d_%02d_90.0.wav"
+  (string 0x31dff2f): cab path, speaker region (e.g. "-ExternalBlack"/"-InternalBlack",
+  tables 0x34464b8, 0x3447c70), mic ("_Akg414","_NeumannU87","_ShureSM57","_RoyerR121"
+  0x34464d8..), two grid indices, mic angle ("_90.0","_45.0" 0x34464f8).
+- Grid: up to 15 x 5 positions per (speaker, mic, region): IR pointer rows of 120 bytes
+  (15 x 8) and 600 bytes per set (5 rows); lengths in parallel int arrays at +0x9e8
+  (Generate 0xf17fd4..0xf18010).
+- SetParameter converts X,Y (-1..1) to polar: r = sqrt(x^2+y^2) -> +0x21f4,
+  theta = round(atan2(.)*180/pi) degrees -> +0x21f8 (0x1541464..0x15414d0).
+- Generate(out,len,?, r, theta, distance, Y, X, nCols, nRows, arrangement, positions,
+  ..., DecimationLevel) 0xf17e80:
+  * index i = r*(nCols-1), j = distance*(nRows-1), clamped to nCols-2/nRows-2, fractions fx, fy
+    (0xf17ed8..0xf17f2c). So the grid axes are RADIUS from speaker centre (15) x DISTANCE (5)
+    [axis meaning inferred from the polar conversion].
+  * BILINEAR, 4 neighbours, TIME DOMAIN, linear weights (1-fx)(1-fy), fx(1-fy), (1-fx)fy, fx*fy
+    via IRComposition::Mix / MixAdd (0xf18014..0xf18084). No per-IR alignment shift (delay args 0).
+  * theta == 0 -> one radial set; theta != 0 and != +-180 -> the 4-neighbour result of a second
+    set (other region) is blended with weight |theta|/180 (0xf18298..0xf18410): 8 IRs total.
+  * Other speakers of a multi-speaker cab (SpeakerArrangement, up to 4): a far-grid IR is added
+    with delay = (sqrt(dx^2+dy^2+(0.1*d)^2) - r/2)/340 m/s * fs samples and a gain using
+    powf(3.16, .) (0xf18468..0xf18580); ApplySpeakerSwap 0xf19be8 handles per-speaker model
+    swaps (CabSpeaker0..3). [geometry details partly inferred]
+- Mic angle: 2 states (45/90 deg) = separate measured sets (file suffix), no interpolation
+  [inferred from param n=2 + names].
+- Inter-mic timing: farther mic delayed by (d_this - min(d1,d2))*0.01/340*fs + 0.5 samples
+  (0x3c23d70a = 0.01, 0x43aa0000 = 340.0; TryUpdateFlexiCabIR 0xf120b4..0xf120e4, shift by
+  bzero+memcpy 0xf12344..0xf12374). Distance stored in cm. This reproduces physical delay; it is
+  NOT automatic phase alignment. No cross-correlation alignment found.
+- 2 mics per cab (Mic1/Mic2), each its own Conv::Module; per mic: Model (18), X, Y, Distance,
+  Speaker (4), Angle (2), Level, Pan, Phase (2). No solo/mute per mic (only Ambience has Solo).
+
+6. ROOM / AMBIENCE
+------------------
+- Convolution: 2x Convolver::Convolver(maxLen 8192) (CompleteBuild 0x1550f10..0x1550f2c) fed by
+  DiskRawIR with length 8192 (OnSampleFrequencyChange 0x154afa0, SetIR 0x154afd0/0x154afec).
+  IR names: KISResLegacy/AmbienceAT3/{Large Studio,Hall,Mid Studio,Amp Closet,Small Studio}.wav,
+  KISResAT5/AmbienceAT5/{Subway,Bathroom}.wav (strings). gcAmbienceMicModelMap 0x30fd53c.
+- Params: AmbienceType (2), IRIndex (8), MicModel (4), Width 0..1 (0.5), Pan 0..1 (0.5),
+  Level 0..6 (0), Phase (2), Solo (2). Separate meters RoomL/RoomR.
+- ProcessBuffer calls Convolver::Process at 0x1552b2c, 0x155371c, 0x1553914, 0x1553958.
+
+7. BETWEEN AMP AND CAB / AFTER
+------------------------------
+- No nonlinear speaker stage found in the FlexiCab path (only IR mixing + linear convolution).
+- Impedance param (2 states) and TweeterLevel (0..1) exist; impedance-curve modelling lives
+  elsewhere (Products::AT4::scImpedanceCabIndex, ToneX::CabVIRLight::ImpedanceInfo::scInfo
+  0x3115bc8, CabVIRLight::IRGenerator holding StateSpace<6> and StateSpace<4> 0x13afdb8) -
+  likely the power-amp/speaker load interaction in the amp model, not cab DSP [inferred, not read].
+- OnSampleFrequencyChange designs RBJ low-shelf (MakeRBJLowShelving 0x154ac70, 0x154acc8; f=150
+  Hz 0x43160000, 0.7) and RBJ high-pass (0x154b184, 0x154b1b8, Q 0.5) filters; exact routing not
+  traced [these may belong to Leslie/Vibratone].
+- Custom IR loader post filters: HiPass 20..500 Hz (bypassed at 20), LowPass 5k..20k (bypassed at
+  20000), biquads TDF-II (fmadd/fmsub pattern 0xf13698..0xf137c8, compares 20.0 @+0x16cc,
+  20000.0 @+0x16c8), then a one-pole stage (0xf13810, likely Tilt) and Volume.
+
+8. CLICK-FREE SWITCHING / SMOOTHING
+-----------------------------------
+- A 20 ms count is computed (fs*0.02, 0x3ca3d70a, stored +0x238) in OnSampleFrequencyChange
+  0x154a9c4 [what it ramps not traced].
+- New cab IR: TryUpdateFlexiCabIR rebuilds the IR spectra in place (Conv::IR::Rebuild 0x102bef4,
+  only for type 2) and calls Module::SetIR (0xf125d4..0xf12690). No dual-engine crossfade found
+  in this path. [gap: whether the audio thread is excluded during Rebuild was not traced]
+- IR files load on a background thread, swap is gated by atomic state (see 1).
+
+9. MONO / STEREO
+----------------
+- Two mono mic convolvers; each mic has Pan 0..1 (0.5) -> stereo cab bus (CabL/CabR meters);
+  DI blend CabinetDryLevel 0..1. Cab-level CabinetPan 0..1.
+- Custom IR loader is stereo: CreateCroppedBuffer outputs 2 channels (cmp w8,#2 0x1bdf24); two
+  ConvolverAutoResampling2 (L/R) in Module::Process 0xf13498/0xf134ac.
+- Ambience: two convolvers + Width.
+
+10. CUSTOM IR LOADER (file handling only)
+-----------------------------------------
+- Formats: juce AudioFormatManager::registerBasicFormats + createReaderFor (OpenFile 0x1bdb80)
+  -> WAV/AIFF and other JUCE basic formats [exact list = JUCE build config, not checked].
+- Crop length by file rate: <=48 kHz -> 2048, <=96 kHz -> 4096, else 8192 samples
+  (CreateCroppedBuffer 0x1bde8c..0x1bdec0; 48000 = 0x473b8000, 96000 = 0x47bb8000). No fade, no
+  normalisation in the crop.
+- Resampling: ConvolverAutoResampling2 (SSRC windowed-sinc) to session rate, with Size factor.
+- Per-slot controls: LowPass, HiPass, Phase, Size, Tilt, Delay (0..25 ms), Volume (table below).
+
+PARAMETER TABLE (IK::MAF::AT3::Cabinet::DefineParameters 0x154c55c; AddParam(name,min,max,def) /
+AddParam(name,count,def); full list in params_maf.tsv; address = call site)
+name                 range / count     default  unit (inferred)   addr
+UseCabinet           2                 1        bool               0x154c5fc
+CabinetType          11                0        enum               0x154c614
+CabinetDryLevel      0..1              0        lin (DI blend)     0x154c630
+CabinetPhase         -20..20           0        ? (ms/deg, untraced) 0x154c64c
+CabinetVol           -201..15          0        dB (-201 = off)    0x154c66c
+CabinetPan           0..1              0.5      pan                0x154c688
+CabinetQuality       3                 2        enum               0x154c6a0
+CabModel             103               25       enum               0x154c95c
+Impedance            2                 0        enum               0x154c974
+TweeterLevel         0..1              0        lin                0x154c990
+Mic1/2Model          18                0        enum               0x154c9a8 / 0x154ca9c
+Mic1/2XAxis          -1..1             0        norm               0x154c9c4 / 0x154cab8
+Mic1/2YAxis          -1..1             0        norm               0x154c9e0 / 0x154cad4
+Mic1/2Distance       0..1              0        norm (-> cm)       0x154c9fc / 0x154caf0
+Mic1/2Speaker        4                 0        index              0x154ca14 / 0x154cb08
+Mic1/2Level          0..6              0        ? (lin or dB-step) 0x154ca38 / 0x154cb24
+Mic1/2Pan            0..1              0.5      pan                0x154ca54 / 0x154cb40
+Mic1/2Phase          2                 0        invert             0x154ca6c / 0x154cb58
+Mic1/2Angle          2                 0        45/90 deg          0x154ca84 / 0x154cb70
+NumSpeaker12Inch     4                 0        enum               0x154cb88
+CabSpeaker0..3       103               0        speaker model      0x154cba0..0x154cbe8
+IRDecimation         2                 0        bool               0x154cc00
+AmbienceType         2                 0                           0x154de30
+AmbienceIRIndex      8                 0                           0x154de48
+AmbienceMicModel     4                 0                           0x154de60
+AmbienceWidth        0..1              0.5                         0x154de7c
+AmbiencePan          0..1              0.5                         0x154de98
+AmbienceLevel        0..6              0                           0x154deb4
+AmbiencePhase/Solo   2 / 2             0                           0x154decc / 0x154dee4
+CustomIRLowPass      5000..20000       20000    Hz                 0x154ea18
+CustomIRHiPass       20..500           20       Hz                 0x154ea38
+CustomIRPhase        2                 0        invert             0x154ea50
+CustomIRSize         0.75..1.25        1.0      ratio              0x154ea6c
+CustomIRTilt         -10..10           0        dB                 0x154ea88
+CustomIRDelay        0..25             0        ms                 0x154eaa4
+CustomIRVolume       -201..6           -20      dB                 0x154eac4
+VibratoneLevelDB     -36..-12          -26      dB                 0x154c5e4
+(+ UseVibratone/VibratoneSpeed/VibratoneStereo 2-state, 132 LeslieII params)
+
+ANNOTATED EXCERPTS
+------------------
+(a) Engine choice in Conv::IR::IR 0x102bc50
+   102bc78 cmp w2,#0x2000      ; len >= 8192 ?
+   102bc80 cbz w3,...          ; zeroLatency?
+   102bc84 mov w8,#2 ; str w8,[x20,#8]   ; type 2 = TimeDomain head + Uniform tail
+   102bc98 cmp w21,w23 ; csel w25,w21,w23,lt   ; head = min(len, block)
+   102bce4 bl UniformSegmentedIR(data+head, len-head, head)
+   102bcf4 mov w8,#3 ...  102bd4c bl MultiSegmentedIR(data+block, len-block, block)
+(b) Cab convolver construction, OnSampleFrequencyChange
+   154a9e0 mov w8,#0x4400 ; movk w8,#0x47ac,lsl16 ; fcmp fs,88200
+   154a9f0 mov w8,#0x1000 ; mov w9,#0x800 ; csel w25,w9,w8,mi    ; len 2048 / 4096
+   154b764 mov x2,x25 ; mov w3,#1 ; mov w4,#0x80 ; bl Conv::IR::IR  ; ZL, block 128
+   154b7c8 bl Conv::Module::Initialize
+(c) Bilinear mic-grid interpolation, Generate 0xf17ed8..
+   f17ee8 fmul s2,s0,s10    ; (nCols-1)*r
+   f17eec fmul s3,s1,s9     ; (nRows-1)*distance
+   f17f20 fsub s14,s2,s0    ; fx       f17f2c fsub s13,s3,s1 ; fy
+   f18020 fmul s0,s1,s8     ; (1-fy)(1-fx)   f18034 fmul s1,s1,s14 ; (1-fy)fx
+   f18050 bl IRComposition::Mix(IR[i][j], len, w00, 0, IR[i+1][j], len, w10, 0, out, n)
+   f1806c fmul s0,s8,s13 ; f18078 fmul s1,s13,s14 ; f18084 bl MixAdd(IR[i][j+1], IR[i+1][j+1])
+(d) Polar conversion of mic X/Y, SetParameter
+   1541470 fmul s0,s1,s1 ; fmul s2,s8,s8 ; fadd ; fsqrt ; str s0,[x21,#0x21f4]  ; radius
+   15414ac bl atan2f ; fmul *180 ; fdiv /pi ; frinta ; str s0,[x21,#0x21f8]     ; angle deg
+(e) Inter-mic propagation delay, TryUpdateFlexiCabIR
+   f120b4 ldr s13,[x27,#0x2218] ; ldr s0,[x27,#0x21f0] ; fcsel s14 = min(d1,d2)
+   f120c4 fsub s0,s0,s14 ; fmul s8,s0,0.01 ; f1220c fdiv s12,s8,340.0
+   f12284 fmul s1,fs,s12 ; f122c0 fadd +0.5 ; f12314 fcvtzs w19   ; delay samples
+   f12354 bzero(out, w19) ; f12374 memcpy(out+w19, ir, len-w19)
+(f) Custom IR crop, CreateCroppedBuffer 0x1bde6c
+   1bde98 fcmp rate,96000 ; 1bdea8 fccmp rate,48000 ; csel 4096/8192 ; csel ..2048 -> crop len
+
+RECHECK COMMANDS (export RE_STATE, RE, AT as in the brief)
+1. Engine selection/threshold 8192, ZL types:
+   python3 $RE/disasm.py "$AT" --dump 'TK::Conv::IR::IR\(' --max 1 | head -80
+2. Non-uniform segment schedule (512..8192, base 64 only):
+   python3 $RE/disasm.py "$AT" --dump 'MultiSegmentedIR::MultiSegmentedIR' --max 1 | sed -n 1,60p
+3. Cab IR length 2048/4096 at 88.2k and block 128, ZL:
+   python3 $RE/disasm.py "$AT" --dump 'MAF::AT3::Cabinet::OnSampleFrequencyChange' --max 1 | grep -nE '154a9(e|f)|154b76|154b80'
+4. Bilinear 4-neighbour mix:
+   python3 $RE/disasm.py "$AT" --dump 'MicPlacementMixer::Generate' --max 1 | sed -n 14,135p
+5. Polar X/Y conversion:
+   python3 $RE/disasm.py "$AT" --addr 0x1541464 | grep -nE '15414(6|7|8|a|b|c|d)'
+6. Inter-mic delay with 340 m/s and cm:
+   python3 $RE/disasm.py "$AT" --dump 'Cab::TryUpdateFlexiCabIR' --max 1 | grep -nE 'f120(b|c|d|e)|f1220c|f1231'
+7. Parameter table:
+   python3 $RE/disasm.py "$AT" --dump 'MAF::AT3::Cabinet::DefineParameters' --max 1 > /tmp/x; (then params.py in this dir: python3 params.py /tmp/x 0 99999)
+8. Custom IR crop lengths:
+   python3 $RE/disasm.py "$AT" --dump 'CustomIRLoader::Utils::CreateCroppedBuffer' --max 1 | sed -n 1,25p
+
+NOT DETERMINED / GAPS
+- Mic Level 0..6 and CabinetPhase -20..20 mapping (SetParameter is 41 KB, hashed name dispatch;
+  not traced). Pan law not traced.
+- Exact grid axis semantics (radius vs. X) and the r/2, 0.1*d terms of the bleed geometry.
+- What the 20 ms count (+0x238) ramps; whether IR swap is crossfaded anywhere downstream.
+- Purpose of the third short ZL IR (+0x6c18) and of the RBJ shelf/high-pass in prepare.
+- Convolver::Convolver / FFTUniformDistributed partition sizes and how FFT work is distributed.
+- DynamicConv/DynamicConv2 internals (used by Vibratone and LeslieII, not by FlexiCab).
+- IRPool+0x7c (per-position IR length) value; meaning of CabinetQuality (3) - likely maps to the
+  DecimationLevel and/or IR length [guess].
+- TONEX CabVIRLight interpolation code itself (UpdateIR 0xfba50c not read): only GetIRs with
+  4 IRDesc (4 neighbours), 2048-sample IRs at 44.1 kHz from the SAME FlexiCab resource names
+  (CabInfo table 0x3447d80 lists e.g. 1x6-KATBMDeacy, 1x8-Fender57Champ ...; mics Akg414/SM57/R121
+  0x3447d68). Its IRGenerator holds StateSpace<6>/<4> models (impedance/resonance?) - not read.
+- Hopper not used.
+
+SECONDARY CLASSES
+- CabLeslie2 / LeslieII: rotary speaker (122/122a/147/3300/G37/Studio12 variants): horn+drum
+  speeds, accel/decel, mic distance/setup, per-rotor pan/vol, 3-band EQ; uses DynamicConv2
+  (MultiConvolver/PartitionedIR) for time-varying rotor IRs (LeslieII::Module::Initialize xrefs).
+- CabVibratone: Fender Vibratone rotary cab; 2 DynamicConv with rate 5.5 Hz (fast) / 0.56 Hz
+  (0x3f0f5c29) via ChangeRateImmediate (OnSampleFrequencyChange 0x154aa24..0x154aa6c);
+  params UseVibratone, Speed, Stereo, LevelDB -36..-12 (-26).

@@ -1,0 +1,15 @@
+# python3 compare.py --traj-only --proto $W/phaser_ref_before_round3.py   (the round-2 prototype: square-root law, x 0.7680/0.2139, R0 539.2, kappa 0.36, gate 4.406 Hz,
+# lag 11818 Hz; the prototype that produced compare_before_round3.txt, copied to $W before round 3). Same measure as compare.txt's traj columns.
+tag	rate_hz	traj_rms%	traj_max%
+p9_block_p010	0.1429	3.87	+6.31
+p9_block_p025	0.2469	3.84	+6.33
+p9_block_p050	1.0710	3.61	+6.53
+p9_block_p075	1.9300	3.15	+5.95
+p9_block_p090	3.7209	2.10	+4.05
+p9_block_p100	9.7561	1.15	+2.14
+ss_off_r040	0.1585	1.89	-3.47
+ss_off_r050	0.3162	1.90	-3.49
+ss_off_r075	1.7783	1.90	-3.57
+ss_on_r040	0.1585	1.08	+2.21
+ss_on_r050	0.3162	1.11	+2.20
+ss_on_r075	1.7783	1.12	+2.17

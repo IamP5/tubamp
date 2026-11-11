@@ -1,0 +1,4 @@
+# GAPS: UADx API Vision Channel Strip (aufx U3CY UADx) and UADx Hitsville EQ (aufx U3D3 UADx)
+# `auhost params` works (api_params.txt, hitsville_params.txt). `auhost render` hangs with no output (killed by perl alarm at 15/20/30/60 s; no 'rendered ...' line, no wav written)
+# tried: imp48.wav and imp44.wav input, default and --channels 1, --block 128/4096, with/without --tail/--warmup. Control: U3AN U3AZ U3AR U3AP render in <1 s with the same invocation.
+# cmd: perl -e 'alarm 30; exec @ARGV' $RE_STATE/bin/auhost render aufx U3CY UADx imp48.wav o.wav   -> rc=142 (SIGALRM)

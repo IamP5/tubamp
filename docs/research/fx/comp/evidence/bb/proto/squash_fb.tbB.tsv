@@ -1,0 +1,25 @@
+# python3 $W/proto.py $W/sig/tb_1000_-40_-15_0.5_3.wav $W/out/proto/squash_fb.tbB.wav --thr -34 --ratio 8 --knee 6 --att 20 --rel 600 --fb 1 --hold 8
+# python3 $W/cb.py timing $W/sig/tb_1000_-40_-15_0.5_3.wav $W/out/proto/squash_fb.tbB.wav --freq 1000 --pre 1 --on 0.5
+metric	value
+lag_smp	0
+g_pre_db	0.000
+g_on_db	-19.577
+g_min_db	-42.165
+t_min_ms	9.250
+g_post_db	-0.140
+att_t50_ms	2.271
+att_t63_ms	2.750
+att_t90_ms	3.729
+g_on+1ms	-2.329
+g_on+3ms	-14.095
+g_on+10ms	-42.111
+g_on+30ms	-40.730
+g_on+100ms	-36.245
+rel_t10_ms	45.250
+rel_t50_ms	394.188
+rel_t63_ms	571.792
+rel_t90_ms	1326.750
+g_off+10ms	-18.699
+g_off+50ms	-17.493
+g_off+200ms	-13.623
+g_off+1000ms	-3.591

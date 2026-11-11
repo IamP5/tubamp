@@ -1,0 +1,171 @@
+# Black-box results. Every block is the output of bb/run.sh <tag> <auhost args>; the first line of each block is the command.
+# Signals: bb/gen.py (48 kHz). Analyses: bb/an.py. Input levels are sine peak dBFS. -127 dB means below the measurement floor.
+# Threshold settings were chosen so each gate opens near -40 dBFS peak.
+
+## res_ours_-40.txt
+# ours:-40 :: 
+decay_static(in_dB gain_dB): -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:-0.0 -35:0.0 -40:-1.6 -45:-12.4 -50:-33.1 -55:-63.9 -60:-137.0 -65:-132.0 -70:-127.0 -75:-122.0 -80:-117.0 -85:-112.0 -90:-107.0 -95:-102.0 -100:-97.1 
+rise_static: -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:-2.0 -45:-13.3 -50:-34.6 -55:-65.9 -60:-107.2 -65:-132.0 -70:-127.0 -75:-122.0 -80:-117.0 -85:-112.0 -90:-107.0 -95:-102.0 -100:-97.1 
+decay_thr: gain<-1dB in=-16.4dB|gain<-3dB in=-16.4dB|gain<-6dB in=-16.4dB|gain<-20dB in=-16.4dB|gain<-40dB in=-16.4dB|
+rise_thr: gain<-1dB in=-39.1dB|gain<-3dB in=-40.7dB|gain<-6dB in=-42.3dB|gain<-20dB in=-46.8dB|gain<-40dB in=-51.0dB|
+burst1k:
+onset#1  g_before=-127.0 >-20dB@0.5ms >-6dB@0.8ms >-3dB@1.0ms >-1dB@1.2ms
+offset#1 <-1dB@64.0ms <-3dB@69.5ms <-6dB@74.7ms <-20dB@90.0ms <-40dB@103.8ms <-60dB@114.5ms final=-127.0dB
+burst82:
+onset#1  g_before=-127.0 >-20dB@0.3ms >-6dB@0.3ms >-3dB@0.3ms >-1dB@0.3ms
+offset#1 <-1dB@64.1ms <-3dB@70.1ms <-6dB@76.2ms <-20dB@94.4ms <-40dB@112.6ms <-60dB@124.7ms final=-127.0dB
+hover: crossings(-6dB)=32 min=-7.0 max=-0.0 median=-1.8
+chug: gap_gain_dB median=-2.0 min=-2.2 max=-1.8 ; onset10ms_gain_dB=-0.0 ; tail_gain_dB=-131.4
+sustain: -20:0.0 -30:0.0 -36:-0.0 -40:-3.6 -44:-13.6 -48:-29.8 -52:-51.5 -56:-78.4 -60:-108.3 
+
+## res_gw.txt
+# gw :: aufx 72RG AAMa --set 1=-40 --set 7=0 --set 8=0 --set 11=0
+decay_static(in_dB gain_dB): -10:-0.0 -15:-0.0 -20:-0.0 -25:-0.0 -30:-0.0 -35:-0.0 -40:-1.6 -45:-12.4 -50:-33.1 -55:-63.9 -60:-137.0 -65:-132.0 -70:-127.0 -75:-122.0 -80:-117.0 -85:-112.0 -90:-107.0 -95:-102.0 -100:-97.1 
+rise_static: -10:-0.0 -15:-0.0 -20:-0.0 -25:-0.0 -30:-0.0 -35:-0.0 -40:-2.0 -45:-13.3 -50:-34.6 -55:-65.9 -60:-107.2 -65:-132.0 -70:-127.0 -75:-122.0 -80:-117.0 -85:-112.0 -90:-107.0 -95:-102.0 -100:-97.1 
+decay_thr: gain<-1dB in=-16.4dB|gain<-3dB in=-16.4dB|gain<-6dB in=-16.4dB|gain<-20dB in=-16.4dB|gain<-40dB in=-16.4dB|
+rise_thr: gain<-1dB in=-39.1dB|gain<-3dB in=-40.7dB|gain<-6dB in=-42.3dB|gain<-20dB in=-46.8dB|gain<-40dB in=-51.0dB|
+burst1k:
+onset#1  g_before=-127.0 >-20dB@0.5ms >-6dB@0.8ms >-3dB@1.0ms >-1dB@1.2ms
+offset#1 <-1dB@65.7ms <-3dB@70.7ms <-6dB@76.0ms <-20dB@99.8ms <-40dB@172.2ms <-60dB@245.5ms final=-127.0dB
+burst82:
+onset#1  g_before=-127.0 >-20dB@0.3ms >-6dB@0.3ms >-3dB@0.3ms >-1dB@0.3ms
+offset#1 <-1dB@100.4ms <-3dB@106.5ms <-6dB@118.6ms <-20dB@167.1ms <-40dB@239.9ms <-60dB@312.6ms final=-127.0dB
+hover: crossings(-6dB)=32 min=-7.0 max=-0.0 median=-1.8
+chug: gap_gain_dB median=-1.6 min=-1.9 max=2.1 ; onset10ms_gain_dB=-0.2 ; tail_gain_dB=-131.4
+sustain: -20:-0.0 -30:-0.0 -36:-0.0 -40:-3.6 -44:-13.6 -48:-29.8 -52:-51.6 -56:-78.5 -60:-108.3 
+
+## res_sd_gate.txt
+# sdg :: aufx Ni$7 -NI- --set 1=1.0 --set 11=0 --set 12=0.522 --set 13=1.0 --set 14=1 --set 15=0
+decay_static(in_dB gain_dB): -10:1.5 -15:-2.9 -20:-0.3 -25:1.9 -30:3.5 -35:4.6 -40:5.3 -45:-33.1 -50:-41.9 -55:-41.9 -60:-41.9 -65:-41.9 -70:-41.9 -75:-41.9 -80:-42.0 -85:-42.0 -90:-43.1 -95:-102.0 -100:-97.1 
+rise_static: -10:-5.6 -15:-2.6 -20:-0.0 -25:2.1 -30:3.6 -35:4.7 -40:-41.9 -45:-41.9 -50:-41.9 -55:-41.9 -60:-41.9 -65:-41.9 -70:-41.9 -75:-41.9 -80:-41.9 -85:-41.9 -90:-41.9 -95:-41.9 -100:-41.9 
+decay_thr: gain<-1dB in=-10.2dB|gain<-3dB in=-10.4dB|gain<-6dB in=-44.8dB|gain<-20dB in=-44.9dB|gain<-40dB in=-45.1dB|
+rise_thr: gain<-1dB in=-15.7dB|gain<-3dB in=-15.7dB|gain<-6dB in=-39.9dB|gain<-20dB in=-39.9dB|gain<-40dB in=-39.9dB|
+burst1k:
+onset#1  g_before=-41.9 >-20dB@0.0ms >-6dB@0.0ms >-3dB@0.0ms >-1dB@0.0ms
+offset#1 <-1dB@65.5ms <-3dB@66.7ms <-6dB@68.7ms <-20dB@78.7ms <-40dB@95.0ms <-60dB never final=-41.9dB
+burst82:
+onset#1  g_before=-41.9 >-20dB@0.3ms >-6dB@0.3ms >-3dB@0.3ms >-1dB@0.3ms
+offset#1 <-1dB@70.1ms <-3dB@76.2ms <-6dB@76.2ms <-20dB@88.3ms <-40dB@100.4ms <-60dB never final=-41.9dB
+hover: crossings(-6dB)=0 min=5.0 max=5.5 median=5.3
+chug: gap_gain_dB median=5.0 min=4.8 max=5.4 ; onset10ms_gain_dB=4.5 ; tail_gain_dB=-41.9
+sustain: -20:0.7 -30:4.0 -36:5.1 -40:5.4 -44:5.6 -48:-41.9 -52:-41.9 -56:-41.9 -60:-41.9 
+
+## res_sd_exp.txt
+# sde :: aufx Ni$7 -NI- --set 1=1.0 --set 11=1 --set 12=0.522 --set 13=1.0 --set 14=0 --set 15=0
+decay_static(in_dB gain_dB): -10:-2.1 -15:-2.9 -20:-0.3 -25:1.9 -30:3.5 -35:4.6 -40:1.2 -45:-3.8 -50:-8.7 -55:-13.7 -60:-18.5 -65:-23.3 -70:-27.7 -75:-29.4 -80:-29.4 -85:-29.4 -90:-29.4 -95:-29.5 -100:-29.2 
+rise_static: -10:-5.6 -15:-2.6 -20:-0.0 -25:2.1 -30:3.6 -35:4.7 -40:0.8 -45:-4.2 -50:-9.1 -55:-14.1 -60:-18.9 -65:-23.7 -70:-28.2 -75:-29.4 -80:-29.4 -85:-29.4 -90:-29.4 -95:-29.4 -100:-29.3 
+decay_thr: gain<-1dB in=-16.4dB|gain<-3dB in=-16.4dB|gain<-6dB in=-16.4dB|gain<-20dB in=-16.4dB|gain<-40dB never|
+rise_thr: gain<-1dB in=-15.7dB|gain<-3dB in=-15.7dB|gain<-6dB in=-46.9dB|gain<-20dB in=-61.1dB|gain<-40dB never|
+burst1k:
+onset#1  g_before=-28.0 >-20dB@2.5ms >-6dB@9.0ms >-3dB@11.7ms >-1dB@14.0ms
+offset#1 <-1dB@19.5ms <-3dB@26.5ms <-6dB@38.0ms <-20dB@126.5ms <-40dB never <-60dB never final=-28.0dB
+burst82:
+onset#1  g_before=-28.0 >-20dB@0.3ms >-6dB@6.4ms >-3dB@6.4ms >-1dB@12.4ms
+offset#1 <-1dB@21.6ms <-3dB@27.7ms <-6dB@39.8ms <-20dB@130.8ms <-40dB never <-60dB never final=-28.0dB
+hover: crossings(-6dB)=0 min=-1.8 max=3.8 median=1.1
+chug: gap_gain_dB median=-10.9 min=-11.0 max=-10.8 ; onset10ms_gain_dB=-5.8 ; tail_gain_dB=-20.9
+sustain: -20:0.7 -30:4.0 -36:3.9 -40:0.3 -44:-3.7 -48:-7.7 -52:-11.5 -56:-15.2 -60:-18.5 
+
+## res_bx_gate.txt
+# bxg :: aumf bcfs Brwx --set 25=0 --set 33=0 --set 47=0 --set 11=0 --set 12=0 --set 38=1.0 --set 5=0 --set 37=0.52 --set 39=0 --set 40=0 --set 41=1 --set 46=0
+decay_static(in_dB gain_dB): -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:0.0 -45:0.0 -50:0.0 -55:0.0 -60:0.0 -65:-132.0 -70:-127.0 -75:-122.0 -80:-117.0 -85:-112.0 -90:-107.0 -95:-102.0 -100:-97.1 
+rise_static: -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:0.0 -45:-69.2 -50:-69.2 -55:-69.2 -60:-69.2 -65:-69.2 -70:-69.2 -75:-69.2 -80:-69.2 -85:-69.2 -90:-68.9 -95:-68.3 -100:-64.8 
+decay_thr: gain<-1dB in=-16.4dB|gain<-3dB in=-61.5dB|gain<-6dB in=-61.6dB|gain<-20dB in=-61.8dB|gain<-40dB in=-62.4dB|
+rise_thr: gain<-1dB in=-40.1dB|gain<-3dB in=-40.1dB|gain<-6dB in=-40.1dB|gain<-20dB in=-40.1dB|gain<-40dB in=-40.1dB|
+burst1k:
+onset#1  g_before=-69.1 >-20dB@0.0ms >-6dB@0.0ms >-3dB@0.0ms >-1dB@0.0ms
+offset#1 <-1dB@31.2ms <-3dB@33.7ms <-6dB@37.0ms <-20dB@146.7ms <-40dB@188.5ms <-60dB@870.0ms final=-60.7dB
+burst82:
+onset#1  g_before=-67.9 >-20dB@0.3ms >-6dB@0.3ms >-3dB@0.3ms >-1dB@0.3ms
+offset#1 <-1dB@155.0ms <-3dB@167.1ms <-6dB@179.3ms <-20dB@215.6ms <-40dB@761.3ms <-60dB@937.1ms final=-53.9dB
+hover: crossings(-6dB)=0 min=0.0 max=0.0 median=0.0
+chug: gap_gain_dB median=-5.3 min=-6.3 max=0.8 ; onset10ms_gain_dB=-0.2 ; tail_gain_dB=-23.4
+sustain: -20:0.0 -30:0.0 -36:0.0 -40:0.0 -44:-66.2 -48:-69.2 -52:-69.2 -56:-69.2 -60:-69.2 
+
+## res_bx_exp.txt
+# bxe :: aumf bcfs Brwx --set 25=0 --set 33=0 --set 47=0 --set 11=0 --set 12=0 --set 38=1.0 --set 5=0 --set 37=0.52 --set 39=0 --set 40=0 --set 41=1 --set 46=1
+decay_static(in_dB gain_dB): -10:0.0 -15:0.0 -20:0.0 -25:-0.0 -30:-0.0 -35:-0.6 -40:-2.6 -45:-4.9 -50:-7.3 -55:-9.7 -60:-12.2 -65:-14.6 -70:-17.1 -75:-19.5 -80:-21.9 -85:-24.3 -90:-26.5 -95:-28.3 -100:-30.4 
+rise_static: -10:0.0 -15:0.0 -20:0.0 -25:-0.0 -30:-0.0 -35:-0.6 -40:-2.6 -45:-4.9 -50:-7.3 -55:-9.7 -60:-12.2 -65:-14.6 -70:-17.1 -75:-19.6 -80:-21.9 -85:-24.3 -90:-26.4 -95:-28.2 -100:-29.2 
+decay_thr: gain<-1dB in=-16.4dB|gain<-3dB in=-16.4dB|gain<-6dB in=-16.4dB|gain<-20dB in=-75.6dB|gain<-40dB never|
+rise_thr: gain<-1dB in=-36.2dB|gain<-3dB in=-40.9dB|gain<-6dB in=-47.2dB|gain<-20dB in=-75.7dB|gain<-40dB never|
+burst1k:
+onset#1  g_before=-17.1 >-20dB@0.0ms >-6dB@0.0ms >-3dB@0.3ms >-1dB@0.8ms
+offset#1 <-1dB@33.5ms <-3dB@37.3ms <-6dB@43.3ms <-20dB never <-40dB never <-60dB never final=-17.1dB
+burst82:
+onset#1  g_before=-15.8 >-20dB@0.3ms >-6dB@0.3ms >-3dB@0.3ms >-1dB@0.3ms
+offset#1 <-1dB@227.8ms <-3dB@239.9ms <-6dB@264.1ms <-20dB never <-40dB never <-60dB never final=-15.7dB
+hover: crossings(-6dB)=0 min=-4.0 max=-1.3 median=-2.6
+chug: gap_gain_dB median=-6.3 min=-6.9 max=3.3 ; onset10ms_gain_dB=-0.2 ; tail_gain_dB=-13.9
+sustain: -20:0.0 -30:-0.1 -36:-0.5 -40:-1.8 -44:-3.6 -48:-5.5 -52:-7.4 -56:-9.4 -60:-11.5 
+
+## res_bx_gate_slow.txt
+# bxs :: aumf bcfs Brwx --set 25=0 --set 33=0 --set 47=0 --set 11=0 --set 12=0 --set 38=1.0 --set 5=0 --set 37=0.52 --set 39=0 --set 40=0 --set 41=1 --set 46=0 --set 41=0
+decay_static(in_dB gain_dB): -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:0.0 -45:0.0 -50:0.0 -55:0.0 -60:0.0 -65:-132.0 -70:-127.0 -75:-122.0 -80:-117.0 -85:-112.0 -90:-107.0 -95:-102.0 -100:-97.1 
+rise_static: -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:0.0 -45:-69.2 -50:-69.2 -55:-69.2 -60:-69.2 -65:-69.2 -70:-69.2 -75:-69.2 -80:-69.2 -85:-69.2 -90:-69.0 -95:-68.4 -100:-65.5 
+decay_thr: gain<-1dB in=-16.4dB|gain<-3dB in=-16.4dB|gain<-6dB in=-16.4dB|gain<-20dB in=-16.4dB|gain<-40dB in=-16.4dB|
+rise_thr: gain<-1dB in=-40.0dB|gain<-3dB in=-40.0dB|gain<-6dB in=-40.0dB|gain<-20dB in=-40.1dB|gain<-40dB in=-40.1dB|
+burst1k:
+onset#1  g_before=-69.2 >-20dB@1.5ms >-6dB@2.8ms >-3dB@3.5ms >-1dB@4.3ms
+offset#1 <-1dB@31.0ms <-3dB@33.7ms <-6dB@37.0ms <-20dB@135.0ms <-40dB@166.0ms <-60dB@856.0ms final=-55.2dB
+burst82:
+onset#1  g_before=-67.9 >-20dB@0.3ms >-6dB@0.3ms >-3dB@0.3ms >-1dB@0.3ms
+offset#1 <-1dB@167.1ms <-3dB@179.3ms <-6dB@191.4ms <-20dB@258.1ms <-40dB@312.6ms <-60dB never final=-50.4dB
+hover: crossings(-6dB)=0 min=0.0 max=0.0 median=0.0
+chug: gap_gain_dB median=15.2 min=0.9 max=17.6 ; onset10ms_gain_dB=-3.5 ; tail_gain_dB=-13.9
+sustain: -20:0.0 -30:0.0 -36:0.0 -40:0.0 -44:-66.2 -48:-69.2 -52:-69.2 -56:-69.2 -60:-69.2 
+
+## res_t3k_model.txt
+# ext:t3k :: 
+decay_static(in_dB gain_dB): -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:0.0 -45:0.0 -50:-26.3 -55:-42.4 -60:-57.4 -65:-132.0 -70:-127.0 -75:-122.0 -80:-117.0 -85:-112.0 -90:-107.0 -95:-102.0 -100:-97.1 
+rise_static: -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:-1.2 -45:-16.2 -50:-31.2 -55:-46.2 -60:-61.2 -65:-76.2 -70:-80.0 -75:-80.0 -80:-80.0 -85:-80.0 -90:-80.0 -95:-80.0 -100:-80.0 
+decay_thr: gain<-1dB in=-16.4dB|gain<-3dB in=-16.4dB|gain<-6dB in=-16.4dB|gain<-20dB in=-48.5dB|gain<-40dB in=-54.2dB|
+rise_thr: gain<-1dB in=-39.9dB|gain<-3dB in=-40.6dB|gain<-6dB in=-41.6dB|gain<-20dB in=-46.3dB|gain<-40dB in=-52.9dB|
+burst1k:
+onset#1  g_before=-80.0 >-20dB@0.0ms >-6dB@0.0ms >-3dB@0.3ms >-1dB@0.8ms
+offset#1 <-1dB@133.5ms <-3dB@156.5ms <-6dB@191.0ms <-20dB@352.2ms <-40dB@583.5ms <-60dB@823.2ms final=-127.0dB
+burst82:
+onset#1  g_before=-80.0 >-20dB@0.3ms >-6dB@0.3ms >-3dB@0.3ms >-1dB@0.3ms
+offset#1 <-1dB@130.8ms <-3dB@155.0ms <-6dB@185.3ms <-20dB@349.0ms <-40dB@579.4ms <-60dB@821.9ms final=-127.0dB
+hover: crossings(-6dB)=0 min=-0.0 max=0.0 median=0.0
+chug: gap_gain_dB median=0.0 min=0.0 max=0.0 ; onset10ms_gain_dB=0.0 ; tail_gain_dB=-53.0
+sustain: -20:0.0 -30:0.0 -36:0.0 -40:0.0 -44:0.0 -48:-10.6 -52:-30.2 -56:-41.5 -60:-51.9 
+
+## res_proto_default.txt
+# ext:new :: 
+decay_static(in_dB gain_dB): -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:0.0 -45:0.0 -50:-7.8 -55:-17.8 -60:-27.8 -65:-37.8 -70:-47.8 -75:-122.0 -80:-117.0 -85:-112.0 -90:-107.0 -95:-102.0 -100:-97.1 
+rise_static: -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:0.0 -45:0.0 -50:-8.0 -55:-18.0 -60:-28.0 -65:-38.0 -70:-48.0 -75:-58.0 -80:-68.0 -85:-78.0 -90:-88.0 -95:-90.0 -100:-90.0 
+decay_thr: gain<-1dB in=-16.4dB|gain<-3dB in=-16.4dB|gain<-6dB in=-16.4dB|gain<-20dB in=-16.4dB|gain<-40dB in=-16.4dB|
+rise_thr: gain<-1dB in=-46.5dB|gain<-3dB in=-47.5dB|gain<-6dB in=-49.0dB|gain<-20dB in=-56.0dB|gain<-40dB in=-66.0dB|
+burst1k:
+onset#1  g_before=-48.0 >-20dB@0.0ms >-6dB@0.3ms >-3dB@0.5ms >-1dB@1.0ms
+offset#1 <-1dB@31.2ms <-3dB@33.7ms <-6dB@37.7ms <-20dB@56.5ms <-40dB@83.3ms <-60dB never final=-48.0dB
+burst82:
+onset#1  g_before=-55.7 >-20dB@0.3ms >-6dB@0.3ms >-3dB@0.3ms >-1dB@0.3ms
+offset#1 <-1dB@39.8ms <-3dB@45.9ms <-6dB@51.9ms <-20dB@70.1ms <-40dB@94.4ms <-60dB never final=-55.7dB
+hover: crossings(-6dB)=0 min=-0.0 max=0.0 median=0.0
+chug: gap_gain_dB median=-19.2 min=-22.0 max=-16.6 ; onset10ms_gain_dB=-0.0 ; tail_gain_dB=-19.1
+sustain: -20:0.0 -30:0.0 -36:0.0 -40:0.0 -44:0.0 -48:0.0 -52:-4.8 -56:-11.4 -60:-16.8 
+
+## res_proto_tight.txt
+# ext:newhard :: 
+decay_static(in_dB gain_dB): -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:0.0 -45:0.0 -50:-147.0 -55:-142.0 -60:-137.0 -65:-132.0 -70:-127.0 -75:-122.0 -80:-117.0 -85:-112.0 -90:-107.0 -95:-102.0 -100:-97.1 
+rise_static: -10:0.0 -15:0.0 -20:0.0 -25:0.0 -30:0.0 -35:0.0 -40:-83.4 -45:-90.0 -50:-90.0 -55:-90.0 -60:-90.0 -65:-90.0 -70:-90.0 -75:-90.0 -80:-90.0 -85:-90.0 -90:-90.0 -95:-90.0 -100:-90.0 
+decay_thr: gain<-1dB in=-16.4dB|gain<-3dB in=-16.4dB|gain<-6dB in=-16.4dB|gain<-20dB in=-16.4dB|gain<-40dB in=-16.4dB|
+rise_thr: gain<-1dB in=-40.0dB|gain<-3dB in=-40.0dB|gain<-6dB in=-40.0dB|gain<-20dB in=-40.0dB|gain<-40dB in=-40.0dB|
+burst1k:
+onset#1  g_before=-90.0 >-20dB@0.3ms >-6dB@0.5ms >-3dB@0.8ms >-1dB@1.0ms
+offset#1 <-1dB@20.2ms <-3dB@21.2ms <-6dB@22.8ms <-20dB@29.7ms <-40dB@39.7ms <-60dB@49.7ms final=-127.0dB
+burst82:
+onset#1  g_before=-90.0 >-20dB@0.3ms >-6dB@0.3ms >-3dB@0.3ms >-1dB@0.3ms
+offset#1 <-1dB@27.7ms <-3dB@33.8ms <-6dB@39.8ms <-20dB@45.9ms <-40dB@58.0ms <-60dB@64.1ms final=-127.0dB
+hover: crossings(-6dB)=0 min=-0.0 max=0.0 median=0.0
+chug: gap_gain_dB median=-90.0 min=-90.0 max=-90.0 ; onset10ms_gain_dB=-0.5 ; tail_gain_dB=-90.0
+sustain: -20:0.0 -30:0.0 -36:0.0 -40:0.0 -44:0.0 -48:0.0 -52:-90.0 -56:-90.0 -60:-90.0 
+
+## extra
+ours thr -60, burst 1 kHz (-20 -> -70 dBFS): offset#1 <-1dB@131.8ms <-3dB@137.8ms <-6dB@144.0ms <-20dB@166.2ms <-40dB never <-60dB never final=-33.9dB   [./ours sig/burst.wav out/x.wav -60 512; python3 an.py burst ...]
+ours thr -50, chug: gap_gain_dB median=0.0 min=0.0 max=0.0 ; onset10ms_gain_dB=0.0 ; tail_gain_dB=-51.0
+proto tight thr -50, chug: gap_gain_dB median=-52.9 min=-87.5 max=0.0 ; onset10ms_gain_dB=-0.2 ; tail_gain_dB=-90.0
+bx_console gate step-down from -20 dBFS (1 kHz), gain 0.2 s / 1.0 s after the step [bb/stepdown.py]: -45:0.0/0.0 -46:0.0/0.0 -47:0.0/0.0 -48:0.0/0.0 -49:0.0/0.0 -50:-41.4/-69.1 -55:-38.6/-69.0 -60:-36.3/-69.0
+Solid Dynamics gate step-down: -45:-41.9/-41.9 -50:-41.9/-41.9
+bx_console parameter displays: Gate Threshold 0..1 = -40..+20 dB (0.5 = -15.0 dB), Range 0..80 dB, Hold 20 ms..4.00 s, Release 0.1..5.0 s [auhost state + params --state]

@@ -1,0 +1,26 @@
+# python3 $RE/sig.py gen sine $W/sig/sine_100_-10.wav --freq 100 --db -10 --secs 4
+# $AUH render aufx U3DJ UADx $W/sig/sine_100_-10.wav $W/out/ua_la2a_tc/d_comp_pr50.thd100.wav --set 49=0.32 --set 52=1 --set 48=0.5 --set 50=0
+# python3 $RE/sig.py thd $W/out/ua_la2a_tc/d_comp_pr50.thd100.wav --freq 100
+# python3 $RE/sig.py curve $W/sig/sine_100_-10.wav $W/out/ua_la2a_tc/d_comp_pr50.thd100.wav --hold 4.0
+# python3 $W/cb.py ripple $W/sig/sine_100_-10.wav $W/out/ua_la2a_tc/d_comp_pr50.thd100.wav --freq 100 --lag 87
+harmonic	freq_hz	level_db	rel_db
+1	100.0	-14.89	0.00
+2	200.0	-71.28	-56.39
+3	300.0	-51.84	-36.95
+4	400.0	-88.70	-73.80
+5	500.0	-67.21	-52.32
+6	600.0	-103.05	-88.16
+7	700.0	-82.73	-67.84
+8	800.0	-111.22	-96.33
+9	900.0	-95.37	-80.48
+10	1000.0	-132.36	-117.47
+thd_percent	1.4504
+dc	-0.000002
+in_db	out_db	gain_db
+-10.00	-17.26	-7.26
+metric	value
+lag_smp	87
+gain_median_db	-7.298
+gain_p05_db	-7.679
+gain_p95_db	-6.828
+ripple_p95_p05_db	0.852

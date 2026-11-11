@@ -1,0 +1,92 @@
+# bx_console Focusrite SC (aumf bcfs Brwx). Neutralised base set on EVERY render: --set 4=0 (Virtual Gain -oo) --set 5=0 (THD Off) --set 11=0 (HPF off) --set 12=0 (LPF off) --set 25=0 (Comp off) --set 33=0 (DeEsser off) --set 44=0 (Gate off); Mute 0, Power 1, Console Channel 1 (id9=0), Stereo Mode Analog, Setting A, In/Out gain 0 dB (ids 3=0.5, 7=0.75), All EQ On 1, EQ LF/LMF/HMF/HF On 1.
+# imp_48000.wav = sig.py gen impulse --db -6 --secs 2 --sr 48000 ; dense H=FFT(out)/FFT(in) 0.5 Hz res. All values relative to the neutral baseline response (separately: baseline within -0.19..+0.30 dB). Gain ids: 49 LF,57 LMF,61 HMF,51 HF; v=0..1, display linear +/-18 dB but measured taper is non-linear (see taper table).
+# scripts: bxlib.py bx0..bx9.py (python3 $W/bxN.py)
+# --- baseline (bx0/bx1)
+defaults lat (1, 0.36362886313249193) dB range -22.69456914694949 -4.254616484208855 | 20,1k,10k,20k -7.963 -4.480 -4.368 -6.704
+neutral lat (0, 0.6301669281869379) dB range -0.1878523055858447 0.29479520961221245 | 20,1k,10k,20k 0.213 -0.031 -0.177 -0.182
+defaults silence
+defaults silence peak 1.5271447409759276e-05
+neutral                -0.16 0.21 0.28 0.29 0.21 0.07 -0.00 -0.04 -0.07 -0.15 -0.17 -0.18 -0.18 -0.18 -0.18 -0.18
+Stereo Mode Digital    -0.16 0.21 0.28 0.29 0.21 0.06 -0.00 -0.03 -0.07 -0.15 -0.17 -0.17 -0.18 -0.18 -0.18 -0.18
+Console ch 2           -0.16 0.21 0.28 0.28 0.20 0.06 -0.00 -0.04 -0.08 -0.15 -0.17 -0.18 -0.18 -0.18 -0.18 -0.19
+Console ch 40          -0.16 0.21 0.28 0.29 0.21 0.06 -0.01 -0.03 -0.07 -0.15 -0.17 -0.17 -0.17 -0.17 -0.17 -0.16
+Setting B              -23.98 -7.96 -5.13 -4.55 -4.28 -4.39 -4.43 -4.46 -4.53 -4.49 -4.41 -4.40 -4.66 -5.71 -6.73 -8.03
+All EQ Off             0.09 0.06 0.04 0.02 0.02 0.02 0.02 0.02 0.02 0.03 0.05 0.06 0.11 0.18 0.21 0.23
+# --- shelves (bx2)
+## LF shelf (id48 freq step, id49 gain). rel to neutral baseline
+step	gain	plateau@10Hz	max	half-gain f	f(-3dB from plateau toward 0 side?)	slope dB/oct at half-gain
+33	18	18.72	18.94	72.5	-	-5.31
+33	-18	-18.96	-19.20	73.0	-	5.40
+33	9	7.19	7.32	106.5	-	-2.68
+56	18	17.78	18.88	158.0	-	-5.38
+56	-18	-18.08	-19.16	156.5	-	5.48
+56	9	6.96	7.34	220.5	-	-2.90
+95	18	17.45	18.82	298.5	-	-5.61
+95	-18	-17.73	-19.06	294.0	-	5.65
+95	9	6.88	7.39	395.5	-	-3.23
+160	18	17.38	18.75	408.5	-	-5.77
+160	-18	-17.67	-18.96	401.5	-	5.79
+160	9	6.86	7.43	525.5	-	-3.47
+270	18	17.34	18.59	613.5	-	-6.02
+270	-18	-17.63	-18.72	603.0	-	6.04
+270	9	6.85	7.48	754.0	-	-3.87
+330	18	17.32	17.56	1280.0	-	-6.46
+330	-18	-17.61	-17.62	1257.5	-	6.46
+330	9	6.84	7.38	1450.5	-	-4.85
+## HF shelf (id50 freq step, id51 gain)
+3.3k	18	peak 18.45 at 22591	d(20k)=18.43	half f 1084	slope 5.85
+3.3k	-18	peak -19.05 at 22698	d(20k)=-19.03	half f 1123	slope -5.88
+3.3k	9	peak 4.33 at 22758	d(20k)=4.32	half f 623	slope 1.89
+4.7k	18	peak 18.45 at 22846	d(20k)=18.42	half f 1602	slope 5.87
+4.7k	-18	peak -19.05 at 22502	d(20k)=-19.02	half f 1670	slope -5.89
+4.7k	9	peak 4.33 at 20904	d(20k)=4.31	half f 924	slope 1.88
+6.8k	18	peak 18.26 at 22940	d(20k)=18.21	half f 2260	slope 5.93
+6.8k	-18	peak -19.05 at 22976	d(20k)=-18.99	half f 2390	slope -5.94
+6.8k	9	peak 4.31 at 21300	d(20k)=4.30	half f 1325	slope 1.88
+10k	18	peak 18.07 at 22926	d(20k)=17.98	half f 3292	slope 6.03
+10k	-18	peak -19.04 at 22882	d(20k)=-18.92	half f 3536	slope -6.04
+10k	9	peak 4.30 at 22396	d(20k)=4.28	half f 1943	slope 1.90
+15k	18	peak 17.71 at 22940	d(20k)=17.54	half f 4602	slope 6.17
+15k	-18	peak -19.03 at 22996	d(20k)=-18.79	half f 5044	slope -6.27
+15k	9	peak 4.27 at 21996	d(20k)=4.25	half f 2772	slope 1.94
+18k	18	peak 17.20 at 22996	d(20k)=16.88	half f 6454	slope 6.47
+18k	-18	peak -19.01 at 22998	d(20k)=-18.49	half f 7216	slope -6.78
+18k	9	peak 4.21 at 22587	d(20k)=4.19	half f 3970	slope 1.99
+# --- taper (bx3)
+## gain taper: dB (rel neutral) at probe vs v. LF shelf step0 -> @10Hz; HF shelf step0 (3.3k) -> @20k; LMF bell (default f,Q) -> peak; HMF bell -> peak
+v	disp_dB(18*(2v-1))	LF@10	HF@20k	LMF peak	HMF peak
+0.00	-18.0	-18.96	-19.02	-14.83	-14.70
+0.10	-14.4	-13.22	-9.11	-12.84	-13.01
+0.20	-10.8	-9.19	-5.42	-8.38	-8.29
+0.30	-7.2	-5.89	-3.16	-5.17	-5.08
+0.40	-3.6	-2.94	-1.48	-2.44	-2.46
+0.50	0.0	-0.00	-0.00	-0.01	0.01
+0.60	3.6	2.65	1.54	2.52	2.11
+0.70	7.2	5.61	3.28	5.05	4.52
+0.75	9.0	7.20	4.32	6.37	5.74
+0.80	10.8	8.91	5.56	7.84	7.06
+0.90	14.4	12.94	9.20	11.71	11.15
+1.00	18.0	18.72	18.44	14.50	14.82
+# --- mirror residual (bx5 tail)
+LMF mid max |sum dB| 0.556 dB (20..20k); complex-product max dev 0.556 dB
+HMF mid max |sum dB| 0.134 dB (20..20k); complex-product max dev 0.134 dB
+LF 33 max |sum dB| 0.299 dB (20..20k); complex-product max dev 0.299 dB
+HF 3k3 max |sum dB| 0.616 dB (20..20k); complex-product max dev 0.616 dB
+LF 330 max |sum dB| 0.287 dB (20..20k); complex-product max dev 0.287 dB
+HF 18k max |sum dB| 1.618 dB (20..20k); complex-product max dev 1.618 dB
+# --- HPF/LPF + noise cross-check (bx9)
+## HPF (id11 on, id13 freq, id14 x3): -3dB freq (rel neutral), dB at f/2, f/4 -> slope
+x3=0 v=0.0 -3dB f=22.0 Hz dB@f3/2 -17.80 f3/4 -36.44  (slope 18.6 dB/oct between f3/4..f3/2)
+x3=0 v=0.5 -3dB f=100.0 Hz dB@f3/2 -17.67 f3/4 -35.85  (slope 18.2 dB/oct between f3/4..f3/2)
+x3=0 v=1.0 -3dB f=392.5 Hz dB@f3/2 -17.58 f3/4 -35.74  (slope 18.2 dB/oct between f3/4..f3/2)
+x3=1 v=0.0 -3dB f=66.0 Hz dB@f3/2 -17.80 f3/4 -36.45  (slope 18.7 dB/oct between f3/4..f3/2)
+x3=1 v=0.5 -3dB f=300.0 Hz dB@f3/2 -17.67 f3/4 -35.85  (slope 18.2 dB/oct between f3/4..f3/2)
+x3=1 v=1.0 -3dB f=1177.0 Hz dB@f3/2 -17.63 f3/4 -35.78  (slope 18.2 dB/oct between f3/4..f3/2)
+## LPF (id12 on, id15 freq, id16 /3)
+/3=0 v=0.0 -3dB f=21391 Hz dB@1.5*f3 -4.21 @2*f3 -4.21  Nyq -4.22
+/3=0 v=0.5 -3dB f=10005 Hz dB@1.5*f3 -13.35 @2*f3 -22.26  Nyq -25.72
+/3=0 v=1.0 -3dB f=3961 Hz dB@1.5*f3 -12.83 @2*f3 -20.75  Nyq -50.21
+/3=1 v=0.0 -3dB f=7423 Hz dB@1.5*f3 -11.69 @2*f3 -19.64  Nyq -31.74
+/3=1 v=0.5 -3dB f=3348 Hz dB@1.5*f3 -12.94 @2*f3 -20.87  Nyq -54.77
+/3=1 v=1.0 -3dB f=1321 Hz dB@1.5*f3 -12.87 @2*f3 -20.76  Nyq -78.82
+## noise(-18dBFS) vs impulse, LMF +max rel: max diff 0.074 dB

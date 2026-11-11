@@ -1,0 +1,40 @@
+
+## AT3::Tremolo (stomp 'Opto Tremolo') LFO table, phase 0..1: 101 float32 at 0x305f904
+min 0.1718 (-15.3 dB) at index 0, max 1.0000 at index 78, first 0.1718, last 0.1718
+fraction of the cycle above the mid level: 0.703; steepest rise +0.0512/step at 13, steepest fall -0.0933/step at 85
+harmonics 2..5 re fundamental (dB): -6.0 -15.8 -23.1 -21.3
+11-point sample: 0.172 0.275 0.708 0.881 0.942 0.969 0.983 0.995 0.997 0.381 0.172
+
+## AT3::FenderTremolo LFO table, phase -1..1 (also used by the Fender amp models): 256 float32 at 0x26257c0
+min 0.0600 (-24.4 dB) at index 52, max 1.0000 at index 0, first 1.0000, last 1.0000
+fraction of the cycle above the mid level: 0.648; steepest rise +0.0300/step at 97, steepest fall -0.1150/step at 5
+harmonics 2..5 re fundamental (dB): -7.3 -23.4 -14.7 -19.9
+11-point sample: 1.000 0.074 0.060 0.128 0.693 0.996 0.999 0.999 0.999 1.000 1.000
+
+## SeymourDuncanShapeShifter wave table 0 (Wave knob = 0): 101 float32 at 0x2fe2308
+min 0.0000 (-240.0 dB) at index 0, max 1.0000 at index 50, first 0.0000, last 0.0000
+fraction of the cycle above the mid level: 0.485; steepest rise +0.0314/step at 24, steepest fall -0.0314/step at 74
+harmonics 2..5 re fundamental (dB): -185.9 -164.3 -166.3 -177.3
+11-point sample: 0.000 0.095 0.345 0.655 0.905 1.000 0.905 0.655 0.345 0.095 0.000
+max |table0 - (0.5 - 0.5*cos(2*pi*x))| = 3.27e-08
+
+## SeymourDuncanShapeShifter wave table 1 (Wave knob = 0.5): 3 float32 at 0x2fe249c
+min 0.0000 (-240.0 dB) at index 0, max 1.0000 at index 1, first 0.0000, last 0.0000
+11-point sample: 0.000 0.000 0.000 1.000 1.000 1.000 1.000 1.000 0.000 0.000 0.000
+
+## SeymourDuncanShapeShifter wave table 2 (Wave knob = 1): 102 float32 at 0x2fe271c
+min 0.0000 (-240.0 dB) at index 0, max 1.0000 at index 8, first 0.0000, last 0.0000
+11-point sample: 0.000 1.000 1.000 1.000 1.000 1.000 0.000 0.000 0.000 0.000 0.000
+table 2 changes value after indices [7, 58]
+
+## SeymourDuncanShapeShifter gain-law table (input 0..1 -> linear gain): 157 float32 at 0x2fe24a8
+min 0.0217 (-33.3 dB) at index 0, max 1.0000 at index 156, first 0.0217, last 1.0000
+11-point sample: 0.022 0.030 0.045 0.068 0.098 0.146 0.218 0.317 0.471 0.685 1.000
+20*log10(table) is a straight line in its input: slope 33.90 dB, intercept -33.69 dB, worst deviation 0.42 dB
+
+## Silvertone1484 tremolo gain table T (gain = 2T-1), input 0.534..1.0: 200 float32 at 0x301d2ac
+min 0.5135 (-5.8 dB) at index 0, max 0.9482 at index 199, first 0.5135, last 0.9482
+11-point sample: 0.513 0.555 0.602 0.660 0.734 0.821 0.888 0.928 0.942 0.947 0.948
+gain = 2T-1 at input 0.534 / 0.6 / 0.7 / 0.77 / 0.85 / 1.0: 0.027 0.147 0.395 0.647 0.844 0.896
+
+## tempo-sync division table (beats) at 0x312a9b4: 0.125 0.1875 0.08333 0.25 0.375 0.1667 0.5 0.75 0.3333 1 1.5 0.6667 2 3 1.333 4

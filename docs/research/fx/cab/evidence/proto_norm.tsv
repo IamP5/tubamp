@@ -1,0 +1,36 @@
+# K-weighted loudness (BS.1770 weighting) of a guitar-amp spectrum through each IR, after normalising the IR by four rules.
+# 0 dB = as loud as the same signal with the cab off. Judge spectrum: flat 70 Hz..1 kHz, -6 dB/oct to 12 kHz.
+# python3 cabproto.py norm $RE_STATE/work/cab/bb ; 25 IRs measured from TONEX VIR at 48 kHz (cabs, mics, positions)
+ir	juce_l2_0.125_db	peak_1.0_db	pink_80_5k_db	l2_ref48k_minus9_db	raw_l2_db
+blend1_m2	-13.64	13.01	-1.47	-4.58	-7.95
+cab_0.1	-11.47	14.83	-0.35	-2.41	-10.74
+cab_0.2	-11.53	14.42	-0.75	-2.47	-10.55
+cab_0.3	-13.23	12.05	-1.09	-4.17	-8.57
+cab_0.4	-14.06	11.42	-0.34	-5.00	-6.26
+cab_0.5	-12.45	14.35	-1.93	-3.39	-9.25
+cab_0.641026	-12.20	14.21	-3.48	-3.14	-7.12
+cab_0.75	-12.06	13.60	-2.37	-3.00	-9.29
+cab_0.85	-13.05	12.49	-2.94	-3.99	-7.78
+cab_0	-10.35	16.35	-3.63	-1.29	-10.91
+cab_1.0	-12.19	13.98	-3.96	-3.13	-6.47
+m1x_0.25	-11.00	16.18	-5.17	-1.94	-7.62
+m1x_0.5	-10.26	18.44	-5.87	-1.20	-9.74
+m1x_0.75	-9.93	20.37	-6.16	-0.87	-11.53
+m1x_0	-12.09	14.40	-4.50	-3.03	-5.45
+m1x_1	-9.89	22.49	-6.02	-0.83	-13.28
+m1z_0.5	-12.06	14.68	-4.20	-3.00	-7.64
+m1z_0	-11.46	15.47	-4.85	-2.40	-6.62
+m1z_1	-12.42	14.13	-3.70	-3.36	-8.61
+mic1model_0.25	-12.82	13.78	-2.71	-3.76	-6.91
+mic1model_0.5	-12.82	13.78	-2.71	-3.76	-6.91
+mic1model_0.75	-11.37	16.07	-5.00	-2.31	-6.40
+mic1model_0	-11.46	15.47	-4.85	-2.40	-6.62
+mic1model_1	-11.37	16.07	-5.00	-2.31	-6.40
+vir_48000	-12.20	14.21	-3.48	-3.14	-7.12
+mean	-11.90	15.05	-3.46	-2.84	-8.23
+std	1.07	2.40	1.73	1.07	1.94
+max-min	4.16	11.07	5.83	4.16	7.83
+# L2 above peak for these IRs: mean 8.89 dB, min 7.22, max 14.33 (a file peaking at 0 dBFS has this L2)
+# rate check, session 44.1k: gain applied by the JUCE L2 rule -11.31 dB, by the 48k-referenced rule -1.88 dB
+# rate check, session 48k: gain applied by the JUCE L2 rule -10.94 dB, by the 48k-referenced rule -1.88 dB
+# rate check, session 96k: gain applied by the JUCE L2 rule -7.93 dB, by the 48k-referenced rule -1.88 dB

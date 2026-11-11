@@ -1,0 +1,3 @@
+# AmpliTube 5 TubeScreamer module: K-method table size, read from the live object (module->[0x1d8] KMethodData, ints at +0x98).
+# rigcall recipe: ik_factory 0x14bafc4 0x14bb12c 0x14bb2e8 0x14bc018 / peekpi 0x1d8 0x98 3
+peekpi *(+0x1d8)+0x98: 1 1999 1998

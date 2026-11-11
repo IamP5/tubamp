@@ -1,0 +1,12 @@
+# python3 $W/cb.py gen-fsteps $W/sig/fsteps_-10.wav --db -10 --hold 1.5
+# $AUH render aufx 'Ni$6' -NI- $W/sig/fsteps_-10.wav $W/out/solid_bus/d_a1ms_rel0.fsteps.wav --set 0=0.5 --set 1=0.2 --set 6=1 --set 7=0 --set 8=0 --set 10=1 --set 2=0.6 --set 4=0.4 --set 5=0
+# python3 $W/cb.py fgain $W/sig/fsteps_-10.wav $W/out/solid_bus/d_a1ms_rel0.fsteps.wav --hold 1.5 --lag 0
+freq_hz	in_db	out_db	gain_db
+40	-10.00	-19.85	-9.85
+60	-10.00	-19.87	-9.87
+100	-10.00	-19.89	-9.89
+200	-10.00	-19.89	-9.89
+500	-10.00	-19.90	-9.90
+1000	-10.00	-19.90	-9.90
+3000	-10.00	-19.87	-9.87
+8000	-10.00	-19.47	-9.47

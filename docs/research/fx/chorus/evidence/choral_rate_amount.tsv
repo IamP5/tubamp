@@ -1,0 +1,15 @@
+# Choral, Universal mode, Voices 1, Width 100%, Mix 100%: pitch deviation against Rate and Amount. Shows depth is scaled by 1/rate so cents stay constant.
+# gen:     python3 $T/cx.py gen clicks clicks600.wav --period 600 --secs 6 --db -6   (clicks.wav, period 2400, for 0.25 Hz)
+# render:  $RE_STATE/bin/auhost render aufx 'Ni$I' -NI- <clicks> ch_ra.wav --warmup 2 --set 0=1 --set 1=0 --set 6=1 --set 7=1 --set 4=<rate> --set 5=<amount>
+#          Rate knob p -> 0.25 + 7.4*p^3 Hz: 0 -> 0.25 Hz, 0.4663 -> 1 Hz, 0.7190 -> 3 Hz.  Amount knob a -> cents = 30*(0.01+0.99*a^2)
+# analyse: python3 $T/cx.py trk ch_ra.wav --ch 0 --period <period> --short
+rate_knob	amount_knob	predicted_cents	result
+0	0.25	2.2	delay_min_ms 7.015	delay_max_ms 9.502	pp_ms 2.487	lfo_hz 0.252	delay_crest 1.74	cents_p95 2.2	cents_max 2.2
+0	0.5	7.7	delay_min_ms 7.017	delay_max_ms 15.924	pp_ms 8.907	lfo_hz 0.252	delay_crest 1.74	cents_p95 7.9	cents_max 7.9
+0	1	30.0	delay_min_ms 7.037	delay_max_ms 41.682	pp_ms 34.644	lfo_hz 0.252	delay_crest 1.73	cents_p95 31.2	cents_max 31.2
+0.4663	0.25	2.2	delay_min_ms 7.015	delay_max_ms 7.636	pp_ms 0.621	lfo_hz 1.002	delay_crest 1.73	cents_p95 2.6	cents_max 2.7
+0.4663	0.5	7.7	delay_min_ms 7.020	delay_max_ms 9.229	pp_ms 2.209	lfo_hz 1.002	delay_crest 1.73	cents_p95 8.4	cents_max 8.4
+0.4663	1	30.0	delay_min_ms 0.493	delay_max_ms 11.728	pp_ms 11.235	lfo_hz 1.140	delay_crest 1.57	cents_p95 31.8	cents_max 342.2
+0.7190	0.25	2.2	delay_min_ms 7.015	delay_max_ms 7.221	pp_ms 0.206	lfo_hz 2.996	delay_crest 1.73	cents_p95 2.7	cents_max 2.7
+0.7190	0.5	7.7	delay_min_ms 7.019	delay_max_ms 7.748	pp_ms 0.729	lfo_hz 2.996	delay_crest 1.71	cents_p95 8.4	cents_max 8.4
+0.7190	1	30.0	delay_min_ms 7.044	delay_max_ms 9.901	pp_ms 2.857	lfo_hz 2.996	delay_crest 1.70	cents_p95 31.7	cents_max 31.8

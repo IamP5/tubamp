@@ -1,0 +1,16 @@
+# Guitar Rig 6 'Ensemble' rack component (NI::DSP::RigEnsemble), headless, impulse train (click every 10 ms, -6 dBFS, 48 kHz, 6 s). Wet = 1 (wet only).
+# state tools gr6state.py and ngrc_xml.py are copies of the tremolo study's tools (docs/research/fx/tremolo/evidence/tools).
+# prep:    $RE_STATE/bin/auhost state aufx 'Ni$R' -NI- gr6_default.aupreset ; python3 -I ngrc_xml.py '/Library/Application Support/Native Instruments/Guitar Rig 6/Component Presets/Ensemble/Ensemble Factory.ngrc' ngrc_Ensemble
+# row:     python3 gr6state.py gr6_default.aupreset ngrc_Ensemble_doc0.xml Ensemble st.aupreset Md=<0 chorus|1 vibrato> CI=<chorus intens> Mx=1 S=<stereo> Dly=<delay> Rack.G=0
+#          $RE_STATE/bin/auhost render aufx 'Ni$R' -NI- clicks480.wav en.wav --state st.aupreset
+#          python3 cx.py trk en.wav --period 480 --ch 0 --mind 0.3 --short --skip 100 ; python3 cx.py lr en.wav --period 480 --mind 0.3
+Md	CI	Dly	S	result
+0	0	0.5	1	delay_min_ms 2.600	delay_max_ms 4.673	pp_ms 2.074	lfo_hz 0.188	delay_crest 1.91	cents_p95 1.5	cents_max 1.5	cents_crest 2.54
+0	0.5	0.5	1	delay_min_ms 2.078	delay_max_ms 4.674	pp_ms 2.596	lfo_hz 1.553	delay_crest 1.78	cents_p95 14.3	cents_max 14.3	cents_crest 1.05
+0	1	0.5	1	delay_min_ms 2.093	delay_max_ms 4.668	pp_ms 2.575	lfo_hz 3.006	delay_crest 1.72	cents_p95 28.0	cents_max 28.1	cents_crest 1.05
+0	0.5	0	1	delay_min_ms 0.401	delay_max_ms 2.969	pp_ms 2.568	lfo_hz 1.553
+0	0.5	1	1	delay_min_ms 3.776	delay_max_ms 6.355	pp_ms 2.580	lfo_hz 1.553
+0	0.5	0.5	0.5	lfo_hz 1.549	R_minus_L_phase_deg +46.0
+0	0.5	0.5	1	lfo_hz 1.549	R_minus_L_phase_deg +91.6
+1	-	0.5	1	delay_min_ms 3.334	delay_max_ms 3.625	pp_ms 0.291	lfo_hz 6.125	delay_crest 1.39	cents_p95 11.2	cents_max 12.0	cents_crest 1.69 (VD=0.5 VR=0.5)
+# note: the CI=0 row runs at 0.1 Hz, so the 6 s take holds about half a cycle; its swing and rate figures are incomplete.

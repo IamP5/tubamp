@@ -1,0 +1,42 @@
+clean_default
+    CURVE g0=0.0 thr-1dB=-19.3 GR@0=-15.0 GR@-12=-6.0 ratio_top=4.0 ratio_mid=4.0
+    tbA GR=-7.5 over=0.0 att63=5.67 att90=12.21 rel50=91 rel63=128 rel90=285
+    tbB GR=-3.8 over=0.0 att63=5.69 att90=12.23 rel50=91 rel63=128 rel90=285
+    thd thd=0.000% h2=-239 h3=-172 gain=0.0 ripple=0.00
+    thd100 thd=0.000% h2=-199 h3=-173 gain=0.0 ripple=0.00
+clean_default_nohold
+    CURVE g0=0.0 thr-1dB=-18.8 GR@0=-14.3 GR@-12=-5.4 ratio_top=3.8 ratio_mid=3.6
+    tbA GR=-6.9 over=0.0 att63=9.73 att90=25.79 rel50=84 rel63=120 rel90=277
+    tbB GR=-3.3 over=0.0 att63=12.19 att90=31.81 rel50=84 rel63=120 rel90=277
+    thd thd=0.040% h2=-239 h3=-68 gain=0.0 ripple=0.00
+    thd100 thd=0.398% h2=-199 h3=-48 gain=0.0 ripple=0.00
+clean_fast
+    CURVE g0=0.0 thr-1dB=-19.3 GR@0=-15.0 GR@-12=-6.0 ratio_top=4.0 ratio_mid=4.0
+    tbA GR=-7.5 over=0.0 att63=0.58 att90=1.19 rel50=15 rel63=18 rel90=31
+    tbB GR=-3.8 over=0.0 att63=0.71 att90=1.21 rel50=15 rel63=18 rel90=31
+    thd thd=0.000% h2=-239 h3=-172 gain=0.0 ripple=0.00
+    thd100 thd=0.000% h2=-199 h3=-173 gain=0.0 ripple=0.00
+clean_fast_nohold
+    CURVE g0=0.0 thr-1dB=-19.1 GR@0=-14.7 GR@-12=-5.8 ratio_top=3.9 ratio_mid=3.8
+    tbA GR=-7.3 over=0.0 att63=0.44 att90=1.23 rel50=7 rel63=10 rel90=24
+    tbB GR=-3.6 over=0.0 att63=0.73 att90=1.31 rel50=7 rel63=10 rel90=24
+    thd thd=0.575% h2=-239 h3=-45 gain=0.0 ripple=0.00
+    thd100 thd=4.666% h2=-198 h3=-27 gain=0.0 ripple=0.00
+fet
+    CURVE g0=0.0 thr-1dB=-23.2 GR@0=-20.0 GR@-12=-10.0 ratio_top=6.0 ratio_mid=6.0
+    tbA GR=-11.7 over=0.0 att63=1.17 att90=1.38 rel50=66 rel63=98 rel90=395
+    tbB GR=-7.5 over=0.0 att63=1.17 att90=1.40 rel50=66 rel63=98 rel90=395
+    thd thd=0.000% h2=-239 h3=-188 gain=0.0 ripple=0.00
+    thd100 thd=0.000% h2=-199 h3=-181 gain=0.0 ripple=0.00
+opto
+    CURVE g0=0.0 thr-1dB=-24.4 GR@0=-18.0 GR@-12=-9.0 ratio_top=4.0 ratio_mid=4.0
+    tbA GR=-10.5 over=0.0 att63=2.69 att90=5.25 rel50=88 rel63=142 rel90=696
+    tbB GR=-6.8 over=0.0 att63=2.71 att90=5.27 rel50=88 rel63=142 rel90=696
+    thd thd=0.000% h2=-239 h3=-170 gain=0.0 ripple=0.00
+    thd100 thd=0.000% h2=-199 h3=-169 gain=0.0 ripple=0.00
+squash_fb
+    CURVE g0=0.0 thr-1dB=-34.8 GR@0=-29.8 GR@-12=-19.3 ratio_top=8.0 ratio_mid=7.7
+    tbA GR=-24.6 over=-28.5 att63=2.75 att90=3.71 rel50=393 rel63=571 rel90=1326
+    tbB GR=-19.6 over=-22.6 att63=2.75 att90=3.73 rel50=394 rel63=572 rel90=1327
+    thd thd=0.000% h2=-225 h3=-172 gain=0.0 ripple=0.00
+    thd100 thd=0.000% h2=-199 h3=-172 gain=0.0 ripple=0.00

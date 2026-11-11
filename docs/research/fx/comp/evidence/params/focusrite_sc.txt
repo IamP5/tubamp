@@ -1,0 +1,78 @@
+latency_s	0
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	Power	0	1	1	1	2	On	Off|On
+1	Mute	0	1	0	0	2	Off	Off|On
+2	Setting	0	3	0	0	1	A	A|B|C|D
+3	In Gain	0	1	0.5	0.5	0	0.0 dB	
+4	Virtual Gain	0	1	0.4	0.4	0	-100.0 dB	
+5	THD	0	1	0.6	0.6	0	-66.0 dB	
+6	Phase	0	1	0	0	2	Off	Off|On
+7	Out Gain	0	1	0.75	0.75	0	0.0 dB	
+8	Monitoring	0	2	0	0	1	Stereo	Stereo|Mid|Side
+9	Console Channel	0	71	0	0	1	1	1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|43|44|45|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|62|63|64|65|66|67|68|69|70|71|72
+10	Stereo Mode	0	1	0	0	2	Analog	Analog|Digital
+11	HPF On	0	1	1	1	2	On	Off|On
+12	LPF On	0	1	1	1	2	On	Off|On
+13	HPF Frequency	0	1	0	0	0	20.0 Hz	
+14	HPF x3	0	1	0	0	2	Off	Off|On
+15	LPF Frequency	0	1	0	0	0	20.0k Hz	
+16	LPF /3	0	1	0	0	2	Off	Off|On
+17	Dyn HPF Pos	0	4	1	1	1	Comp	Off|Comp|Gate|Gate&Comp|Audio
+18	Dyn Peak EQ Pos	0	4	2	2	1	Gate	Off|Comp|Gate|Gate&Comp|Audio
+19	Dyn LPF Pos	0	4	1	1	1	Comp	Off|Comp|Gate|Gate&Comp|Audio
+20	Dyn LPF Freq	0	1	1	1	0	20.0k Hz	
+21	Dyn HPF Freq	0	1	0	0	0	20.0 Hz	
+22	Dyn Peak EQ Gain	0	1	0.5	0.5	0	0.0 dB	
+23	Dyn Peak EQ Freq	0	1	0.5	0.5	0	1.7k Hz	
+24	Dyn Peak EQ Freq x10	0	1	1	1	2	On	Off|On
+25	Comp On	0	1	1	1	2	On	Off|On
+26	Comp Threshold	0	1	1	1	0	+20.0 dB	
+27	Comp Ratio	0	5	3	3	1	5.0 : 1	1.5 : 1|2.0 : 1|3.0 : 1|5.0 : 1|10.0 : 1|oo : 1
+28	Comp Release	0	1	0.2	0.2	0	0.2 s	
+29	Comp Attack	0	1	0.2	0.2	0	18.2 ms	
+30	Comp Makeupgain	0	1	0	0	0	0.0 dB	
+31	Comp Link	0	1	1	1	2	On	Off|On
+32	Comp Mix	0	1	1	1	0	100 %	
+33	DeEsser On	0	1	1	1	2	On	Off|On
+34	DeEsser Bandpass Freq	0	1	0.7	0.7	0	5.0k Hz	
+35	DeEsser Sensitivity	0	1	0.5	0.5	0	0	
+36	DeEsser Listen	0	1	0	0	2	Off	Off|On
+37	Gate Threshold	0	1	0	0	0	-40.0 dB	
+38	Gate Range	0	1	0.5	0.5	0	40.0 dB	
+39	Gate Hold	0	1	0.1	0.1	0	45 ms	
+40	Gate Release	0	1	0.3	0.3	0	0.3 s	
+41	Gate Attack	0	1	0	0	2	Off	Off|On
+42	Gate Key	0	1	0	0	2	Off	Off|On
+43	Gate Key Listen	0	1	0	0	2	Off	Off|On
+44	Gate On	0	1	1	1	2	On	Off|On
+45	Gate Link	0	1	1	1	2	On	Off|On
+46	Gate Expander	0	1	0	0	2	Off	Off|On
+47	All EQ On	0	1	1	1	2	On	Off|On
+48	EQ LF Freq	0	5	0	0	1	33 Hz	33 Hz|56 Hz|95 Hz|160 Hz|270 Hz|330 Hz
+49	EQ LF Gain	0	1	0.5	0.5	0	0.0 dB	
+50	EQ HF Freq	0	5	0	0	1	3.3k Hz	3.3k Hz|4.7k Hz|6.8k Hz|10.0k Hz|15.0k Hz|18.0k Hz
+51	EQ HF Gain	0	1	0.5	0.5	0	0.0 dB	
+52	EQ HF On	0	1	1	1	2	On	Off|On
+53	EQ LF On	0	1	1	1	2	On	Off|On
+54	EQ LMF Q	0	1	0.5	0.5	0	1.3	
+55	EQ LMF Freq	0	1	0.5	0.5	0	120 Hz	
+56	EQ LMF Freq x3	0	1	0	0	2	Off	Off|On
+57	EQ LMF Gain	0	1	0.5	0.5	0	0.0 dB	
+58	EQ HMF Q	0	1	0.5	0.5	0	1.3	
+59	EQ HMF Freq	0	1	0.5	0.5	0	2.2k Hz	
+60	EQ HMF Freq x3	0	1	0	0	2	Off	Off|On
+61	EQ HMF Gain	0	1	0.5	0.5	0	0.0 dB	
+62	EQ HMF On	0	1	1	1	2	On	Off|On
+63	EQ LMF On	0	1	1	1	2	On	Off|On
+64	EQ Position	0	1	1	1	2	Post Dyn	Pre Dyn|Post Dyn
+65	Meter Position	0	1	0	0	2	Output	Output|Input
+66		0	1	0	0	0		
+67		0	1	0	0	0		
+68		0	1	0	0	0		
+69		0	1	0	0	0		
+70	Expansion	0	1	0	1	0	26.0 dB	
+71	Expansion	0	1	0	1	0	26.0 dB	
+72	L/C Gain Reduction	0	1	0	0	0	-oo dB	
+73	L/C Gain Reduction	0	1	0	0	0	-oo dB	
+74	DeEss / Excite 	0	1	0	0	0	-oo dB	

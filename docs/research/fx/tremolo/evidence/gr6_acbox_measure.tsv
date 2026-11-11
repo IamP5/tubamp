@@ -1,0 +1,54 @@
+# Guitar Rig 6 'AC Box' amp (NI::DSP::RigAC30) tremolo, headless. Regenerate: tools/measure_gr6.sh <outdir>
+# one row = python3 tools/gr6state.py gr6_default.aupreset ngrc_ACBox_doc1.xml 'AC Box' st.aupreset TDt=<depth> TSp=<speed> Rack.G=0
+#           $RE_STATE/bin/auhost render aufx 'Ni$R' -NI- sine440_m<L>.wav out.wav --state st.aupreset
+#           python3 tools/tremenv.py out.wav --freq 440 --ref <same amp, TDt=0, same level>.wav
+# doc1 = factory preset Clean, doc2 = factory preset Crunch. Gain 1.0 = the amp without tremolo at that input level.
+label	rate_hz	gmax	gmin	depth_db	duty_hi	rise_ms	fall_ms	mean_gain_db
+# Clean, TDt=0, in -42 dBFS: out peak -39.28 dB, rms -42.60 dB
+clean_in-42dB_TDt0.25	4.5130	1.0283	0.9723	0.49	0.499	70.35	77.83	0.00
+clean_in-42dB_TDt0.5	4.5062	1.0535	0.9457	0.94	0.503	64.25	64.71	0.00
+clean_in-42dB_TDt0.75	4.5037	1.0783	0.9186	1.39	0.506	63.33	63.83	0.00
+clean_in-42dB_TDt1	4.5028	1.1026	0.8909	1.85	0.508	63.02	62.88	0.01
+# Clean, TDt=0, in -30 dBFS: out peak -27.24 dB, rms -30.62 dB
+clean_in-30dB_TDt0.25	4.5130	1.0283	0.9721	0.49	0.499	76.17	77.81	0.00
+clean_in-30dB_TDt0.5	4.5058	1.0537	0.9454	0.94	0.503	64.35	64.73	0.00
+clean_in-30dB_TDt0.75	4.5037	1.0785	0.9182	1.40	0.506	63.29	63.77	0.00
+clean_in-30dB_TDt1	4.5028	1.1029	0.8904	1.86	0.508	62.85	62.83	0.01
+# Clean, TDt=0, in -18 dBFS: out peak -15.34 dB, rms -18.94 dB
+clean_in-18dB_TDt0.25	4.5104	1.0293	0.9708	0.51	0.501	67.02	76.25	0.00
+clean_in-18dB_TDt0.5	4.5045	1.0556	0.9424	0.99	0.505	63.83	63.98	0.00
+clean_in-18dB_TDt0.75	4.5028	1.0811	0.9132	1.47	0.509	62.75	62.92	-0.00
+clean_in-18dB_TDt1	4.5020	1.1059	0.8834	1.95	0.512	62.27	62.08	-0.00
+# Clean, TDt=0, in -6 dBFS: out peak -9.45 dB, rms -12.02 dB
+clean_in-6dB_TDt0.25	8.4284	1.0261	0.9746	0.45	0.499	81.54	82.79	-0.00
+clean_in-6dB_TDt0.5	4.5232	1.0443	0.9506	0.82	0.518	66.98	80.29	-0.02
+clean_in-6dB_TDt0.75	4.4868	1.0602	0.9248	1.19	0.533	65.31	76.88	-0.04
+clean_in-6dB_TDt1	4.4902	1.0741	0.8969	1.57	0.546	64.48	72.12	-0.06
+# Clean, TDt=0, in -0 dBFS: out peak -9.69 dB, rms -11.09 dB
+clean_in-0dB_TDt0.25	49.8184	1.0153	0.9851	0.26	0.483	5.26	11.23	0.00
+clean_in-0dB_TDt0.5	10.2367	1.0215	0.9767	0.39	0.516	25.40	30.77	-0.00
+clean_in-0dB_TDt0.75	nan	nan	nan	nan	nan	nan	nan	nan
+clean_in-0dB_TDt1	8.2787	1.0318	0.9576	0.65	0.550	81.83	86.08	-0.02
+# speed sweep (Clean, TDt=1, -18 dBFS)
+clean_TSp0	2.0010	1.1051	0.8858	1.92	0.514	141.90	140.80	-0.00
+clean_TSp0.25	3.2540	1.1066	0.8832	1.96	0.512	86.92	86.35	-0.02
+clean_TSp0.5	4.5020	1.1059	0.8834	1.95	0.512	62.27	62.08	-0.00
+clean_TSp0.75	5.7437	1.1076	0.8811	1.99	0.513	48.00	48.10	0.01
+clean_TSp1	7.0032	1.1106	0.8773	2.05	0.514	38.94	39.01	0.00
+# Crunch preset, TDt=1 TSp=0.5
+# Crunch, TDt=0, in -30 dBFS: out peak -14.02 dB, rms -17.64 dB
+crunch_in-30dB_TDt1	4.4994	1.1789	0.7618	3.79	0.536	61.00	61.50	-0.05
+# Crunch, TDt=0, in -18 dBFS: out peak -14.13 dB, rms -15.53 dB
+crunch_in-18dB_TDt1	4.5274	1.0403	0.9187	1.08	0.622	65.40	92.98	-0.09
+# Crunch, TDt=0, in -6 dBFS: out peak -14.34 dB, rms -14.97 dB
+crunch_in-6dB_TDt1	4.4931	1.0217	0.8881	1.22	0.662	45.88	116.94	-0.23
+# Crunch, TDt=0, in -0 dBFS: out peak -14.26 dB, rms -14.93 dB
+crunch_in-0dB_TDt1	4.4965	1.0273	0.8802	1.34	0.646	46.54	117.90	-0.23
+# spectrum lines (dBFS, Hann, 4 s): LFO feed-through at 4.5 Hz, carrier, harmonics, AM sidebands
+file	lfo_4.5Hz	H1	H2	H3	sb-4.5	sb+4.5	sb-9
+out_ac_ref_m18.wav	-153.2	-15.9	-46.5	-74.1	-141.6	-143.7	-155.2
+out_ac_m18_d1.wav	-96.6	-15.9	-46.5	-72.4	-40.8	-40.8	-72.6
+out_ac_ref_m6.wav	-128.2	-9.0	-33.3	-30.9	-110.5	-110.7	-122.5
+out_ac_m6_d1.wav	-46.1	-9.1	-32.7	-30.6	-36.2	-36.0	-56.0
+out_cr_ref_m6.wav	-141.5	-12.5	-70.5	-22.8	-133.4	-134.2	-147.8
+out_cr_m6_d1.wav	-65.3	-12.7	-67.6	-23.2	-38.2	-38.9	-47.2

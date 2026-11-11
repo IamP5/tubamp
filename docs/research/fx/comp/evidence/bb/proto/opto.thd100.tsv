@@ -1,0 +1,15 @@
+# python3 $W/proto.py $W/sig/sine_100_-10.wav $W/out/proto/opto.thd100.wav --thr -24 --ratio 4 --knee 12 --att 2 --rel 60 --rel2 500 --w 0.6 --hold 8
+# python3 $RE/sig.py thd $W/out/proto/opto.thd100.wav --freq 100
+harmonic	freq_hz	level_db	rel_db
+1	100.0	-18.13	0.00
+2	200.0	-216.84	-198.71
+3	300.0	-187.32	-169.19
+4	400.0	-238.78	-220.65
+5	500.0	-196.39	-178.27
+6	600.0	-240.00	-231.85
+7	700.0	-192.73	-174.61
+8	800.0	-240.00	-239.56
+9	900.0	-202.30	-184.17
+10	1000.0	-240.00	-240.00
+thd_percent	0.0000
+dc	0.000000

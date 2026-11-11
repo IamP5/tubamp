@@ -1,0 +1,14 @@
+# Internal processing rate of Guitar Rig 6 ni::effektrig cores against host rate, read from the live object after onSetSampleRate().
+# rigcall recipe: alloc 0x80000 / c <ctor> / c <onInit> / peeki <exp offset> 1 / cfi <onSetSampleRate> <host rate> 16 / peekf <rate offset> 2   (prints internal rate, factor)
+tubescreamer(SkreamerDeluxe) host=44100: peeki +0x3d0: 2 peekf +0x3d4: 176400 4 
+tubescreamer(SkreamerDeluxe) host=48000: peeki +0x3d0: 2 peekf +0x3d4: 192000 4 
+tubescreamer(SkreamerDeluxe) host=96000: peeki +0x3d0: 2 peekf +0x3d4: 192000 2 
+tubescreamer(SkreamerDeluxe) host=192000: peeki +0x3d0: 2 peekf +0x3d4: 192000 1 
+hm2 host=44100: peeki +0x350: 1 peekf +0x354: 88200 2 
+hm2 host=48000: peeki +0x350: 1 peekf +0x354: 96000 2 
+hm2 host=96000: peeki +0x350: 1 peekf +0x354: 96000 1 
+hm2 host=192000: peeki +0x350: 1 peekf +0x354: 96000 0.5 
+fuzzface host=44100: peeki +0x350: 1 peekf +0x354: 88200 2 
+fuzzface host=48000: peeki +0x350: 1 peekf +0x354: 96000 2 
+fuzzface host=96000: peeki +0x350: 1 peekf +0x354: 96000 1 
+fuzzface host=192000: peeki +0x350: 1 peekf +0x354: 96000 0.5 

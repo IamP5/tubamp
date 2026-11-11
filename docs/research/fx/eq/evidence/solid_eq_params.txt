@@ -1,0 +1,19 @@
+latency_s	0
+tail_s	0
+id	name	min	max	default	current	unit	display	choices
+0	HPF Freq	0	1	0	0	0	Off	
+1	LF Gain	0	1	0.5	0.5	0	0.0 dB	
+2	LF Freq	0	1	0.5	0.5	0	155 Hz	
+3	LF Mode	0	1	0	0	2	Off	
+4	LMF Gain	0	1	0.5	0.5	0	0.0 dB	
+5	LMF Freq	0	1	0.5	0.5	0	 632 Hz	
+6	LMF Q	0	1	0.5	0.5	0	1.60	
+7	EQ Mode	0	1	0	1	2	E	
+8	HMF Gain	0	1	0.5	0.5	0	0.0 dB	
+9	HMF Freq	0	1	0.5	0.5	0	2049 Hz	
+10	HMF Q	0	1	0.5	0.5	0	1.60	
+11	-	0	1	0	0	2	-	
+12	HF Gain	0	1	0.5	0.5	0	0.0 dB	
+13	HF Freq	0	1	0.5	0.5	0	5.8 kHz	
+14	HF Mode	0	1	0	0	2	Off	
+15	LPF Freq	0	1	0	0	0	Off	
