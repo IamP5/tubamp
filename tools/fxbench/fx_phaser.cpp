@@ -1,6 +1,7 @@
 // fxbench adapter for the phaser voicings of the mod block (docs/FX-ENGINES.md §4.6).
-// Keys: model rate depth mix color sync_phase on (0 skips process()), and the test key
-// freeze_u (hold the Phase 90 / Small Stone sweep at u in [-1, 1]; absent = running).
+// Keys: model rate depth mix color sync_phase on (0 skips process()), reset_on_enable (1: call
+// reset() when on goes from 0 to 1, as the processor does for Phase 90 and Small Stone), and the
+// test key freeze_u (hold the Phase 90 / Small Stone sweep at u in [-1, 1]; absent = running).
 // --trace writes the LFO phase in cycles of each block's last sample: use --block=1 for a
 // per-sample trace. The legacy reference is the old Modulation block running its phaser.
 #include "FxBench.h"
@@ -62,10 +63,14 @@ public:
     void setParams (const fxbench::Args& a) override
     {
         // Like the processor: a bypassed block is neither updated nor run.
+        const bool wasOn = on;
         on = a.get ("on", 1.0) > 0.5;
 
         if (! on)
             return;
+
+        if (! wasOn && a.get ("reset_on_enable", 0.0) > 0.5)
+            phaser.reset();
 
         tubamp::PhaserParams p;
         p.model = (int) a.get ("model", p.model);
@@ -99,5 +104,6 @@ private:
 };
 
 FXBENCH_REGISTER ("phaser", PhaserBench,
-                  "model(0 Classic,1 Phase 90,2 Small Stone) rate depth mix color(0/1) sync_phase on(0/1) freeze_u(test)");
+                  "model(0 Classic,1 Phase 90,2 Small Stone) rate depth mix color(0/1) sync_phase on(0/1) "
+                  "reset_on_enable(0/1) freeze_u(test)");
 } // namespace

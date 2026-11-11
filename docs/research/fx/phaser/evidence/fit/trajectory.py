@@ -158,7 +158,7 @@ def proto_track(P_mod, tag, rate):
     """The prototype over the same probe at `rate`, tracked identically. Returns t, n1, period."""
     comp, ov, secs, P, M, lo, gain, kw = TAKES[tag]
     x, pos = T.probe(int(secs * FS), P, M, AMP)
-    y = P_mod.render(x.T.copy(), FS, rate=rate, **kw)
+    y = P_mod.render(x.T.copy(), FS, rate=rate, makeup=False, **kw)
     t, n1, per, _ = track_take(list(y.T), pos, P, lo, 0.0)
     return t, n1, per
 

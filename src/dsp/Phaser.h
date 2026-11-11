@@ -39,7 +39,9 @@ public:
     ~PhaserFx();
 
     void prepare (const juce::dsp::ProcessSpec& spec);
-    /** Clears every filter state and sets the LFO to phase 0, the bottom of the sweep. */
+    /** Clears every state (filters, feedback, LFO to phase 0 = the sweep bottom, gate smoothing,
+        sync glide, model switcher, parameter smoothers): the next block is a fresh engine's.
+        The processor calls it when a Phase 90 / Small Stone block is switched back on. */
     void reset();
     /** Audio thread, once per block before process(). */
     void setParameters (const PhaserParams& params);

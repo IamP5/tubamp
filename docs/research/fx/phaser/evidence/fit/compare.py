@@ -54,7 +54,7 @@ def job_quasi(proto_path, tag, rate):
     import static
     P = load_proto(proto_path); kw = VOICE[tag.rsplit("_", 1)[0]]
     x = track.read_wav(f"{W}/pprobe.wav")[0][0][:int(102 * track.FS)]
-    y = P.render(x, track.FS, rate=rate, **kw)
+    y = P.render(x, track.FS, rate=rate, makeup=False, **kw)
     k = static.bins(); X = np.fft.rfft(x[:static.N])[k]
     starts = np.arange(int(1.0 * track.FS), len(x) - static.N, 2048)
     H = np.array([np.abs(np.fft.rfft(y[s:s + static.N])[k] / X) for s in starts])
@@ -80,7 +80,7 @@ def job(args):
     ind = f"{W}/probe{secs}"; outd = os.path.join(tmp, tag); os.makedirs(outd, exist_ok=True)
     m = track.read_grid(ind)[3]
     xs = np.stack([track.read_wav(f"{ind}/tone_{j:02d}.wav")[0][0] for j in range(m)], axis=1)
-    y = P.render(xs, track.FS, rate=rate, **kw)
+    y = P.render(xs, track.FS, rate=rate, makeup=False, **kw)
     for j in range(m): track.write_wav(f"{outd}/tone_{j:02d}.wav", y[:, j])
     f, step, t, H, _ = track.H_from_dirs(ind, outd, 8, 16, 0, 0.0)
     r = track.summarise(t, f, step, H, lo, 12000, 3.0, 1.0)

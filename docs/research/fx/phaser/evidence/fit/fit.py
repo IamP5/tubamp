@@ -11,26 +11,31 @@ Phase 90 (block):
      Model = the prototype's own phase90_break_hz() (imported, constants patched) at a 4 kHz
      control rate:  LFO (RC-charge triangle, curvature kappa) -> one-pole gate smoothing gate_hz ->
          R(u) = (RS^m + (R1 exp(-gamma u))^m)^(1/m),  fc = (1/22k + 1/R(u)) / (2 pi 47n),
-     and notch 1 = the frozen block response's first minimum at that fc (table over fc, TPT at 48 kHz,
-     beta and the feedback lag as in the prototype). Free: RS, R1, gamma, m, kappa, gate_hz.
+     and notch 1 = the analog block response's first minimum at that fc (table over fc, beta and the
+     feedback lag as in the prototype). The prototype's discretisation puts its notches on the analog
+     ones at every sample rate, so the analog notch is the rendered one. Free: RS, R1, gamma, m, kappa,
+     gate_hz.
      Cost per rate: mean(e^2) + 30 mean(e^4) over the bins (e = ln model/measured, best common phase
      shift within +-0.03 cycle), plus 10 * ((ln end error)^4 / 1e-4) for each sweep end. Nelder-Mead from
      two starts (m = 1 and m = 3), the better is kept; both are printed.
      The impulse tracker reads smooth sweeps' trajectories to 0.05 % rms (selftest_traj.txt), so no
      tracker correction is applied.
   3. f_lag (one-pole lag in the feedback-resistor path) so that the median notch-1 depth over each
-     measured sweep, computed in closed form along the prototype's own break-frequency
-     trajectory, matches depth_db on average over the p9_block rows (bisection). Without it the
+     measured sweep, computed in closed form (analog; the discretisation keeps the notch-1 depth
+     analog) along the prototype's own break-frequency trajectory, matches depth_db on average over
+     the p9_block rows (bisection). Without it the
      delay-free loop gives a frequency-independent -32.6 dB; Guitar Rig 6's notch fills in as it
      rises (-30.3 dB near 510 Hz to -27.2 dB near 1380 Hz at noon), the signature of a small
      delay in its feedback loop. Step 2's notch table uses the prototype's current f_lag (the lag
      moves notch 1 by < 0.2 %).
 Small Stone, Color off (ss_off_* rows): dry and wet gains from the median notch depth and
-  peak: dry - wet = 10^(depth/20), dry + wet = 10^(peak/20).
+  peak: dry - wet = 10^(depth/20), dry + wet = 10^(peak/20). Then f_lo, f_hi and the LFO curvature
+  kappa (shared with Color on) from the ss_off trajectories: with dry > wet the notches sit where
+  P^4 = -1, so notch 1 is tan(pi/8) fc (analog, and so rendered, at every rate).
 Small Stone, Color on, in two steps.
   1. Structure constants from the six static frames (the `static` rows: frozen LFO, sweep
-     turning points of three sweep windows). Model, the prototype's own equations evaluated in
-     closed form with TPT (prewarped bilinear) one-poles at 48 kHz:
+     turning points of three sweep windows). Model, the prototype's own analog equations in
+     closed form:
          H = dry + wet * Ha * P^4 / (1 - c * F * P^4)
          Ha = (s + w_za)(s + w_zb) / ((s + w_p1)(s + w_p2)),  F = s (s + w_zf) / ((s + w_p1)(s + w_p2))
      Free: c, f_p1, f_p2, f_zf, f_za, f_zb, dry, wet, and one break frequency per frame (nuisance).
@@ -116,23 +121,22 @@ def nelder_mead(fun, x0, step, iters=400, tol=1e-10):
     return pts[int(np.argmin(vals))], min(vals)
 
 
-def p90_notch_depth(beta, f_lag, fc, fs=48000.0):
-    """Notch-1 level (dB) of the block loop at break frequency fc, TPT one-poles at fs, lag in the
-    feedback path: wet = A S2 A^2 / (1 + beta L A^2), out = (x + wet) / 2."""
+def p90_notch_depth(beta, f_lag, fc):
+    """Notch-1 level (dB) of the analog block loop at break frequency fc, lag in the feedback path:
+    wet = A S2 A^2 / (1 + beta L A^2), out = (x + wet) / 2."""
     f = fc * np.exp(np.linspace(math.log(0.3), math.log(0.65), 1500))
-    z = np.exp(2j * np.pi * f / fs); sp = (1 - 1 / z) / (1 + 1 / z)
-    g = math.tan(math.pi * fc / fs); gl = math.tan(math.pi * min(f_lag, 0.49 * fs) / fs)
+    sp = 1j * f; g = fc; gl = f_lag
     A = (sp - g) / (sp + g); S2 = ((1 + beta) * sp - g) / (sp + g); L = gl / (gl + sp)
     return float(20 * np.log10(np.abs(0.5 + 0.5 * A * S2 * A * A / (1 + beta * L * A * A)).min()))
 
 
-def p90_notch_table(beta, f_lag, fs=48000.0):
-    """Notch-1 frequency of the frozen block response against the break frequency fc."""
+def p90_notch_table(beta, f_lag):
+    """Notch-1 frequency of the frozen analog block response against the break frequency fc."""
     fcg = np.exp(np.linspace(math.log(400.0), math.log(6000.0), 300)); out = []
-    gl = math.tan(math.pi * min(f_lag, 0.49 * fs) / fs)
+    gl = f_lag
     for fc in fcg:
         f = fc * np.exp(np.linspace(math.log(0.35), math.log(0.6), 4001))
-        z = np.exp(2j * np.pi * f / fs); sp = (1 - 1 / z) / (1 + 1 / z); g = math.tan(math.pi * fc / fs)
+        sp = 1j * f; g = fc
         A = (sp - g) / (sp + g); S2 = ((1 + beta) * sp - g) / (sp + g); L = gl / (gl + sp)
         h = np.log(np.abs(0.5 + 0.5 * A * S2 * A * A / (1 + beta * L * A * A))); k = int(np.argmin(h))
         d = 0.5 * (h[k - 1] - h[k + 1]) / (h[k - 1] - 2 * h[k] + h[k + 1])
@@ -219,14 +223,14 @@ def main():
         dep = np.array([p90_notch_depth(beta, f_lag, f) for f in grid])
         return float(np.median(np.interp(np.log(fc), np.log(grid), dep)))
     target = float(np.mean([v["depth"] for v in blk]))
-    lo_f, hi_f = 2000.0, 0.49 * 48000
+    lo_f, hi_f = 2000.0, 60000.0
     for _ in range(30):                  # deeper notch for a higher lag frequency
         mid = math.sqrt(lo_f * hi_f)
         m = float(np.mean([depth_median(mid, v) for v in blk]))
         lo_f, hi_f = (mid, hi_f) if m > target else (lo_f, mid)
     f_lag = math.sqrt(lo_f * hi_f)
     print(f"# Phase 90 block: measured notch-1 depth {target:.2f} dB (mean of medians) -> feedback lag {f_lag:.0f} Hz "
-          f"(TPT at 48 kHz: a {1e6/(2*48000*math.tan(math.pi*f_lag/48000)):.1f} us delay at low frequencies)")
+          f"(a {1e6/(2*math.pi*f_lag):.1f} us delay at low frequencies)")
     for k, v in sorted(T.items()):
         if k.startswith("p9_block"): print(f"#   {k}: model median depth {depth_median(f_lag, v):.2f} dB, measured {v['depth']:.2f} dB")
     print(f"P90_FB_LAG_HZ = {f_lag:.0f}")
@@ -236,17 +240,18 @@ def main():
     dmw, dpw = 10 ** (dep / 20), 10 ** (pk / 20)
     print(f"# Small Stone Color off: depth {dep:.2f} dB, peak {pk:.2f} dB -> dry {(dpw+dmw)/2:.4f}, wet {(dpw-dmw)/2:.4f}")
     print(f"SS_OFF dry = {(dpw+dmw)/2:.2f}, wet = {(dpw-dmw)/2:.2f}")
-    ss_off_check(P, TJ.read_tsv(a.traj))
+    ss_off_fit(P, TJ.read_tsv(a.traj))
 
     if a.skip_color: return
     color_fit(a, T, P)
 
 
-def ss_off_check(P, TR, fs=48000.0):
-    """Check only (the constants are not changed): Small Stone Color off sweep range and LFO curvature
-    refitted to the ss_off trajectories. With dry > wet the notches sit where P^4 = -1, so notch 1 is
-    fs/pi atan(tan(pi fc/fs) tan(pi/8)) at every instant; the model is the prototype's
-    smallstone_break_hz() sampled at the 200 bin phases. Least squares on ln f1 with the best phase shift."""
+def ss_off_fit(P, TR):
+    """Small Stone Color off sweep range and LFO curvature fitted to the ss_off trajectories. With
+    dry > wet the notches sit where P^4 = -1, so notch 1 is tan(pi/8) fc at every instant (analog, and
+    rendered at every rate); the model is the prototype's smallstone_break_hz() sampled at the 200 bin
+    phases. Least squares on ln f1 with the best phase shift. Sets P.SS_OFF f_lo, f_hi and P.SS_KAPPA
+    (the LFO is shared with Color on)."""
     import trajectory as TJ
     rows = [(k, v) for k, v in sorted(TR.items()) if k.startswith("ss_off")]
     if not rows: return
@@ -255,19 +260,20 @@ def ss_off_check(P, TR, fs=48000.0):
         P.SS_OFF["f_lo"], P.SS_OFF["f_hi"] = q[0], q[1]; P.SS_KAPPA = q[2]
         n = 4000; t = np.arange(n) / n * per
         fc = P.smallstone_break_hz(n, n / per, 1 / per, 0.5, False)
-        n1 = fs / np.pi * np.arctan(np.tan(np.pi * fc / fs) * math.tan(math.pi / 8))
+        n1 = fc * math.tan(math.pi / 8)
         return TJ.fold(t, n1, per, skip=0.0)[1]
     def cost(q):
         if not (50 < q[0] < 2000 and 1000 < q[1] < 20000 and 0.01 < q[2] < 3): return 1e9
         return sum(TJ.traj_error(v["f1"], model(q, v["period"]), max_shift=0.03, steps=61)[0] ** 2 for _, v in rows)
     used = (P.SS_OFF["f_lo"], P.SS_OFF["f_hi"], P.SS_KAPPA)
     q, _ = nelder_mead(cost, list(used), [20.0, 400.0, 0.1], iters=300)
-    print(f"# Small Stone Color off, check only (constants not changed): trajectories.tsv gives f_lo {q[0]:.1f} Hz, f_hi {q[1]:.0f} Hz, "
-          f"kappa {q[2]:.3f}; used {used[0]:.0f} Hz, {used[1]:.0f} Hz, {used[2]:.2f}")
+    print(f"# Small Stone Color off: trajectories.tsv gives f_lo {q[0]:.1f} Hz, f_hi {q[1]:.0f} Hz, kappa {q[2]:.3f} "
+          f"(start: {used[0]:.1f} Hz, {used[1]:.0f} Hz, {used[2]:.3f})")
     for k, v in rows:
-        r_used = TJ.traj_error(v["f1"], model(used, v["period"])); r_fit = TJ.traj_error(v["f1"], model(q, v["period"]))
-        print(f"#   {k}: trajectory {r_used[0]:.2f} % rms ({r_used[1]:+.2f} % largest) with the used constants, {r_fit[0]:.2f} % ({r_fit[1]:+.2f} %) refitted")
-    P.SS_OFF["f_lo"], P.SS_OFF["f_hi"] = used[0], used[1]; P.SS_KAPPA = used[2]
+        r_fit = TJ.traj_error(v["f1"], model(q, v["period"]))
+        print(f"#   {k}: trajectory {r_fit[0]:.2f} % rms ({r_fit[1]:+.2f} % largest)")
+    P.SS_OFF["f_lo"], P.SS_OFF["f_hi"] = float(q[0]), float(q[1]); P.SS_KAPPA = float(q[2])
+    print(f"SS_OFF f_lo={q[0]:.1f}, f_hi={q[1]:.1f}\nSS_KAPPA = {q[2]:.3f}")
 
 
 # ------------------------------------------------------------------ Small Stone, Color on
@@ -280,9 +286,9 @@ def read_static(path):
     return hz, frames
 
 
-def color_static_model(hz, fs=48000.0):
-    z = np.exp(2j * np.pi * hz / fs); sp = (1 - 1 / z) / (1 + 1 / z)      # bilinear s', TPT prewarp per one-pole
-    def g(f): return math.tan(math.pi * min(f, 0.49 * fs) / fs)
+def color_static_model(hz):
+    sp = 1j * hz                                                            # analog
+    def g(f): return f
     def lp(f): return g(f) / (g(f) + sp)
     def resp(par, fc):
         c, f1, f2, fzf, fza, fzb, dry, wet = par
@@ -343,7 +349,7 @@ def color_track(P, rows, f_lo, f_hi, quasi):
         else:
             secs = take[tag][3]; ind = f"{measure.W}/probe{secs}"
             xs = np.stack([track.read_wav(f"{ind}/tone_{j:02d}.wav")[0][0] for j in range(track.read_grid(ind)[3])], axis=1)
-            y = P.render(xs, track.FS, rate=1 / v["period"], voicing="smallstone", color=True)
+            y = P.render(xs, track.FS, rate=1 / v["period"], voicing="smallstone", color=True, makeup=False)
             import tempfile, shutil
             d = tempfile.mkdtemp(dir=measure.W)
             for j in range(y.shape[1]): track.write_wav(f"{d}/tone_{j:02d}.wav", y[:, j])
