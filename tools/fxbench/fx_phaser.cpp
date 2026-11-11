@@ -1,10 +1,14 @@
 // fxbench adapter for the phaser voicings of the mod block (docs/FX-ENGINES.md §4.6).
-// Keys: model rate depth mix color sync_phase on (0 skips process()). The legacy reference is the old
-// Modulation block running its phaser.
+// Keys: model rate depth mix color sync_phase on (0 skips process()), and the test key
+// freeze_u (hold the Phase 90 / Small Stone sweep at u in [-1, 1]; absent = running).
+// --trace writes the LFO phase in cycles of each block's last sample: use --block=1 for a
+// per-sample trace. The legacy reference is the old Modulation block running its phaser.
 #include "FxBench.h"
 #include "legacy/LegacyFx.h"
 
 #include "../../src/dsp/Phaser.h"
+
+#include <limits>
 
 namespace
 {
@@ -71,12 +75,20 @@ public:
         p.color = a.get ("color", p.color ? 1.0 : 0.0) > 0.5;
         p.syncPhase = a.get ("sync_phase", p.syncPhase);
         phaser.setParameters (p);
+        phaser.freezeSweep (a.get ("freeze_u", std::numeric_limits<double>::quiet_NaN()));
     }
 
     void process (juce::AudioBuffer<float>& io, int) override
     {
         if (on)
             phaser.process (juce::dsp::AudioBlock<float> (io));
+    }
+
+    int traceChannels() const override { return 1; }
+
+    void trace (float* const* dst, int numSamples) override
+    {
+        juce::FloatVectorOperations::fill (dst[0], (float) phaser.getLfoPhase(), numSamples);
     }
 
     std::unique_ptr<fxbench::Effect> makeLegacy() const override { return std::make_unique<LegacyModBench>(); }
@@ -87,5 +99,5 @@ private:
 };
 
 FXBENCH_REGISTER ("phaser", PhaserBench,
-                  "model(0 Classic,1 Phase 90,2 Small Stone) rate depth mix color(0/1) sync_phase on(0/1)");
+                  "model(0 Classic,1 Phase 90,2 Small Stone) rate depth mix color(0/1) sync_phase on(0/1) freeze_u(test)");
 } // namespace
