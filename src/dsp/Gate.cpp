@@ -20,13 +20,11 @@ constexpr double kGateHoldTime = 0.01;
 constexpr double kGateCloseTime = 0.05;
 
 // --- Tight and Smooth (docs/FX-ENGINES.md §4.1.5) ----------------------------
-constexpr double kOpenSeconds = 0.0002;                // linear, mute to full gain [choice: no more splatter than the 0.5 ms / 60 dB dB-ramp it replaces, check_gate X16]
 constexpr float kHysteresisDb = 6.0f;                  // [study: R1, inside the references' 4.8-9.5 dB]
 constexpr double kWindowSeconds = 0.012;               // half period of 42 Hz [study: R1 Nwin]
 constexpr float kExpanderSlope = 3.0f;                 // Smooth below the close level [study: R1]
 // 4th-order Butterworth high-pass as two sections: at the 75 Hz default a low E reads 1.7 dB
 // low (the 2nd-order 90 Hz filter read 3.9) and 50 / 60 Hz hum is cut 14 / 8 dB (was 11 / 8).
-// Its longer ringing does not delay a stopped note: the stop detector below ignores it.
 // [choice, check_gate X20, G15; section damping 2cos(pi/8), 2cos(3pi/8)]
 constexpr double kHighPassDamping[2] { 1.8477590650225735, 0.7653668647301796 };
 constexpr float kScHpfOffHz = 20.5f;                   // at or below: no sidechain filter [§4.1.2]
@@ -35,25 +33,52 @@ constexpr float kPeakFloor = 1.0e-9f;                  // Smooth's log guard [§
 constexpr float kSidechainLimit = 1.0e6f;              // [choice: fx::sanitise's bound, but clamped so a huge input still opens the gate]
 constexpr double kFlushBelow = 1.0e-15;                // filter state, once per block [§2.6]
 constexpr float kDbToGain = 0.11512925464970229f;      // ln(10) / 20
+// The state machine reads the lower of the filtered and the unfiltered windowed peak: the 4th-order
+// filter rings for tens of ms after a note stops (up to 45 ms more after a loud low note over a deep
+// floor), the unfiltered signal stops with the note. On a guitar note the unfiltered peak is the
+// higher, so the hysteresis stays whole (check_gate X10, B1); hum keeps the filtered one lower.
 
-// How long an open gate waits below the close level depends on how far the level has fallen
-// from its recent peak. A note that stops (palm mute, a choked chord) falls 30 dB or more and
-// closes after the hold; a decaying chord whose strings beat, or a tremolo, dips a few dB
-// around the threshold and is ridden. [choice, check_gate X10-X13: every verifier chord and
-// beating case, gb2.py / gb.py, and the palm-mute gaps]
-constexpr float kRefReleaseDbPerSecond = 20.0f;        // the recent peak forgets this fast
-constexpr float kShallowFallDb = 16.0f;                // at or within: wait kRideSeconds
-constexpr float kDeepFallDb = 26.0f;                   // at or beyond: wait the hold
-constexpr double kRideSeconds = 0.4;                   // longest beat trough ridden: 1 Hz, 15 dB swing
-constexpr double kWaitDone = 1.0 - 1.0e-9;
-constexpr double kStopCornerRatio = 2.0;               // the stop detector's one-pole, x the sidechain corner: 50/60 Hz -10/-9 dB
+// The closing rule (Gate.h). How fast the level fell through the hysteresis band tells a stop from
+// a fade, not how far it fell: a hand stop crosses it in 1 to 44 ms whatever the floor, a decay at
+// 60 dB/s takes 100 ms. [choice, check_gate A1-A4, X10-X12, B1, B2, C]
+constexpr double kFastFallSeconds = 0.05;              // the band in less: a stop, wait the hold
+constexpr double kRideRatio = 2.0;                     // slower: wait twice the band time (a beat trough lasts up to 1.7x it) ...
+constexpr float kStillFallingRatio = 0.89125094f;      // ... from the last new low 1 dB under the one before
+constexpr float kReboundRatio = 2.0f;                  // and from scratch once the level climbs 6 dB back
+constexpr double kRideMaxSeconds = 1.0;
+// Dips the level came back from: a fall of kDipDb under its own maximum over kFastFallSeconds and a
+// return to within kBackDb of it. With the gate open (a chord's partials beating 15 to 40 times a
+// second, which the window cannot fill) they lengthen the wait after a stop, by at most 20 ms.
+constexpr float kDipDb = 6.0f;
+constexpr float kBackDb = 3.0f;
+constexpr double kDipMaxSeconds = 0.2;
+constexpr double kExtendMaxSeconds = 0.02;
+constexpr double kExtendRatio = 1.25;
+constexpr double kExtendMarginSeconds = 0.001;
+constexpr double kDipForget = 0.04;                    // memory lost per sample: 40 ms a second
+// A beat trough that falls as fast as a stop cannot be told from one: the gate reaches -20 dB on
+// the stop's timing, then falls only 20 dB per 1.5 remembered dip lengths (troughs lengthen as the
+// note decays), so the trough costs a partial dip, not a cut to mute. Dips the gate closed in count
+// here, not in the wait, and only if it reopened as slowly as a beat crest climbs (a palm-muted
+// note reopens it at once).
+constexpr float kGentleFromDb = -20.0f;
+constexpr double kGentleDbPerDip = 20.0 / 1.5;
+constexpr double kDipRiseSeconds = 0.015;
+
+// Opening follows the onset: half as long as the level took to climb the hysteresis band, from
+// version 2's 0.2 ms linear rise for a pick to a 5 ms smoothstep for a swell; linear at the
+// shortest (a 0.2 ms smoothstep splatters more), smoothstep from twice that. [choice, check_gate D1, D2, X16]
+constexpr double kOpenRatio = 0.5;
+constexpr double kOpenMinSeconds = 0.0002;
+constexpr double kOpenMaxSeconds = 0.005;
 
 // Smooth's floor estimate while closed: the dB peak level, averaged over half the time since the
-// gate closed (or since the level jumped), up to kFloorTauMaxSeconds, so it lands on a new floor
-// at once and then holds still on hiss and hum. [choice, check_gate X14]
-constexpr float kFloorRestartDb = 6.0f;
+// gate closed, up to kFloorTauMaxSeconds; the expander gain follows it at most kFloorSlewDbPerSecond,
+// so a floor that jumps or wobbles moves no faster. [choice, check_gate X14, E1]
 constexpr double kFloorTauGrowth = 0.5;
 constexpr double kFloorTauMaxSeconds = 0.2;
+constexpr double kFloorSlewDbPerSecond = 100.0;        // 1 dB per 10 ms
+constexpr double kRangeSeconds = 0.01;                 // range moves, one-pole in dB, per sample [check_gate G1]
 
 // --- mode switches and meters -------------------------------------------------
 constexpr float kSwitchSeconds = 0.02f;                // linear curve crossfade [§4.1.8]
@@ -285,70 +310,72 @@ struct MaxWindow
     }
 };
 
-/** A windowed peak and its recent peak, released at kRefReleaseDbPerSecond. */
-struct FallMeter
+/** One gain ramp (Tight's or Smooth's), in dB. Opening rises in linear gain from where it was;
+    closing falls at the release rate to the closed target, which it then follows. */
+struct Ramp
 {
-    MaxWindow window;
-    float peak = 0.0f, ref = kPeakFloor;
-
-    void clear() noexcept
-    {
-        window.clear();
-        peak = 0.0f;
-        ref = kPeakFloor;
-    }
-
-    void push (float a, float refDecay) noexcept
-    {
-        peak = window.push (a);
-        ref = juce::jmax (peak, juce::jmax (ref * refDecay, kPeakFloor));
-    }
-
-    /** Under `level` and at least the deep fall below the recent peak. */
-    bool stopped (float level, float deepRatio) const noexcept { return peak < level && peak <= ref * deepRatio; }
+    float gr = -90.0f, from = 0.0f, phase = 1.0f;
+    bool closing = false;
 };
 
 /** Tight and Smooth share one detector and one state machine (§4.1.5); only the closed
-    target differs, so both gain-reduction ramps run side by side every sample and a switch
-    between the two is a crossfade of two live curves. */
+    target differs, so both gain ramps run side by side every sample and a switch between the
+    two is a crossfade of two live curves. */
 class PeakGate
 {
 public:
     void prepare (double newSampleRate)
     {
         sampleRate = newSampleRate;
-        const int windowLength = juce::jmax (1, (int) std::lround (kWindowSeconds * sampleRate));
-        main.window.prepare (windowLength);
-        raw.window.prepare (windowLength);
-        stop.window.prepare (windowLength);
+        windowSamples = juce::jmax (1, (int) std::lround (kWindowSeconds * sampleRate));
+        main.prepare (windowSamples);
+        raw.prepare (windowSamples);
+        fastSamples = (int) std::lround (kFastFallSeconds * sampleRate);
+        crest.prepare (juce::jmax (1, fastSamples));
 
-        openStep = (float) (1.0 / (kOpenSeconds * sampleRate));
-        refDecay = (float) std::pow (10.0, -kRefReleaseDbPerSecond / (20.0 * sampleRate));
-        deepRatio = std::pow (10.0f, -kDeepFallDb / 20.0f);
-        shallowRatio = std::pow (10.0f, -kShallowFallDb / 20.0f);
-        rideSamples = kRideSeconds * sampleRate;
+        rideMax = kRideMaxSeconds * sampleRate;
+        dipMax = (int) std::lround (kDipMaxSeconds * sampleRate);
+        riseSlow = (int) std::lround (kDipRiseSeconds * sampleRate);
+        extendMax = kExtendMaxSeconds * sampleRate;
+        extendMargin = kExtendMarginSeconds * sampleRate;
+        dipRatio = std::pow (10.0f, -kDipDb / 20.0f);
+        backRatio = std::pow (10.0f, (kDipDb - kBackDb) / 20.0f);
+        openMin = kOpenMinSeconds * sampleRate;
+        openMax = kOpenMaxSeconds * sampleRate;
         floorTauMax = kFloorTauMaxSeconds * sampleRate;
         floorGrowSamples = (int) std::ceil (floorTauMax / kFloorTauGrowth);
+        floorSlew = (float) (kFloorSlewDbPerSecond / sampleRate);
+        rangeCoeff = (float) (1.0 - std::exp (-1.0 / (kRangeSeconds * sampleRate)));
         lastThreshold = lastRelease = lastHold = lastRange = lastHpf = -1.0e9f;
         reset();
     }
 
-    /** Closed at the range, windows empty, filters at rest. */
+    /** Closed at the range, windows empty, filters at rest, nothing remembered. */
     void reset() noexcept
     {
         for (auto& section : hpf)
             section.clear();
 
-        stopLowpass = 0.0;
         main.clear();
         raw.clear();
-        stop.clear();
+        crest.clear();
         open = false;
-        waited = 0.0;
-        stoppedFor = 0;
+        below = 0;
+        crossed = -1;
+        slowFall = false;
+        wait = 0.0;
+        sinceOpen = sinceLow = kLongAgo;
+        dipActive = dipBlocked = dipTainted = false;
+        dipAge = pendingDip = 0;
+        reopenedSlowly = false;
+        dipRef = lowest = lowMark = 0.0f;
+        memory = closedMemory = 0.0;
         floorDb = 0.0f;
         floorSince = 0;
-        grTight = grSmooth = range;
+        settle = windowSamples;
+        range = rangeTarget;
+        mute = range <= kMuteDb;
+        tight = smooth = Ramp { range, 0.0f, 1.0f, false };
         invalidateCaches();
     }
 
@@ -360,7 +387,6 @@ public:
             openLevel = std::pow (10.0f, thresholdDb / 20.0f);
             closeLevel = openLevel * std::pow (10.0f, -kHysteresisDb / 20.0f);
             smoothOffsetDb = (kExpanderSlope - 1.0f) * 20.0f * std::log10 (closeLevel);
-            invalidateCaches();
         }
 
         if (! juce::exactlyEqual (releaseMs, lastRelease))
@@ -373,16 +399,12 @@ public:
         {
             lastHold = holdMs;
             holdSamples = (double) std::lround ((double) holdMs * 0.001 * sampleRate);
-            lnHold = std::log (juce::jmax (1.0, holdSamples));
-            lnRide = std::log (juce::jmax (rideSamples, holdSamples));
         }
 
         if (! juce::exactlyEqual (rangeDb, lastRange))
         {
             lastRange = rangeDb;
-            range = rangeDb;
-            mute = rangeDb <= kMuteDb;
-            invalidateCaches();
+            rangeTarget = rangeDb;
         }
 
         if (! juce::exactlyEqual (scHpfHz, lastHpf))
@@ -398,17 +420,12 @@ public:
 
                 for (int i = 0; i < 2; ++i)
                     hpf[i].setup (g, kHighPassDamping[i]);
-
-                const double g1 = std::tan (pi * juce::jmin (kStopCornerRatio * scHpfHz, 0.49 * sampleRate) / sampleRate);
-                stopG = g1 / (1.0 + g1);
             }
 
             if (hpfOn != wasOn)
             {
                 for (auto& section : hpf)
                     section.clear();
-
-                stopLowpass = 0.0;
             }
         }
     }
@@ -416,102 +433,143 @@ public:
     /** One sample of the mono sidechain: filters, windowed peaks, state, both ramps. */
     void advance (float s) noexcept
     {
-        const double x = (double) s;
-        double filtered = x, stopFiltered = x;
+        float peak, level;
 
         if (hpfOn)
         {
-            filtered = hpf[1].process (hpf[0].process (x));
-
-            const double v = (x - stopLowpass) * stopG;
-            const double lp = v + stopLowpass;
-            stopLowpass = lp + v;
-            stopFiltered = x - lp;
-        }
-
-        main.push ((float) std::abs (filtered), refDecay);
-        raw.push (std::abs (s), refDecay);
-        stop.push ((float) std::abs (stopFiltered), refDecay);
-
-        const float peak = main.peak;
-        const bool wasOpen = open;
-
-        // The note has stopped, whatever the sidechain filter is still ringing (up to 10 ms
-        // after a loud low note): unfiltered, or through a one-pole that keeps hum out, the
-        // level is under the close level and far below its recent peak. Neither reads more
-        // than 4.9 dB under the main filter, inside the 6 dB hysteresis, so this never closes
-        // on a level that could reopen the gate.
-        if (raw.stopped (closeLevel, deepRatio) || stop.stopped (closeLevel, deepRatio))
-        {
-            if (open && (double) ++stoppedFor > holdSamples)
-                open = false;
+            peak = main.push ((float) std::abs (hpf[1].process (hpf[0].process ((double) s))));
+            level = juce::jmin (peak, raw.push (std::abs (s)));
         }
         else
         {
-            stoppedFor = 0;
+            peak = level = main.push (std::abs (s));
+            raw.push (std::abs (s));   // kept warm for when the filter comes back on
+        }
 
-            if (peak >= openLevel)
+        mainPeak = peak;
+        sinceOpen = level >= openLevel ? 0 : juce::jmin (sinceOpen + 1, kLongAgo);
+        sinceLow = level < closeLevel ? 0 : juce::jmin (sinceLow + 1, kLongAgo);
+        learnDips (level);
+        followRange();
+
+        if (level >= openLevel)
+        {
+            below = 0;
+            crossed = -1;
+
+            if (! open)
             {
                 open = true;
-                waited = 0.0;
-            }
-            else if (open)
-            {
-                if (peak >= closeLevel)
-                    waited = 0.0;
-                else if ((waited += 1.0 / (waitSamples() + 1.0)) >= kWaitDone)
-                    open = false;
+                reopenedSlowly = sinceLow >= riseSlow;
+
+                if (reopenedSlowly)
+                    closedMemory = juce::jmax (closedMemory, (double) pendingDip);
+
+                pendingDip = 0;
+                const double steps = juce::jlimit (openMin, openMax, kOpenRatio * (double) sinceLow + 1.0);
+                openStep = 1.0f / (float) steps;
+                openCurve = (float) juce::jlimit (0.0, 1.0, steps / openMin - 1.0);
+                startOpening (tight, tightCache);
+                startOpening (smooth, smoothCache);
             }
         }
-
-        float smoothTarget = 0.0f;
-
-        if (! open)
+        else if (open)
         {
-            // The lower reading, so filter ringing after a stopped note does not hold the
-            // expander up; otherwise the filtered one (hum stays out).
-            const float level = juce::jmin (peak, raw.peak);
-            const float levelDb = 20.0f * std::log10 (juce::jmax (level, kPeakFloor));
-
-            if (wasOpen || levelDb - floorDb > kFloorRestartDb)
-                floorSince = 0;
-
-            if (floorSince == 0)
-                floorDb = levelDb;
+            if (level >= closeLevel)
+            {
+                below = 0;
+                crossed = -1;
+            }
             else
-                floorDb += (levelDb - floorDb) * (floorSince < floorGrowSamples
-                                                      ? (float) (1.0 / juce::jmax (1.0, kFloorTauGrowth * floorSince))
-                                                      : (float) (1.0 / floorTauMax));
+            {
+                if (crossed < 0)
+                {
+                    crossed = 0;
+                    wait = waitSamples();
+                    slowFall = sinceOpen > fastSamples;
+                    lowest = lowMark = level;
+                }
 
-            floorSince = juce::jmin (floorSince + 1, floorGrowSamples);
-            smoothTarget = juce::jlimit (range, 0.0f, (kExpanderSlope - 1.0f) * floorDb - smoothOffsetDb);
+                ++crossed;
+
+                // After a slow fall the wait runs from where the level stops falling, and starts
+                // over if it climbs back (a beat trough, not a decay on the floor); 1 s at most.
+                if (slowFall)
+                {
+                    lowest = juce::jmin (lowest, level);
+
+                    if (level >= lowest * kReboundRatio)
+                    {
+                        below = crossed = 0;
+                        lowest = lowMark = level;
+                    }
+                    else if (level <= lowMark * kStillFallingRatio)
+                    {
+                        below = 0;
+                        lowMark = level;
+                    }
+                }
+
+                if ((double) ++below > wait || (slowFall && (double) crossed > rideMax))
+                {
+                    open = false;
+                    crossed = -1;
+                    tight.closing = smooth.closing = true;
+                    const double dip = juce::jmax (memory, closedMemory);
+                    gentleStep = dip > wait ? juce::jmin (releaseStep, (float) (kGentleDbPerDip / dip)) : releaseStep;
+                    floorSince = 0;
+                }
+            }
         }
 
-        grTight = slew (grTight, open ? 0.0f : range, tightCache);
-        grSmooth = slew (grSmooth, smoothTarget, smoothCache);
+        if (open)
+        {
+            advanceOpening (tight);
+            advanceOpening (smooth);
+            return;
+        }
+
+        const float levelDb = 20.0f * std::log10 (juce::jmax (level, kPeakFloor));
+
+        // Until the window has filled once after a reset, the estimate and the expander take the
+        // level as it comes: there is no floor yet for the slew to protect.
+        const bool settling = settle > 0;
+
+        if (settling)
+            --settle;
+
+        if (floorSince == 0 || settling)
+            floorDb = levelDb;
+        else
+            floorDb += (levelDb - floorDb) * (floorSince < floorGrowSamples
+                                                  ? (float) (1.0 / juce::jmax (1.0, kFloorTauGrowth * floorSince))
+                                                  : (float) (1.0 / floorTauMax));
+
+        floorSince = juce::jmin (floorSince + 1, floorGrowSamples);
+
+        advanceClosed (tight, range, kNoSlewLimit);
+        advanceClosed (smooth, juce::jlimit (range, 0.0f, (kExpanderSlope - 1.0f) * floorDb - smoothOffsetDb),
+                       settling ? kNoSlewLimit : floorSlew);
     }
 
-    float tightGain() noexcept { return gainFor (grTight, tightCache); }
-    float smoothGain() noexcept { return gainFor (grSmooth, smoothCache); }
+    float tightGain() noexcept { return gainFor (tight.gr, tightCache); }
+    float smoothGain() noexcept { return gainFor (smooth.gr, smoothCache); }
     float gainOf (int mode) noexcept { return mode == (int) GateFx::Mode::smooth ? smoothGain() : tightGain(); }
-    float grOf (int mode) const noexcept { return mode == (int) GateFx::Mode::smooth ? grSmooth : grTight; }
+    float grOf (int mode) const noexcept { return mode == (int) GateFx::Mode::smooth ? smooth.gr : tight.gr; }
 
     /** Once per block: filter states that went tiny or bad. */
     void endBlock() noexcept
     {
         for (auto& section : hpf)
             section.endBlock();
-
-        if (! (std::abs (stopLowpass) < 1.0e12) || std::abs (stopLowpass) < kFlushBelow)
-            stopLowpass = 0.0;
     }
 
-    float currentPeak() const noexcept { return main.peak; }
+    float currentPeak() const noexcept { return mainPeak; }
     bool isMuted (float gr) const noexcept { return mute && gr <= kMuteDb; }
-    float floorGain() const noexcept { return mute ? 0.0f : std::exp (range * kDbToGain); }
+    float floorGain() const noexcept { return rangeTarget <= kMuteDb ? 0.0f : std::exp (rangeTarget * kDbToGain); }
 
-    /** 2 open, 1 in the hysteresis band or holding, 0 closed (§4.1.5). */
-    int state() const noexcept { return open ? (main.peak >= openLevel ? 2 : 1) : 0; }
+    /** 2 open, 1 in the hysteresis band or waiting, 0 closed (§4.1.5). */
+    int state() const noexcept { return open ? (mainPeak >= openLevel ? 2 : 1) : 0; }
 
 private:
     struct GainCache
@@ -519,42 +577,113 @@ private:
         float gr = 1.0f, gain = 1.0f;
     };
 
-    /** Samples to wait under the close level at the present fall from the recent peak: the
-        hold for a deep fall, kRideSeconds for a shallow one, log-interpolated between. */
+    static constexpr int kLongAgo = 1 << 30;
+    static constexpr float kNoSlewLimit = 1.0e9f;
+
+    /** The wait under the close level, decided as the level crosses it (Gate.h). */
     double waitSamples() const noexcept
     {
-        if (main.peak <= main.ref * deepRatio)
-            return holdSamples;
+        const double extend = memory > 0.0 ? juce::jmin (extendMax, kExtendRatio * memory + extendMargin) : 0.0;
+        const double afterStop = holdSamples + extend;
 
-        if (main.peak >= main.ref * shallowRatio)
-            return std::exp (lnRide);
+        if (sinceOpen <= fastSamples)
+            return afterStop;
 
-        const double fallDb = 20.0 * std::log10 ((double) main.ref / (double) main.peak);
-        const double f = (fallDb - kShallowFallDb) / (kDeepFallDb - kShallowFallDb);
-        return std::exp (lnRide + f * (lnHold - lnRide));
+        return juce::jmax (afterStop, juce::jmin (rideMax, kRideRatio * (double) sinceOpen));
     }
 
-    /** Release: dB-linear. Attack: linear in gain, so the opening spends no time at
-        inaudible gains. */
-    float slew (float gr, float target, const GainCache& cache) const noexcept
+    /** Remembers how long the level's recent dips lasted (see kDipDb, kGentleFromDb). */
+    void learnDips (float level) noexcept
     {
-        const float d = target - gr;
+        const float top = crest.push (level) * dipRatio;
+        memory = juce::jmax (0.0, memory - kDipForget);
+        closedMemory = juce::jmax (0.0, closedMemory - kDipForget);
 
-        if (d > 0.0f)
+        if (dipActive)
         {
-            const float from = juce::exactlyEqual (gr, cache.gr) ? cache.gain : (isMuted (gr) ? 0.0f : std::exp (gr * kDbToGain));
-            const float next = from + openStep;
+            ++dipAge;
+            dipTainted = dipTainted || ! open;
 
-            if (next >= std::exp (target * kDbToGain))
-                return target;
+            if (level >= dipRef)
+            {
+                if (! dipTainted)
+                    memory = juce::jmax (memory, (double) dipAge);
+                else if (reopenedSlowly)
+                    closedMemory = juce::jmax (closedMemory, (double) dipAge);
+                else if (! open)
+                    pendingDip = dipAge;   // came back before the gate reopened: judged when it does
 
-            return std::log (next) / kDbToGain;
+                dipActive = false;
+            }
+            else if (dipAge > dipMax)
+            {
+                dipActive = false;
+                dipBlocked = true;
+            }
+        }
+        else if (dipBlocked)
+        {
+            dipBlocked = level < top;
+        }
+        else if (level < top)
+        {
+            dipActive = true;
+            dipTainted = ! open;
+            dipAge = 0;
+            reopenedSlowly = false;
+            dipRef = top * backRatio;
+        }
+    }
+
+    void followRange() noexcept
+    {
+        if (juce::exactlyEqual (range, rangeTarget))
+            return;
+
+        range += (rangeTarget - range) * rangeCoeff;
+
+        if (std::abs (rangeTarget - range) < 1.0e-3f)
+            range = rangeTarget;
+
+        if (const bool nowMute = range <= kMuteDb; nowMute != mute)
+        {
+            mute = nowMute;
+            invalidateCaches();
+        }
+    }
+
+    void startOpening (Ramp& r, GainCache& cache) noexcept
+    {
+        r.from = gainFor (r.gr, cache);
+        r.phase = r.gr >= 0.0f ? 1.0f : 0.0f;
+        r.closing = false;
+    }
+
+    void advanceOpening (Ramp& r) const noexcept
+    {
+        if (r.phase >= 1.0f)
+            return;
+
+        r.phase = juce::jmin (1.0f, r.phase + openStep);
+        const float p = r.phase;
+        const float shape = p + openCurve * (p * p * (3.0f - 2.0f * p) - p);
+        const float g = r.from + (1.0f - r.from) * shape;
+        r.gr = p >= 1.0f || g >= 1.0f ? 0.0f : std::log (juce::jmax (g, 1.0e-9f)) / kDbToGain;
+    }
+
+    /** Release to `target`, then follow it at most `slew` dB per sample. */
+    void advanceClosed (Ramp& r, float target, float slew) const noexcept
+    {
+        if (r.closing)
+        {
+            if (r.gr > target)
+                r.gr = juce::jmax (target, r.gr - (r.gr <= kGentleFromDb ? gentleStep : releaseStep));
+
+            r.closing = r.gr > target;
+            return;
         }
 
-        if (d < -releaseStep)
-            return gr - releaseStep;
-
-        return target;
+        r.gr += juce::jlimit (-slew, slew, target - r.gr);
     }
 
     float gainFor (float gr, GainCache& cache) const noexcept
@@ -576,22 +705,26 @@ private:
     double sampleRate = 48000.0;
 
     SvfHighPass hpf[2];
-    double stopG = 0.0, stopLowpass = 0.0;
     bool hpfOn = false;
 
-    FallMeter main, raw, stop;   // filtered, unfiltered, one-pole high-passed
+    MaxWindow main, raw, crest;   // filtered, unfiltered, recent maximum of the level
 
-    float openLevel = 1.0e-4f, closeLevel = 5.0e-5f, smoothOffsetDb = 0.0f;
-    float openStep = 0.1f, releaseStep = 0.04f, range = -90.0f, refDecay = 1.0f;
-    float deepRatio = 0.05f, shallowRatio = 0.16f;
-    double holdSamples = 0.0, rideSamples = 19200.0, lnHold = 0.0, lnRide = 0.0, floorTauMax = 9600.0;
-    int floorGrowSamples = 19200;
+    float openLevel = 1.0e-4f, closeLevel = 5.0e-5f, smoothOffsetDb = 0.0f, mainPeak = 0.0f;
+    float releaseStep = 0.04f, gentleStep = 0.04f, openStep = 1.0f, openCurve = 0.0f, floorSlew = 0.002f;
+    float dipRatio = 0.5f, backRatio = 1.4f, rangeCoeff = 0.002f;
+    float range = -90.0f, rangeTarget = -90.0f;
+    double holdSamples = 0.0, rideMax = 48000.0, extendMax = 960.0, extendMargin = 48.0;
+    double openMin = 9.6, openMax = 240.0, floorTauMax = 9600.0;
+    int fastSamples = 2400, dipMax = 4800, riseSlow = 240, floorGrowSamples = 19200;
     bool mute = true;
 
-    float grTight = -90.0f, grSmooth = -90.0f, floorDb = 0.0f;
-    int floorSince = 0, stoppedFor = 0;
-    bool open = false;
-    double waited = 0.0;
+    Ramp tight, smooth;
+    float floorDb = 0.0f, dipRef = 0.0f, lowest = 0.0f, lowMark = 0.0f;
+    int floorSince = 0, below = 0, crossed = -1, sinceOpen = 0, sinceLow = 0, settle = 0, windowSamples = 576;
+    int dipAge = 0, pendingDip = 0;
+    bool open = false, slowFall = false;
+    bool dipActive = false, dipBlocked = false, dipTainted = false, reopenedSlowly = false;
+    double wait = 0.0, memory = 0.0, closedMemory = 0.0;
 
     GainCache tightCache, smoothCache;
     float lastThreshold = -1.0e9f, lastRelease = -1.0e9f, lastHold = -1.0e9f, lastRange = -1.0e9f, lastHpf = -1.0e9f;
