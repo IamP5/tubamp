@@ -20,6 +20,8 @@ import type {
   EditorSizeLimits,
   ErrorResult,
   FileEntry,
+  IrInfo,
+  ToneRef,
   FxEmbedState,
   FxParamInfo,
   FxPluginEntry,
@@ -33,8 +35,10 @@ import type {
   SliderProperties,
   T3kBrowseRequest,
   T3kBrowseResult,
+  T3kInstalledFile,
   T3kModel,
   T3kModelsResult,
+  T3kPromptResult,
   T3kTone,
   ToggleParamId,
   ToggleParamState,
@@ -702,7 +706,50 @@ const loadedModel: ModelInfo = {
   ...mockGear("Marshall JCM800 Crunch"),
   isSlimmable: true,
   latencySamples: 90,
+  // As if it had been downloaded in the browser: the panel credits its creator.
+  tone: {
+    toneId: 1001,
+    title: "JCM800 2203 — Full Stack Roar",
+    creator: "tonehound",
+    gear: "amp",
+    size: "standard",
+    license: "t3k",
+    url: "https://www.tone3000.com/tones/1001",
+  },
 };
+
+/**
+ * The mock's reading of each file's sidecar: path → who made it. Filled when a
+ * simulated download completes; a file that was imported has no entry, and its
+ * panel shows the plain "Powered by TONE3000".
+ */
+const toneRefs = new Map<string, ToneRef>([
+  [loadedModel.path, loadedModel.tone as ToneRef],
+]);
+
+/**
+ * What the cab would report for a library entry. Deterministic and plausible:
+ * a name that says room / hall / plate / stereo is a two-channel, reverb-like
+ * IR, everything else a mono cabinet. The image follows the chain the way the
+ * real cab's does — true stereo only while no amp sits behind it.
+ */
+function irInfoFor(entry: FileEntry, chainOrder: readonly string[]): IrInfo {
+  const room = /room|hall|plate|space/i.test(entry.name);
+  const stereo = room || /stereo/i.test(entry.name);
+  const cabAt = chainOrder.indexOf("cab");
+  const ampAfter = cabAt >= 0 && chainOrder.indexOf("amp") > cabAt;
+  return {
+    ...entry,
+    channels: stereo ? 2 : 1,
+    sampleRateHz: 48000,
+    seconds: room ? 2.4 : 0.21,
+    reverbLike: room,
+    gainDb: room ? -6.2 : -24.6,
+    truncated: false,
+    image: !stereo ? "mono-file" : ampAfter ? "mono-path" : "stereo",
+    tone: toneRefs.get(entry.path) ?? null,
+  };
+}
 
 /**
  * The chain each preset restores, mirroring the real thing: a preset carries its
@@ -759,7 +806,11 @@ const state: UiState = {
   // capture into it (docs/SPLIT.md §1) — tracked regardless of whether amp2 is
   // in the chain right now.
   modelB: null,
-  ir: { path: `${IRS_DIR}/Greenback 4x12 SM57 Cap.wav`, name: "Greenback 4x12 SM57 Cap" },
+  ir: irInfoFor(
+    { path: `${IRS_DIR}/Greenback 4x12 SM57 Cap.wav`, name: "Greenback 4x12 SM57 Cap" },
+    ["amp"],
+  ),
+  missingMedia: { model: null, modelB: null, ir: null },
   models: [
     { path: `${MODELS_DIR}/Marshall JCM800 Crunch.nam`, name: "Marshall JCM800 Crunch" },
     { path: `${MODELS_DIR}/Fender Twin Clean.nam`, name: "Fender Twin Clean" },
@@ -771,6 +822,7 @@ const state: UiState = {
     { path: `${IRS_DIR}/Greenback 4x12 SM57 Cap.wav`, name: "Greenback 4x12 SM57 Cap" },
     { path: `${IRS_DIR}/V30 4x12 R121 Edge.wav`, name: "V30 4x12 R121 Edge" },
     { path: `${IRS_DIR}/Jensen 1x12 Ribbon.wav`, name: "Jensen 1x12 Ribbon" },
+    { path: `${IRS_DIR}/Studio Live Room Stereo.wav`, name: "Studio Live Room Stereo" },
   ],
   presets: [
     { name: "Init", path: `${PRESETS_DIR}/Init.tubamp`, favorite: false, tags: [] },
@@ -890,7 +942,15 @@ const TONE_SEEDS: ToneSeed[] = [
   ["112 Blue Alnico — Close 57", "studio_irs", "ir", "cab", "Single Celestion Blue in a Deluxe-style cab. The chime cap, close-miked and bright.", 15110, 1310, ["Celestion"], ["1x12", "alnico", "bright"], ["standard"], "2026-07-19"],
   ["4×12 Uber — T75/V30 X-Pattern", "ir_foundry", "ir", "cab", "Bogner Uberkab X-pattern quad. Scooped T75 sizzle plus V30 mids in one IR.", 22870, 1740, ["Bogner", "Celestion"], ["4x12", "x-pattern", "modern"], ["standard"], "2026-04-03"],
   ["Pine 1×10 — Lo-Fi Character", "studio_irs", "ir", "cab", "Vintage pine 1×10 with a worn ceramic speaker. Boxy on purpose — instant character.", 4310, 386, ["Supro"], ["1x10", "lofi", "character"], ["standard"], "2026-08-02"],
+  ["LA-2A Leveler — Slow Glue", "rack_room", "nam", "outboard", "Teletronix LA-2A on a DI guitar, peak reduction 40. Smooth optical squash before the amp.", 6210, 488, ["Teletronix"], ["compressor", "studio", "optical"], ["standard", "lite"], "2026-05-11"],
+  ["Tape Echo Saturation", "labtones", "nam", "experimental", "Just the preamp of a worn Echoplex, no repeats. Warm, slightly wobbly front end.", 3980, 402, ["Maestro"], ["tape", "preamp", "lofi"], ["standard"], "2026-07-08"],
+  ["Stone Chapel — Long Tail", "studio_irs", "ir", "space", "A 12th-century chapel, omni pair at 6 m. 3.8 s tail; use it as a reverb send.", 7120, 905, [], ["hall", "church", "long"], ["standard"], "2026-03-30"],
+  ["Plate 140 — Bright Room", "ir_foundry", "ir", "space", "EMT 140 plate, damper at 3. Short, bright, dense — the classic vocal plate on guitar.", 9840, 1012, ["EMT"], ["plate", "bright", "short"], ["standard"], "2026-06-12"],
+  ["Bedroom 5W — My First Capture", "mock_user", "nam", "amp", "My little 5 watt practice amp, captured in the closet. Surprisingly fat.", 112, 9, ["Fender"], ["practice", "clean"], ["standard", "nano"], "2026-08-04"],
+  ["Garage 2×12 — Phone Mic", "mock_user", "ir", "cab", "Captured with a phone mic. Fizzy on purpose.", 41, 3, [], ["2x12", "lofi"], ["standard"], "2026-08-05"],
 ];
+
+const LICENSES = ["t3k", "cc-by", "cc-by-nc", "cc-by-sa", "cco"];
 
 /** Inline thumbnail: exercises the <img> path, which a data URI reaches even
  *  though the WebView origin blocks remote images. */
@@ -930,6 +990,8 @@ function seedToTone(seed: ToneSeed, id: number, index: number): T3kTone {
     sizes,
     modelsCount: format === "ir" ? 1 + (title.length % 3) : sizes.length,
     createdAt,
+    license: LICENSES[index % LICENSES.length]!,
+    url: `https://www.tone3000.com/tones/${id}`,
   };
 }
 
@@ -948,6 +1010,7 @@ const CATALOG: T3kTone[] = TONE_SEEDS.flatMap((seed, i) => {
       favoritesCount: Math.round(tone.favoritesCount * 0.35),
       imageUrl: artFor(i + 1),
       createdAt: "2026-08-03",
+      url: `https://www.tone3000.com/tones/${tone.id + 1000}`,
     },
   ];
 });
@@ -962,13 +1025,38 @@ function trendScore(tone: T3kTone): number {
   );
 }
 
+/** Tones "this account" downloaded — the Recently used shelf. Seeded with a
+ *  few, grows as the mock downloads. Most recent first, like the endpoint. */
+const downloadedTones: number[] = [1104, 107];
+
+/** Deterministic "has a calibrated model" flag — every third capture. */
+function isCalibrated(tone: T3kTone): boolean {
+  return tone.format === "nam" && tone.id % 3 === 0;
+}
+
+function relevance(tone: T3kTone, needle: string): number {
+  const title = tone.title.toLowerCase();
+  if (title.startsWith(needle)) return 3;
+  if (title.includes(needle)) return 2;
+  return 1;
+}
+
 function browseCatalog(request: T3kBrowseRequest): T3kBrowseResult {
   const needle = request.query.trim().toLowerCase();
   let rows = CATALOG.filter((t) =>
     request.kind === "irs" ? t.format === "ir" : t.format === "nam",
   );
+  const profile = request.shelf !== "all";
   if (request.shelf === "favorites") rows = rows.filter((t) => favorites.has(t.id));
+  if (request.shelf === "downloaded")
+    rows = downloadedTones
+      .map((id) => rows.find((t) => t.id === id))
+      .filter((t): t is T3kTone => t !== undefined);
+  if (request.shelf === "created")
+    rows = rows.filter((t) => t.creator.username === state.t3k.username);
   if (request.gear) rows = rows.filter((t) => t.gear === request.gear);
+  if (request.calibrated && !profile && request.kind === "models")
+    rows = rows.filter(isCalibrated);
   if (needle)
     rows = rows.filter((t) =>
       [t.title, t.description, t.creator.username, ...t.makes, ...t.tags]
@@ -977,12 +1065,29 @@ function browseCatalog(request: T3kBrowseRequest): T3kBrowseResult {
         .includes(needle),
     );
 
+  // Same mapping as Tone3000Client::searchSort: no pick (or best-match
+  // without a query) is trending; profile shelves keep their own order for
+  // trending / best-match.
+  const sort =
+    request.sort === null || request.sort === "best-match"
+      ? needle
+        ? "best-match"
+        : "trending"
+      : request.sort;
   const sorted = [...rows];
-  if (request.sort === "newest")
+  if (sort === "newest")
     sorted.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  else if (request.sort === "downloads")
+  else if (sort === "oldest")
+    sorted.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  else if (sort === "downloads")
     sorted.sort((a, b) => b.downloadsCount - a.downloadsCount);
-  else sorted.sort((a, b) => trendScore(b) - trendScore(a));
+  else if (!profile && sort === "best-match")
+    sorted.sort(
+      (a, b) =>
+        relevance(b, needle) - relevance(a, needle) ||
+        b.downloadsCount - a.downloadsCount,
+    );
+  else if (!profile) sorted.sort((a, b) => trendScore(b) - trendScore(a));
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const page = Math.min(Math.max(1, request.page), totalPages);
@@ -1011,7 +1116,7 @@ function listToneModels(toneId: number): T3kModel[] {
       kind: "wav" as const,
     }));
   }
-  return tone.sizes.map((size, i) => ({
+  const files = tone.sizes.map((size, i) => ({
     id: toneId * 10 + i,
     name: `${tone.title} (${size})`,
     modelUrl: `https://tone3000.test/m/${toneId * 10 + i}.nam`,
@@ -1019,6 +1124,9 @@ function listToneModels(toneId: number): T3kModel[] {
     architecture: "2",
     kind: "nam" as const,
   }));
+  // The API returns files in no promised order; odd tones list the smallest
+  // size first so the "standard first" default pick is exercised.
+  return toneId % 2 === 1 ? files.reverse() : files;
 }
 
 /* Select-flow tones (the `t3kStartSelectFlow` path, unchanged): the last one has
@@ -1032,22 +1140,75 @@ const T3K_TONES: { toneId: number; models: T3kModel[] }[] = [
 let nextTone = 0;
 const downloads = new Map<number, number>();
 
-/** `?t3kfail` makes every simulated download die half-way, so the failure path
- *  (t3kError carrying a modelId, progress row cleared) is reachable in dev;
- *  `?t3kfavfail` does the same for the optimistic favorite toggle. */
+/** Dev flags (query string):
+ *  `?t3kfail`     every simulated download dies half-way (t3kError + modelId);
+ *  `?t3kfavfail`  the optimistic favorite toggle is rejected;
+ *  `?t3kslow`     every TONE3000 call is ~6× slower (watch the in-between states);
+ *  `?t3k429`      browse / list answer with the rate-limit message;
+ *  `?t3koffline`  browse / list answer with the offline message;
+ *  `?t3kprompt=x` the native search prompt answers "x" without a dialog
+ *                 (`?t3kprompt` alone = cancel). */
 const search = new URLSearchParams(window.location.search);
 const failDownloads = search.has("t3kfail");
 const failFavorites = search.has("t3kfavfail");
+const slowT3k = search.has("t3kslow");
+const rateLimited = search.has("t3k429");
+const offline = search.has("t3koffline");
+const t3kDelay = (ms: number): number => (slowT3k ? ms * 6 : ms);
 
-function simulateDownload(model: T3kModel): void {
+/* `?missing`: the session names a capture and an IR this machine does not have
+   — the amp and cab panels show which, instead of an unexplained empty slot. */
+if (search.has("missing")) {
+  state.missingMedia = {
+    model: "/Volumes/Studio/Captures/Bogner Shiva Lead.nam",
+    modelB: null,
+    ir: "/Volumes/Studio/IRs/Mesa OS 4x12 V30 SM57.wav",
+  };
+  state.model = null;
+  state.ir = null;
+}
+
+function t3kTransportError(): string | null {
+  if (offline) return "Could not reach TONE3000 — check your internet connection.";
+  if (rateLimited) return "TONE3000 is limiting requests — try again in 30 s.";
+  return null;
+}
+
+/** Mirrors Tone3000Client's slugify, so mock file names look like real ones. */
+function slugify(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "model";
+}
+
+/** The mock's sidecars: path → what `<file>.t3k.json` would say. */
+const installed: T3kInstalledFile[] = [];
+
+/* One capture that is already in the library from an earlier session, so the
+   "reuse the library copy" path of one-click load is reachable in dev. */
+{
+  const toneId = 113; // Dumble ODS — Holy Grail
+  const entry: FileEntry = {
+    path: `${MODELS_DIR}/dumble-ods-holy-grail-standard.nam`,
+    name: "dumble-ods-holy-grail-standard",
+  };
+  state.models = [...state.models, entry];
+  installed.push({ path: entry.path, toneId, modelId: toneId * 10, format: "nam" });
+}
+
+function simulateDownload(model: T3kModel, tone?: T3kTone): void {
   if (downloads.has(model.id)) return;
   let progress = 0;
   const step = (): void => {
-    progress = Math.min(1, progress + 0.03 + Math.random() * 0.05);
+    progress = Math.min(1, progress + (0.03 + Math.random() * 0.05) / (slowT3k ? 3 : 1));
     if (failDownloads && progress > 0.4) {
       downloads.delete(model.id);
       emit("t3kError", {
-        message: "Could not download the model from TONE3000 (HTTP 503).",
+        message:
+          "Download failed: TONE3000 is having trouble (HTTP 503) — try again in a moment.",
         modelId: model.id,
       });
       return;
@@ -1059,12 +1220,32 @@ function simulateDownload(model: T3kModel): void {
     }
     downloads.delete(model.id);
     // `kind` routes the file exactly as the C++ downloader does: models/ for
-    // captures, irs/ for impulse responses.
+    // captures, irs/ for impulse responses; the name is the slugified model name.
     const isIr = model.kind === "wav";
+    const stem = slugify(model.name);
     const entry: FileEntry = {
-      path: `${isIr ? IRS_DIR : MODELS_DIR}/${model.name}.${model.kind}`,
-      name: model.name,
+      path: `${isIr ? IRS_DIR : MODELS_DIR}/${stem}.${model.kind}`,
+      name: stem,
     };
+    // The sidecar is written before anything is announced (C++ does the same).
+    if (!installed.some((f) => f.path === entry.path))
+      installed.push({
+        path: entry.path,
+        toneId: tone?.id ?? 0,
+        modelId: model.id,
+        format: isIr ? "ir" : "nam",
+      });
+    if (tone)
+      toneRefs.set(entry.path, {
+        toneId: tone.id,
+        title: tone.title,
+        creator: tone.creator.username,
+        gear: tone.gear,
+        size: model.size,
+        license: tone.license ?? "",
+        url: tone.url ?? `https://www.tone3000.com/tones/${tone.id}`,
+      });
+    if (tone && !downloadedTones.includes(tone.id)) downloadedTones.unshift(tone.id);
     const shelf = isIr ? state.irs : state.models;
     if (!shelf.some((f) => f.path === entry.path)) {
       if (isIr) state.irs = [...state.irs, entry];
@@ -1178,6 +1359,7 @@ export const mockBridge: Bridge = {
     if (!entry) return delay<ErrorResult>({ error: "Model file not found" });
     state.model = {
       ...loadedModel,
+      tone: toneRefs.get(entry.path) ?? null,
       path: entry.path,
       name: entry.name,
       ...mockGear(entry.name),
@@ -1202,6 +1384,7 @@ export const mockBridge: Bridge = {
     if (!entry) return delay<ErrorResult>({ error: "Model file not found" });
     state.modelB = {
       ...loadedModel,
+      tone: toneRefs.get(entry.path) ?? null,
       path: entry.path,
       name: entry.name,
       ...mockGear(entry.name),
@@ -1221,15 +1404,19 @@ export const mockBridge: Bridge = {
   loadIr: async (path) => {
     const entry = state.irs.find((i) => i.path === path);
     if (!entry) return delay<ErrorResult>({ error: "IR file not found" });
-    state.ir = { ...entry };
-    emit("irChanged", { ir: { ...entry } });
+    state.ir = irInfoFor(entry, state.chainOrder);
+    state.missingMedia = { ...state.missingMedia, ir: null };
+    emit("irChanged", { ir: { ...state.ir } });
+    emit("missingMediaChanged", { missingMedia: { ...state.missingMedia } });
     return delay<ErrorResult>({}, 120);
   },
 
   clearIr: async () => {
     state.ir = null;
+    state.missingMedia = { ...state.missingMedia, ir: null };
     await delay(null, 0);
     emit("irChanged", { ir: null });
+    emit("missingMediaChanged", { missingMedia: { ...state.missingMedia } });
   },
 
   // Import installs the file *and* loads it, like WebEditor's native functions —
@@ -1245,6 +1432,7 @@ export const mockBridge: Bridge = {
     emitLibrary();
     state.model = {
       ...loadedModel,
+      tone: toneRefs.get(entry.path) ?? null,
       path: entry.path,
       name: entry.name,
       ...mockGear(entry.name),
@@ -1264,8 +1452,8 @@ export const mockBridge: Bridge = {
     state.irs = [...state.irs, entry];
     await delay(null, 400);
     emitLibrary();
-    state.ir = { ...entry };
-    emit("irChanged", { ir: { ...entry } });
+    state.ir = irInfoFor(entry, state.chainOrder);
+    emit("irChanged", { ir: { ...state.ir } });
     return { path: entry.path, name: entry.name } satisfies ImportResult;
   },
 
@@ -1374,9 +1562,9 @@ export const mockBridge: Bridge = {
     emit("t3kToneSelected", { toneId: tone.toneId, models: [...tone.models] });
   },
 
-  t3kDownloadModel: async (model: T3kModel) => {
+  t3kDownloadModel: async (model: T3kModel, tone?: T3kTone) => {
     await delay(null, 0);
-    simulateDownload(model);
+    simulateDownload(model, tone);
   },
 
   t3kSignIn: async () => {
@@ -1393,17 +1581,40 @@ export const mockBridge: Bridge = {
   t3kBrowse: async (request: T3kBrowseRequest) => {
     if (!state.t3k.authenticated)
       return delay<T3kBrowseResult>({ error: "Not signed in to TONE3000." }, 80);
-    return delay(browseCatalog(request), 220);
+    const failure = t3kTransportError();
+    if (failure) return delay<T3kBrowseResult>({ error: failure }, t3kDelay(300));
+    return delay(browseCatalog(request), t3kDelay(220));
   },
 
   t3kListModels: async (toneId) => {
+    const failure = t3kTransportError();
+    if (failure) return delay<T3kModelsResult>({ error: failure }, t3kDelay(200));
     const models = listToneModels(toneId);
     if (models.length === 0)
       return delay<T3kModelsResult>(
         { error: "That tone has no downloadable files." },
-        180,
+        t3kDelay(180),
       );
-    return delay<T3kModelsResult>({ models }, 180);
+    return delay<T3kModelsResult>({ models }, t3kDelay(180));
+  },
+
+  t3kPromptSearch: async (initial: string) => {
+    // The plugin shows a native AlertWindow; a browser has window.prompt.
+    const scripted = search.get("t3kprompt");
+    if (scripted !== null)
+      return delay<T3kPromptResult>({ text: scripted === "" ? null : scripted }, 300);
+    const text = window.prompt("Search TONE3000", initial);
+    return { text: text === null ? null : text.trim() };
+  },
+
+  t3kInstalled: async () =>
+    delay({ files: installed.map((f) => ({ ...f })) }, 20),
+
+  openExternal: async (url: string) => {
+    if (!url.startsWith("https://www.tone3000.com/"))
+      return delay<ErrorResult>({ error: "Only tone3000.com links can be opened." }, 0);
+    console.info("[mock] openExternal", url);
+    return delay<ErrorResult>({}, 0);
   },
 
   t3kSetFavorite: async (toneId, favorite) => {

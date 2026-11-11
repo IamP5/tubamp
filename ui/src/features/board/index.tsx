@@ -19,22 +19,27 @@
  *    the store action on drop / add / remove; `chainChanged` coming back in is
  *    applied to the store and compared by value here, so an inbound event can
  *    never bounce back out as another `setChainOrder`.
- *  - Rows are the store's `chainRows` when it has them and an auto-wrap when it
- *    does not (`rowsFor` — the single source of the partition, so the board and
- *    the drag can never disagree about which row a block is in), then through
- *    `laneRows`, which regroups a split region into the single row-equivalent
- *    the container is.
- *  - A split region (docs/SPLIT.md §5) renders as a lane container: SPLIT, two
- *    half-height lane tracks on the shared column grid, MIX. `lane2` is
- *    furniture — it marks where lane B begins and never gets a card, so lane
- *    membership is nothing but position in the flat order and needs no
- *    recomputing at commit. SPLIT and MIX are not draggable in v1; removing
- *    either flattens the region (lane A then lane B, inline where the split
- *    was), and "Add split" in the [+] picker creates one. A board with no
- *    structure lays out exactly as it did before any of this existed.
+ *  - Rows are `displayRows`: the store's `chainRows` (made region-safe by
+ *    `laneRows`) when it has them, and a structure-aware auto-wrap when it does
+ *    not — the single source of the partition, so the board and the drag can
+ *    never disagree about which row a block is in.
+ *  - A split region (docs/SPLIT.md §5) renders as a lane container inside its
+ *    row — serial blocks may sit either side of it on the same row: SPLIT, two
+ *    half-height lane tracks on the shared column grid, MIX. Each lane carries
+ *    a head badge on the container frame (named after the split mode: A/B,
+ *    L/R, LOW/HIGH) and closes with its own small [+] slot, so an empty lane
+ *    reads as a slot and adding to a lane is one click. `lane2` is furniture —
+ *    it marks where lane B begins and never gets a card. SPLIT and MIX are not
+ *    draggable in v1; their kebabs (and the panel's trash) offer the three
+ *    explicit ways out — keep lane A, keep lane B, chain A → B — and the [+]
+ *    pickers' "Split path" section creates one (empty, or a one-click dual-amp
+ *    rig). A board with no structure lays out exactly as it did before.
  *  - Selection is UI-local (store) and the panel is an overlay over the board's
  *    bottom edge: selecting pans the board so the card is never underneath its
  *    own panel, and a tap on the background dismisses it (R4).
+ *  - Any chain change that did not come from a card drag (a picker add, a menu
+ *    remove, a preset recall) re-frames the board when the new content no
+ *    longer fits the visible band — never mid-gesture.
  */
 import {
   useCallback,
@@ -61,37 +66,52 @@ import {
   SPLIT_TRIPLE,
   canAddSplit,
   findStructure,
-  flattenStructure,
   insertSplit,
+  laneSpans,
   sanitizeStructure,
 } from "../../chain/structure";
 import { useRigCab } from "../../hooks";
-import { rowsFor, useStore } from "../../store";
+import { useStore } from "../../store";
 import { stagger, tween } from "../../theme/motion";
 import { EmptyState, PlusIcon, cx } from "../../components";
+import type { MenuEntry } from "../../components";
 import { BlockCard, type CardNote } from "./BlockCard";
 import { Connectors } from "./Connectors";
 import {
   AddBlockButton,
   AddNode,
   InsertNode,
+  LaneAddNode,
+  LaneBadge,
   Terminal,
   canAddBlock,
   pickerKinds,
+  type SplitOption,
 } from "./LaneNodes";
 import {
   PANEL_BAND,
+  REGION_PAD_Y,
   boardGeometry,
   clamp,
   connectorBox,
   contentBox,
+  displayRows,
   insertPoints,
+  laneAddId,
   laneRows,
-  rowContaining,
   rowsWithRun,
-  rowsWithoutRun,
+  sameOrder,
   slotOf,
+  type LaneRegion,
 } from "./layout";
+import { laneHint, useLaneNames, useXoverHz, type LaneSide } from "./lanes";
+import {
+  buildDualAmp,
+  canBuildDualAmp,
+  dualAmpHint,
+  removeSplitRegion,
+} from "./splitActions";
+import { MixCard, SplitCard } from "./StructureCards";
 import { useNodeMotion } from "./nodes";
 import { useBlockToggles, bypassedBlocks } from "./useBlockToggles";
 import { useChainDrag } from "./useChainDrag";
@@ -193,14 +213,16 @@ export function Board() {
     return splitAt >= 0 || lane2At >= 0 || mixAt >= 0;
   }, [chainOrder]);
   const splitRoom = useMemo(() => canAddSplit(chainOrder), [chainOrder]);
+  const dualRoom = useMemo(() => canBuildDualAmp(chainOrder), [chainOrder]);
   const showAdd = canAddBlock(kinds) || (!hasStructure && splitRoom);
+  const { mode: splitMode, names: laneNames } = useLaneNames();
 
-  /* The published partition, auto-wrapped when there is none and regrouped so a
-     split region owns one row. Everything that needs to know where a block sits
-     — geometry, drag, connectors — reads THIS, never chainRows directly. */
+  /* The published partition, auto-wrapped when there is none, with the split
+     region kept whole inside one row. Everything that needs to know where a
+     block sits — geometry, drag, connectors — reads THIS, never chainRows. */
   const rows = useMemo(
-    () => laneRows(chainOrder, rowsFor(chainOrder, chainRows)),
-    [chainOrder, chainRows],
+    () => displayRows(chainOrder, chainRows, showAdd),
+    [chainOrder, chainRows, showAdd],
   );
 
   /* Framing geometry comes from the STORE order, not the drag preview: the
@@ -231,6 +253,7 @@ export function Board() {
     zoomTo,
     fit,
     ensureVisible,
+    reveal,
   } = useStageTransform({
     content,
     reduced,
@@ -238,6 +261,17 @@ export function Board() {
     onBackgroundTap: dismiss,
   });
   const getZoom = useCallback(() => zoom.get(), [zoom]);
+
+  /* A drop is the user placing a card exactly where they want it: the board
+     must not re-frame in answer to it. Every other chain change may. */
+  const fromDrag = useRef(false);
+  const commitDrag = useCallback(
+    (order: BlockId[], next: number[]) => {
+      fromDrag.current = true;
+      setChainOrder(order, next);
+    },
+    [setChainOrder],
+  );
 
   const drag = useChainDrag({
     chainOrder,
@@ -249,7 +283,7 @@ export function Board() {
     getZoom,
     isPanMode,
     onSelect: selectBlock,
-    commit: setChainOrder,
+    commit: commitDrag,
     reduced,
   });
 
@@ -268,11 +302,64 @@ export function Board() {
   }, [drag.dragId, nodes, reduced, slots]);
 
   /* Opening a panel over the card that summoned it is the one thing an overlay
-     panel must not do — pan the minimum that clears it. */
+     panel must not do — pan the minimum that clears it.
+
+     A structural edit made from a menu (a picker add, a split built or taken
+     apart, a remove) can also leave the chain hanging off the stage: then the
+     whole content is revealed instead, which clears the selected card too —
+     the content box contains it. Drops are exempt (`fromDrag`), and nothing
+     re-frames while the user is mid-gesture. */
+  const framedOrder = useRef(chainOrder);
+  const dragging = drag.dragId !== null;
+
+  /* The reveal runs one frame late, through refs: an add publishes the order
+     and then selects the new block, and React may render those as two passes —
+     the panel inset (and so the visible band) is only right after the second. */
+  const latest = useRef({ reveal, content, dragging });
+  useLayoutEffect(() => {
+    latest.current = { reveal, content, dragging };
+  }, [content, dragging, reveal]);
+
+  /* The pending frame lives in a ref and is cancelled only by a newer reveal or
+     on unmount — never by the effect's own cleanup. The chain round-trips
+     through C++ (`chainChanged` hands back an equal order in a new array), so
+     the effect re-runs between scheduling and the frame; a cleanup that
+     cancelled would drop the reveal, and the re-run (same order) would not
+     schedule another. */
+  const revealFrame = useRef(0);
+  useEffect(() => () => cancelAnimationFrame(revealFrame.current), []);
+
   useEffect(() => {
-    if (selected === null) return;
+    // Read and cleared before the early return: a drop that only moves a row
+    // break leaves the order as it was, and the flag must not survive to make
+    // the next menu edit look like a drop.
+    const dropped = fromDrag.current;
+    fromDrag.current = false;
+    if (sameOrder(framedOrder.current, chainOrder)) return;
+    framedOrder.current = chainOrder;
+    if (dropped) return;
+    cancelAnimationFrame(revealFrame.current);
+    revealFrame.current = requestAnimationFrame(() => {
+      const now = latest.current;
+      if (now.dragging || isPanMode()) return;
+      now.reveal(now.content);
+    });
+  }, [chainOrder, isPanMode]);
+
+  /* Keyed by value: the chain round-trips through C++ (`chainChanged` hands
+     back an equal order in a new array), and re-running on identity alone
+     would cancel a reveal that is still animating. */
+  const ensured = useRef("");
+  useEffect(() => {
+    if (selected === null) {
+      ensured.current = "";
+      return;
+    }
     const slot = slotOf(storeSlots, selected);
     if (!slot) return;
+    const key = `${selected}@${slot.x},${slot.y}`;
+    if (ensured.current === key) return;
+    ensured.current = key;
     ensureVisible({
       x: slot.x,
       y: slot.y - slot.h / 2,
@@ -300,10 +387,13 @@ export function Board() {
      selection; stopPropagation keeps it off the stage's pan / background tap. */
   const onStructurePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLElement>, id: BlockId) => {
+      // A middle-button or space-held press is the stage's pan, wherever it
+      // starts — ordinary cards let it bubble (useChainDrag), so do these.
+      if (event.button !== 0 || isPanMode()) return;
       event.stopPropagation();
       selectBlock(id);
     },
-    [selectBlock],
+    [isPanMode, selectBlock],
   );
 
   /**
@@ -320,14 +410,14 @@ export function Board() {
 
       const index = at ? clamp(at.index, 0, order.length) : order.length;
       const next = sanitizeStructure(insertSplit(order, index));
-      const displayed = laneRows(order, rowsFor(order, state.chainRows));
-      const row = at ? at.row : Math.max(displayed.length - 1, 0);
-      // An auto chain stays auto: `laneRows` regroups the wrap around the new
-      // container on every render, so nothing needs freezing here.
-      const rows =
-        state.chainRows.length === 0
-          ? []
-          : laneRows(next, rowsWithRun(displayed, row, SPLIT_TRIPLE.length));
+      // An auto chain stays auto: `displayRows` re-wraps around the new region
+      // on every render, so nothing needs freezing here.
+      let rows: number[] = [];
+      if (state.chainRows.length > 0) {
+        const shown = laneRows(order, state.chainRows);
+        const row = at ? at.row : Math.max(shown.length - 1, 0);
+        rows = laneRows(next, rowsWithRun(shown, row, SPLIT_TRIPLE.length));
+      }
 
       setChainOrder(next, rows);
       // Same rule as addBlock: what the user just made is what they want to see.
@@ -336,40 +426,53 @@ export function Board() {
     [selectBlock, setChainOrder],
   );
 
-  /**
-   * Deleting SPLIT or MIX deletes the region: lane A's blocks then lane B's,
-   * inline where the split stood — which is exactly the flat order with the
-   * three structural tokens dropped out of it.
-   */
-  const flatten = useCallback(() => {
-    const state = useStore.getState();
-    const order = state.chainOrder;
-    const structure = findStructure(order);
-    if (structure.splitAt < 0 && structure.lane2At < 0 && structure.mixAt < 0)
-      return;
-
-    const next = flattenStructure(order);
-    const displayed = laneRows(order, rowsFor(order, state.chainRows));
-    const rows =
-      state.chainRows.length === 0 || !structure.valid
-        ? []
-        : rowsWithoutRun(
-            displayed,
-            rowContaining(displayed, structure.splitAt),
-            order.length - next.length,
-          );
-
-    setChainOrder(next, rows);
-  }, [setChainOrder]);
-
-  /* The picker's structural row, bound once: absent while a region exists,
-     disabled when the chain has no room for one. */
-  const splitOption = useMemo(
-    () =>
+  /** The pickers' "Split path" section, bound to an insertion point (the tail
+   *  [+] passes none: append). Absent while a region exists. */
+  const splitFor = useCallback(
+    (at?: { index: number; row: number }): SplitOption | undefined =>
       hasStructure
         ? undefined
-        : { enabled: splitRoom, onSelect: () => addSplit() },
-    [addSplit, hasStructure, splitRoom],
+        : {
+            enabled: splitRoom,
+            onSelect: () => addSplit(at),
+            dualAmp: {
+              enabled: dualRoom,
+              hint: dualAmpHint(chainOrder),
+              onSelect: () => buildDualAmp(at),
+            },
+          },
+    [addSplit, chainOrder, dualRoom, hasStructure, splitRoom],
+  );
+  const splitOption = useMemo(() => splitFor(), [splitFor]);
+
+  /** Append to the end of one lane — the lane [+] slot's action. */
+  const regionRow = board.region?.row ?? 0;
+  const addToLane = useMemo(() => {
+    const make =
+      (side: LaneSide) =>
+      (id: BlockId): void => {
+        const order = useStore.getState().chainOrder;
+        const spans = laneSpans(findStructure(order));
+        if (!spans) return;
+        addBlock(id, { index: spans[side].end, row: regionRow });
+      };
+    return { a: make("a"), b: make("b") };
+  }, [addBlock, regionRow]);
+
+  /* "Make stereo (dual amp)" on the AMP card, whenever the rig can be built. */
+  const ampEntries = useMemo<MenuEntry[] | undefined>(
+    () =>
+      dualRoom && chainOrder.includes("amp")
+        ? [
+            {
+              id: "make-stereo",
+              label: "Make stereo (dual amp)",
+              icon: <StereoGlyph />,
+              onSelect: () => buildDualAmp(),
+            },
+          ]
+        : undefined,
+    [chainOrder, dualRoom],
   );
 
   const laneVariants = reduced ? LANE_VARIANTS_REDUCED : LANE_VARIANTS;
@@ -382,6 +485,15 @@ export function Board() {
       onPointerDown={onStagePointerDown}
       onDoubleClick={onStageDoubleClick}
       onContextMenu={(event) => event.preventDefault()}
+      onScroll={(event) => {
+        // `overflow: hidden` hides the scrollbars, not the scrolling: the browser
+        // still scrolls this box to reveal a focused element (Tab onto a card
+        // that sits off-stage, any scrollIntoView). The board is placed by the
+        // stage transform alone, so a scrolled root shifts every card and
+        // everything anchored to the root — and no pan can bring it back.
+        const root = event.currentTarget;
+        if (root.scrollLeft !== 0 || root.scrollTop !== 0) root.scrollTo(0, 0);
+      }}
     >
       <motion.div
         className={cx(s.stage, (panning || drag.dragId) && s.stageActive)}
@@ -421,28 +533,58 @@ export function Board() {
                 // drop target and never has a panel.
                 if (id === "lane2") return null;
                 const structural = isStructureBlockId(id);
+                const common = {
+                  id,
+                  node: nodes.get(id),
+                  selected: selected === id,
+                  enabled: toggles[id].value,
+                  dragging: drag.dragId === id,
+                  reduced,
+                  paramIndex: toggles[id].parameterIndex,
+                  onPointerDown: structural
+                    ? onStructurePointerDown
+                    : onCardPointerDown,
+                  onToggle: toggles[id].toggle,
+                  onRemove: structural
+                    ? () => removeSplitRegion("series")
+                    : () => removeBlock(id),
+                };
+                if (id === "split") return <SplitCard key={id} {...common} />;
+                if (id === "mix") return <MixCard key={id} {...common} />;
                 return (
                   <BlockCard
                     key={id}
-                    id={id}
-                    node={nodes.get(id)}
-                    selected={selected === id}
-                    enabled={toggles[id].value}
-                    dragging={drag.dragId === id}
-                    reduced={reduced}
+                    {...common}
                     note={noteFor(id)}
-                    paramIndex={toggles[id].parameterIndex}
-                    onPointerDown={
-                      structural ? onStructurePointerDown : onCardPointerDown
-                    }
-                    onToggle={toggles[id].toggle}
-                    onRemove={structural ? flatten : () => removeBlock(id)}
-                    removeLabel={
-                      structural ? "Remove split (lanes rejoin)" : undefined
-                    }
+                    extraEntries={id === "amp" ? ampEntries : undefined}
                   />
                 );
               })}
+            </AnimatePresence>
+
+            {/* Lane furniture: a head badge per lane on the container frame, and
+                a lane-scoped [+] slot closing each lane. */}
+            {board.region && (
+              <RegionBadges
+                region={board.region}
+                mode={splitMode}
+                names={laneNames}
+              />
+            )}
+            <AnimatePresence>
+              {board.region &&
+                showAdd &&
+                (["a", "b"] as const).map((side) => (
+                  <LaneAddNode
+                    key={laneAddId(side)}
+                    side={side}
+                    name={laneNames[side]}
+                    node={nodes.get(laneAddId(side))}
+                    kinds={kinds}
+                    reduced={reduced}
+                    onAdd={addToLane[side]}
+                  />
+                ))}
             </AnimatePresence>
 
             <AnimatePresence>
@@ -470,8 +612,7 @@ export function Board() {
                   point={point}
                   kinds={kinds}
                   onAdd={addBlock}
-                  onAddSplit={hasStructure ? undefined : addSplit}
-                  canAddSplit={splitRoom}
+                  splitFor={hasStructure ? undefined : splitFor}
                 />
               ))}
 
@@ -505,6 +646,53 @@ export function Board() {
         onFit={() => fit(true)}
       />
     </div>
+  );
+}
+
+/* ─────────────────────────────── lane badges ───────────────────────────── */
+
+/**
+ * Both lane badges, set into the container frame's top and bottom edges above
+ * lane A's and below lane B's first column. Its own component so the crossover
+ * knob (which the X-Over hint quotes) re-renders two badges, not the board.
+ */
+function RegionBadges({
+  region,
+  mode,
+  names,
+}: {
+  region: LaneRegion;
+  mode: number;
+  names: Record<LaneSide, string>;
+}) {
+  const xover = useXoverHz();
+  return (
+    <>
+      <LaneBadge
+        side="a"
+        name={names.a}
+        hint={laneHint(mode, "a", xover)}
+        x={region.laneX}
+        y={region.y - REGION_PAD_Y}
+      />
+      <LaneBadge
+        side="b"
+        name={names.b}
+        hint={laneHint(mode, "b", xover)}
+        x={region.laneX}
+        y={region.y + region.h + REGION_PAD_Y}
+      />
+    </>
+  );
+}
+
+/** Two offset waveforms — the "stereo" mark for the AMP card's menu row. */
+function StereoGlyph() {
+  return (
+    <svg width={14} height={14} viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="6" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth={1.4} />
+      <circle cx="10" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth={1.4} />
+    </svg>
   );
 }
 

@@ -1,71 +1,80 @@
 /**
  * Level 2 — one tone. The file list is a second request (`t3kListModels`,
- * A2-filtered for captures), so it carries its own loading and error states; the
- * tone itself is whatever level 1 already had.
+ * A2-filtered for captures), shared with the row's one-click Load through the
+ * store's session cache, so opening a tone the user just loaded costs nothing.
+ *
+ * The primary Load takes the same default the row does (NAM: `standard`, else
+ * the first; IR: the first); the file list shows that default first, with size
+ * and architecture badges and which files are already in the library.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo } from "react";
 import {
   Button,
+  CheckIcon,
   ChevronLeftIcon,
   CloseIcon,
   DownloadIcon,
   EmptyState,
   IconButton,
   Skeleton,
+  Spinner,
 } from "../../components";
-import { bridge, type T3kModel, type T3kTone } from "../../bridge";
-import { useStore } from "../../store";
-import { Avatar, FormatBadge, HeartButton, HeartIcon, ToneArt } from "./parts";
+import type { T3kTone } from "../../bridge";
+import {
+  bestDefaultFile,
+  findInstalledPath,
+  loadedPathOf,
+  loadedTargetsOf,
+  selectT3kTarget,
+  T3K_TARGET_LABELS,
+  useStore,
+} from "../../store";
+import {
+  Avatar,
+  ExternalIcon,
+  FormatBadge,
+  HeartButton,
+  HeartIcon,
+  RetryIcon,
+  ToneArt,
+} from "./parts";
 import { ModelRow } from "./ModelRow";
-import { formatCount, GEAR_LABELS, SIZE_LABELS } from "./labels";
+import { formatCount, GEAR_LABELS, LICENSE_LABELS, toneUrl } from "./labels";
 import s from "./t3k.module.css";
-
-/** Carries the tone (and retry) it answered, so loading stays derived. */
-interface Files {
-  key: string;
-  models: T3kModel[];
-  error: string | null;
-}
 
 export interface ToneDetailProps {
   tone: T3kTone;
   onBack(): void;
   onClose(): void;
-  onToggleFavorite(tone: T3kTone): void;
 }
 
-export function ToneDetail({
-  tone,
-  onBack,
-  onClose,
-  onToggleFavorite,
-}: ToneDetailProps) {
-  const [files, setFiles] = useState<Files | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const key = `${tone.id}:${attempt}`;
-  const answered = files?.key === key ? files : null;
-  const inChain = useStore((st) => {
-    const paths = st.t3kDownloaded[tone.id];
-    if (!paths) return false;
-    return paths.some((p) => p === st.model?.path || p === st.ir?.path);
-  });
+export function ToneDetail({ tone, onBack, onClose }: ToneDetailProps) {
+  const files = useStore((st) => st.t3kFiles[tone.id]);
+  const listFiles = useStore((st) => st.t3kListFiles);
+  const toggleFavorite = useStore((st) => st.t3kToggleFavorite);
+  const openExternal = useStore((st) => st.t3kOpenExternal);
+  const drawerTarget = useStore(selectT3kTarget);
+  const target = tone.format === "ir" ? "cab" : drawerTarget === "cab" ? "amp" : drawerTarget;
+  const loadedIn = useStore((st) => loadedTargetsOf(st, tone.id).join(","));
 
+  // Keyed on the tone's identity, not the object: the drawer hands down a fresh
+  // object whenever a favorite override is layered on, and a failed listing
+  // would otherwise be re-requested on every such render, without a click.
+  const { id: toneId, format: toneFormat } = tone;
   useEffect(() => {
-    let cancelled = false;
-    void bridge.t3kListModels(tone.id).then((res) => {
-      if (cancelled) return;
-      setFiles({ key, models: res.models ?? [], error: res.error ?? null });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [tone.id, key]);
+    void listFiles({ id: toneId, format: toneFormat });
+  }, [toneId, toneFormat, listFiles]);
 
-  const chips = [
-    ...tone.makes,
-    ...tone.tags,
-    ...tone.sizes.map((size) => SIZE_LABELS[size] ?? size),
-  ];
+  const models = files?.models ?? null;
+  const fallback = useMemo(() => (models ? bestDefaultFile(models) : null), [models]);
+  const sorted = useMemo(() => {
+    if (!models || !fallback) return models ?? [];
+    return [fallback, ...models.filter((m) => m.id !== fallback.id)];
+  }, [models, fallback]);
+
+  const chips = [...tone.makes, ...tone.tags];
+  const license = tone.license ? (LICENSE_LABELS[tone.license] ?? tone.license) : null;
+  const loadedTargets = loadedIn === "" ? [] : loadedIn.split(",");
 
   return (
     <>
@@ -85,7 +94,11 @@ export function ToneDetail({
           <span className={s.bannerTags}>
             <span className={s.gearTag}>{GEAR_LABELS[tone.gear] ?? tone.gear}</span>
             <FormatBadge tone={tone} />
-            {inChain && <span className={s.bannerLoaded}>In chain</span>}
+            {loadedTargets.map((t) => (
+              <span key={t} className={s.bannerLoaded}>
+                In {T3K_TARGET_LABELS[t as keyof typeof T3K_TARGET_LABELS]}
+              </span>
+            ))}
           </span>
         </ToneArt>
 
@@ -101,8 +114,10 @@ export function ToneDetail({
               {formatCount(tone.favoritesCount)}
             </span>
           </span>
-          <HeartButton tone={tone} onToggle={onToggleFavorite} />
+          <HeartButton tone={tone} onToggle={toggleFavorite} />
         </div>
+
+        <PrimaryLoad tone={tone} target={target} />
 
         {tone.description && <p className={s.description}>{tone.description}</p>}
 
@@ -116,40 +131,148 @@ export function ToneDetail({
           </div>
         )}
 
-        <div className={s.sectionHead}>
-          <span>Files</span>
-          <span className={s.sectionCount}>
-            {answered?.models.length ?? tone.modelsCount}
-          </span>
+        <div className={s.metaLine}>
+          {license && (
+            <span className={s.licenseLabel} title="Creator-chosen license on TONE3000">
+              {license}
+            </span>
+          )}
+          <button
+            type="button"
+            className={s.externalLink}
+            onClick={() => void openExternal(toneUrl(tone))}
+          >
+            Open on tone3000.com
+            <ExternalIcon size={11} />
+          </button>
         </div>
 
-        {answered === null ? (
-          <ul className={s.fileList}>
+        <div className={s.sectionHead}>
+          <span>Files</span>
+          <span className={s.sectionCount}>{models?.length ?? tone.modelsCount}</span>
+        </div>
+
+        {models === null && files?.error ? (
+          <EmptyState
+            className={s.filesEmpty}
+            message="No files to show"
+            hint={files.error}
+            action={
+              <Button size="sm" onClick={() => void listFiles(tone, true)}>
+                Try again
+              </Button>
+            }
+          />
+        ) : models === null ? (
+          <ul className={s.fileList} aria-busy="true">
             {[0, 1].map((i) => (
               <li key={i} className={s.file}>
                 <Skeleton width="60%" height={11} />
               </li>
             ))}
           </ul>
-        ) : answered.error ? (
+        ) : models.length === 0 ? (
           <EmptyState
             className={s.filesEmpty}
-            message="No files to show"
-            hint={answered.error}
-            action={
-              <Button size="sm" onClick={() => setAttempt((a) => a + 1)}>
-                Try again
-              </Button>
+            message="No files to load"
+            hint={
+              tone.format === "ir"
+                ? "This tone has no downloadable IRs."
+                : "This tone has no A2 captures, which is all this plugin loads."
             }
           />
         ) : (
           <ul className={s.fileList}>
-            {answered.models.map((model) => (
-              <ModelRow key={model.id} tone={tone} model={model} />
+            {sorted.map((model) => (
+              <ModelRow
+                key={model.id}
+                tone={tone}
+                model={model}
+                target={target}
+                isDefault={model.id === fallback?.id}
+              />
             ))}
           </ul>
         )}
       </div>
     </>
+  );
+}
+
+/** The detail level's one big action: load the default file into the target. */
+function PrimaryLoad({ tone, target }: { tone: T3kTone; target: "amp" | "amp2" | "cab" }) {
+  const load = useStore((st) => st.t3kLoads[tone.id]);
+  const progress = useStore((st) =>
+    load?.modelId != null ? st.downloads[load.modelId] : undefined,
+  );
+  const files = useStore((st) => st.t3kFiles[tone.id]?.models ?? null);
+  const fallback = files ? bestDefaultFile(files) : null;
+  const loaded = useStore((st) => {
+    if (!fallback) return false;
+    const path = findInstalledPath(st, fallback);
+    return path !== null && path === loadedPathOf(st, target);
+  });
+  const installed = useStore((st) => (fallback ? findInstalledPath(st, fallback) !== null : false));
+  const loadTone = useStore((st) => st.t3kLoadTone);
+  const label = T3K_TARGET_LABELS[target];
+  const unavailable = files !== null && fallback === null;
+
+  let content;
+  if (load && load.phase !== "failed") {
+    const pct = load.phase === "downloading" ? Math.round((progress ?? 0) * 100) : null;
+    content = (
+      <Button variant="primary" block disabled icon={<Spinner size={13} />}>
+        {pct !== null
+          ? `Downloading… ${pct}%`
+          : load.phase === "resolving"
+            ? "Finding files…"
+            : `Loading into ${label}…`}
+      </Button>
+    );
+  } else if (load?.phase === "failed") {
+    content = (
+      <Button
+        variant="danger"
+        block
+        icon={<RetryIcon size={13} />}
+        title={load.error ?? undefined}
+        onClick={() => void loadTone(tone)}
+      >
+        Retry — load into {label}
+      </Button>
+    );
+  } else if (loaded) {
+    content = (
+      <Button block disabled icon={<CheckIcon size={13} />}>
+        Loaded in {label}
+      </Button>
+    );
+  } else {
+    content = (
+      <Button
+        variant="primary"
+        block
+        disabled={unavailable}
+        icon={installed ? undefined : <DownloadIcon size={13} />}
+        onClick={() => void loadTone(tone)}
+      >
+        {unavailable ? "Nothing to load" : `Load into ${label}`}
+      </Button>
+    );
+  }
+
+  return (
+    <div className={s.primaryLoad}>
+      {content}
+      <span className={s.primaryHint}>
+        {load?.phase === "failed" && load.error
+          ? load.error
+          : fallback
+            ? `${fallback.name}${installed ? " · in your library" : ""}`
+            : tone.format === "ir"
+              ? "Loads the first IR of this tone"
+              : "Loads the standard-size capture"}
+      </span>
+    </div>
   );
 }

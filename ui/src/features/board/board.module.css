@@ -164,6 +164,86 @@
   stroke-dasharray: 6 5;
 }
 
+/* Lane head badge — set into the frame's top (lane A) or bottom (lane B) edge
+   like a legend. Colours come inline from features/board/lanes.ts (LANE_TINT),
+   the one table every lane name on screen reads. The anchor is a zero-height
+   box on the frame line, so the pill centres on it whatever its height. */
+.laneBadgeAnchor {
+  position: absolute;
+  height: 0;
+  display: flex;
+  align-items: center;
+  z-index: 3;
+}
+
+.laneBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 7px 0 6px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+  /* Opaque underlay so the dashed frame line does not run through the text. */
+  background-color: var(--bg-app);
+}
+
+.laneBadgeDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+}
+
+/* The lane's own [+] slot: smaller and quieter than the tail [+], dashed in its
+   lane's tint so it reads as "this lane", always visible. */
+.laneAdd {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--lane-ink);
+  background: var(--bg-app);
+  border: 1px dashed var(--lane-ring);
+  opacity: 0.8;
+  transition:
+    opacity 120ms ease,
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.laneAdd:hover,
+.laneAddOpen {
+  opacity: 1;
+  background: var(--lane-fill);
+  border-color: var(--lane-ink);
+}
+
+/* Lane swatches in menus (the "Remove split" rows), on the 14px icon grid so
+   the labels line up with the Bypass row above them. */
+.menuLaneIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.menuLaneDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+
 /* ─────────────────────────────── block card ────────────────────────────── */
 
 .card {
@@ -242,6 +322,12 @@
   justify-content: center;
   gap: 9px;
   pointer-events: none;
+}
+
+/* A card with a note pill lifts its glyph + name clear of the pill. */
+.cardContentNoted {
+  padding-bottom: 16px;
+  gap: 6px;
 }
 
 .cardIcon {

@@ -49,6 +49,61 @@ export function SearchIcon({ size = 13 }: { size?: number }) {
   );
 }
 
+export function KeyboardIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.3}
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <rect x="1.75" y="4" width="12.5" height="8" rx="1.6" />
+      <path d="M4.5 6.6h.01M7 6.6h.01M9.5 6.6h.01M12 6.6h.01M5.5 9.4h5" />
+    </svg>
+  );
+}
+
+export function RetryIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2.8 8a5.2 5.2 0 1 0 1.6-3.8" />
+      <path d="M2.6 2.4v2.9h2.9" />
+    </svg>
+  );
+}
+
+export function ExternalIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3" />
+    </svg>
+  );
+}
+
 /** The persistent TONE3000 attribution mark. */
 export function T3kMark({ compact }: { compact?: boolean }) {
   return (

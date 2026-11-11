@@ -29,10 +29,13 @@
  * with a flushSync per move each flip would be a rendered frame.
  *
  * SPLIT PATHS (docs/SPLIT.md §5). The same frozen-geometry rule extends to the
- * lanes: the split container's row band is entirely lane — upper half A, lower
- * half B — so an ordinary block (amp2 included) drops into either track exactly
- * the way it drops into a serial row, and `dropTargetAt` hands back a flat index
- * that is always inside one legal segment. The structural tiles themselves are
+ * lanes: inside the row that holds the split region, the lane columns are lane
+ * — upper half A, lower half B, each lane's [+] slot included, so an EMPTY lane
+ * is a drop target too — and the columns either side of the region are that
+ * row's serial runs. An ordinary block (amp2 included) therefore drops into a
+ * track, out of one, or across from one to the other exactly the way it drops
+ * into a serial row, and `dropTargetAt` hands back a flat index that is always
+ * inside one legal segment. The structural tiles themselves are
  * NOT draggable in v1 (the spec's stated simplification): SPLIT and MIX would
  * have to travel as a pair-preserving unit, and a half-moved pair is a chain
  * shape the sanitizer would flatten under the user's hands. They are removed
@@ -59,12 +62,14 @@ import { animate } from "motion/react";
 import type { BlockId } from "../../bridge/types";
 import { isStructureBlockId } from "../../bridge/types";
 import { sanitizeStructure, type LaneSide } from "../../chain/structure";
-import { rowsFor, useStore } from "../../store";
+import { useStore } from "../../store";
 import { spring } from "../../theme/motion";
 import {
   DRAG_LIFT,
   DRAG_THRESHOLD_PX,
+  autoRows,
   computeSlots,
+  displayRows,
   dropTargetAt,
   insertItem,
   isBelowRows,
@@ -190,9 +195,10 @@ export function useChainDrag({
       // is actually showing — the published one may put the split region across
       // two rows, and the drag never worked in those terms.
       const state = useStore.getState();
-      const publishedRows = laneRows(
+      const publishedRows = displayRows(
         state.chainOrder,
-        rowsFor(state.chainOrder, state.chainRows),
+        state.chainRows,
+        showAdd,
       );
 
       // The chain changed underneath the gesture (preset recall, A/B, host
@@ -220,12 +226,11 @@ export function useChainDrag({
         if (changed) {
           // A chain that was on auto-wrap and still matches it stays on auto:
           // publishing the wrap as an explicit partition would freeze a shape
-          // the user never arranged. A split container never matches the plain
-          // wrap, so a structured board always publishes its rows — which is
-          // right: the container has to own a row of its own.
+          // the user never arranged. `autoRows` is structure-aware, so a split
+          // region dragged into a matching shape stays auto as well.
           const auto =
             state.chainRows.length === 0 &&
-            sameRows(rows, rowsFor(order, []));
+            sameRows(rows, autoRows(order, showAdd));
           commit(order, auto ? [] : rows);
         }
       }
@@ -362,7 +367,7 @@ export function useChainDrag({
       // Resolved once here and never again — see the header note.
       const baseOrder = order.filter((block) => block !== id);
       const baseRows = laneRows(baseOrder, rowsWithRemove(chainRows, index));
-      const baseGeom = rowGeometry(baseOrder, baseRows);
+      const baseGeom = rowGeometry(baseOrder, baseRows, showAdd);
 
       event.stopPropagation();
       try {

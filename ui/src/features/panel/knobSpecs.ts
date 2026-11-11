@@ -50,6 +50,7 @@ const BASE_KNOB_SPECS: Record<BaseBlockId, readonly KnobSpec[]> = {
   cab: [
     { id: "cab_lowcut", label: "LO CUT" },
     { id: "cab_highcut", label: "HI CUT" },
+    { id: "cab_mix", label: "MIX" },
   ],
   eq: [
     { id: "eq_bass", label: "BASS" },

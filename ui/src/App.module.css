@@ -66,11 +66,22 @@
 .dock {
   position: absolute;
   left: var(--dock-gap);
-  right: var(--dock-gap);
+  right: calc(var(--dock-gap) + var(--t3k-drawer-inset, 0px));
   bottom: var(--dock-gap);
   height: var(--dock-h);
   pointer-events: none;
   z-index: 1;
+}
+
+/*
+  The TONE3000 drawer is open (App.tsx stamps `data-t3k-open`): the panel yields
+  the drawer's width instead of running underneath it, so no knob ends up under
+  the catalog. Only the right edge moves — the band's height (`--panel-band`)
+  and everything anchored to it (embed hole, toaster, zoom bar) are unchanged.
+  380px mirrors the drawer's fixed width (features/t3k-browser/t3k.module.css).
+*/
+.root[data-t3k-open] {
+  --t3k-drawer-inset: min(380px, 100%);
 }
 
 /*

@@ -336,6 +336,9 @@ export const SLIDER_PARAM_IDS = [
   "reverb3_lowcut",
   "reverb3_highcut",
   "reverb3_mod",
+
+  /* cab dry/wet (docs/NAM-IR.md §3) */
+  "cab_mix",
 ] as const;
 
 /**
@@ -488,11 +491,58 @@ export interface ModelInfo {
   includesCab: boolean;
   isSlimmable: boolean;
   latencySamples: number;
+  /** Present when the file was downloaded from TONE3000 (its sidecar). */
+  tone?: ToneRef | null;
 }
 
 export interface FileEntry {
   path: string;
   name: string;
+}
+
+/** What TONE3000 said about a downloaded file: whose tone it is, and where it
+ *  lives. Empty strings where the catalog had nothing to say. */
+export interface ToneRef {
+  toneId: number;
+  title: string;
+  creator: string;
+  /** The catalog's raw gear value (`amp`, `cab`, `space`, …). */
+  gear: string;
+  size: string;
+  license: string;
+  /** The tone's page on tone3000.com; empty without a tone id. */
+  url: string;
+}
+
+/** How the cab applied its IR the last time it ran: true stereo, or one kernel
+ *  on every channel — because the file is mono, or because the path folds to
+ *  mono after the cab (an enabled amp follows it). */
+export type IrImage = "none" | "stereo" | "mono-file" | "mono-path";
+
+/** The loaded impulse response: a library entry plus what the cab made of it. */
+export interface IrInfo extends FileEntry {
+  /** Kernels available: 1 or 2. */
+  channels: number;
+  sampleRateHz: number;
+  /** Kernel length after trimming. */
+  seconds: number;
+  /** Longer than a second, or tagged `space`: a room, not a cabinet. It keeps
+   *  its level (a cabinet IR is padded by 18 dB) and wants a mix below 100 %. */
+  reverbLike: boolean;
+  /** Normalization and pad applied to the convolved signal. */
+  gainDb: number;
+  /** The file ran past the 10 s limit and was cut there. */
+  truncated: boolean;
+  image: IrImage;
+  tone?: ToneRef | null;
+}
+
+/** Per slot, the file a restored session / preset named that could not be found
+ *  or rebuilt — the slot is empty, the reference is kept. Null = nothing missing. */
+export interface MissingMedia {
+  model: string | null;
+  modelB: string | null;
+  ir: string | null;
 }
 
 export interface PresetInfo {
@@ -612,7 +662,8 @@ export interface UiState {
    *  `model`. Only meaningful while `amp2` is in the chain, but tracked
    *  regardless — clearing model A must not clear B. */
   modelB: ModelInfo | null;
-  ir: FileEntry | null;
+  ir: IrInfo | null;
+  missingMedia: MissingMedia;
   models: FileEntry[];
   irs: FileEntry[];
   presets: PresetInfo[];
@@ -643,23 +694,41 @@ export interface T3kModel {
 /* ─────────────────────── TONE3000 in-plugin browser ────────────────────── */
 
 export type T3kBrowseKind = "models" | "irs";
-export type T3kBrowseShelf = "all" | "favorites";
-export type T3kBrowseSort = "trending" | "newest" | "downloads";
+/** `all` searches the catalog; the rest are the user's own bounded lists:
+ *  `favorites` /tones/favorited, `downloaded` /tones/downloaded ("Recently
+ *  used"), `created` /tones/created ("My tones"). */
+export type T3kBrowseShelf = "all" | "favorites" | "downloaded" | "created";
+/** TonesSort, with `downloads` for `downloads-all-time`. `best-match` only
+ *  means something with a query; without one C++ sends `trending`. */
+export type T3kBrowseSort =
+  | "best-match"
+  | "trending"
+  | "newest"
+  | "downloads"
+  | "oldest";
+
+/** Which block a browser load lands in. */
+export type T3kTarget = "amp" | "amp2" | "cab";
 
 /**
  * One page of the catalog. `kind` maps C++-side to
  * `format=nam&architecture=2` (models) or `format=ir` (irs) — omitting
  * `architecture` would silently exclude A2 (tone3000-api.md §6).
- * `shelf: "favorites"` reads the bounded `/tones/favorited` list instead of
- * `/tones/search` and filters/sorts client-side.
+ * Profile shelves read the whole bounded list once (in-memory, a few minutes)
+ * and filter/sort/page it C++-side.
  */
 export interface T3kBrowseRequest {
   kind: T3kBrowseKind;
   shelf: T3kBrowseShelf;
-  sort: T3kBrowseSort;
+  /** null = the API default: best-match with a query, trending without. */
+  sort: T3kBrowseSort | null;
   query: string;
-  /** Gear filter (amp | amp-cab | pedal); models only, null = all. */
+  /** Raw Gear enum value (models: amp | amp-cab | pedal | outboard |
+   *  experimental; irs: cab | space); null = all. */
   gear: string | null;
+  /** `calibrated=true` — models on the `all` shelf only; ignored otherwise.
+   *  Optional so older callers stay valid. */
+  calibrated?: boolean;
   /** 1-based. */
   page: number;
 }
@@ -689,6 +758,28 @@ export interface T3kTone {
   /** a2_models_count for nam tones; irs_count for ir tones. */
   modelsCount: number;
   createdAt: string;
+  /** Creator-chosen License enum value (t3k | cc-by | …); null when absent.
+   *  Optional: C++ builds before the browser rework do not send it. */
+  license?: string | null;
+  /** Tone page on tone3000.com; null when absent. */
+  url?: string | null;
+}
+
+/** `t3kPromptSearch` — the native prompt's text, null when cancelled. */
+export interface T3kPromptResult {
+  text: string | null;
+}
+
+/** One library file that carries a TONE3000 sidecar (`<file>.t3k.json`). */
+export interface T3kInstalledFile {
+  path: string;
+  toneId: number;
+  modelId: number;
+  format: string;
+}
+
+export interface T3kInstalledResult {
+  files: T3kInstalledFile[];
 }
 
 export interface T3kBrowseResult {
@@ -719,7 +810,8 @@ export interface BridgeEventMap {
   /** Mirrors `modelChanged` for engine B — `WebEditor::pollModelAndIr` polls
    *  `loadedModelPathB` alongside the A/IR paths it already watches. */
   modelBChanged: { modelB: ModelInfo | null };
-  irChanged: { ir: FileEntry | null };
+  irChanged: { ir: IrInfo | null };
+  missingMediaChanged: { missingMedia: MissingMedia };
   t3kStatus: T3kState;
   t3kToneSelected: { toneId: number; models: T3kModel[] };
   t3kProgress: { modelId: number; progress: number };
@@ -815,15 +907,28 @@ export interface Bridge {
   t3kSignOut(): Promise<void>;
   /** Async; results arrive as `t3kToneSelected` / `t3kError`. */
   t3kStartSelectFlow(): Promise<void>;
-  /** Async; `t3kProgress` / `t3kComplete` / `t3kError` follow. */
-  t3kDownloadModel(model: T3kModel): Promise<void>;
+  /** Async; `t3kProgress` / `t3kComplete` / `t3kError` follow. With `tone`,
+   *  C++ writes a ToneSidecar (`<file>.t3k.json`: toneId, modelId, title,
+   *  modelName, creator, raw gear, format, size, architecture, license) beside
+   *  the file BEFORE `libraryChanged`/`t3kComplete`. */
+  t3kDownloadModel(model: T3kModel, tone?: T3kTone): Promise<void>;
   /** Standard OAuth flow (system browser + loopback redirect), no tone
    *  selection. Outcome arrives as `t3kStatus` (success) / `t3kError`. */
   t3kSignIn(): Promise<void>;
   /** One catalog page. Resolves with data or `{error}`; never rejects. */
   t3kBrowse(request: T3kBrowseRequest): Promise<T3kBrowseResult>;
-  /** Downloadable files of one tone (A2-filtered for nam tones). */
-  t3kListModels(toneId: number): Promise<T3kModelsResult>;
+  /** Downloadable files of one tone (A2-filtered for nam tones). `format`
+   *  ("nam" | "ir") picks the architecture filter; C++ falls back to what the
+   *  last browse pages said about the tone. */
+  t3kListModels(toneId: number, format?: string): Promise<T3kModelsResult>;
+  /** Native text prompt for the search box — the keyboard-less host fallback.
+   *  Never rejects; `{text: null}` on cancel. */
+  t3kPromptSearch(initial: string): Promise<T3kPromptResult>;
+  /** Library files carrying a TONE3000 sidecar (local disk scan). */
+  t3kInstalled(): Promise<T3kInstalledResult>;
+  /** Opens a https://www.tone3000.com/ URL in the system browser; any other
+   *  URL is refused with `{error}`. */
+  openExternal(url: string): Promise<ErrorResult>;
   /** Favorite/unfavorite on TONE3000. UI updates optimistically and reverts
    *  on `{error}`. */
   t3kSetFavorite(toneId: number, favorite: boolean): Promise<ErrorResult>;

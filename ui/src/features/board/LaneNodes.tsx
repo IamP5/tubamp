@@ -1,10 +1,12 @@
 /**
- * Board furniture: the IN / OUT terminals and the [+] node with its picker menu.
+ * Board furniture: the IN / OUT terminals, the [+] node with its picker menu,
+ * and the split region's lane furniture — each lane's head badge and its own
+ * lane-scoped [+] slot.
  *
  * Same three-layer shape as a block card (position → entrance → face), so the
  * whole board enters as one staggered build-in and reflows on the same springs.
  */
-import { useMemo } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { motion } from "motion/react";
 import {
   instanceTokensOfKind,
@@ -23,10 +25,13 @@ import {
   ADD_H,
   ADD_W,
   GAP,
+  LANE_ADD_H,
+  LANE_ADD_W,
   TERMINAL_H,
   TERMINAL_W,
   type InsertPoint,
 } from "./layout";
+import { LANE_TINT, type LaneSide } from "./lanes";
 import type { NodeMotion } from "./nodes";
 import s from "./board.module.css";
 
@@ -108,27 +113,31 @@ export function canAddBlock(kinds: readonly PickerKind[]): boolean {
 }
 
 /**
- * The "Add split" row, when the board offers one. Bound by the caller so each
- * [+] can insert the fork at its own position. The row is absent entirely once a
- * structure exists (exactly one region per chain) and merely disabled when the
- * chain has no room for the three tokens it costs.
+ * The "Split path" section, when the board offers one. Bound by the caller so
+ * each [+] can insert at its own position. The section is absent entirely once
+ * a structure exists (exactly one region per chain); each row is merely
+ * disabled when the chain has no room for the tokens it costs.
+ *
+ *   Empty split       — `split, lane2, mix` (an empty fork).
+ *   Dual amp (stereo) — wraps the chain's amp (or inserts one) with `amp2` in
+ *                       the other lane, hard-panned, ready for a 2nd capture.
  */
 export interface SplitOption {
   enabled: boolean;
   onSelect(): void;
+  dualAmp?: { enabled: boolean; hint: string; onSelect(): void };
 }
 
 /** Vercel-style picker rows: one per kind, tinted with its own accent, plus the
- *  structural "Add split" row under a separator — it makes a shape, not a block,
- *  and reading as one more block kind would be a lie. */
+ *  structural "Split path" section under a separator — it makes a shape, not a
+ *  block, and reading as one more block kind would be a lie. */
 export function pickerEntries(
   kinds: readonly PickerKind[],
   onPick: (id: BlockId) => void,
   split?: SplitOption,
+  title = "Add to chain",
 ): MenuEntry[] {
-  const entries: MenuEntry[] = [
-    { kind: "section", id: "title", label: "Add to chain" },
-  ];
+  const entries: MenuEntry[] = [{ kind: "section", id: "title", label: title }];
   for (const { base, used, total, addable } of kinds) {
     entries.push({
       id: base,
@@ -145,18 +154,33 @@ export function pickerEntries(
   }
   if (split) {
     entries.push({ kind: "separator", id: "split-sep" });
+    entries.push({ kind: "section", id: "split-title", label: "Split path" });
     entries.push({
       id: "split",
-      label: "Split path",
+      label: "Empty split",
       icon: (
         <span className={s.pickerIcon} style={{ color: BLOCK_ACCENT.split }}>
           <BlockGlyph block="split" size={16} strokeWidth={1.6} />
         </span>
       ),
-      hint: "LANES",
+      hint: "2 LANES",
       disabled: !split.enabled,
       onSelect: split.onSelect,
     });
+    if (split.dualAmp) {
+      entries.push({
+        id: "split-dual-amp",
+        label: "Dual amp (stereo)",
+        icon: (
+          <span className={s.pickerIcon} style={{ color: BLOCK_ACCENT.amp2 }}>
+            <BlockGlyph block="amp2" size={16} strokeWidth={1.6} />
+          </span>
+        ),
+        hint: split.dualAmp.hint,
+        disabled: !split.dualAmp.enabled,
+        onSelect: split.dualAmp.onSelect,
+      });
+    }
   }
   return entries;
 }
@@ -239,10 +263,9 @@ export interface InsertNodeProps {
   point: InsertPoint;
   kinds: readonly PickerKind[];
   onAdd(id: BlockId, at: { index: number; row: number }): void;
-  /** Inserts the fork at THIS gap; absent once a structure exists. */
-  onAddSplit?(at: { index: number; row: number }): void;
-  /** False when the chain has no room for the fork's three tokens. */
-  canAddSplit?: boolean;
+  /** The "Split path" section bound to THIS gap; absent once a structure
+   *  exists (and inside a lane, where a second region could never go). */
+  splitFor?(at: { index: number; row: number }): SplitOption | undefined;
 }
 
 /**
@@ -251,29 +274,12 @@ export interface InsertNodeProps {
  * hit-box deliberately has no pointer handlers of its own: a press in a gap
  * that misses the dot must still bubble to the stage (pan / background tap).
  */
-export function InsertNode({
-  point,
-  kinds,
-  onAdd,
-  onAddSplit,
-  canAddSplit = false,
-}: InsertNodeProps) {
+export function InsertNode({ point, kinds, onAdd, splitFor }: InsertNodeProps) {
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
-  const entries = useMemo(
-    () =>
-      pickerEntries(
-        kinds,
-        (id) => onAdd(id, { index: point.index, row: point.row }),
-        onAddSplit
-          ? {
-              enabled: canAddSplit,
-              onSelect: () =>
-                onAddSplit({ index: point.index, row: point.row }),
-            }
-          : undefined,
-      ),
-    [canAddSplit, kinds, onAdd, onAddSplit, point.index, point.row],
-  );
+  const entries = useMemo(() => {
+    const at = { index: point.index, row: point.row };
+    return pickerEntries(kinds, (id) => onAdd(id, at), splitFor?.(at));
+  }, [kinds, onAdd, point.index, point.row, splitFor]);
 
   return (
     <div
@@ -350,5 +356,134 @@ export function AddBlockButton({
         minWidth={210}
       />
     </>
+  );
+}
+
+/* ──────────────────────────── lane furniture ───────────────────────────── */
+
+export interface LaneAddNodeProps {
+  side: LaneSide;
+  /** Badge text for this lane ("A", "L", "LOW" …). */
+  name: string;
+  node: NodeMotion;
+  kinds: readonly PickerKind[];
+  reduced: boolean;
+  /** Appends `id` to the end of THIS lane. */
+  onAdd(id: BlockId): void;
+}
+
+/**
+ * The lane's own [+]: a small dashed slot closing the lane, always visible, so
+ * an empty lane reads as a place to put something and filling it is one click.
+ * It is wired like the tail [+] on the main path (last card → slot → MIX), and
+ * it is a drop target too — dragging a card onto it appends to the lane.
+ */
+export function LaneAddNode({
+  side,
+  name,
+  node,
+  kinds,
+  reduced,
+  onAdd,
+}: LaneAddNodeProps) {
+  const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
+  const entries = useMemo(
+    () => pickerEntries(kinds, onAdd, undefined, `Add to lane ${name}`),
+    [kinds, name, onAdd],
+  );
+  const tint = LANE_TINT[side];
+  const label = `Add a block to lane ${name}`;
+
+  return (
+    <motion.div
+      className={s.node}
+      style={{
+        x: node.x,
+        y: node.y,
+        width: LANE_ADD_W,
+        height: LANE_ADD_H,
+        marginTop: -LANE_ADD_H / 2,
+        zIndex: 2,
+      }}
+      exit="exit"
+    >
+      <motion.div
+        className={s.cardEnter}
+        variants={reduced ? CARD_VARIANTS_REDUCED : CARD_VARIANTS}
+      >
+        <Tooltip label={`Add to lane ${name}`} placement="top">
+          <button
+            type="button"
+            ref={anchorRef}
+            className={cx(s.laneAdd, open && s.laneAddOpen)}
+            style={
+              {
+                "--lane-ink": tint.ink,
+                "--lane-ring": tint.ring,
+                "--lane-fill": tint.fill,
+              } as CSSProperties
+            }
+            data-lane={side}
+            aria-label={label}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={toggle}
+          >
+            <PlusIcon size={14} />
+          </button>
+        </Tooltip>
+      </motion.div>
+
+      <Menu
+        anchor={anchor}
+        open={open}
+        onClose={close}
+        entries={entries}
+        align="center"
+        minWidth={210}
+      />
+    </motion.div>
+  );
+}
+
+export interface LaneBadgeProps {
+  side: LaneSide;
+  name: string;
+  /** What the lane receives, as a sentence (tooltip). */
+  hint: string;
+  /** Left edge and centre line, in lane units. Static: the badge sits on the
+   *  container frame, which does not move vertically, at the first lane column,
+   *  which never moves horizontally. */
+  x: number;
+  y: number;
+}
+
+/**
+ * The lane's head badge, set into the container frame like a legend — lane A's
+ * on the top edge above its track, lane B's on the bottom edge below its own —
+ * so both lanes are labelled whether or not anything is in them yet.
+ */
+export function LaneBadge({ side, name, hint, x, y }: LaneBadgeProps) {
+  const tint = LANE_TINT[side];
+  return (
+    <div className={s.laneBadgeAnchor} style={{ left: x, top: y }}>
+      <Tooltip label={hint} placement={side === "a" ? "top" : "bottom"}>
+        <span
+          className={s.laneBadge}
+          data-lane={side}
+          /* The tint is layered as an image so the class's opaque background
+             colour stays underneath it: the badge sits on the region's dashed
+             frame, and a translucent fill alone lets the dashes through. */
+          style={{
+            color: tint.ink,
+            backgroundImage: `linear-gradient(${tint.fill}, ${tint.fill})`,
+            boxShadow: `inset 0 0 0 1px ${tint.ring}`,
+          }}
+          aria-label={hint}
+        >
+          <span className={s.laneBadgeDot} style={{ background: tint.ink }} />
+          {name}
+        </span>
+      </Tooltip>
+    </div>
   );
 }

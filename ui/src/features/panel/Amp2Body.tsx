@@ -5,14 +5,15 @@
  * block's own IN/OUT knobs. amp2's own bypass (`amp2_on`) is the panel
  * header's power pill, like every other block — no toggle for it here.
  *
- * Deliberately thinner than AmpBody: no TONE3000 browse/import actions and no
- * tone stack — engine B has neither (docs/SPLIT.md §3 notes users add an EQ
- * instance instead) — and no calibration/output-mode fields, which stay
- * amp-only.
+ * Deliberately thinner than AmpBody: no tone stack — engine B has none
+ * (docs/SPLIT.md §3 notes users add an EQ instance instead) — and no
+ * calibration/output-mode fields, which stay amp-only. It does browse
+ * TONE3000: the drawer opens targeted at this engine.
  */
-import { Button, Knob, Tooltip } from "../../components";
+import { Button, DownloadIcon, Knob, Tooltip } from "../../components";
 import { useStore } from "../../store";
 import { FileRow } from "./FileRow";
+import { Attribution, MissingNotice } from "./MediaMeta";
 import { formatSampleRate, isEngineLive, rigLabel } from "./library";
 import s from "./panel.module.css";
 
@@ -23,6 +24,9 @@ const RIG_TIP =
 export function Amp2Body() {
   const model = useStore((st) => st.model);
   const modelB = useStore((st) => st.modelB);
+  const missing = useStore((st) => st.missingMedia.modelB);
+  const configured = useStore((st) => st.t3k.configured);
+  const openT3kBrowser = useStore((st) => st.openT3kBrowser);
   const models = useStore((st) => st.models);
   const loadModelB = useStore((st) => st.loadModelB);
   const clearModelB = useStore((st) => st.clearModelB);
@@ -36,15 +40,20 @@ export function Amp2Body() {
       <section className={s.columnModel}>
         <div className={s.captionRow}>
           <span className={s.caption}>Model</span>
+          <Attribution tone={modelB?.tone} />
         </div>
 
         <div className={s.modelLine}>
-          <span
-            className={modelB ? s.modelName : s.modelNameEmpty}
-            title={modelB?.path ?? NO_MODEL_B}
-          >
-            {modelB ? modelB.name : NO_MODEL_B}
-          </span>
+          {!modelB && missing ? (
+            <MissingNotice path={missing} what="capture" />
+          ) : (
+            <span
+              className={modelB ? s.modelName : s.modelNameEmpty}
+              title={modelB?.path ?? NO_MODEL_B}
+            >
+              {modelB ? modelB.name : NO_MODEL_B}
+            </span>
+          )}
           {modelB && (
             <>
               <span className={live ? s.chipLive : s.chipDown}>
@@ -91,6 +100,19 @@ export function Amp2Body() {
             </Tooltip>
           }
         />
+
+        {configured && (
+          <div className={s.actionRow}>
+            <Button
+              size="sm"
+              variant="primary"
+              icon={<DownloadIcon size={14} />}
+              onClick={() => openT3kBrowser("models", "amp2")}
+            >
+              Browse TONE3000
+            </Button>
+          </div>
+        )}
       </section>
 
       <div className={s.divider} />

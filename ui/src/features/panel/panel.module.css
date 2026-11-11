@@ -183,12 +183,17 @@
   groups are exactly as wide as their knob rows, so everything fits from the
   minimum window width up without any column painting over its neighbour.
 */
+/* Scrolls sideways rather than clipping: with the TONE3000 drawer open the panel
+   is 380px narrower, and the three groups no longer fit side by side. Nothing
+   may become unreachable just because the catalog is open next to it. */
 .ampBody {
   display: flex;
   align-items: stretch;
   gap: 18px;
   width: 100%;
   height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .columnModel {
@@ -260,6 +265,48 @@
   white-space: nowrap;
 }
 
+/* The attribution as a link to the tone's page: same quiet text, underlined on
+   hover so it reads as a link without shouting in a caption row. */
+.attributionLink {
+  composes: attribution;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 2px;
+  transition: color 120ms ease, text-decoration-color 120ms ease;
+}
+
+/* Two rules, not one selector list: WKWebView before Safari 15.4 does not know
+   :focus-visible, and an unknown selector in a list drops the whole rule. */
+.attributionLink:hover {
+  color: var(--text-secondary);
+  text-decoration-color: currentColor;
+}
+
+.attributionLink:focus-visible {
+  color: var(--text-secondary);
+  text-decoration-color: currentColor;
+}
+
+/* Caption plus the facts that belong to it (the cab's IR status). */
+.captionGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.irStatus {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .footerNote {
   margin-right: auto;
   font-size: 10px;
@@ -298,7 +345,8 @@
 
 .chipLive,
 .chipDown,
-.chipRig {
+.chipRig,
+.chipPlain {
   flex: none;
   padding: 1px 6px;
   border-radius: 999px;
@@ -328,6 +376,13 @@
   background: transparent;
   /* --warning #ffb224 at 45%; literal rgba, see tokens.css on color-mix. */
   box-shadow: inset 0 0 0 1px rgba(255, 178, 36, 0.45);
+}
+
+/* A plain fact with no judgement attached ("MONO", "ROOM"). */
+.chipPlain {
+  color: var(--text-secondary);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 /* ── full-rig notice in the cab panel's action row ── */

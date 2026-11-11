@@ -337,8 +337,8 @@ const PRO_LAYOUT: readonly LayoutEntry[] = [
 
 /** The whole APVTS layout, in order: 44 v1 parameters, 54 instance parameters,
  *  4 for the amp tone stack, 12 for the stereo-chain append, 13 for the
- *  split-path append, 39 for the reverb/delay engines append — 119 sliders,
- *  30 toggles, 17 combos. */
+ *  split-path append, 39 for the reverb/delay engines append, then the cab's
+ *  dry/wet — 120 sliders, 30 toggles, 17 combos. */
 const LAYOUT: readonly LayoutEntry[] = [
   ...V1_LAYOUT,
   ...INSTANCE_LAYOUT,
@@ -346,6 +346,7 @@ const LAYOUT: readonly LayoutEntry[] = [
   ...STEREO_LAYOUT,
   ...SPLIT_LAYOUT,
   ...PRO_LAYOUT,
+  s("cab_mix", "Cab Mix", 0, 100, 0.1, 100, "%"),
 ];
 
 /* ────────────────────────────── derived tables ─────────────────────────── */

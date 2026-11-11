@@ -26,11 +26,19 @@ import {
   type FxEmbedState,
   type FxSlotIndex,
   type FxSlotState,
+  type IrInfo,
+  type MissingMedia,
   type ModelInfo,
   type PresetInfo,
   type T3kBrowseKind,
+  type T3kBrowseRequest,
+  type T3kBrowseShelf,
+  type T3kBrowseSort,
+  type T3kInstalledFile,
   type T3kModel,
   type T3kState,
+  type T3kTarget,
+  type T3kTone,
   type UiState,
 } from "../bridge";
 import {
@@ -60,11 +68,61 @@ export interface T3kPendingDownload {
   kind: T3kModel["kind"];
   /** null for the select flow, which has no browser row to credit. */
   toneId: number | null;
+  /** The block a browser load is for; absent/null = route by `kind` (select
+   *  flow, legacy callers). */
+  target?: T3kTarget | null;
 }
 
+/**
+ * The TONE3000 drawer, remembered for the editor's lifetime (closing it only
+ * flips `open`): the request it shows, the detail level, and through
+ * `t3kLists`/`t3kScroll` the pages and scroll offset of every list it showed.
+ */
 export interface T3kBrowserState {
   open: boolean;
   kind: T3kBrowseKind;
+  /** Which NAM engine captures load into; IRs always go to the cab. Read it
+   *  through `selectT3kTarget`, which also falls back to `amp` once `amp2`
+   *  leaves the chain. */
+  ampTarget: "amp" | "amp2";
+  shelf: T3kBrowseShelf;
+  /** null = API default (best-match with a query, trending without). */
+  sort: T3kBrowseSort | null;
+  query: string;
+  gear: string | null;
+  calibrated: boolean;
+  detail: T3kTone | null;
+}
+
+/** One list (= one request minus its page), as far as it has been paged. */
+export interface T3kListState {
+  /** Highest page answered; 0 before the first response. */
+  page: number;
+  totalPages: number;
+  total: number;
+  tones: T3kTone[];
+  error: string | null;
+  /** The page in flight; never more than one per list. */
+  loadingPage: number | null;
+}
+
+/** A tone's downloadable files (session memory only — ToS: no persistent
+ *  catalog cache). */
+export interface T3kFilesState {
+  models: T3kModel[] | null;
+  error: string | null;
+  loading: boolean;
+}
+
+export type T3kLoadPhase = "resolving" | "downloading" | "loading" | "failed";
+
+/** One-click load of a tone, in flight or failed. Absent = idle (or done:
+ *  "Loaded" is derived from what the target slot holds). */
+export interface T3kRowLoad {
+  phase: T3kLoadPhase;
+  target: T3kTarget;
+  modelId: number | null;
+  error: string | null;
 }
 
 export interface AppState {
@@ -80,7 +138,9 @@ export interface AppState {
    *  `amp2` chain block — docs/SPLIT.md §1) — tracked regardless of whether
    *  `amp2` is in the chain, since clearing model A must not clear B. */
   modelB: ModelInfo | null;
-  ir: FileEntry | null;
+  ir: IrInfo | null;
+  /** Files a restored session / preset wanted and could not get (bridge types). */
+  missingMedia: MissingMedia;
   models: FileEntry[];
   irs: FileEntry[];
   presets: PresetInfo[];
@@ -122,6 +182,17 @@ export interface AppState {
    */
   t3kDownloaded: Record<number, string[]>;
   browser: T3kBrowserState;
+  /** listKey → pages loaded so far (see `t3kListKey`). In-memory, capped. */
+  t3kLists: Record<string, T3kListState>;
+  /** listKey → last scroll offset of that list. */
+  t3kScroll: Record<string, number>;
+  /** toneId → optimistic favorite flag, layered over server rows. */
+  t3kFavOverrides: Record<number, boolean>;
+  t3kFiles: Record<number, T3kFilesState>;
+  /** Library files that carry a TONE3000 sidecar (`t3kInstalled`). */
+  t3kInstalled: T3kInstalledFile[];
+  /** toneId → one-click load state. */
+  t3kLoads: Record<number, T3kRowLoad>;
   toasts: Toast[];
 }
 
@@ -178,8 +249,31 @@ export interface AppActions {
   /** `toneId` credits the download to a browser row; omit it for the select flow. */
   t3kDownloadModel(model: T3kModel, toneId?: number): Promise<void>;
   dismissTone(): void;
-  openT3kBrowser(kind: T3kBrowseKind): void;
+  /** `target` defaults to the cab for IRs, and for models to `amp2` when the
+   *  Amp 2 panel is the selected block, else `amp`. Keeps the rest of the
+   *  remembered browser state; a kind change resets gear (the gear sets differ)
+   *  and closes a detail level of the other format. */
+  openT3kBrowser(kind: T3kBrowseKind, target?: T3kTarget): void;
   closeT3kBrowser(): void;
+  patchT3kBrowser(
+    patch: Partial<
+      Pick<T3kBrowserState, "kind" | "shelf" | "sort" | "query" | "gear" | "calibrated">
+    >,
+  ): void;
+  setT3kAmpTarget(target: "amp" | "amp2"): void;
+  setT3kDetail(tone: T3kTone | null): void;
+  setT3kScroll(key: string, top: number): void;
+  /** Fetch `page` of the current list. No-op while that list has a page in
+   *  flight; page 1 restarts the list (retry / first load). */
+  t3kFetchPage(page: number): Promise<void>;
+  t3kToggleFavorite(tone: T3kTone): void;
+  t3kListFiles(tone: Pick<T3kTone, "id" | "format">, force?: boolean): Promise<T3kFilesState>;
+  /** One-click load: resolve files, pick the default (or `model`), reuse the
+   *  library copy or download it, then load into the tone's target. One in
+   *  flight per tone; the latest pick per target wins the slot. */
+  t3kLoadTone(tone: T3kTone, model?: T3kModel): Promise<void>;
+  t3kRefreshInstalled(): Promise<void>;
+  t3kOpenExternal(url: string): Promise<void>;
 
   /* toasts */
   toast(message: string, kind?: ToastKind, duration?: number): number;
@@ -329,6 +423,7 @@ const initialState: AppState = {
   model: null,
   modelB: null,
   ir: null,
+  missingMedia: { model: null, modelB: null, ir: null },
   models: [],
   irs: [],
   presets: [],
@@ -357,7 +452,23 @@ const initialState: AppState = {
   downloads: {},
   t3kPending: {},
   t3kDownloaded: {},
-  browser: { open: false, kind: "models" },
+  browser: {
+    open: false,
+    kind: "models",
+    ampTarget: "amp",
+    shelf: "all",
+    sort: null,
+    query: "",
+    gear: null,
+    calibrated: false,
+    detail: null,
+  },
+  t3kLists: {},
+  t3kScroll: {},
+  t3kFavOverrides: {},
+  t3kFiles: {},
+  t3kInstalled: [],
+  t3kLoads: {},
   toasts: [],
 };
 
@@ -388,6 +499,8 @@ export const useStore = create<Store>()((set, get) => {
         // `?? null`: a C++ build that predates docs/STEREO.md must still hydrate.
         modelB: state.modelB ?? null,
         ir: state.ir,
+        // `??`: a C++ build that predates missing-file reporting must still hydrate.
+        missingMedia: state.missingMedia ?? { model: null, modelB: null, ir: null },
         models: state.models,
         irs: state.irs,
         presets: state.presets,
@@ -648,12 +761,239 @@ export const useStore = create<Store>()((set, get) => {
       set({ tone: null });
     },
 
-    openT3kBrowser(kind) {
-      set({ browser: { open: true, kind } });
+    openT3kBrowser(kind, target) {
+      const s = get();
+      const b = s.browser;
+      const ampTarget: "amp" | "amp2" =
+        target === "amp" || target === "amp2"
+          ? target
+          : kind === "models" && s.selected === "amp2"
+            ? "amp2"
+            : kind === "models"
+              ? "amp"
+              : b.ampTarget;
+      const kindChanged = b.kind !== kind;
+      const format = kind === "irs" ? "ir" : "nam";
+      set({
+        browser: {
+          ...b,
+          open: true,
+          kind,
+          ampTarget,
+          gear: kindChanged ? null : b.gear,
+          detail: b.detail && b.detail.format !== format ? null : b.detail,
+        },
+      });
+      void get().t3kRefreshInstalled();
     },
 
     closeT3kBrowser() {
       set((s) => ({ browser: { ...s.browser, open: false } }));
+    },
+
+    patchT3kBrowser(patch) {
+      set((s) => {
+        const b = s.browser;
+        const next: T3kBrowserState = { ...b, ...patch };
+        if (patch.kind !== undefined && patch.kind !== b.kind && patch.gear === undefined)
+          next.gear = null;
+        const hadQuery = b.query.trim() !== "";
+        const hasQuery = next.query.trim() !== "";
+        // A new search drops a "trending" pick (relevance is what a search
+        // wants); an emptied one drops "best-match" (meaningless without text).
+        if (patch.sort === undefined) {
+          if (!hadQuery && hasQuery && next.sort === "trending") next.sort = null;
+          if (!hasQuery && next.sort === "best-match") next.sort = null;
+        }
+        return { browser: next };
+      });
+    },
+
+    setT3kAmpTarget(ampTarget) {
+      set((s) => ({ browser: { ...s.browser, ampTarget } }));
+    },
+
+    setT3kDetail(detail) {
+      set((s) => ({ browser: { ...s.browser, detail } }));
+    },
+
+    setT3kScroll(key, top) {
+      set((s) => ({ t3kScroll: { ...s.t3kScroll, [key]: top } }));
+    },
+
+    async t3kFetchPage(page) {
+      const browser = get().browser;
+      const key = t3kListKey(browser);
+      const current = get().t3kLists[key];
+      if (current?.loadingPage != null) return;
+
+      set((s) => ({
+        t3kLists: trimLists(
+          {
+            ...s.t3kLists,
+            [key]: {
+              ...(current ?? EMPTY_LIST),
+              loadingPage: page,
+              error: null,
+            },
+          },
+          key,
+        ),
+      }));
+
+      const res = await bridge.t3kBrowse(t3kRequestOf(browser, page));
+
+      set((s) => {
+        const list = s.t3kLists[key];
+        // Dropped (cap) or restarted meanwhile: this answer belongs to nobody.
+        if (!list || list.loadingPage !== page) return {};
+        if (res.error !== undefined) {
+          return {
+            t3kLists: {
+              ...s.t3kLists,
+              [key]: { ...list, loadingPage: null, error: res.error },
+            },
+          };
+        }
+        const incoming = res.tones ?? [];
+        const seen = new Set(page === 1 ? [] : list.tones.map((t) => t.id));
+        const tones =
+          page === 1
+            ? incoming
+            : [...list.tones, ...incoming.filter((t) => !seen.has(t.id))];
+        return {
+          t3kLists: {
+            ...s.t3kLists,
+            [key]: {
+              page: res.page ?? page,
+              totalPages: res.totalPages ?? 1,
+              total: res.total ?? tones.length,
+              tones,
+              error: null,
+              loadingPage: null,
+            },
+          },
+        };
+      });
+    },
+
+    t3kToggleFavorite(tone) {
+      // One request per tone at a time: a PUT and a DELETE fired back to back
+      // travel on separate threads and can reach the server in either order,
+      // leaving the heart showing the opposite of what is stored.
+      if (favoritesInFlight.has(tone.id)) return;
+      favoritesInFlight.add(tone.id);
+
+      const overrides = get().t3kFavOverrides;
+      const next = !(overrides[tone.id] ?? tone.favorited);
+      set((s) => ({ t3kFavOverrides: { ...s.t3kFavOverrides, [tone.id]: next } }));
+      void bridge.t3kSetFavorite(tone.id, next).then((res) => {
+        favoritesInFlight.delete(tone.id);
+        if (res.error) {
+          set((s) => ({
+            t3kFavOverrides: { ...s.t3kFavOverrides, [tone.id]: !next },
+          }));
+          get().toast(res.error, "error", 6000);
+          return;
+        }
+        // The favorites shelf changed in a way no cached page knows about; the
+        // one on screen stays put (rows vanishing under the cursor is worse).
+        set((s) => ({ t3kLists: dropShelfLists(s.t3kLists, "favorites", t3kListKey(s.browser)) }));
+      });
+    },
+
+    t3kListFiles(tone, force = false) {
+      const cached = get().t3kFiles[tone.id];
+      const inflight = filesInFlight.get(tone.id);
+      if (inflight) return inflight;
+      if (cached && cached.models && !force) return Promise.resolve(cached);
+
+      set((s) => ({
+        t3kFiles: {
+          ...s.t3kFiles,
+          [tone.id]: { models: null, error: null, loading: true },
+        },
+      }));
+      const request: Promise<T3kFilesState> = bridge
+        .t3kListModels(tone.id, tone.format)
+        .then((res): T3kFilesState => {
+          const result: T3kFilesState = {
+            models: res.error ? null : (res.models ?? []),
+            error: res.error ?? null,
+            loading: false,
+          };
+          // Superseded — the account changed while this was in the air and the
+          // map was cleared: the answer belongs to a session that is gone.
+          if (filesInFlight.get(tone.id) !== request) return result;
+          filesInFlight.delete(tone.id);
+          set((s) => ({ t3kFiles: { ...s.t3kFiles, [tone.id]: result } }));
+          return result;
+        });
+      filesInFlight.set(tone.id, request);
+      return request;
+    },
+
+    async t3kLoadTone(tone, explicit) {
+      const existing = get().t3kLoads[tone.id];
+      if (existing && existing.phase !== "failed") return;
+
+      const target = targetForTone(get(), tone);
+      latestPick[target] = tone.id;
+      const setLoad = (load: T3kRowLoad | null): void =>
+        set((s) => {
+          const t3kLoads = { ...s.t3kLoads };
+          if (load) t3kLoads[tone.id] = load;
+          else delete t3kLoads[tone.id];
+          return { t3kLoads };
+        });
+      const fail = (error: string, modelId: number | null): void =>
+        setLoad({ phase: "failed", target, modelId, error });
+
+      let model = explicit;
+      if (!model) {
+        setLoad({ phase: "resolving", target, modelId: null, error: null });
+        const files = await get().t3kListFiles(tone);
+        if (files.error) return fail(files.error, null);
+        model = bestDefaultFile(files.models ?? []) ?? undefined;
+        if (!model)
+          return fail(
+            tone.format === "ir"
+              ? "This tone has no downloadable IRs."
+              : "This tone has no A2 captures to load.",
+            null,
+          );
+      }
+
+      const path = findInstalledPath(get(), model);
+      if (path) {
+        if (latestPick[target] !== tone.id) return setLoad(null);
+        setLoad({ phase: "loading", target, modelId: model.id, error: null });
+        const error = await loadIntoTarget(target, path, model.name);
+        if (error) return fail(error, model.id);
+        set((s) => ({ t3kDownloaded: creditPath(s.t3kDownloaded, tone.id, path) }));
+        return setLoad(null);
+      }
+
+      setLoad({ phase: "downloading", target, modelId: model.id, error: null });
+      const picked = model;
+      set((s) => ({
+        downloads: { ...s.downloads, [picked.id]: s.downloads[picked.id] ?? 0 },
+        t3kPending: {
+          ...s.t3kPending,
+          [picked.id]: { name: picked.name, kind: picked.kind, toneId: tone.id, target },
+        },
+      }));
+      await bridge.t3kDownloadModel(picked, tone);
+    },
+
+    async t3kRefreshInstalled() {
+      const res = await bridge.t3kInstalled();
+      set({ t3kInstalled: res.files ?? [] });
+    },
+
+    async t3kOpenExternal(url) {
+      const res = await bridge.openExternal(url);
+      reportError(res.error);
     },
 
     /* ───────────────────────────── toasts ────────────────────────────── */
@@ -695,6 +1035,235 @@ async function autoLoad(
   toast(name ? `Loaded ${name}` : "Loaded", "success", 2500);
 }
 
+/* ─────────────────────────── TONE3000 helpers ─────────────────────────── */
+
+const EMPTY_LIST: T3kListState = {
+  page: 0,
+  totalPages: 1,
+  total: 0,
+  tones: [],
+  error: null,
+  loadingPage: null,
+};
+
+/** Lists kept in memory at once (each up to a few pages of 25 rows). */
+const MAX_LISTS = 12;
+
+/** toneId → its in-flight `t3kListModels`, so a row click and the detail
+ *  level never ask twice. */
+const filesInFlight = new Map<number, Promise<T3kFilesState>>();
+
+/** Tones with a favorite toggle on its way to the server. */
+const favoritesInFlight = new Set<number>();
+
+/** Last tone picked per target: a download that finishes after a newer pick
+ *  only lands in the library, it does not steal the slot back. */
+const latestPick: Record<T3kTarget, number> = { amp: 0, amp2: 0, cab: 0 };
+
+/** Calibration is a capture-only search filter; it means nothing elsewhere. */
+function effectiveCalibrated(b: T3kBrowserState): boolean {
+  return b.calibrated && b.kind === "models" && b.shelf === "all";
+}
+
+/** The request minus its page — two requests sharing this describe one list. */
+export function t3kListKey(b: T3kBrowserState): string {
+  return JSON.stringify([
+    b.kind,
+    b.shelf,
+    b.sort,
+    b.query.trim(),
+    b.gear,
+    effectiveCalibrated(b),
+  ]);
+}
+
+export function t3kRequestOf(b: T3kBrowserState, page: number): T3kBrowseRequest {
+  return {
+    kind: b.kind,
+    shelf: b.shelf,
+    sort: b.sort,
+    query: b.query.trim(),
+    gear: b.gear,
+    calibrated: effectiveCalibrated(b),
+    page,
+  };
+}
+
+/** Keeps the newest MAX_LISTS lists (insertion order), always keeping `keep`. */
+function trimLists(
+  lists: Record<string, T3kListState>,
+  keep: string,
+): Record<string, T3kListState> {
+  const keys = Object.keys(lists);
+  if (keys.length <= MAX_LISTS) return lists;
+  const next = { ...lists };
+  for (const key of keys.slice(0, keys.length - MAX_LISTS))
+    if (key !== keep) delete next[key];
+  return next;
+}
+
+function dropShelfLists(
+  lists: Record<string, T3kListState>,
+  shelf: T3kBrowseShelf,
+  keep: string,
+): Record<string, T3kListState> {
+  const next = { ...lists };
+  for (const key of Object.keys(next)) {
+    const parsed = JSON.parse(key) as unknown[];
+    if (parsed[1] === shelf && key !== keep) delete next[key];
+  }
+  return next;
+}
+
+/** The engine/slot a load from the browser lands in. */
+export function selectT3kTarget(s: Store): T3kTarget {
+  if (s.browser.kind === "irs") return "cab";
+  return s.browser.ampTarget === "amp2" && s.chainOrder.includes("amp2")
+    ? "amp2"
+    : "amp";
+}
+
+function targetForTone(s: Store, tone: T3kTone): T3kTarget {
+  if (tone.format === "ir") return "cab";
+  return s.browser.ampTarget === "amp2" && s.chainOrder.includes("amp2")
+    ? "amp2"
+    : "amp";
+}
+
+/** Mirrors Tone3000Client's slugify: how a downloaded file ends up named. */
+export function t3kSlug(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "model";
+}
+
+/** Default file of a tone: NAM prefers `standard`, else the first; IR the first. */
+export function bestDefaultFile(models: readonly T3kModel[]): T3kModel | null {
+  return models.find((m) => m.kind === "nam" && m.size === "standard") ?? models[0] ?? null;
+}
+
+/** Library path of a TONE3000 file, if it is installed: the sidecar's modelId
+ *  first, then the file name the downloader gives it. */
+export function findInstalledPath(s: AppState, model: T3kModel): string | null {
+  const shelf = model.kind === "wav" ? s.irs : s.models;
+  const bySidecar = s.t3kInstalled.find((f) => f.modelId === model.id);
+  if (bySidecar && shelf.some((f) => f.path === bySidecar.path)) return bySidecar.path;
+  const slug = t3kSlug(model.name);
+  return shelf.find((f) => f.name === slug || f.name === model.name)?.path ?? null;
+}
+
+/** What each target slot currently holds. */
+export function loadedPathOf(s: AppState, target: T3kTarget): string | null {
+  if (target === "cab") return s.ir?.path ?? null;
+  if (target === "amp2") return s.modelB?.path ?? null;
+  return s.model?.path ?? null;
+}
+
+/** Every library path known to come from `toneId` (sidecars + this session). */
+export function tonePaths(s: AppState, toneId: number): string[] {
+  return [
+    ...s.t3kInstalled.filter((f) => f.toneId === toneId).map((f) => f.path),
+    ...(s.t3kDownloaded[toneId] ?? []),
+  ];
+}
+
+/** Targets whose slot currently holds a file of `toneId`. */
+export function loadedTargetsOf(s: AppState, toneId: number): T3kTarget[] {
+  const paths = tonePaths(s, toneId);
+  if (paths.length === 0) return [];
+  return (["amp", "amp2", "cab"] as const).filter((t) => {
+    const loaded = loadedPathOf(s, t);
+    return loaded !== null && paths.includes(loaded);
+  });
+}
+
+export function decorateTone(
+  tone: T3kTone,
+  overrides: Record<number, boolean>,
+): T3kTone {
+  const override = overrides[tone.id];
+  if (override === undefined || override === tone.favorited) return tone;
+  return {
+    ...tone,
+    favorited: override,
+    favoritesCount: Math.max(0, tone.favoritesCount + (override ? 1 : -1)),
+  };
+}
+
+function creditPath(
+  credited: Record<number, string[]>,
+  toneId: number,
+  path: string,
+): Record<number, string[]> {
+  const paths = credited[toneId] ?? [];
+  return paths.includes(path) ? credited : { ...credited, [toneId]: [...paths, path] };
+}
+
+export const T3K_TARGET_LABELS: Record<T3kTarget, string> = {
+  amp: "Amp",
+  amp2: "Amp 2",
+  cab: "Cab",
+};
+
+/** Loads into one slot; resolves with an error message or null. */
+async function loadIntoTarget(
+  target: T3kTarget,
+  path: string,
+  name: string,
+): Promise<string | null> {
+  const res =
+    target === "cab"
+      ? await bridge.loadIr(path)
+      : target === "amp2"
+        ? await bridge.loadModelB(path)
+        : await bridge.loadModel(path);
+  if (res.error) return res.error;
+  useStore
+    .getState()
+    .toast(
+      target === "amp2" ? `Loaded ${name} into Amp 2` : `Loaded ${name}`,
+      "success",
+      2500,
+    );
+  return null;
+}
+
+/** A browser download finished: load it into its target unless a newer pick
+ *  took that slot meanwhile, then settle the row. */
+async function finishBrowserLoad(
+  path: string,
+  pending: T3kPendingDownload,
+  modelId: number,
+): Promise<void> {
+  const { toneId, target } = pending;
+  if (toneId == null || !target) return;
+  const set = useStore.setState;
+  const settle = (load: T3kRowLoad | null): void =>
+    set((s) => {
+      const t3kLoads = { ...s.t3kLoads };
+      if (load) t3kLoads[toneId] = load;
+      else delete t3kLoads[toneId];
+      return { t3kLoads };
+    });
+
+  if (latestPick[target] !== toneId) {
+    settle(null);
+    useStore.getState().toast(`Saved ${pending.name} to your library`, "info", 3000);
+    return;
+  }
+  settle({ phase: "loading", target, modelId, error: null });
+  const error = await loadIntoTarget(target, path, pending.name);
+  if (error) {
+    settle({ phase: "failed", target, modelId, error });
+    useStore.getState().toast(error, "error", 6000);
+    return;
+  }
+  settle(null);
+}
+
 let wired = false;
 
 /**
@@ -718,7 +1287,11 @@ export function connectStore(): () => void {
       });
     }),
 
-    bridge.on("libraryChanged", ({ models, irs }) => set({ models, irs })),
+    bridge.on("libraryChanged", ({ models, irs }) => {
+      set({ models, irs });
+      // Sidecars are written before this fires, so the scan sees new files.
+      void get().t3kRefreshInstalled();
+    }),
 
     bridge.on("presetChanged", ({ presets, currentPresetName, ab }) =>
       set({ presets, currentPresetName, ab }),
@@ -730,7 +1303,28 @@ export function connectStore(): () => void {
 
     bridge.on("irChanged", ({ ir }) => set({ ir })),
 
-    bridge.on("t3kStatus", (t3k) => set({ t3k })),
+    bridge.on("missingMediaChanged", ({ missingMedia }) => set({ missingMedia })),
+
+    bridge.on("t3kStatus", (t3k) => {
+      const before = get().t3k;
+      // Another account (or none): every remembered list, file listing and
+      // favorite override described the old session.
+      if (before.authenticated !== t3k.authenticated || before.username !== t3k.username) {
+        // The open detail carries the old account's favorite flag, and a file
+        // listing still in the air would land in the cleared map.
+        filesInFlight.clear();
+        favoritesInFlight.clear();
+        set((s) => ({
+          t3k,
+          t3kLists: {},
+          t3kScroll: {},
+          t3kFiles: {},
+          t3kFavOverrides: {},
+          t3kLoads: {},
+          browser: { ...s.browser, detail: null },
+        }));
+      } else set({ t3k });
+    }),
 
     bridge.on("t3kToneSelected", ({ toneId, models }) => {
       if (models.length === 0) {
@@ -761,11 +1355,20 @@ export function connectStore(): () => void {
                 ...s.t3kDownloaded,
                 [toneId]: [...(s.t3kDownloaded[toneId] ?? []), path],
               };
-        return { downloads, t3kPending, t3kDownloaded, tone: null };
+        return {
+          downloads,
+          t3kPending,
+          t3kDownloaded,
+          tone: null,
+          // TONE3000 now lists this tone under Recently used.
+          t3kLists: dropShelfLists(s.t3kLists, "downloaded", t3kListKey(s.browser)),
+        };
       });
-      // C++ only downloads + refreshes the library; loading is the UI's call,
-      // and `kind` decides which slot the file belongs in.
-      void autoLoad(path, pending);
+      void get().t3kRefreshInstalled();
+      // C++ only downloads + refreshes the library; loading is the UI's call.
+      // A browser load names its target; everything else routes by `kind`.
+      if (pending?.target) void finishBrowserLoad(path, pending, modelId);
+      else void autoLoad(path, pending);
     }),
 
     bridge.on("fxSlotChanged", ({ slot, state }) => {
@@ -799,7 +1402,12 @@ export function connectStore(): () => void {
           const t3kPending = { ...s.t3kPending };
           delete downloads[modelId];
           delete t3kPending[modelId];
-          return { downloads, t3kPending };
+          // The row that asked for this file shows the failure + Retry.
+          const t3kLoads = { ...s.t3kLoads };
+          for (const [toneId, load] of Object.entries(t3kLoads))
+            if (load.modelId === modelId && load.phase === "downloading")
+              t3kLoads[Number(toneId)] = { ...load, phase: "failed", error: message };
+          return { downloads, t3kPending, t3kLoads };
         });
       }
       get().toast(message, "error", 6000);
