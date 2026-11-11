@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <utility>
 #include <vector>
 
 namespace tubamp
@@ -141,6 +142,13 @@ public:
     /** State as var for A/B slots + presets (params + model + IR + chain order). */
     juce::var captureStateVar();
     void applyStateVar (const juce::var& state);
+
+    /** captureStateVar()'s shape for a state other than the live one: every parameter at its
+        default with `values` (id, plain value) on top, `order` as the chain with auto rows, and
+        no model, IR or hosted plugin. Reads and changes no live state, so the factory presets
+        are written from it. */
+    juce::var makeStateVar (const chain::Order& order,
+                            const std::vector<std::pair<juce::String, float>>& values) const;
 
     /** Current signal-chain order. Any thread (read under chainLock). */
     chain::Order getChainOrder() const;
@@ -277,11 +285,15 @@ private:
         (atomics only). */
     ChainLatency computeChainLatency (const chain::BlockId* order, int numBlocks,
                                       bool ampOn, bool amp2On,
-                                      bool lanesRunning = true) const noexcept;
+                                      bool lanesRunning = true,
+                                      const bool* waiting = nullptr) const noexcept;
 
     /** What one chain entry delays the signal by, the term computeChainLatency sums and
-        the gate's deferred curve is delayed by. Any thread (atomics only). */
-    int blockLatency (chain::BlockId id, bool ampOn, bool amp2On) const noexcept;
+        the gate's deferred curve is delayed by. Any thread (atomics only), except `waiting`:
+        the audio thread passes pendingReset, so a block that waits for its re-entry reset
+        counts what it delays while it waits. */
+    int blockLatency (chain::BlockId id, bool ampOn, bool amp2On,
+                      const bool* waiting = nullptr) const noexcept;
 
     /** What the host is told: the serial sections plus the slower lane. */
     int computeWantedLatency (const chain::BlockId* order, int numBlocks,
@@ -305,6 +317,11 @@ private:
     /** Audio thread: silences one block instance that is re-entering the chain, so it
         cannot replay what it was holding when it left. Allocation-free. */
     void resetBlockInstance (chain::BlockId id) noexcept;
+
+    /** Audio thread: block `id`'s engine processes this callback. True when it must start
+        from its reset first: it holds audio from before it last stopped and runs, or last
+        ran, a non-Classic type. A Classic engine keeps what it held, as it always did. */
+    bool engineStarts (chain::BlockId id, bool classic) noexcept;
 
     /** Audio thread: runs ONE chain entry over the buffer it is handed. `buf` and
         `block` are two views of the same audio — the host buffer for a serial entry or
@@ -332,6 +349,11 @@ private:
                          float* monoScratchData, juce::SmoothedValue<float>& inGain,
                          juce::SmoothedValue<float>& outGain, bool applyDeferredGate,
                          bool useToneStack) noexcept;
+
+    /** Audio thread: the gate's gain curve over `block`, at the gate's own position or
+        `deferred` onto the amp's mono output, through gateFader when the mode is not Classic
+        (gateFading and gateFadeOn are this callback's, set by processBlock). */
+    void applyGate (juce::dsp::AudioBlock<float> block, int numSamples, bool deferred) noexcept;
 
     /** Audio thread: fills `lane` from `main` per split_mode, leaving lane A in `main`.
         Allocation-free; the X-Over filters are prepared in prepareToPlay. */
@@ -625,6 +647,12 @@ private:
     std::array<int, 2> laneRingDelays { 0, 0 };
     bool laneRingPrimed = false;
 
+    /** A lane's alignment delay that changes (the other lane's latency moved) slides from the
+        old tap to the new one over this many samples, reading history the ring already holds:
+        clearing the ring would blank the lane for the length of the delay. */
+    int laneTapFadeSamples = 1, laneTapFadeLeft = 0;
+    std::array<int, 2> laneTapFrom { 0, 0 };
+
     /** What the previous block ran, for spotting a block re-entering the chain.
         Audio thread only. */
     std::array<bool, chain::numBlockTypes> prevPresent {};
@@ -634,6 +662,18 @@ private:
         switch can re-enter half a dozen blocks in one block. A block whose reset is
         still pending processes as bypassed (silent, never stale). Audio thread only. */
     std::array<bool, chain::numBlockTypes> pendingReset {};
+
+    /** Per block: its engine processed last callback / this callback; it holds audio from
+        before it last stopped; the type it last ran was Classic. Audio thread only. */
+    std::array<bool, chain::numBlockTypes> engineRan {}, engineRunsNow {}, engineStale {};
+    std::array<bool, chain::numBlockTypes> engineRanClassic {};
+
+    /** How each block with a non-Classic type goes on and off (one per instance). */
+    BypassFader gateFader;
+    std::array<BypassFader, params::maxInstances> compFader, driveFader, eqFader, modFader;
+
+    /** This callback's gate: whether its gain goes through gateFader, and towards on or off. */
+    bool gateFading = false, gateFadeOn = false;
 
     // Written on the message thread; also read by getStateInformation, which hosts
     // may call from a save/worker thread. juce::String is copy-on-write and not safe

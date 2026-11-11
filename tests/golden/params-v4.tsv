@@ -169,7 +169,7 @@
 167	gate_release	Gate Release	float	5	500	0.100000001	0.289064825	30	4	
 168	gate_hold	Gate Hold	float	0	250	0.100000001	1	6	4	
 169	gate_range	Gate Range	float	-90	0	0.100000001	1	-90	4	
-170	gate_sc_hpf	Gate SC HPF	float	20	300	1	0.437674046	90	4	
+170	gate_sc_hpf	Gate SC HPF	float	20	300	1	0.437674046	75	4	
 171	comp_type	Comp Type	choice	0	4	1	1	1	4	Classic|Clean|Squash|FET|Opto
 172	comp_knee	Comp Knee	float	0	24	0.100000001	1	6	4	
 173	comp_mix	Comp Mix	float	0	100	0.100000001	1	100	4	

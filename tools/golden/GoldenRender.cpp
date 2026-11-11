@@ -5,12 +5,20 @@
 //
 //   tubamp_golden --capture <file.tsv> [--model <a.nam>] [--ir <ir.wav>] [--only <glob>]
 //   tubamp_golden --verify <file.tsv> [--expected <expected-changes.tsv>] [--model ...] [--ir ...] [--only <glob>]
+//                 [--restore host|preset]
 //   tubamp_golden --params <file.tsv>
 //   tubamp_golden --legacy-check [--dump <dir>]
 //   tubamp_golden --list [--model ...] [--ir ...]
 //
 // Hashes are architecture- and build-type-specific: capture and verify on the same
 // machine, Release.
+//
+// --restore renders every case the way an old session reaches the plugin instead of setting
+// it up directly: written by a processor with the case's order and settings, saved, every
+// parameter the base commit did not have (version hint 4) taken out, then restored into a
+// fresh processor through setStateInformation (host) or applyStateVar (preset). The type ids
+// are not set by hand there, so the legacy pin alone has to bring every block back to Classic
+// for the captured hashes to hold.
 #include <juce_events/juce_events.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_cryptography/juce_cryptography.h>
@@ -227,9 +235,22 @@ struct Inputs
     juce::File model, ir;
 };
 
-Result render (const Case& c, const Config& cfg, const Inputs& inputs)
+enum class Restore { none, host, preset };
+
+void loadInputs (tubamp::TubampAudioProcessor& proc, const Case& c, const Inputs& inputs)
 {
-    tubamp::TubampAudioProcessor proc;
+    if (c.model)
+        if (const auto error = proc.loadModel (inputs.model); error.isNotEmpty())
+            std::fprintf (stderr, "error: %s: loadModel: %s\n", c.name.c_str(), error.toRawUTF8());
+
+    if (c.ir)
+        if (const auto error = proc.loadIr (inputs.ir); error.isNotEmpty())
+            std::fprintf (stderr, "error: %s: loadIr: %s\n", c.name.c_str(), error.toRawUTF8());
+}
+
+/** The case set up directly, every type pinned to Classic by hand. */
+void setUp (tubamp::TubampAudioProcessor& proc, const Case& c, const Inputs& inputs)
+{
     proc.setChainOrder (c.order, {});
 
     for (const auto& id : classicPinIds())
@@ -239,14 +260,12 @@ Result render (const Case& c, const Config& cfg, const Inputs& inputs)
         if (! setParam (proc, id, value))
             std::fprintf (stderr, "warning: %s: no parameter '%s'\n", c.name.c_str(), id.c_str());
 
-    if (c.model)
-        if (const auto error = proc.loadModel (inputs.model); error.isNotEmpty())
-            std::fprintf (stderr, "error: %s: loadModel: %s\n", c.name.c_str(), error.toRawUTF8());
+    loadInputs (proc, c, inputs);
+}
 
-    if (c.ir)
-        if (const auto error = proc.loadIr (inputs.ir); error.isNotEmpty())
-            std::fprintf (stderr, "error: %s: loadIr: %s\n", c.name.c_str(), error.toRawUTF8());
-
+/** Prepares `proc`, which holds the case's state, renders gen:music through it and hashes it. */
+Result renderPrepared (tubamp::TubampAudioProcessor& proc, const Case& c, const Config& cfg)
+{
     proc.prepareToPlay (cfg.sampleRate, cfg.block);
 
     if (c.ir)
@@ -280,6 +299,115 @@ Result render (const Case& c, const Config& cfg, const Inputs& inputs)
 
     const juce::SHA256 sha (interleaved.get(), (size_t) numFrames * 2 * sizeof (float));
     return { sha.toHexString().toStdString(), proc.getLatencySamples() };
+}
+
+Result render (const Case& c, const Config& cfg, const Inputs& inputs)
+{
+    tubamp::TubampAudioProcessor proc;
+    setUp (proc, c, inputs);
+    return renderPrepared (proc, c, cfg);
+}
+
+/** A case restored the way an old session reaches the plugin (see --restore). */
+struct Restored
+{
+    Result restored;
+    /** The same state saved with every type id of a block in the chain written as Classic
+        instead of left out, restored the same way: the legacy pin must be exactly that. */
+    Result explicitClassic;
+    /** Every type id of a block in the chain came back Classic. */
+    bool pinned = true;
+    /** Every value the base commit had came back as the directly set case has it, so the base
+        capture applies. A state round trip can move a value in its last bit, on the base commit
+        too: a parameter left at its default holds the unsnapped default until it is set. */
+    bool exact = true;
+};
+
+Restored renderRestored (const Case& c, const Config& cfg, const Inputs& inputs, Restore restore)
+{
+    tubamp::TubampAudioProcessor writer;
+    writer.setChainOrder (c.order, {});
+
+    for (const auto& [id, value] : c.settings)
+        if (! setParam (writer, id, value))
+            std::fprintf (stderr, "warning: %s: no parameter '%s'\n", c.name.c_str(), id.c_str());
+
+    loadInputs (writer, c, inputs);
+
+    juce::StringArray newer, pinnedIds;
+
+    for (auto* p : writer.getParameters())
+        if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*> (p); withId != nullptr && withId->getVersionHint() >= 4)
+            newer.add (withId->paramID);
+
+    for (const auto id : c.order)
+        for (const auto& pin : tubamp::kLegacyTypePins)
+            if (chain::kindOf (id) == pin.kind)
+                pinnedIds.add (pin.ids[chain::instanceOf (id)]);
+
+    // `strip`: the old session (every newer id left out); otherwise the same state with the
+    // pinned ids written as Classic.
+    const auto restoreInto = [&] (tubamp::TubampAudioProcessor& target, bool strip)
+    {
+        if (restore == Restore::host)
+        {
+            juce::MemoryBlock blob;
+            writer.getStateInformation (blob);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
+
+            if (xml == nullptr)
+                return;
+
+            if (auto* params = xml->getChildByName (writer.apvts.state.getType()))
+                for (auto* child = params->getFirstChildElement(); child != nullptr;)
+                {
+                    auto* next = child->getNextElement();
+                    const auto id = child->getStringAttribute ("id");
+
+                    if (strip && newer.contains (id))
+                        params->removeChildElement (child, true);
+                    else if (! strip && pinnedIds.contains (id))
+                        child->setAttribute ("value", 0.0);
+
+                    child = next;
+                }
+
+            juce::AudioProcessor::copyXmlToBinary (*xml, blob);
+            target.setStateInformation (blob.getData(), (int) blob.getSize());
+        }
+        else
+        {
+            const auto state = writer.captureStateVar();
+
+            if (auto* values = state.getProperty ("params", {}).getDynamicObject())
+                for (const auto& id : strip ? newer : pinnedIds)
+                    strip ? (void) values->removeProperty (id) : values->setProperty (id, 0.0);
+
+            target.applyStateVar (state);
+        }
+    };
+
+    tubamp::TubampAudioProcessor proc, reference, direct;
+    restoreInto (proc, true);
+    restoreInto (reference, false);
+    setUp (direct, c, inputs);
+
+    Restored out;
+
+    for (auto* p : proc.getParameters())
+        if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*> (p))
+        {
+            const float value = proc.apvts.getRawParameterValue (withId->paramID)->load();
+
+            if (pinnedIds.contains (withId->paramID))
+                out.pinned = out.pinned && value == 0.0f;
+            else if (! newer.contains (withId->paramID))
+                out.exact = out.exact && value == direct.apvts.getRawParameterValue (withId->paramID)->load();
+        }
+
+    out.restored = renderPrepared (proc, c, cfg);
+    out.explicitClassic = renderPrepared (reference, c, cfg);
+    return out;
 }
 
 std::string fileSha (const juce::File& f)
@@ -660,6 +788,7 @@ struct LegacyModCrossfade
             m.prepare (spec);
 
         outgoingAudio.setSize ((int) spec.numChannels, (int) spec.maximumBlockSize);
+        sampleRate = spec.sampleRate;
         fadeLength = tubamp::Modulation::crossfadeSamples (spec.sampleRate);
         reset();
     }
@@ -692,6 +821,12 @@ struct LegacyModCrossfade
             perType[active].reset();
             fadePosition = 0;
             started = true;
+
+            tubamp::ModParams incoming;
+            incoming.type = type;
+            incoming.chorusMode = 0;
+            incoming.depth = depth;
+            fadeHold = tubamp::Modulation::crossfadeHoldSamples (incoming, sampleRate);
         }
 
         last[active] = { rate, depth, mix };
@@ -710,7 +845,7 @@ struct LegacyModCrossfade
         perType[outgoing].process (old);
         perType[active].process (block);
 
-        const int count = juce::jmin ((int) n, fadeLength - fadePosition);
+        const int count = juce::jmin ((int) n, fadeHold + fadeLength - fadePosition);
 
         for (size_t ch = 0; ch < channels; ++ch)
         {
@@ -719,14 +854,14 @@ struct LegacyModCrossfade
 
             for (int i = 0; i < count; ++i)
             {
-                const float w = (float) (fadePosition + i) / (float) fadeLength;
+                const float w = (float) juce::jmax (0, fadePosition + i - fadeHold) / (float) fadeLength;
                 data[i] = o[i] + w * (data[i] - o[i]);
             }
         }
 
         fadePosition += count;
 
-        if (fadePosition >= fadeLength)
+        if (fadePosition >= fadeHold + fadeLength)
             outgoing = -1;
 
         return started;
@@ -735,7 +870,8 @@ struct LegacyModCrossfade
     tubamp::legacy::Modulation perType[3];
     std::array<float, 3> last[3] {};
     juce::AudioBuffer<float> outgoingAudio;
-    int active = -1, outgoing = -1, fadePosition = 0, fadeLength = 1;
+    double sampleRate = 44100.0;
+    int active = -1, outgoing = -1, fadePosition = 0, fadeLength = 1, fadeHold = 0;
 };
 
 LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce::File& dumpDir, juce::String& commands)
@@ -989,7 +1125,7 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
                     modulation.process (juce::dsp::AudioBlock<float> (jp, 2, (size_t) n));
 
                     if (modCrossfade.process (block, type, rate, depth, mix))
-                        fadeSpans.push_back ({ start, start + modCrossfade.fadeLength });
+                        fadeSpans.push_back ({ start, start + modCrossfade.fadeHold + modCrossfade.fadeLength });
                 }
                 break;
             }
@@ -1145,6 +1281,7 @@ int usage()
     std::printf ("usage:\n"
                  "  tubamp_golden --capture <file.tsv> [--model <a.nam>] [--ir <ir.wav>] [--only <glob>]\n"
                  "  tubamp_golden --verify <file.tsv> [--expected <expected-changes.tsv>] [--model ...] [--ir ...] [--only <glob>]\n"
+                 "                [--restore host|preset]\n"
                  "  tubamp_golden --params <file.tsv>\n"
                  "  tubamp_golden --legacy-check [--dump <dir>]\n"
                  "  tubamp_golden --list [--model ...] [--ir ...]\n");
@@ -1269,6 +1406,13 @@ int main (int argc, char** argv)
             return 2;
         }
 
+        const auto restore = opt ("--restore") == "host"   ? Restore::host
+                           : opt ("--restore") == "preset" ? Restore::preset
+                                                           : Restore::none;
+
+        if (! opt ("--restore").empty() && restore == Restore::none)
+            return usage();
+
         std::vector<Expectation> expected;
 
         if (! opt ("--expected").empty())
@@ -1284,7 +1428,7 @@ int main (int argc, char** argv)
         for (const auto& row : golden.rows)
             capturedHash[rowKey (row.name, row.fs, row.block)] = row.hash;
 
-        int checked = 0, differences = 0, skipped = 0, identical = 0, changed = 0;
+        int checked = 0, differences = 0, skipped = 0, identical = 0, changed = 0, moved = 0;
 
         for (const auto& row : golden.rows)
         {
@@ -1302,7 +1446,32 @@ int main (int argc, char** argv)
                 continue;
             }
 
-            const auto r = render (*it->second, { (double) row.fs, row.block }, inputs);
+            Result r;
+
+            if (restore == Restore::none)
+            {
+                r = render (*it->second, { (double) row.fs, row.block }, inputs);
+            }
+            else
+            {
+                const auto restored = renderRestored (*it->second, { (double) row.fs, row.block }, inputs, restore);
+                r = restored.restored;
+                const bool consistent = restored.pinned && r.hash == restored.explicitClassic.hash
+                                        && r.latency == restored.explicitClassic.latency;
+
+                if (! consistent || ! restored.exact)
+                {
+                    ++checked;
+                    consistent ? ++moved : ++differences;
+                    std::printf ("%s %-18s %6d %4d  %s\n", consistent ? "val " : "FAIL", row.name.c_str(), row.fs, row.block,
+                                 ! restored.pinned ? "a type id did not come back Classic"
+                                 : ! consistent    ? "the old session differs from the same state saved with Classic types"
+                                                   : "values moved in the round trip; equals the state saved with Classic types");
+                    std::fflush (stdout);
+                    continue;
+                }
+            }
+
             juce::String audioRule ("same"), latencyRule ("same");
 
             for (const auto& e : expected)
@@ -1378,6 +1547,11 @@ int main (int argc, char** argv)
 
             std::fflush (stdout);
         }
+
+        if (restore != Restore::none)
+            std::printf ("restore: %d rows equal the base capture (or its expected change) through the restore; %d rows "
+                         "whose values moved in the round trip equal the same state saved with Classic types\n",
+                         identical + changed, moved);
 
         std::printf ("verify: %d rows checked: %d identical, %d changed as expected, %d unexpected; %d skipped\n",
                      checked, identical, changed, differences, skipped);

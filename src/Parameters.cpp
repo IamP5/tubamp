@@ -396,7 +396,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     addFloat (layout, gateHold,    "Gate Hold",    { 0.0f, 250.0f, 0.1f },
               tubamp::kGateHoldDefault[kGateStart.mode], "ms", kVersionHint4);
     addFloat (layout, gateRange,   "Gate Range",   { -90.0f, 0.0f, 0.1f },         kGateStart.rangeDb, "dB", kVersionHint4);
-    addFloat (layout, gateScHpf,   "Gate SC HPF",  logRange (20.0f, 300.0f, 1.0f), kGateStart.scHpfHz, "Hz", kVersionHint4);
+    addFloat (layout, gateScHpf,   "Gate SC HPF",  logRange (20.0f, 300.0f, 1.0f),
+              tubamp::kGateScHpfDefault[kGateStart.mode], "Hz", kVersionHint4);
 
     const char* const compNames[maxInstances]  { "Comp", "Comp 2", "Comp 3" };
     const char* const driveNames[maxInstances] { "Drive", "Drive 2", "Drive 3" };

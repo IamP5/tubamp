@@ -27,6 +27,9 @@ constexpr double kGainSmoothingSeconds = 0.02;
 // re-enters many blocks to a few callbacks of extra silence for the stragglers.
 constexpr int kMaxResetsPerCallback = 2;
 
+// A lane whose alignment delay changes slides to the new one over this long (BypassFader's 10 ms).
+constexpr double kLaneTapFadeSeconds = 0.01;
+
 /** split_mode's choice order, frozen with the parameter (docs/SPLIT.md §2). */
 enum class SplitMode { copy = 0, leftRight = 1, crossover = 2 };
 
@@ -224,6 +227,30 @@ SerializedOrder serializeOrder (const chain::Order& order)
         return { text, {} };
 
     return { chain::emptyChainToken, text };
+}
+
+/** The state var presets and A/B slots store, the shape applyStateVar reads. */
+juce::var stateVar (juce::DynamicObject* paramValues, const chain::Order& order, const std::vector<int>& rows,
+                    const juce::String& modelPath, const juce::String& modelPathB, const juce::String& irPath,
+                    const juce::String& fxSlotsXml)
+{
+    const auto serialized = serializeOrder (order);
+
+    auto* state = new juce::DynamicObject();
+    state->setProperty ("version", kStateVersion);
+    state->setProperty ("params", juce::var (paramValues));
+    state->setProperty ("modelPath", modelPath);
+    state->setProperty ("modelPathB", modelPathB);
+    state->setProperty ("irPath", irPath);
+    state->setProperty ("chainOrder", serialized.v1);
+
+    if (serialized.v2.isNotEmpty())
+        state->setProperty ("chainOrderV2", serialized.v2);
+
+    state->setProperty ("chainRows", rowsToString (rows));
+    state->setProperty ("fxSlots", fxSlotsXml);
+
+    return juce::var (state);
 }
 
 /** Every id kLegacyTypePins covers whose block instance is in `order`: the ids a restore
@@ -880,6 +907,18 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     ampEq.prepare ({ spec.sampleRate, spec.maximumBlockSize, 1 });
     dcBlocker.prepare (spec);
 
+    gateFader.prepare (spec);
+
+    for (int k = 0; k < params::maxInstances; ++k)
+        for (auto* fader : { &compFader[(size_t) k], &driveFader[(size_t) k], &eqFader[(size_t) k], &modFader[(size_t) k] })
+            fader->prepare (spec);
+
+    // Every engine was just prepared, so none holds anything from before.
+    engineRan.fill (false);
+    engineRunsNow.fill (false);
+    engineStale.fill (false);
+    engineRanClassic.fill (true);
+
     splitLow.prepare (spec);
     splitLow.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
     splitLow.reset();
@@ -923,6 +962,9 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     laneRingWrite = 0;
     laneRingDelays = { 0, 0 };
     laneRingPrimed = false;
+    laneTapFadeSamples = juce::jmax (1, (int) std::lround (kLaneTapFadeSeconds * sampleRate));
+    laneTapFadeLeft = 0;
+    laneTapFrom = { 0, 0 };
 
     for (auto* smoothed : { &inputTrimLin, &outputLevelLin, &ampInLin, &ampOutLin,
                             &amp2InLin, &amp2OutLin, &mixLevelLin })
@@ -1002,6 +1044,19 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     for (int ch = numInputChannels; ch < numOutputChannels; ++ch)
         buffer.clear (ch, 0, numSamples);
+
+    // A non-finite sample from the host would live on in every recursive state it reached (the
+    // always-on DC blocker first) and leave the plugin silent or non-finite until the next
+    // prepare: it becomes silence here, before anything reads it, on every channel and so on
+    // every path. Finite input passes untouched.
+    for (int ch = 0; ch < juce::jmin (buffer.getNumChannels(), numOutputChannels); ++ch)
+    {
+        auto* data = buffer.getWritePointer (ch);
+
+        for (int n = 0; n < numSamples; ++n)
+            if (! std::isfinite (data[n]))
+                data[n] = 0.0f;
+    }
 
     // Adopt a staged model before anything reads it, on both engines and whatever the
     // chain looks like: a swap staged into B must never sit there going stale because
@@ -1088,19 +1143,6 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                        && laneScratch.getNumSamples() >= numSamples
                        && laneScratch.getNumChannels() >= numOutputChannels;
 
-    // Report latency from here, where the topology is known: only blocks that are
-    // actually in the path delay the signal, and lanes cost what the slower one costs.
-    // Hosts tolerate latency changes reported from the audio thread (same contract as
-    // the old staging-time report).
-    const auto chainLatency = computeChainLatency (order.data(), numBlocks, ampOn, amp2On, lanes);
-
-    {
-        const int wantedLatency = chainLatency.reported();
-
-        if (wantedLatency != getLatencySamples())
-            setLatencySamples (wantedLatency);
-    }
-
     // Which of the four segments an entry runs in: 0 = serial before the split (and
     // everything in a chain without one), 1 = lane A, 2 = lane B, 3 = serial after the
     // mixer.
@@ -1140,6 +1182,21 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         ++drained;
     }
 
+    // Report latency from here, where the topology is known and the resets are drained: only
+    // blocks that are actually in the path delay the signal, by what they delay it this block
+    // (a block still waiting for its reset included), and lanes cost what the slower one costs.
+    // Hosts tolerate latency changes reported from the audio thread (same contract as the old
+    // staging-time report).
+    const auto chainLatency = computeChainLatency (order.data(), numBlocks, ampOn, amp2On, lanes,
+                                                   pendingReset.data());
+
+    {
+        const int wantedLatency = chainLatency.reported();
+
+        if (wantedLatency != getLatencySamples())
+            setLatencySamples (wantedLatency);
+    }
+
     // Gate split: the trigger always measures at the gate's own position. The reduction
     // is deferred onto the model's mono output only when the amp runs later in the SAME
     // segment; across a split there is no shared post-model point to gate at (the other
@@ -1147,7 +1204,15 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // split every entry is in segment 0 and this is exactly the old rule. A gate whose
     // re-entry reset is still pending runs as bypassed, like every other block.
     const bool gateRuns = gateOn && ! pendingReset[(size_t) chain::BlockId::gate];
-    const bool deferGateToAmp = gateRuns && ampOn && gateIndex >= 0 && ampIndex > gateIndex
+    const int gateMode = juce::jlimit (0, GateFx::numModes - 1,
+                                       (int) valueOf (pp.gateMode, (float) GateFx::Mode::tight));
+
+    // Tight and Smooth fade their gain in and out; the gate measures, and its curve lands,
+    // until a fade out is over.
+    gateFading = present[(size_t) chain::BlockId::gate] && gateMode != (int) GateFx::Mode::classic;
+    gateFadeOn = gateRuns;
+    const bool gateEngine = gateFading ? gateFader.needsEngine (gateRuns) : gateRuns;
+    const bool deferGateToAmp = gateEngine && ampOn && gateIndex >= 0 && ampIndex > gateIndex
                                 && segmentOf (gateIndex) == segmentOf (ampIndex);
 
     // A deferred curve meets audio that is late by everything from the gate to the amp's
@@ -1159,9 +1224,9 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
         if (deferGateToAmp)
             for (int i = gateIndex + 1; i <= ampIndex; ++i)
-                curveDelay += blockLatency (order[(size_t) i], ampOn, amp2On);
+                curveDelay += blockLatency (order[(size_t) i], ampOn, amp2On, pendingReset.data());
 
-        gate.setCurveDelay (curveDelay);
+        gate.setCurveDelay (juce::jmin (curveDelay, GateFx::kMaxCurveDelaySamples));
     }
 
     if (! present[(size_t) chain::BlockId::gate] || ! gateRuns)
@@ -1206,7 +1271,7 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                juce::dsp::AudioBlock<float> targetBlock)
     {
         processChainBlock (order[(size_t) index], target, targetBlock, numSamples,
-                           monoScratchData, gateRuns, deferGateToAmp, ampOn, amp2On, playHead,
+                           monoScratchData, gateEngine, deferGateToAmp, ampOn, amp2On, playHead,
                            transport);
     };
 
@@ -1260,6 +1325,14 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // any block that did not (no split in the order, a scratch too small) ends that run.
     laneRingPrimed = lanes;
 
+    // An engine that ran last callback and not this one now holds audio from the past.
+    for (size_t index = 0; index < engineRan.size(); ++index)
+        if (engineRan[index] && ! engineRunsNow[index])
+            engineStale[index] = true;
+
+    engineRan = engineRunsNow;
+    engineRunsNow.fill (false);
+
     // --- DC blocker: always on, never user-facing (spec §4 step 7)
     dcBlocker.process (block);
 
@@ -1292,7 +1365,7 @@ GateParams TubampAudioProcessor::gateParams() const noexcept
     gp.releaseMs   = valueOf (pp.gateRelease, kGateReleaseDefault[(int) GateFx::Mode::tight]);
     gp.holdMs      = valueOf (pp.gateHold, kGateHoldDefault[(int) GateFx::Mode::tight]);
     gp.rangeDb     = valueOf (pp.gateRange, -90.0f);
-    gp.scHpfHz     = valueOf (pp.gateScHpf, 90.0f);
+    gp.scHpfHz     = valueOf (pp.gateScHpf, kGateScHpfDefault[(int) GateFx::Mode::tight]);
     return gp;
 }
 
@@ -1301,9 +1374,9 @@ DriveParams TubampAudioProcessor::driveParams (int instance) const noexcept
     const auto k = (size_t) instance;
     DriveParams dp;
     dp.type    = (int) valueOf (pp.driveType[k], (float) DriveFx::Type::screamer);
-    dp.gainDb  = valueOf (pp.driveGain[k], 12.0f);
-    dp.toneHz  = valueOf (pp.driveTone[k], 4000.0f);
-    dp.levelDb = valueOf (pp.driveLevel[k]);
+    dp.gainDb  = valueOf (pp.driveGain[k], kDriveGainDefault[(int) DriveFx::Type::screamer]);
+    dp.toneHz  = valueOf (pp.driveTone[k], kDriveToneDefault[(int) DriveFx::Type::screamer]);
+    dp.levelDb = valueOf (pp.driveLevel[k], kDriveLevelDefault[(int) DriveFx::Type::screamer]);
     return dp;
 }
 
@@ -1412,7 +1485,7 @@ void TubampAudioProcessor::processAmpMono (NamEngine& engine, juce::dsp::AudioBl
 
     // Gate reduction lands on the model's output, before the amp-out gain.
     if (applyDeferredGate)
-        gate.apply (mono, numSamples);
+        applyGate (juce::dsp::AudioBlock<float> (&mono, 1, (size_t) numSamples), numSamples, true);
 
     // The amp's own tone stack, on the mono path: model -> gate gain -> tone stack is
     // the reference plugin's order (docs/research/nam-plugin-params.md §4), and running
@@ -1459,20 +1532,36 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
 
     switch (id)
     {
-        // --- gate trigger (analysis only when the reduction lands after the model)
+        // --- gate trigger (analysis only when the reduction lands after the model). `gateOn`
+        // is whether the gate's engine runs: on, or fading out.
         case chain::BlockId::gate:
         {
-            if (gateOn)
+            if (! gateOn)
             {
+                // Resting off: the fader still keeps its input history and its rest state.
+                if (gateFading)
+                    gateFader.process (block, false, 0, [] (juce::dsp::AudioBlock<float>) {});
+            }
+            else
+            {
+                if (engineStarts (id, ! gateFading))
+                {
+                    gate.reset();
+                    gateFader.restart();
+                }
+
                 gate.setParameters (gateParams());
                 gate.measure (block, numSamples);
 
                 if (! deferGateToAmp)
-                    gate.apply (block, numSamples);
+                    applyGate (block, numSamples, false);
 
-                publishMax (gateGrDb, gate.getGainReductionDb());
-                publishMax (gateLevelDb, gate.getDetectorLevelDb());
-                gateState.store (gate.getState(), std::memory_order_relaxed);
+                if (gateFadeOn)
+                {
+                    publishMax (gateGrDb, gate.getGainReductionDb());
+                    publishMax (gateLevelDb, gate.getDetectorLevelDb());
+                    gateState.store (gate.getState(), std::memory_order_relaxed);
+                }
             }
 
             break;
@@ -1483,32 +1572,85 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         case chain::BlockId::comp2:
         case chain::BlockId::comp3:
         {
-            comp[k].setParameters (compParams ((int) k));
+            const auto cp = compParams ((int) k);
+            const bool runs = isOn (pp.compOn[k]) && ! pendingReset[(size_t) id];
+            const bool classic = juce::jlimit (0, CompFx::numTypes - 1, cp.type) == (int) CompFx::Type::classic;
 
-            if (isOn (pp.compOn[k]) && ! pendingReset[(size_t) id])
+            if (classic)
+                compFader[k].follow (block, runs);
+
+            if (classic ? runs : compFader[k].needsEngine (runs))
             {
-                comp[k].process (block);
-                publishMax (compGrDb[k], comp[k].getGainReductionDb());
+                if (engineStarts (id, classic))
+                {
+                    comp[k].reset();
+                    compFader[k].restart();
+                }
+
+                comp[k].setParameters (cp);
+
+                if (classic)
+                    comp[k].process (block);
+                else
+                    compFader[k].process (block, runs, 0, [this, k] (juce::dsp::AudioBlock<float> sub) { comp[k].process (sub); });
+
+                if (runs)
+                    publishMax (compGrDb[k], comp[k].getGainReductionDb());
             }
             else
             {
+                comp[k].setParameters (cp);
+
+                if (! classic)
+                    compFader[k].process (block, false, 0, [] (juce::dsp::AudioBlock<float>) {});
+
                 comp[k].skip (numSamples);
             }
 
             break;
         }
 
-        // --- drive
+        // --- drive. A non-Classic drive holds its input back by its latency while it is off
+        // or waiting, which is why its latency stays counted then (blockLatency).
         case chain::BlockId::drive:
         case chain::BlockId::drive2:
         case chain::BlockId::drive3:
         {
-            if (isOn (pp.driveOn[k]) && ! pendingReset[(size_t) id])
+            const auto dp = driveParams ((int) k);
+            const bool runs = isOn (pp.driveOn[k]) && ! pendingReset[(size_t) id];
+            const int type = juce::jlimit (0, DriveFx::numTypes - 1, dp.type);
+            const bool classic = type == (int) DriveFx::Type::classic;
+
+            if (classic)
             {
-                drive[k].setParameters (driveParams ((int) k));
-                drive[k].process (block);
+                driveFader[k].follow (block, runs);
+
+                if (runs)
+                {
+                    if (engineStarts (id, true))
+                        drive[k].reset();
+
+                    drive[k].setParameters (dp);
+                    drive[k].process (block);
+                }
+
+                break;
             }
 
+            if (driveFader[k].needsEngine (runs))
+            {
+                if (engineStarts (id, false))
+                {
+                    drive[k].reset();
+                    driveFader[k].restart();
+                }
+
+                drive[k].setParameters (dp);
+            }
+
+            driveFader[k].process (block, runs,
+                                   DriveFx::latencyFor (type, preparedSampleRate.load (std::memory_order_relaxed)),
+                                   [this, k] (juce::dsp::AudioBlock<float> sub) { drive[k].process (sub); });
             break;
         }
 
@@ -1577,12 +1719,38 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         case chain::BlockId::eq2:
         case chain::BlockId::eq3:
         {
-            if (isOn (pp.eqOn[k]) && ! pendingReset[(size_t) id])
+            const auto ep = eqParams ((int) k);
+            const bool runs = isOn (pp.eqOn[k]) && ! pendingReset[(size_t) id];
+            const bool classic = juce::jlimit (0, EqFx::numTypes - 1, ep.type) == (int) EqFx::Type::classic;
+
+            if (classic)
             {
-                eq[k].setParameters (eqParams ((int) k));
-                eq[k].process (block);
+                eqFader[k].follow (block, runs);
+
+                if (runs)
+                {
+                    if (engineStarts (id, true))
+                        eq[k].reset();
+
+                    eq[k].setParameters (ep);
+                    eq[k].process (block);
+                }
+
+                break;
             }
 
+            if (eqFader[k].needsEngine (runs))
+            {
+                if (engineStarts (id, false))
+                {
+                    eq[k].reset();
+                    eqFader[k].restart();
+                }
+
+                eq[k].setParameters (ep);
+            }
+
+            eqFader[k].process (block, runs, 0, [this, k] (juce::dsp::AudioBlock<float> sub) { eq[k].process (sub); });
             break;
         }
 
@@ -1591,12 +1759,42 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         case chain::BlockId::mod2:
         case chain::BlockId::mod3:
         {
-            if (isOn (pp.modOn[k]) && ! pendingReset[(size_t) id])
+            const auto mp = modParams ((int) k, transport);
+            const bool runs = isOn (pp.modOn[k]) && ! pendingReset[(size_t) id];
+            const int type = juce::jlimit (0, Modulation::numTypes - 1, mp.type);
+            const int voicing = type == (int) Modulation::Type::chorus ? mp.chorusMode
+                              : type == (int) Modulation::Type::phaser ? mp.phaserModel
+                                                                       : mp.tremVoice;
+            const bool classic = voicing <= 0;
+
+            if (classic)
             {
-                modulation[k].setParameters (modParams ((int) k, transport));
-                modulation[k].process (block);
+                modFader[k].follow (block, runs);
+
+                if (runs)
+                {
+                    if (engineStarts (id, true))
+                        modulation[k].reset();
+
+                    modulation[k].setParameters (mp);
+                    modulation[k].process (block);
+                }
+
+                break;
             }
 
+            if (modFader[k].needsEngine (runs))
+            {
+                if (engineStarts (id, false))
+                {
+                    modulation[k].reset();
+                    modFader[k].restart();
+                }
+
+                modulation[k].setParameters (mp);
+            }
+
+            modFader[k].process (block, runs, 0, [this, k] (juce::dsp::AudioBlock<float> sub) { modulation[k].process (sub); });
             break;
         }
 
@@ -1673,6 +1871,35 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         case chain::BlockId::mix:
             break;
     }
+}
+
+void TubampAudioProcessor::applyGate (juce::dsp::AudioBlock<float> block, int numSamples, bool deferred) noexcept
+{
+    const auto apply = [this, deferred] (juce::dsp::AudioBlock<float> sub)
+    {
+        if (deferred)
+            gate.apply (sub.getChannelPointer (0), (int) sub.getNumSamples());
+        else
+            gate.apply (sub, (int) sub.getNumSamples());
+    };
+
+    if (gateFading)
+        gateFader.process (block, gateFadeOn, 0, apply);
+    else if (deferred)
+        gate.apply (block.getChannelPointer (0), numSamples);
+    else
+        gate.apply (block, numSamples);
+}
+
+bool TubampAudioProcessor::engineStarts (chain::BlockId id, bool classic) noexcept
+{
+    const auto index = (size_t) id;
+    const bool startsFresh = engineStale[index] && ! (classic && engineRanClassic[index]);
+
+    engineRunsNow[index] = true;
+    engineStale[index] = false;
+    engineRanClassic[index] = classic;
+    return startsFresh;
 }
 
 void TubampAudioProcessor::splitLanes (juce::AudioBuffer<float>& main, juce::AudioBuffer<float>& lane,
@@ -1837,47 +2064,73 @@ void TubampAudioProcessor::compensateLaneLatency (juce::AudioBuffer<float>& lane
     const std::array<int, 2> delays { juce::jlimit (0, capacity - 1, delayA),
                                       juce::jlimit (0, capacity - 1, delayB) };
 
-    // Stale content: a delay that just changed (a model swap, a hosted plugin landing in
-    // a lane) or a run of lane blocks that was interrupted. Cheap, and only on those
-    // edges.
-    if (! laneRingPrimed || delays != laneRingDelays)
+    if (! laneRingPrimed)
     {
+        // Stale content: the run of lane blocks was interrupted. Cheap, and only on that edge.
         laneRing[0].clear();
         laneRing[1].clear();
         laneRingWrite = 0;
         laneRingDelays = delays;
+        laneTapFadeLeft = 0;
+    }
+    else if (delays != laneRingDelays)
+    {
+        // A latency moved in one lane (a model swap, a drive switched or retyped, a hosted
+        // plugin landing): each lane's tap slides from its old delay to the new one over the
+        // history the ring already holds, so neither lane drops or skips a sample. A change in
+        // the middle of a slide starts the next one from where that one was going.
+        laneTapFrom = laneRingDelays;
+        laneRingDelays = delays;
+        laneTapFadeLeft = laneTapFadeSamples;
     }
 
     juce::AudioBuffer<float>* const lanes[2] { &laneA, &laneB };
+    const int fadeLeft = laneTapFadeLeft;
 
     for (int lane = 0; lane < 2; ++lane)
     {
         const int delay = delays[(size_t) lane];
-
-        // Equal latencies (the common case, and always so when neither lane holds an amp,
-        // a drive or an fx slot): nothing to compensate, and the ring is not touched at all.
-        if (delay == 0)
-            continue;
+        const int from = laneTapFrom[(size_t) lane];
+        const bool sliding = fadeLeft > 0 && from != delay;
 
         for (int ch = 0; ch < juce::jmin (numChannels, laneRing[(size_t) lane].getNumChannels()); ++ch)
         {
             auto* ring = laneRing[(size_t) lane].getWritePointer (ch);
             auto* data = lanes[lane]->getWritePointer (ch);
-            int write = laneRingWrite;
+            int write = laneRingWrite, left = fadeLeft;
 
             for (int n = 0; n < numSamples; ++n)
             {
-                // Written before it is read, so the read (at least one sample behind) can
-                // never see what this iteration just stored — which is what makes a block
-                // longer than the ring harmless.
+                // Written before it is read, so the read (at least one sample behind) can never
+                // see what this iteration just stored — which is what makes a block longer than
+                // the ring harmless. A lane that waits for nothing is still written: its history
+                // is what a later delay, or a slide, reads.
                 ring[write] = data[n];
 
-                int read = write - delay;
+                if (delay != 0 || sliding)
+                {
+                    int read = write - delay;
 
-                if (read < 0)
-                    read += capacity;
+                    if (read < 0)
+                        read += capacity;
 
-                data[n] = ring[read];
+                    const float now = ring[read];
+
+                    if (sliding && left > 0)
+                    {
+                        int readFrom = write - from;
+
+                        if (readFrom < 0)
+                            readFrom += capacity;
+
+                        data[n] = now + ((float) left / (float) laneTapFadeSamples) * (ring[readFrom] - now);
+                        --left;
+                    }
+                    else
+                    {
+                        data[n] = now;
+                    }
+                }
 
                 if (++write == capacity)
                     write = 0;
@@ -1885,13 +2138,14 @@ void TubampAudioProcessor::compensateLaneLatency (juce::AudioBuffer<float>& lane
         }
     }
 
+    laneTapFadeLeft = juce::jmax (0, fadeLeft - numSamples);
     laneRingWrite = (laneRingWrite + numSamples) % capacity;
 }
 
 TubampAudioProcessor::ChainLatency
 TubampAudioProcessor::computeChainLatency (const chain::BlockId* order, int numBlocks,
                                            bool ampOn, bool amp2On,
-                                           bool lanesRunning) const noexcept
+                                           bool lanesRunning, const bool* waiting) const noexcept
 {
     ChainLatency result;
 
@@ -1922,7 +2176,7 @@ TubampAudioProcessor::computeChainLatency (const chain::BlockId* order, int numB
 
     for (int i = 0; i < numBlocks; ++i)
     {
-        const int latency = blockLatency (order[i], ampOn, amp2On);
+        const int latency = blockLatency (order[i], ampOn, amp2On, waiting);
 
         if (latency == 0)
             continue;
@@ -1938,7 +2192,8 @@ TubampAudioProcessor::computeChainLatency (const chain::BlockId* order, int numB
     return result;
 }
 
-int TubampAudioProcessor::blockLatency (chain::BlockId id, bool ampOn, bool amp2On) const noexcept
+int TubampAudioProcessor::blockLatency (chain::BlockId id, bool ampOn, bool amp2On,
+                                        const bool* waiting) const noexcept
 {
     // A resampler's latency only reaches the signal when its block actually runs:
     // in the published order AND enabled. Otherwise it contributes zero, so hosts
@@ -1950,15 +2205,22 @@ int TubampAudioProcessor::blockLatency (chain::BlockId id, bool ampOn, bool amp2
     if (id == chain::BlockId::amp2)
         return (amp2On && namEngineB.hasLiveModel()) ? namEngineB.getLatencySamples() : 0;
 
-    // The drive's oversampling delay, by the amp's rule (FX-ENGINES.md D-7): counted while
-    // the drive is on, so automating drive_on or drive_type moves the report. latencyFor
-    // is a pure function of type and rate: this runs on the message thread too.
+    // The drive's oversampling delay. latencyFor is a pure function of type and rate: this
+    // runs on the message thread too. A non-Classic drive counts it whenever it is in the
+    // chain, the FX-slot rule: bypassed or waiting for its reset it holds its input back by the
+    // same amount (BypassFader), so switching it crossfades without moving the audio in time.
+    // Classic keeps the amp's rule (FX-ENGINES.md D-7) — delaying a bypassed Classic drive
+    // would change old sessions — and counts only while it runs.
     if (chain::kindOf (id) == chain::BlockId::drive)
     {
         const auto k = (size_t) chain::instanceOf (id);
-        return isOn (pp.driveOn[k]) ? DriveFx::latencyFor ((int) valueOf (pp.driveType[k]),
-                                                           preparedSampleRate.load (std::memory_order_relaxed))
-                                    : 0;
+        const int type = juce::jlimit (0, DriveFx::numTypes - 1, (int) valueOf (pp.driveType[k]));
+        const int latency = DriveFx::latencyFor (type, preparedSampleRate.load (std::memory_order_relaxed));
+
+        if (type != (int) DriveFx::Type::classic)
+            return latency;
+
+        return isOn (pp.driveOn[k]) && (waiting == nullptr || ! waiting[(size_t) id]) ? latency : 0;
     }
 
     // A loaded FX slot contributes its plugin's latency whether or not the slot is
@@ -2002,27 +2264,32 @@ void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
 {
     const auto k = (size_t) chain::instanceOf (id);
 
+    // The engine below starts clean, so engineStarts() has nothing to reset; a non-Classic
+    // block fades in from its input as it comes back.
+    engineStale[(size_t) id] = false;
+    engineRanClassic[(size_t) id] = true;
+
     switch (id)
     {
         case chain::BlockId::comp:
         case chain::BlockId::comp2:
-        case chain::BlockId::comp3:   comp[k].reset();       break;
+        case chain::BlockId::comp3:   comp[k].reset();       compFader[k].reset (false);  break;
 
         // Tight and Smooth would resume from the gain they had when the gate left; a
         // reset starts them closed. Classic only drops its curve, as it always did.
-        case chain::BlockId::gate:    gate.reset();          break;
+        case chain::BlockId::gate:    gate.reset();          gateFader.reset (false);     break;
 
         case chain::BlockId::drive:
         case chain::BlockId::drive2:
-        case chain::BlockId::drive3:  drive[k].reset();      break;
+        case chain::BlockId::drive3:  drive[k].reset();      driveFader[k].reset (false); break;
 
         case chain::BlockId::eq:
         case chain::BlockId::eq2:
-        case chain::BlockId::eq3:     eq[k].reset();         break;
+        case chain::BlockId::eq3:     eq[k].reset();         eqFader[k].reset (false);    break;
 
         case chain::BlockId::mod:
         case chain::BlockId::mod2:
-        case chain::BlockId::mod3:    modulation[k].reset(); break;
+        case chain::BlockId::mod3:    modulation[k].reset(); modFader[k].reset (false);   break;
 
         case chain::BlockId::delay:
         case chain::BlockId::delay2:
@@ -2381,23 +2648,31 @@ juce::var TubampAudioProcessor::captureStateVar()
         rowsCopy = uiChainRows;
     }
 
-    const auto serialized = serializeOrder (orderCopy);
+    return stateVar (paramValues, orderCopy, rowsCopy, loadedModelPath, loadedModelPathB, loadedIrPath,
+                     fxSlotsTree().toXmlString());
+}
 
-    auto* state = new juce::DynamicObject();
-    state->setProperty ("version", kStateVersion);
-    state->setProperty ("params", juce::var (paramValues));
-    state->setProperty ("modelPath", loadedModelPath);
-    state->setProperty ("modelPathB", loadedModelPathB);
-    state->setProperty ("irPath", loadedIrPath);
-    state->setProperty ("chainOrder", serialized.v1);
+juce::var TubampAudioProcessor::makeStateVar (const chain::Order& order,
+                                              const std::vector<std::pair<juce::String, float>>& values) const
+{
+    auto* paramValues = new juce::DynamicObject();
 
-    if (serialized.v2.isNotEmpty())
-        state->setProperty ("chainOrderV2", serialized.v2);
+    for (auto* parameter : getParameters())
+    {
+        if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (parameter))
+        {
+            float normalised = ranged->getDefaultValue();
 
-    state->setProperty ("chainRows", rowsToString (rowsCopy));
-    state->setProperty ("fxSlots", fxSlotsTree().toXmlString());
+            for (const auto& [id, value] : values)
+                if (id == ranged->paramID)
+                    normalised = ranged->convertTo0to1 (ranged->convertFrom0to1 (ranged->convertTo0to1 (value)));
 
-    return juce::var (state);
+            // What captureStateVar() reads back once the value has been set on the parameter.
+            paramValues->setProperty (juce::Identifier (ranged->paramID), (double) ranged->convertFrom0to1 (normalised));
+        }
+    }
+
+    return stateVar (paramValues, order, {}, {}, {}, {}, juce::ValueTree ("FXSLOTS").toXmlString());
 }
 
 void TubampAudioProcessor::applyStateVar (const juce::var& state)

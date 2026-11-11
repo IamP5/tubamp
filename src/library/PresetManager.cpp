@@ -169,73 +169,39 @@ void PresetManager::createFactoryPresetsIfMissing()
     if (presetsDir.getNumberOfChildFiles (juce::File::findFiles, "*.json") > 0)
         return; // already initialised (or the user has their own presets)
 
-    // Factory presets reference no model/IR - captureStateVar() only reflects
-    // whatever is currently loaded (none, on first run), plus the APVTS values
-    // we stage below. Parameter changes made here are reverted afterwards.
-    const auto originalState = proc.apvts.copyState();
-
-    // captureStateVar() also records the live chain order, which for a fresh instance
-    // is the amp on its own. A factory preset is a whole rig, so the classic
-    // arrangement is staged around every capture and the user's own chain restored at
-    // the end - the same shape as the apvts.replaceState restore.
-    const auto originalOrder = proc.getChainOrder();
-    const auto originalRows = proc.getChainRows();
-
-    auto setBool = [this] (const char* paramId, bool value)
+    // Each factory preset is a whole rig on the classic arrangement, built from the parameter
+    // defaults and its own settings, and referencing no model or IR. It is never staged on
+    // the live parameters: this runs in the constructor of the first instance on a machine,
+    // which must come up exactly as every later instance does.
+    const auto writeFactoryPreset = [this] (const juce::String& name, std::vector<std::pair<juce::String, float>> values)
     {
-        if (auto* p = proc.apvts.getParameter (paramId))
-            p->setValueNotifyingHost (value ? 1.0f : 0.0f);
-    };
-
-    auto setFloat = [this] (const char* paramId, float rawValue)
-    {
-        if (auto* p = proc.apvts.getParameter (paramId))
-            p->setValueNotifyingHost (p->convertTo0to1 (rawValue));
-    };
-
-    auto writeFactoryPreset = [this, setFloat] (const juce::String& name)
-    {
-        // Rows stay auto: a factory preset should lay itself out for whatever window
-        // the user opens it in, not carry one machine's arrangement.
-        proc.setChainOrder (chain::classicOrder(), {});
-
         // Every engine type at Classic (docs/FX-ENGINES.md §8 D-2): installs that wrote
         // their presets before the types existed load them pinned to Classic, so a
         // fresh install writes the same sound rather than the recommended types.
         for (const auto& pin : kLegacyTypePins)
             for (int k = 0; k < chain::numInstancesOf (pin.kind); ++k)
-                setFloat (pin.ids[k], 0.0f);
+                values.emplace_back (pin.ids[k], 0.0f);
 
-        const auto file = presetFileForName (name);
-        const auto presetVar = buildPresetVar (name, {}, false, proc.captureStateVar());
-        file.replaceWithText (juce::JSON::toString (presetVar));
+        const auto state = proc.makeStateVar (chain::classicOrder(), values);
+        presetFileForName (name).replaceWithText (juce::JSON::toString (buildPresetVar (name, {}, false, state)));
     };
 
     // 1. Init - untouched defaults.
-    writeFactoryPreset ("Init");
+    writeFactoryPreset ("Init", {});
 
     // 2. Clean + Room - a little ambience, nothing else engaged.
-    setBool (params::reverbOn, true);
-    setFloat (params::reverbMix, 0.35f);
-    writeFactoryPreset ("Clean + Room");
-    proc.apvts.replaceState (originalState);
+    writeFactoryPreset ("Clean + Room", { { params::reverbOn, 1.0f }, { params::reverbMix, 0.35f } });
 
     // 3. Crunch Drive - drive block on, moderate gain.
-    setBool (params::driveOn, true);
-    setFloat (params::driveGain, 18.0f);
-    writeFactoryPreset ("Crunch Drive");
-    proc.apvts.replaceState (originalState);
+    writeFactoryPreset ("Crunch Drive", { { params::driveOn, 1.0f }, { params::driveGain, 18.0f } });
 
-    // 4. Ambient Lead - delay + reverb + modulation, all engaged.
-    setBool (params::delayOn, true);
-    setFloat (params::delayMix, 0.35f);
-    setBool (params::reverbOn, true);
-    setFloat (params::reverbMix, 0.4f);
-    setBool (params::modOn, true);
-    writeFactoryPreset ("Ambient Lead");
-    proc.apvts.replaceState (originalState);
-
-    proc.setChainOrder (originalOrder, originalRows);
+    // 4. Ambient Lead - delay + reverb + modulation, all engaged, over Crunch Drive's drive:
+    // the old staging restored the live state only once, so every install so far wrote it
+    // that way, and the factory sound stays the same everywhere (D-2).
+    writeFactoryPreset ("Ambient Lead", { { params::driveOn, 1.0f }, { params::driveGain, 18.0f },
+                                          { params::delayOn, 1.0f }, { params::delayMix, 0.35f },
+                                          { params::reverbOn, 1.0f }, { params::reverbMix, 0.4f },
+                                          { params::modOn, 1.0f } });
 }
 
 void PresetManager::captureToSlot (int slot)

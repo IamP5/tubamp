@@ -29,6 +29,102 @@ private:
     juce::dsp::StateVariableTPTFilter<float> filter;
 };
 
+/** How a gate, comp, drive, EQ or mod block running a non-Classic type goes in and out of the
+    signal (docs/FX-ENGINES.md §6.0): its input and its engine's output are crossfaded over
+    10 ms when it is switched on or off, because the engines alone step at a hard switch under
+    signal. The input is delayed by the engine's latency so the two line up, and stays delayed
+    while the block is off when that latency stays counted (a non-Classic drive), so the audio
+    is where the host was told it is. Audio thread after prepare(), allocation-free. */
+class BypassFader
+{
+public:
+    /** The longest latency it lines up: more than any drive type reports at any rate. */
+    static constexpr int kMaxDelaySamples = 64;
+
+    void prepare (const juce::dsp::ProcessSpec& spec);
+    /** Silent input history, resting off. `snapOnFirstUse`: nothing was heard from the block
+        before (after prepare), so the next process() starts at rest in the state it is asked
+        for; otherwise (a block re-entering the chain, its engine just reset) a block that is
+        on fades in after restart()'s settling time. */
+    void reset (bool snapOnFirstUse) noexcept;
+    /** The engine was just reset: it runs unheard for 10 ms before it fades in, so whatever
+        its filters do while they fill from zero is over before it is heard. */
+    void restart() noexcept { settle = settleSamples; }
+    /** The engine has to run this block: the block is on, or still fading out. */
+    bool needsEngine (bool on) const noexcept { return on || (wet > 0.0f && ! snap); }
+    /** A Classic block, which switches hard: only keeps the input history and the rest state
+        current, so a switch to a non-Classic type finds both. The audio is not touched. */
+    void follow (const juce::dsp::AudioBlock<float>& block, bool on) noexcept;
+
+    /** In place. `engine (subBlock)` runs the block's engine; it is called whenever
+        needsEngine (on) was true, on sub-blocks no larger than prepare() promised. */
+    template <typename Engine>
+    void process (juce::dsp::AudioBlock<float> block, bool on, int delaySamples, Engine&& engine) noexcept
+    {
+        const int numChannels = juce::jmin ((int) block.getNumChannels(), history.getNumChannels());
+        const int delay = juce::jlimit (0, kMaxDelaySamples, delaySamples);
+        const float target = on ? 1.0f : 0.0f;
+
+        if (snap)
+        {
+            snap = false;
+            wet = target;
+        }
+
+        for (int offset = 0; offset < (int) block.getNumSamples();)
+        {
+            const int count = juce::jmin (chunkSamples, (int) block.getNumSamples() - offset);
+            auto sub = block.getSubBlock ((size_t) offset, (size_t) count);
+            remember (sub, numChannels);
+
+            if (wet == target)
+            {
+                if (on)
+                    engine (sub);
+                else if (delay > 0)
+                    for (int ch = 0; ch < numChannels; ++ch)
+                        for (int n = 0; n < count; ++n)
+                            sub.getChannelPointer ((size_t) ch)[n] = history.getSample (ch, indexOf (n, delay));
+            }
+            else
+            {
+                engine (sub);
+
+                for (int n = 0; n < count; ++n)
+                {
+                    if (settle > 0 && target > wet)
+                        --settle;
+                    else
+                        wet = target > wet ? juce::jmin (target, wet + step) : juce::jmax (target, wet - step);
+
+                    // Smoothstep over the linear ramp: no corner at either end of the fade, so a
+                    // boosted block fading out leaves nothing above the music's own band.
+                    const float gain = wet * wet * (3.0f - 2.0f * wet);
+
+                    for (int ch = 0; ch < numChannels; ++ch)
+                    {
+                        const float dry = history.getSample (ch, indexOf (n, delay));
+                        auto& y = sub.getChannelPointer ((size_t) ch)[n];
+                        y = dry + gain * (y - dry);
+                    }
+                }
+            }
+
+            write = (write + count) % capacity;
+            offset += count;
+        }
+    }
+
+private:
+    void remember (const juce::dsp::AudioBlock<float>& block, int numChannels) noexcept;
+    int indexOf (int n, int delay) const noexcept { return (write + n - delay + capacity) % capacity; }
+
+    juce::AudioBuffer<float> history;
+    int capacity = 1, chunkSamples = 1, write = 0, settle = 0, settleSamples = 0;
+    float wet = 0.0f, step = 1.0f;
+    bool snap = true;
+};
+
 /** Note values for mod_sync in quarter-note beats per LFO cycle; index 0 is "Off". The
     order matches modSyncNames in Parameters.h and is FROZEN (FxBlocks.cpp ties the two
     sizes). Append only. */
@@ -78,8 +174,9 @@ struct ModParams
 /** The mod block (docs/FX-ENGINES.md §6.5): ChorusFx, PhaserFx or TremoloFx, chosen by
     mod_type. Each engine fades its own voicing switches. A mod_type change does what the
     old block did — the incoming engine is reset and runs from this block on — and also
-    crossfades from the outgoing engine over crossfadeSamples(), so once the fade is over
-    the output is the old block's, bit for bit. */
+    crossfades from the outgoing engine over crossfadeSamples() (after
+    crossfadeHoldSamples()), so once the fade is over the output is the old block's, bit for
+    bit. */
 class Modulation
 {
 public:
@@ -100,6 +197,12 @@ public:
     static Timing resolveTiming (const ModParams& params, bool classic) noexcept;
     /** Length of a mod_type crossfade at `sampleRate`, in samples. */
     static int crossfadeSamples (double sampleRate) noexcept;
+    /** How long a mod_type crossfade holds the outgoing engine alone before it starts, in
+        samples, for the type and voicing in `params`: a Classic chorus starts from an empty
+        delay line and its wet steps in when the line reaches it (7 + 10 x depth ms, the most
+        juce::dsp::Chorus delays at the centre delay ChorusFx sets), so the fade waits for that.
+        0 for every other voicing, which starts clean from its reset. */
+    static int crossfadeHoldSamples (const ModParams& params, double sampleRate) noexcept;
 
     void prepare (const juce::dsp::ProcessSpec& spec);
     void reset();
@@ -122,7 +225,8 @@ private:
     TremoloParams tremoloSent;
     ModParams params;
     juce::AudioBuffer<float> outgoingAudio;
-    int active = 0, outgoing = -1, fadePosition = 0, fadeLength = 1;
+    double sampleRate = 44100.0;
+    int active = 0, outgoing = -1, fadePosition = 0, fadeLength = 1, fadeHold = 0;
     bool snapType = true;
 };
 

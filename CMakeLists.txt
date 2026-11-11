@@ -43,7 +43,8 @@ target_include_directories(nam_core SYSTEM PUBLIC
 target_compile_features(nam_core PUBLIC cxx_std_20)
 # Note: do NOT add DSP_SAMPLE_FLOAT here — AudioDSPTools' NoiseGate.h is internally
 # inconsistent under DSP_SAMPLE=float (hardcoded double member vs DSP_SAMPLE accessors).
-# The gate wrapper in FxBlocks converts float<->double through scratch buffers instead.
+# The Classic gate in src/dsp/Gate.cpp (and its frozen copy in tools/fxbench/legacy)
+# converts float<->double through scratch buffers instead.
 target_compile_definitions(nam_core PUBLIC
     NAM_SAMPLE_FLOAT=1
     NAM_ENABLE_A2_FAST)
