@@ -17,6 +17,12 @@ Harmonic bands, stereo spread on Optical/Bias/Harmonic) the reference below writ
 §4.7.4-§4.7.5 on top of them. Knob values are fed to it rounded to float32, as the engine
 receives them. Bias and Harmonic take no loudness exponent under spread (coordinator
 decision, deviating from §4.7.4): their summed power is then constant at 180 degrees.
+Every gain smoother starts at unity after prepare() or reset() (y0=1 in the reference): the
+first block glides from the input into the tremolo instead of stepping to the dip.
+
+Rows M1, R1, S1, T5 (table), X7 and N1 were added after the independent verification
+(.audit/fx-verify/mod.md): mono and Width, re-enable after bypass, song-position jumps,
+pulse splatter against the carrier frequency, depth 0 after automation, NaN and Inf.
 """
 import sys
 from pathlib import Path
@@ -123,7 +129,7 @@ def ref_smooth(x, sr, rate, depth, wave, shape, width):
     out = []
     for c, start in enumerate((0.0, 0.5 * f32(width))):
         w = proto.w_morph(proto.phase(f32(rate), n, sr, start), f32(wave), s)
-        g = proto.onepole(proto.apply_depth(w ** e, f32(depth)), proto.SLEW_HZ, sr=sr)
+        g = proto.onepole(proto.apply_depth(w ** e, f32(depth)), proto.SLEW_HZ, sr=sr, y0=1.0)
         out.append(x[c] * g)
     return np.vstack(out)
 
@@ -152,7 +158,7 @@ def ref_bias(x, sr, rate, depth, shape, width, exponent=1.0):
     for c, start in enumerate((0.0, 0.5 * f32(width))):
         u = 0.5 + 0.5 * np.cos(2 * np.pi * proto.phase(f32(rate), n, sr, start))
         g = proto.bias_gain(u ** e, f32(depth), env, knee_dbfs=-24.0 + 24.0 * f32(shape))
-        out.append(x[c] * proto.onepole(g, proto.SLEW_HZ, sr=sr))
+        out.append(x[c] * proto.onepole(g, proto.SLEW_HZ, sr=sr, y0=1.0))
     return np.vstack(out)
 
 
@@ -167,8 +173,8 @@ def ref_harmonic(x, sr, rate, depth, tone, width, exponent=1.0):
     out = []
     for c, start in enumerate((0.0, 0.5 * f32(width))):
         u = (0.5 - 0.5 * np.cos(2 * np.pi * proto.phase(f32(rate), n, sr, start))) ** e
-        gl = proto.onepole(norm * np.sqrt(1 - d * u), proto.SLEW_HZ, sr=sr)
-        gh = proto.onepole(norm * np.sqrt(1 - d * (1 - u)), proto.SLEW_HZ, sr=sr)
+        gl = proto.onepole(norm * np.sqrt(1 - d * u), proto.SLEW_HZ, sr=sr, y0=1.0)
+        gh = proto.onepole(norm * np.sqrt(1 - d * (1 - u)), proto.SLEW_HZ, sr=sr, y0=1.0)
         low, s = np.empty(n), 0.0
         for i, v in enumerate(x[c]):
             w = (v - s) * G
@@ -614,6 +620,195 @@ def x6_shapes(report):
               f"{rise:.2f}\t{fall:.2f}")
 
 
+# ---------------------------------------------------------------------------- rows after verification
+
+VOICE_START = {1: (4.0, 0.6), 2: (5.0, 0.7), 3: (5.0, 0.75), 4: (4.0, 0.8)}   # Tremolo.h rate, depth
+
+
+def m1_mono(report):
+    """A mono block has nothing to spread: Width must not change a sample, in any voice, and
+    Smooth at depth 1 reaches the floor of stereo at width 0 (T3's)."""
+    sr = 48000
+    x = as_f32(fx.music(sr))[:1]
+    rows, ok = [], True
+    for v in TYPES:
+        outs = [render(x, dict(voice=v, rate=4.0, depth=0.8, wave=0.3, width=w), sr)[0] for w in (0.0, 0.37, 1.0)]
+        diff = max(float(np.max(np.abs(o - outs[0]))) for o in outs[1:])
+        ok &= diff == 0.0
+        rows.append(f"{TYPES[v]} {diff:.3g}")
+    report.add("M1", "mono: width 0/0.37/1 identical, every voice", ok, "max |diff| " + ", ".join(rows))
+
+    keys = dict(voice=1, rate=4.0, depth=1.0, wave=0.0)
+    _, mono = render(tone_in(sr, channels=1), dict(keys, width=1.0), sr)
+    _, st = render(tone_in(sr), dict(keys, width=0.0), sr)
+    floors = []
+    for g in (mono[0], st[0]):
+        gmax, gmin, _, _, _, _ = stats(g, 4.0, sr)
+        floors.append(fx.db(max(gmin, 1e-12) / gmax))
+    ok = floors[0] <= -60.0 and abs(floors[0] - floors[1]) <= 0.01
+    report.add("M1", "mono Smooth depth 1 at width 1: floor of stereo width 0", ok,
+               f"mono {floors[0]:.1f} dB, stereo width 0 {floors[1]:.1f} dB re crest")
+
+
+def r1_reenable(report):
+    """The block switched off and on as the processor does it: setParameters() and process()
+    stop while bypassed, and on the way back the processor calls reset() on voices 1-4
+    (the adapter calls it between setParameters() and process()).
+    (a) A loud note, bypass at 1.0 s, input silent from 1.2 s, on again at 2.2 s: nothing
+        of the old note may come back (bar -140 dBFS).
+    (b) Input that keeps playing, with rate and depth moved while bypassed: from the
+        re-enable sample on, the output equals a freshly prepared engine's on the same
+        input, bit for bit (no stale filter, envelope, phase or knob ramp).
+    (c) The gain across the re-entry, unity while bypassed, steps by no more than the
+        120 Hz gain smoother's coefficient (a full-swing pulse edge) per sample."""
+    sr, block = 48000, 512
+    n = int(3.5 * sr)
+    t_off = int(np.ceil(1.0 * sr / block)) * block
+    t_on = int(np.ceil(2.2 * sr / block)) * block
+    note = fx.sine(110.0, -6.0, 3.5, sr, 0.7) + fx.pink(3.5, -20.0, sr, seed=31)
+    loud = note.copy()
+    loud[int(1.2 * sr):] = 0.0
+    loud = as_f32(np.vstack([loud, loud]))
+    playing = as_f32(np.vstack([note, fx.pink(3.5, -20.0, sr, seed=32) + note]))
+    bound = 1.0 - np.exp(-2 * np.pi * 120.0 / sr)
+    rows, ok = [], True
+    for v, (rate, depth) in VOICE_START.items():
+        onoff = [f"on@{t_off / sr!r}=0", f"on@{t_on / sr!r}=1"]
+        out, _ = render(loud, [f"voice={v}", f"rate={rate}", f"depth={depth}", "width=0"] + onoff, sr, block)
+        stale = float(fx.db(max(float(np.max(np.abs(out[:, t_on:]))), 1e-30)))
+
+        after = [f"voice={v}", "rate=6", "depth=0.9", "width=0.5", "wave=0.5"]
+        keys = [f"voice={v}", "width=0.5", "wave=0.5", "rate=2", "depth=0.3", f"rate@{t_off / sr!r}=6",
+                f"depth@{t_off / sr!r}=0.9"] + onoff
+        out, tr = render(playing, keys, sr, block)
+        fresh, _ = render(playing[:, t_on:], after, sr, block)
+        same = int(np.sum(out[:, t_on:] != fresh))
+        g = tr[0].copy()
+        g[t_off:t_on] = 1.0
+        step = float(np.max(np.abs(np.diff(g[t_on - block:t_on + block]))))
+        ok &= stale <= -140.0 and same == 0 and step <= bound
+        rows.append(f"{TYPES[v]} {stale:.0f} dBFS / {same} / {step:.4f}")
+    report.add("R1", "re-enable: stale peak / samples differing from fresh / gain step", ok,
+               f"{', '.join(rows)} (bars -140 dBFS, 0, {bound:.4f})")
+
+
+def s1_sync_jump(report):
+    """A song-position jump (transport start, locate, loop) mid-cycle: honoured, without a
+    click. -12 dBFS low tones, each voice at its starting point and at depth 1, jumps of
+    0.1-0.75 cycle at six points of the cycle. The click is the peak of the output above
+    2 kHz (clicklib's 1023-tap Kaiser high-pass) from 5 ms before the jump to 120 ms after.
+    Bar -60 dBFS, or what the voice itself puts above 2 kHz in that window without a jump
+    (Optical's lamp edges: the larger of the renders that stay on the old phase and that
+    start on the new one), whichever is higher."""
+    sr, block, secs = 48000, 512, 2.0
+    taps = np.arange(1023) - 511
+    hp = -np.sinc(2 * 2000.0 / sr * taps) * 2 * 2000.0 / sr
+    hp[511] += 1.0
+    hp *= np.kaiser(1023, 14.0)
+
+    def above_2k(y, a, b):
+        return float(fx.db(max(float(np.max(np.abs(np.convolve(y, hp, mode="same")[a:b]))), 1e-12)))
+
+    def sync(offset, rate, te=None, jump=0.0):
+        if te is None:
+            return [f"sync_phase@0..{secs!r}={offset!r}..{offset + rate * secs!r}"]
+        b = rate * te + jump
+        return [f"sync_phase@0..{te!r}=0..{rate * te!r}", f"sync_phase@{te!r}..{secs!r}={b!r}..{b + rate * (secs - te)!r}"]
+
+    jumps = (0.1, 0.25, 0.5, 0.75)
+    rows, ok = [], True
+    for v, (rate, start_depth) in VOICE_START.items():
+        worst = (-999.0, -999.0, "")
+        for depth in (start_depth, 1.0):
+            base = [f"voice={v}", f"rate={rate}", f"depth={depth}", "width=0", "wave=0"]
+            for f0 in (82.4, 220.0):
+                x = as_f32(fx.sine(f0, -12.0, secs, sr, 0.7))[None, :]
+                refs = {j: render(x, base + sync(j, rate), sr, block)[0][0] for j in (0.0,) + jumps}
+                for jump in jumps:
+                    for k in range(6):
+                        te = round((1.2 + k / (6 * rate)) * sr / block) * block / sr
+                        y = render(x, base + sync(0.0, rate, te, jump), sr, block)[0][0]
+                        a, b = int((te - 0.005) * sr), int((te + 0.12) * sr)
+                        click = above_2k(y, a, b)
+                        natural = max(above_2k(refs[0.0], a, b), above_2k(refs[jump], a, b))
+                        if click - max(-60.0, natural) > worst[0] - max(-60.0, worst[1]):
+                            worst = (click, natural, f"depth {depth}, {f0} Hz, jump {jump}, at {k}/6 cycle")
+        ok &= worst[0] <= max(-60.0, worst[1])
+        rows.append(f"{TYPES[v]} {worst[0]:.1f} (own {worst[1]:.1f}; {worst[2]})")
+    report.add("S1", "sync phase jump click above 2 kHz (dBFS)", ok, "; ".join(rows))
+
+
+# Pulse splatter bound against the carrier, from the measured worst case (16 carrier phases,
+# carriers on the 4 Hz grid so the phase at every edge is the same). The edge itself does not
+# change with the carrier: the measure's band (carrier + 2..5 kHz) also catches the lower
+# sideband of the edge, which for a low carrier lands at nearly the same offsets and adds
+# coherently at the worst phase (+3.3 dB at 40 Hz). The incoherent mean is -61.6 dBc flat.
+SPLATTER_BOUNDS = ((40.0, -55.5), (82.0, -55.8), (200.0, -56.4), (500.0, -58.0))   # (from Hz, bar dBc)
+
+
+def t5_splatter_table(report):
+    sr = 48000
+    keys = dict(voice=1, rate=4.0, depth=1.0, wave=1.0, shape=0.5, width=0.0)
+    carriers = (40.0, 48.0, 64.0, 84.0, 112.0, 148.0, 196.0, 248.0, 332.0, 440.0, 660.0, 1000.0, 1320.0, 2000.0)
+    print("\npulse splatter, Smooth wave 1 depth 1 4 Hz, worst of 16 carrier phases (dBc)")
+    print("carrier_hz\tworst\tbar")
+    rows, ok = [], True
+    for f in carriers:
+        worst = max(splatter_dbc(render(tone_in(sr, freq=f, phase=k * np.pi / 8, channels=1), keys, sr)[0], sr, f)
+                    for k in range(16))
+        bar = [b for lo, b in SPLATTER_BOUNDS if f >= lo][-1]
+        ok &= worst <= bar
+        print(f"{f:g}\t{worst:.1f}\t{bar}")
+        rows.append(f"{f:g} {worst:.1f}")
+    bars = ", ".join(f">= {lo:g} Hz {b}" for lo, b in SPLATTER_BOUNDS)
+    report.add("T5", "pulse splatter against the carrier 40 Hz-2 kHz", ok, f"dBc {', '.join(rows)} (bars {bars})")
+
+
+def x7_depth_zero_after(report):
+    """Depth automated down to 0 (a ramp, and Harmonic's step 1 -> 0): one second after the
+    automation ends the output is the input, bit for bit, as from a fresh reset (X3)."""
+    sr = 48000
+    x = as_f32(fx.music(sr))
+    rows, ok = [], True
+    cases = [(v, ["depth=0.75", "depth@1.0..1.5=0.75..0"]) for v in (1, 2, 3, 4)] + [(4, ["depth=1", "depth@1.0=0"])]
+    for v, auto in cases:
+        out, _ = render(x, [f"voice={v}", "rate=4", "width=1", "wave=0.5"] + auto, sr)
+        a = int(2.5 * sr)
+        diff = float(np.max(np.abs(out[:, a:] - x[:, a:])))
+        ok &= diff == 0.0
+        label = f"{TYPES[v]}{' step' if '@1.0=' in auto[1] else ''}"
+        rows.append(f"{label} {'bit-exact' if diff == 0 else f'{rel_db(out[:, a:] - x[:, a:], x[:, a:]):.1f} dB'}")
+    report.add("X7", "depth automated to 0: transparent after 1 s", ok, ", ".join(rows))
+
+
+def n1_non_finite(report):
+    """Bursts of NaN and Inf in the input, then normal signal, every voice, block 512: a bad
+    input sample may only make its own output sample non-finite, and 0.5 s after the last
+    one the output is the clean render's (bar -100 dB rms)."""
+    sr, n = 48000, 3 * 48000
+    clean = as_f32(np.vstack([fx.pink(3.0, -18.0, sr, seed=21), fx.pink(3.0, -18.0, sr, seed=22)]))
+    bad = clean.copy()
+    bad[0, sr:sr + 37] = np.nan
+    bad[:, int(1.5 * sr):int(1.5 * sr) + 100] = np.inf
+    bad[1, int(1.7 * sr)] = -np.inf
+    bad[0, int(1.8 * sr) + 5] = np.nan
+    last = int(1.8 * sr) + 5
+    rows, ok = [], True
+    for v in TYPES:
+        keys = dict(voice=v, depth=0.8, rate=5.0, width=0.5)
+        ref, _ = render(clean, keys, sr)
+        out, _ = render(bad, keys, sr)
+        spread = int(np.sum(~np.isfinite(out) & np.isfinite(bad)))
+        a = last + sr // 2
+        tail_ok = bool(np.all(np.isfinite(out[:, a:])))
+        diff = rel_db(out[:, a:] - ref[:, a:], ref[:, a:]) if tail_ok else np.inf
+        if tail_ok and np.max(np.abs(out[:, a:] - ref[:, a:])) == 0.0:
+            diff = -np.inf
+        ok &= spread == 0 and diff <= -100.0
+        rows.append(f"{TYPES[v]} {spread} / {'identical' if diff == -np.inf else f'{diff:.0f} dB'}")
+    report.add("N1", "NaN/Inf bursts: extra non-finite samples / 0.5 s later vs clean", ok, ", ".join(rows))
+
+
 def specific_checks(report, args):
     only = args.types
     if only is None or 0 in only:
@@ -641,6 +836,12 @@ def specific_checks(report, args):
     x4_zipper(report)
     x5_stereo(report)
     x6_shapes(report)
+    m1_mono(report)
+    r1_reenable(report)
+    s1_sync_jump(report)
+    t5_splatter_table(report)
+    x7_depth_zero_after(report)
+    n1_non_finite(report)
 
 
 def main():

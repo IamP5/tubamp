@@ -32,6 +32,12 @@ constexpr float kBiasKneeRangeDb = 24.0f;      // [study: R5]
 constexpr float kHarmonicCentreHz = 300.0f;    // [study: R6] geometric mean of the circuit's 144 and 636 Hz
 constexpr float kHarmonicOctaves = 2.0f;       // [study: R6] tone 0..1 spans 150..600 Hz
 
+// A song-position jump (transport start, locate, loop) is honoured by crossfading the gain
+// target from the old phase to the new one with a raised cosine; the 120 Hz smoother alone
+// leaves a slope step that clicks at -44 dBFS on a low note.
+constexpr double kJumpCycles = 1.0e-3;         // [choice] smaller corrections are applied outright
+constexpr float kJumpFadeSeconds = 0.010f;     // [choice, measured: check_tremolo.py S1]
+
 // Phases are recounted from a fresh origin this often so the product rate * count stays
 // far inside double precision.
 constexpr int kPhaseRebaseCount = 1 << 30;
@@ -167,6 +173,7 @@ public:
             s->prepare (kParamSmoothSeconds, fs, 0.0f);
 
         gainCoeff = 1.0f - std::exp (-fx::kTwoPi * kGainSmoothHz / fs);
+        jumpLength = juce::jmax (1, (int) std::lround (kJumpFadeSeconds * fs));
         opticalFall = 1.0f - std::exp (-1.0f / (kOpticalFallSeconds * fs));
         opticalRise = 1.0f - std::exp (-1.0f / (kOpticalRiseSeconds * fs));
         biasAttack = 1.0f - std::exp (-1.0f / (kBiasAttackSeconds * fs));
@@ -175,17 +182,19 @@ public:
         reset();
     }
 
-    /** Fixed start: phase 0 (Smooth at its dip), gains primed from the first sample's
-        target, photocell at 1, envelope and filters empty. The next setTargets() snaps. */
+    /** Fixed start: phase 0 (Smooth at its dip), every gain at unity so the first block
+        glides from the input into the tremolo through the gain smoother, envelope and
+        filters empty. Every setTargets() until the next process() snaps, so the knobs
+        start at their targets whether the host updates them before or after the reset. */
     void reset() noexcept
     {
         phase.reset();
-        primeGains = true;
+        freshPhase = true;
+        jumpLeft = 0;
 
         for (int c = 0; c < 2; ++c)
         {
-            gain[c] = highGain[c] = 1.0f;
-            photocell[c] = 1.0f;
+            gainDev[c] = highDev[c] = photocellDev[c] = 0.0f;
             lowpass[c] = 0.0f;
         }
 
@@ -204,15 +213,27 @@ public:
         wave.setTarget (juce::jlimit (0.0f, 1.0f, p.wave));
 
         if (snapPending)
-        {
-            snapPending = false;
-
             for (auto* s : { &rate, &depth, &width, &tone, &shape, &wave })
                 s->snapToTarget();
-        }
     }
 
-    void lockPhase (double cycles) noexcept { phase.lockTo (cycles); }
+    void lockPhase (double cycles) noexcept
+    {
+        if (! freshPhase)
+        {
+            double d = cycles - phase.get();
+            d -= std::floor (d + 0.5);
+
+            if (std::abs (d) > kJumpCycles)
+            {
+                // A jump during a fade restarts it from the newer phase.
+                oldPhase = phase;
+                jumpLeft = jumpLength;
+            }
+        }
+
+        phase.lockTo (cycles);
+    }
 
     /** `right` is null for a mono block. Trace pointers may be null. */
     void process (TremoloFx::Voice voice, float* left, float* right, int numSamples,
@@ -228,11 +249,7 @@ public:
             default:                          processSmooth (left, right, numSamples, traceLeft, traceRight); break;
         }
 
-        // Once per block, so one bad sample cannot live in a recursive state.
-        envelope = fx::sanitise (envelope);
-
-        for (int c = 0; c < 2; ++c)
-            lowpass[c] = fx::sanitise (lowpass[c]);
+        snapPending = freshPhase = false;
     }
 
 private:
@@ -249,8 +266,12 @@ private:
         harmonicNorm = std::sqrt (2.0f / (2.0f - d));
     }
 
-    void updateWidth (float w) noexcept
+    /** A mono block has nothing to spread, so it runs as width 0 whatever the knob says. */
+    void updateWidth (float w, bool stereo) noexcept
     {
+        if (! stereo)
+            w = 0.0f;
+
         if (juce::exactlyEqual (w, cachedWidth))
             return;
 
@@ -309,9 +330,49 @@ private:
         return r >= 1.0 ? r - 1.0 : r;
     }
 
-    void smoothGain (int c, float target) noexcept
+    // Gains are held as their distance from unity. Near 1 a float one-pole stalls a few
+    // ulps short of its target (Optical's lamp at -86 dB), so depth 0 would never come
+    // back to exact transparency; the distance decays to nothing and 1 + it rounds to 1.
+    static float smoothToward (float& dev, float coeff, float target) noexcept
     {
-        gain[c] += gainCoeff * (target - gain[c]) + fx::kAntiDenormal;
+        dev += coeff * ((target - 1.0f) - dev) + fx::kAntiDenormal;
+        return 1.0f + dev;
+    }
+
+    /** Weight of the new phase in a jump crossfade for this sample, 1 outside one. */
+    float jumpWeight() const noexcept
+    {
+        if (jumpLeft == 0)
+            return 1.0f;
+
+        return 0.5f - 0.5f * std::cos (fx::kPi * (float) (jumpLength - jumpLeft) / (float) jumpLength);
+    }
+
+    /** The voice's LFO shape `shapeAt (phase)` for this sample; during a jump fade, the
+        shape at the old phase crossfaded into the shape at the new one. */
+    template <typename ShapeAt>
+    float lfo (ShapeAt&& shapeAt, bool rightChannel, float k) const noexcept
+    {
+        const auto at = [&] (const LfoPhase& l) { return shapeAt (rightChannel ? rightPhase (l.get()) : l.get()); };
+        const float now = at (phase);
+
+        if (k >= 1.0f)
+            return now;
+
+        const float before = at (oldPhase);
+        return before + k * (now - before);
+    }
+
+    void advancePhase() noexcept
+    {
+        const float r = rate.next();
+        phase.advance (r);
+
+        if (jumpLeft > 0)
+        {
+            oldPhase.advance (r);
+            --jumpLeft;
+        }
     }
 
     //==========================================================================
@@ -343,67 +404,62 @@ private:
         for (int i = 0; i < n; ++i)
         {
             updateDepth (depth.next());
-            updateWidth (width.next());
+            updateWidth (width.next(), right != nullptr);
             updateSkew (shape.next());
             const float waveMix = wave.next();
-            const double p = phase.get();
-
-            const float targetL = (floorGain + (1.0f - floorGain) * loudness (smoothShape (p, waveMix))) * makeup;
-            const float targetR = right != nullptr
-                                      ? (floorGain + (1.0f - floorGain) * loudness (smoothShape (rightPhase (p), waveMix))) * makeup
-                                      : targetL;
-
-            if (primeGains)
+            const float k = jumpWeight();
+            const auto shapeAt = [&] (double p) { return loudness (smoothShape (p, waveMix)); };
+            const auto target = [&] (bool rightChannel)
             {
-                gain[0] = targetL;
-                gain[1] = targetR;
-                primeGains = false;
-            }
+                return (floorGain + (1.0f - floorGain) * lfo (shapeAt, rightChannel, k)) * makeup;
+            };
 
-            smoothGain (0, targetL);
+            gain[0] = smoothToward (gainDev[0], gainCoeff, target (false));
             left[i] *= gain[0];
 
             if (right != nullptr)
             {
-                smoothGain (1, targetR);
+                gain[1] = smoothToward (gainDev[1], gainCoeff, target (true));
                 right[i] *= gain[1];
             }
 
             writeTrace (traceLeft, traceRight, i, right != nullptr);
-            phase.advance (rate.next());
+            advancePhase();
         }
     }
 
     void processOptical (float* left, float* right, int n, float* traceLeft, float* traceRight) noexcept
     {
-        const auto follow = [this] (int c, double p)
+        const auto lit = [] (double p) { return p >= kOpticalLitFrom ? 1.0f : 0.0f; };
+
+        const auto follow = [this, &lit] (int c, float k)
         {
-            const float target = p >= kOpticalLitFrom ? 1.0f - opticalDepth : 1.0f;
-            photocell[c] += (target > photocell[c] ? opticalRise : opticalFall) * (target - photocell[c]) + fx::kAntiDenormal;
-            return photocell[c];
+            // Held as the distance from unity, like the gain smoothers (smoothToward).
+            const float target = -opticalDepth * lfo (lit, c == 1, k);
+            auto& d = photocellDev[c];
+            d += (target > d ? opticalRise : opticalFall) * (target - d) + fx::kAntiDenormal;
+            return 1.0f + d;
         };
 
         for (int i = 0; i < n; ++i)
         {
             updateDepth (depth.next());
-            updateWidth (width.next());
-            const double p = phase.get();
+            updateWidth (width.next(), right != nullptr);
+            const float k = jumpWeight();
 
             // The lamp is either lit or dark, so the loudness law (u^e) leaves it unchanged.
-            gain[0] = follow (0, p);
+            gain[0] = follow (0, k);
             left[i] *= gain[0];
 
             if (right != nullptr)
             {
-                gain[1] = follow (1, rightPhase (p));
+                gain[1] = follow (1, k);
                 right[i] *= gain[1];
             }
 
             writeTrace (traceLeft, traceRight, i, right != nullptr);
-            phase.advance (rate.next());
+            advancePhase();
         }
-
-        primeGains = false;
     }
 
     void processBias (float* left, float* right, int n, float* traceLeft, float* traceRight) noexcept
@@ -411,12 +467,13 @@ private:
         for (int i = 0; i < n; ++i)
         {
             updateDepth (depth.next());
-            updateWidth (width.next());
+            updateWidth (width.next(), right != nullptr);
             updateKnee (shape.next());
-            const double p = phase.get();
+            const float k = jumpWeight();
 
             // [choice] the mean of the channels, so the knee means the same dBFS in mono and stereo.
-            const float level = std::abs (right != nullptr ? 0.5f * (left[i] + right[i]) : left[i]);
+            // A non-finite sample is skipped, so it cannot live on in the envelope.
+            const float level = fx::sanitise (std::abs (right != nullptr ? 0.5f * (left[i] + right[i]) : left[i]));
             envelope += (level > envelope ? biasAttack : biasRelease) * (level - envelope) + fx::kAntiDenormal;
             const float q = envelope * inverseKnee;
 
@@ -424,33 +481,24 @@ private:
             // already the square root of a law linear in u, so at spread 180 L^2 + R^2 is
             // constant at any depth and level; u^e would add up to 2 dB of ripple. A division,
             // not a reciprocal: at depth 0 it is exactly 1, so the voice is transparent.
-            const auto target = [&] (double ph)
+            const auto dip = [] (double ph) { return 0.5f + 0.5f * std::cos (fx::kTwoPi * (float) ph); };
+            const auto target = [&] (bool rightChannel)
             {
-                const float u = 0.5f + 0.5f * std::cos (fx::kTwoPi * (float) ph);
+                const float u = lfo (dip, rightChannel, k);
                 return std::sqrt (juce::jmax (0.0f, (1.0f - cachedDepth * u + q) / (1.0f + q)));
             };
 
-            const float targetL = target (p);
-            const float targetR = right != nullptr ? target (rightPhase (p)) : targetL;
-
-            if (primeGains)
-            {
-                gain[0] = targetL;
-                gain[1] = targetR;
-                primeGains = false;
-            }
-
-            smoothGain (0, targetL);
+            gain[0] = smoothToward (gainDev[0], gainCoeff, target (false));
             left[i] *= gain[0];
 
             if (right != nullptr)
             {
-                smoothGain (1, targetR);
+                gain[1] = smoothToward (gainDev[1], gainCoeff, target (true));
                 right[i] *= gain[1];
             }
 
             writeTrace (traceLeft, traceRight, i, right != nullptr);
-            phase.advance (rate.next());
+            advancePhase();
         }
     }
 
@@ -458,54 +506,34 @@ private:
     {
         const auto band = [this] (int c, float x)
         {
-            // TPT one-pole: L = low-pass, H = x - L, so depth 0 sums back to x.
-            const float v = (x - lowpass[c]) * crossoverG;
+            // TPT one-pole: L = low-pass, H = x - L. Written as gH * x + (gL - gH) * L, so
+            // equal band gains of exactly 1 return x itself. A non-finite sample is kept out
+            // of the filter state.
+            const float s = fx::sanitise (x);
+            const float v = (s - lowpass[c]) * crossoverG;
             const float low = v + lowpass[c];
             lowpass[c] = low + v + fx::kAntiDenormal;
-            return gain[c] * low + highGain[c] * (x - low);
+            return highGain[c] * x + (gain[c] - highGain[c]) * low;
         };
+
+        const auto rise = [] (double ph) { return 0.5f - 0.5f * std::cos (fx::kTwoPi * (float) ph); };
 
         for (int i = 0; i < n; ++i)
         {
             updateDepth (depth.next());
-            updateWidth (width.next());
+            updateWidth (width.next(), right != nullptr);
             updateCrossover (tone.next());
-            const double p = phase.get();
-
-            float lowTarget[2] {}, highTarget[2] {};
+            const float k = jumpWeight();
+            const int channels = right != nullptr ? 2 : 1;
 
             // No loudness law here either [coordinator decision, deviates from §4.7.4]: the
             // band powers are linear in u, so at spread 180 L^2 + R^2 is constant for any
             // spectrum; u^e would add up to 1.3 dB of ripple.
-            const auto targets = [&] (int c, double ph)
-            {
-                const float u = 0.5f - 0.5f * std::cos (fx::kTwoPi * (float) ph);
-                lowTarget[c] = harmonicNorm * std::sqrt (juce::jmax (0.0f, 1.0f - cachedDepth * u));
-                highTarget[c] = harmonicNorm * std::sqrt (juce::jmax (0.0f, 1.0f - cachedDepth * (1.0f - u)));
-            };
-
-            targets (0, p);
-
-            if (right != nullptr)
-                targets (1, rightPhase (p));
-
-            const int channels = right != nullptr ? 2 : 1;
-
-            if (primeGains)
-            {
-                for (int c = 0; c < channels; ++c)
-                {
-                    gain[c] = lowTarget[c];
-                    highGain[c] = highTarget[c];
-                }
-
-                primeGains = false;
-            }
-
             for (int c = 0; c < channels; ++c)
             {
-                smoothGain (c, lowTarget[c]);
-                highGain[c] += gainCoeff * (highTarget[c] - highGain[c]) + fx::kAntiDenormal;
+                const float u = lfo (rise, c == 1, k);
+                gain[c] = smoothToward (gainDev[c], gainCoeff, harmonicNorm * std::sqrt (juce::jmax (0.0f, 1.0f - cachedDepth * u)));
+                highGain[c] = smoothToward (highDev[c], gainCoeff, harmonicNorm * std::sqrt (juce::jmax (0.0f, 1.0f - cachedDepth * (1.0f - u))));
             }
 
             left[i] = band (0, left[i]);
@@ -514,7 +542,7 @@ private:
                 right[i] = band (1, right[i]);
 
             writeTrace (traceLeft, traceRight, i, right != nullptr);
-            phase.advance (rate.next());
+            advancePhase();
         }
     }
 
@@ -531,9 +559,10 @@ private:
 
     //==========================================================================
     float fs = 48000.0f;
-    LfoPhase phase;
+    LfoPhase phase, oldPhase;
     fx::Smoother rate, depth, width, tone, shape, wave;
-    bool snapPending = true, primeGains = true;
+    bool snapPending = true, freshPhase = true;
+    int jumpLength = 1, jumpLeft = 0;
 
     float gainCoeff = 1.0f, opticalFall = 1.0f, opticalRise = 1.0f, biasAttack = 1.0f, biasRelease = 1.0f;
 
@@ -544,8 +573,10 @@ private:
     float loudnessExponent = 1.0f, skewF = 0.5f, riseScale = 1.0f, fallScale = 1.0f;
     float inverseKnee = 1.0f, crossoverG = 0.5f;
 
-    // Audio state. gain[] is each channel's smoothed gain (Harmonic: its low band's).
-    float gain[2] { 1.0f, 1.0f }, highGain[2] { 1.0f, 1.0f }, photocell[2] { 1.0f, 1.0f };
+    // Audio state. gain[] is each channel's gain this sample (Harmonic: its low band's);
+    // the *Dev arrays are the smoothers' state, as distances from unity.
+    float gain[2] { 1.0f, 1.0f }, highGain[2] { 1.0f, 1.0f };
+    float gainDev[2] {}, highDev[2] {}, photocellDev[2] {};
     float lowpass[2] {};
     float envelope = 0.0f;
 };
@@ -598,6 +629,8 @@ void TremoloFx::reset()
 {
     impl->classic.reset();
     impl->shaped.reset();
+    // The knobs restart at the last values the host sent, in case process() comes next.
+    impl->shaped.setTargets (impl->params);
     // Both voices are clean, so the next block starts on the requested voice outright
     // rather than finishing a switch that was in flight.
     impl->snapVoice = true;

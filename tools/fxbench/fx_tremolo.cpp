@@ -1,6 +1,7 @@
 // fxbench adapter for the tremolo voicings of the mod block (docs/FX-ENGINES.md §4.7).
-// Keys: voice rate depth mix width tone shape wave sync_phase on (0 skips process()). The legacy reference is
-// the old Modulation block running its tremolo. --trace writes the gain each channel gets (voices 1-4;
+// Keys: voice rate depth mix width tone shape wave sync_phase on (0 skips process()). Switching on back to 1
+// on voices 1-4 calls reset() between setParameters() and process(), as the processor does when the block
+// is re-enabled. The legacy reference is the old Modulation block running its tremolo. --trace writes the gain each channel gets (voices 1-4;
 // Harmonic: the low band's), through TremoloFx::setTraceBuffers.
 #include "FxBench.h"
 #include "legacy/LegacyFx.h"
@@ -61,7 +62,12 @@ public:
         tremolo.setTraceBuffers (traced[0].data(), traced[1].data());
     }
 
-    void reset() override { tremolo.reset(); }
+    void reset() override
+    {
+        tremolo.reset();
+        wasOn = true;
+        resetPending = false;
+    }
 
     void setParams (const fxbench::Args& a) override
     {
@@ -87,12 +93,25 @@ public:
         // Like the processor: a bypassed block is neither updated nor run.
         if (on)
             tremolo.setParameters (p);
+
+        if (on && ! wasOn && p.voice != 0)
+            resetPending = true;
+
+        wasOn = on;
     }
 
     void process (juce::AudioBuffer<float>& io, int) override
     {
-        if (on)
-            tremolo.process (juce::dsp::AudioBlock<float> (io));
+        if (! on)
+            return;
+
+        if (resetPending)
+        {
+            resetPending = false;
+            tremolo.reset();
+        }
+
+        tremolo.process (juce::dsp::AudioBlock<float> (io));
     }
 
     int traceChannels() const override { return 2; }
@@ -111,7 +130,7 @@ public:
 private:
     tubamp::TremoloFx tremolo;
     std::vector<float> traced[2];
-    bool on = true;
+    bool on = true, wasOn = true, resetPending = false;
 };
 
 FXBENCH_REGISTER ("tremolo", TremoloBench,

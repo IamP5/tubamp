@@ -40,6 +40,9 @@ public:
     ~TremoloFx();
 
     void prepare (const juce::dsp::ProcessSpec& spec);
+    /** Clears every state. Voices 1-4 then start with their knobs at the last values sent
+        and their gain at unity, gliding into the tremolo, so the processor can call this
+        when the block is switched back on. */
     void reset();
     /** Audio thread, once per block before process(). */
     void setParameters (const TremoloParams& params);
