@@ -14,15 +14,37 @@ export interface KnobRowProps {
   /** Smaller dials for rows that share vertical space with another body. */
   size?: "sm" | "md";
   className?: string;
+  /** Narrower cells, for rows of more than six knobs (delay, reverb). */
+  snug?: boolean;
+  /** Knobs to dim and make non-interactive (their engine ignores them). Matched
+   *  by `key` (id minus its kind/instance prefix, e.g. "lowcut") so one list
+   *  serves all three instances. */
+  disabledKeys?: ReadonlySet<string>;
 }
 
-export function KnobRow({ specs, size = "md", className }: KnobRowProps) {
+/** `delay2_lowcut` → `lowcut`: everything after the first underscore. */
+export function paramKey(id: string): string {
+  return id.slice(id.indexOf("_") + 1);
+}
+
+export function KnobRow({
+  specs,
+  size = "md",
+  className,
+  snug,
+  disabledKeys,
+}: KnobRowProps) {
   if (specs.length === 0) return null;
   return (
     <div className={className ? `${s.knobRow} ${className}` : s.knobRow}>
       {specs.map((spec) => (
-        <div key={spec.id} className={s.knobCell}>
-          <Knob id={spec.id} label={spec.label} size={size} />
+        <div key={spec.id} className={snug ? s.knobCellSnug : s.knobCell}>
+          <Knob
+            id={spec.id}
+            label={spec.label}
+            size={size}
+            disabled={disabledKeys?.has(paramKey(spec.id))}
+          />
         </div>
       ))}
     </div>

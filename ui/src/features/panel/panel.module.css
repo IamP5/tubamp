@@ -147,6 +147,14 @@
   max-width: 620px;
 }
 
+/* Delay's TYPE / MODE / SYNC trio side by side. */
+.menuRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
 .centeredSection {
   display: flex;
   align-items: center;

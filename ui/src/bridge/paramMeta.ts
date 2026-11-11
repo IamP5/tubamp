@@ -294,15 +294,58 @@ const SPLIT_LAYOUT: readonly LayoutEntry[] = [
   s("mix_level", "Mix Level", -60, 12, 0.1, 0, "dB"),
 ];
 
+
+/* ───────────── v3 reverb/delay engines append (docs/REVERB-DELAY.md §1) ───── */
+
+/** Choice lists are FROZEN once shipped (append only): the C++ enums index them. */
+const DELAY_TYPES = ["Digital", "Analog", "Tape", "Lo-Fi", "Diffuse"];
+const DELAY_SYNCS = [
+  "Off", "1/32", "1/16T", "1/16", "1/8T", "1/16.", "1/8", "1/4T", "1/8.",
+  "1/4", "1/2T", "1/4.", "1/2", "1/2.", "1/1",
+];
+const REVERB_TYPES = ["Room", "Hall", "Plate", "Spring", "Ambient"];
+
+/** §1.3 step 1: per delay instance (1, 2, 3 in turn) type, sync, lowcut, highcut,
+ *  mod, color, duck. Instance 1 is hand-declared (no v1 entry for these), then
+ *  cloned by `instanceEntry()` exactly like the stereo block above. */
+const DELAY_PRO_1: readonly LayoutEntry[] = [
+  c("delay_type", "Delay Type", DELAY_TYPES, 0),
+  c("delay_sync", "Delay Sync", DELAY_SYNCS, 0),
+  s("delay_lowcut", "Delay Low Cut", 20, 1000, 1, 80, "Hz", true),
+  s("delay_highcut", "Delay High Cut", 1000, 20000, 1, 7000, "Hz", true),
+  s("delay_mod", "Delay Mod", 0, 1, 0.001, 0.2),
+  s("delay_color", "Delay Color", 0, 1, 0.001, 0),
+  s("delay_duck", "Delay Duck", 0, 1, 0.001, 0.25),
+];
+
+/** §1.3 step 2: per reverb instance type, predelay, decay, lowcut, highcut, mod. */
+const REVERB_PRO_1: readonly LayoutEntry[] = [
+  c("reverb_type", "Reverb Type", REVERB_TYPES, 2),
+  s("reverb_predelay", "Reverb Pre-Delay", 0, 250, 0.1, 10, "ms"),
+  s("reverb_decay", "Reverb Decay", 0.2, 20, 0.01, 1.6, "s", true),
+  s("reverb_lowcut", "Reverb Low Cut", 20, 1000, 1, 120, "Hz", true),
+  s("reverb_highcut", "Reverb High Cut", 1000, 20000, 1, 8000, "Hz", true),
+  s("reverb_mod", "Reverb Mod", 0, 1, 0.001, 0.35),
+];
+
+const PRO_LAYOUT: readonly LayoutEntry[] = [
+  ...DELAY_PRO_1,
+  ...EXTRA_INSTANCES.flatMap((n) => DELAY_PRO_1.map((b) => instanceEntry(b, "delay", n))),
+  ...REVERB_PRO_1,
+  ...EXTRA_INSTANCES.flatMap((n) => REVERB_PRO_1.map((b) => instanceEntry(b, "reverb", n))),
+];
+
 /** The whole APVTS layout, in order: 44 v1 parameters, 54 instance parameters,
  *  4 for the amp tone stack, 12 for the stereo-chain append, 13 for the
- *  split-path append — 89 sliders, 30 toggles, 8 combos. */
+ *  split-path append, 39 for the reverb/delay engines append — 119 sliders,
+ *  30 toggles, 17 combos. */
 const LAYOUT: readonly LayoutEntry[] = [
   ...V1_LAYOUT,
   ...INSTANCE_LAYOUT,
   ...AMP_EQ_LAYOUT,
   ...STEREO_LAYOUT,
   ...SPLIT_LAYOUT,
+  ...PRO_LAYOUT,
 ];
 
 /* ────────────────────────────── derived tables ─────────────────────────── */

@@ -10,7 +10,7 @@
  * `amp` is deliberately empty: every amp control lives in AmpBody, exactly like
  * the native panel; `amp2`'s row (docs/SPLIT.md §5) holds only its IN/OUT pair
  * for the same reason — model B management lives in Amp2Body. `cab`, `mod`,
- * `delay`, `split` and `mix` keep their generic row *and* get an extra body
+ * `delay`, `reverb`, `split` and `mix` keep their generic row *and* get an extra body
  * above it (IR row / type combo / mode combo / phase toggle). The fx slots are
  * empty too — a hosted plugin's parameters are discovered at load time, so they
  * can never appear in a static table of tubamp's own slider ids (FxSlotBody
@@ -67,12 +67,22 @@ const BASE_KNOB_SPECS: Record<BaseBlockId, readonly KnobSpec[]> = {
     { id: "delay_time", label: "TIME" },
     { id: "delay_feedback", label: "FDBK" },
     { id: "delay_mix", label: "MIX" },
+    { id: "delay_lowcut", label: "LO CUT" },
+    { id: "delay_highcut", label: "HI CUT" },
+    { id: "delay_mod", label: "MOD" },
+    { id: "delay_color", label: "COLOR" },
+    { id: "delay_duck", label: "DUCK" },
     { id: "delay_ratio", label: "RATIO" },
     { id: "delay_width", label: "WIDTH" },
   ],
   reverb: [
+    { id: "reverb_predelay", label: "PRE-DLY" },
+    { id: "reverb_decay", label: "DECAY" },
     { id: "reverb_size", label: "SIZE" },
     { id: "reverb_damping", label: "DAMP" },
+    { id: "reverb_lowcut", label: "LO CUT" },
+    { id: "reverb_highcut", label: "HI CUT" },
+    { id: "reverb_mod", label: "MOD" },
     { id: "reverb_mix", label: "MIX" },
     { id: "reverb_width", label: "WIDTH" },
   ],

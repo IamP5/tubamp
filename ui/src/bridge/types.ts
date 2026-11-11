@@ -198,7 +198,7 @@ export function blockRecord<T>(make: (id: BlockId) => T): Record<BlockId, T> {
 /* ─────────────────────────── parameter identifiers ─────────────────────── */
 
 /**
- * 89 slider params — ids are the APVTS ids verbatim and are frozen.
+ * 119 slider params — ids are the APVTS ids verbatim and are frozen.
  *
  * The first 29 are v1's, in v1 order. The rest are appended in Parameters.cpp's
  * v2 append order: each duplicable kind's instances 2 and 3 (same ranges,
@@ -303,6 +303,39 @@ export const SLIDER_PARAM_IDS = [
   "mix_apan",
   "mix_bpan",
   "mix_level",
+
+  /* docs/REVERB-DELAY.md §1.4 relay order */
+  "delay_lowcut",
+  "delay_highcut",
+  "delay_mod",
+  "delay_color",
+  "delay_duck",
+  "delay2_lowcut",
+  "delay2_highcut",
+  "delay2_mod",
+  "delay2_color",
+  "delay2_duck",
+  "delay3_lowcut",
+  "delay3_highcut",
+  "delay3_mod",
+  "delay3_color",
+  "delay3_duck",
+
+  "reverb_predelay",
+  "reverb_decay",
+  "reverb_lowcut",
+  "reverb_highcut",
+  "reverb_mod",
+  "reverb2_predelay",
+  "reverb2_decay",
+  "reverb2_lowcut",
+  "reverb2_highcut",
+  "reverb2_mod",
+  "reverb3_predelay",
+  "reverb3_decay",
+  "reverb3_lowcut",
+  "reverb3_highcut",
+  "reverb3_mod",
 ] as const;
 
 /**
@@ -346,9 +379,10 @@ export const TOGGLE_PARAM_IDS = [
   "mix_bphase",
 ] as const;
 
-/** 8 combo params — mod and delay (docs/STEREO.md §4) are the duplicable kinds
+/** 17 combo params — mod and delay (docs/STEREO.md §4) are the duplicable kinds
  *  with a choice parameter; `split_mode` (docs/SPLIT.md §2) is the split
- *  region's, FROZEN once shipped like `delay_mode`. */
+ *  region's, FROZEN once shipped like `delay_mode`; the nine appended last are
+ *  the delay/reverb type + delay sync choices (docs/REVERB-DELAY.md §1). */
 export const COMBO_PARAM_IDS = [
   "amp_out_mode",
   "mod_type",
@@ -360,6 +394,17 @@ export const COMBO_PARAM_IDS = [
   "delay3_mode",
 
   "split_mode",
+
+  /* docs/REVERB-DELAY.md §1.4 relay order */
+  "delay_type",
+  "delay_sync",
+  "delay2_type",
+  "delay2_sync",
+  "delay3_type",
+  "delay3_sync",
+  "reverb_type",
+  "reverb2_type",
+  "reverb3_type",
 ] as const;
 
 export type SliderParamId = (typeof SLIDER_PARAM_IDS)[number];

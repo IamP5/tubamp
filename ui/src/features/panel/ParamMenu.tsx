@@ -19,9 +19,11 @@ export interface ParamMenuProps {
   minWidth?: number;
   /** Trigger width; defaults to filling the row. */
   width?: number;
+  /** Called after the user picks a different entry (not on automation or recall). */
+  onPick?: (index: number) => void;
 }
 
-export function ParamMenu({ id, label, minWidth = 168, width }: ParamMenuProps) {
+export function ParamMenu({ id, label, minWidth = 168, width, onPick }: ParamMenuProps) {
   const param = useComboParam(id);
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu();
 
@@ -29,7 +31,11 @@ export function ParamMenu({ id, label, minWidth = 168, width }: ParamMenuProps) 
     id: `${id}:${index}`,
     label: choice,
     selected: index === param.index,
-    onSelect: () => param.setIndex(index),
+    onSelect: () => {
+      const changed = index !== param.index;
+      param.setIndex(index);
+      if (changed) onPick?.(index);
+    },
   }));
 
   return (
