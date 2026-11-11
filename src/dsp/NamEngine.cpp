@@ -1,4 +1,5 @@
 #include "NamEngine.h"
+#include "EngineHandoff.h"
 
 #include <juce_core/juce_core.h>
 
@@ -12,12 +13,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <functional>
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #include <NAM/get_dsp.h>
 #include <NAM/dsp.h>
@@ -41,6 +45,42 @@ static_assert (std::is_same_v<NAM_SAMPLE, float>,
 constexpr double kAssumedModelSampleRate = 48000.0;
 constexpr double kTargetLoudnessDb = -18.0;
 constexpr int kResamplerMaxBlockSize = 2048; // conservative default before prepareToPlay
+
+// The reference plugin's guards on what a .nam claims about itself
+// (tone3000-plugin Processor.cpp, the per-block post-model gain). A file can say
+// anything: a loudness of +40 or NaN would turn "normalize" into a 60 dB boost or a
+// silent channel, so metadata outside these windows is treated as absent and the
+// normalization gain itself never exceeds +-24 dB.
+constexpr double kMinPlausibleLoudnessDb = -100.0;
+constexpr double kMaxPlausibleLoudnessDb = 0.0;
+constexpr double kMaxPlausibleLevelDbu = 60.0;
+constexpr float kMaxNormalizationDb = 24.0f;
+
+// While a swap fade is running the block is processed in slices this long, so the
+// swap lands within a millisecond of the ramp reaching silence instead of at the
+// next host block (which may be 85 ms away at 4096 samples).
+constexpr int kFadeSlice = 32;
+
+bool plausible (double value, double low, double high) noexcept
+{
+    return std::isfinite (value) && value >= low && value <= high;
+}
+
+/** True when every sample is a finite number. Tested on the bit pattern (exponent
+    all ones = Inf/NaN) so no floating-point optimisation can fold the test away. */
+bool allFinite (const float* data, int numSamples) noexcept
+{
+    std::uint32_t bad = 0;
+
+    for (int n = 0; n < numSamples; ++n)
+    {
+        std::uint32_t bits;
+        std::memcpy (&bits, data + n, sizeof (bits));
+        bad |= (std::uint32_t) ((bits & 0x7f800000u) == 0x7f800000u);
+    }
+
+    return bad == 0;
+}
 
 /** Old .nam files don't encode a sample rate (report <= 0); the NAM convention is
     to assume 48 kHz for those. */
@@ -234,7 +274,7 @@ public:
         }
     }
 
-    int getLatency() const { return needToResample() ? mResampler->GetLatency() : 0; }
+    int getLatency() const { return mLatency; }
 
     /** Never call from the audio thread: resets the encapsulated model, which prewarms
         (allocates and runs the network). */
@@ -250,6 +290,7 @@ public:
         // first-block glitch at 44.1k; bit-exact renders only at the model's own rate).
         mResampler.emplace (getEncapsulatedSampleRate());
         mResampler->Reset (sampleRate, maxBlockSize);
+        mLatency = needToResample() ? measureLatency (sampleRate, maxBlockSize) : 0;
 
         const double upRatio = sampleRate / getEncapsulatedSampleRate();
         const int maxEncapsulatedBlockSize = (int) std::ceil ((double) maxBlockSize / upRatio);
@@ -259,14 +300,83 @@ public:
     double getEncapsulatedSampleRate() const { return getNamSampleRate (mEncapsulated); }
 
 private:
+    /** The delay of the resampler pair, measured: a pulse through a scratch container
+        whose encapsulated "model" is the identity, peak to peak in host samples.
+
+        The container's own GetLatency() is the amount of silence it primes itself
+        with, which is the delay before the *first* sample comes out — it leaves out
+        the group delay of the two Lanczos kernels, a few samples depending on the
+        rate ratio. Reporting the smaller number leaves the plugin that much late
+        against every other track, and inside a split it leaves this lane that much
+        late against the other one, which is a comb filter (the reference plugin
+        measures for the same reason: measureChainBoundaryLatency, Processor.cpp).
+
+        The pulse is a Gaussian a few samples wide at the lower of the two rates
+        rather than a single sample: a one-sample impulse sits above the lower rate's
+        Nyquist, and at an integer ratio the decimating resampler either passes it
+        whole or drops it, depending on which phase it lands on. */
+    int measureLatency (double sampleRate, int maxBlockSize) const
+    {
+        const int block = std::max (1, maxBlockSize);
+
+        ::dsp::ResamplingContainer<NAM_SAMPLE, 1, 12> probe (getEncapsulatedSampleRate());
+        probe.Reset (sampleRate, block);
+
+        const double sigma = 6.0 * std::max (1.0, sampleRate / getEncapsulatedSampleRate());
+        const int centre = (int) std::ceil (8.0 * sigma);
+        const int needed = 2 * centre + probe.GetLatency() + 64;
+        const int total = (needed / block + 1) * block;
+
+        std::vector<NAM_SAMPLE> input ((size_t) total, (NAM_SAMPLE) 0), output ((size_t) total, (NAM_SAMPLE) 0);
+
+        for (int n = 0; n < 2 * centre; ++n)
+        {
+            const double x = ((double) n - (double) centre) / sigma;
+            input[(size_t) n] = (NAM_SAMPLE) std::exp (-0.5 * x * x);
+        }
+
+        const std::function<void (NAM_SAMPLE**, NAM_SAMPLE**, int)> identity =
+            [] (NAM_SAMPLE** in, NAM_SAMPLE** out, int n) { std::copy_n (in[0], n, out[0]); };
+
+        for (int offset = 0; offset < total; offset += block)
+        {
+            NAM_SAMPLE* in[1]  = { input.data() + offset };
+            NAM_SAMPLE* out[1] = { output.data() + offset };
+            probe.ProcessBlock (in, out, block, identity);
+        }
+
+        int peak = 0;
+
+        for (int n = 1; n < total; ++n)
+            if (output[(size_t) n] > output[(size_t) peak])
+                peak = n;
+
+        // Parabola through the peak and its neighbours: the true maximum of a smooth
+        // pulse lies between samples, and rounding the refined position is what
+        // makes the result the nearest whole sample rather than the larger one.
+        double refined = (double) peak;
+
+        if (peak > 0 && peak < total - 1)
+        {
+            const double l = output[(size_t) peak - 1], c = output[(size_t) peak], r = output[(size_t) peak + 1];
+            const double curvature = l - 2.0 * c + r;
+
+            if (curvature < 0.0)
+                refined += 0.5 * (l - r) / curvature;
+        }
+
+        return std::max (0, (int) std::lround (refined - (double) centre));
+    }
+
     bool needToResample() const
     {
         return std::abs (GetExpectedSampleRate() - getEncapsulatedSampleRate()) > 1.0e-9;
     }
 
     std::unique_ptr<nam::DSP> mEncapsulated;
-    std::optional<dsp::ResamplingContainer<NAM_SAMPLE, 1, 12>> mResampler;
+    std::optional<::dsp::ResamplingContainer<NAM_SAMPLE, 1, 12>> mResampler;
     int mMaxExternalBlockSize = kResamplerMaxBlockSize;
+    int mLatency = 0;
     std::function<void (NAM_SAMPLE**, NAM_SAMPLE**, int)> mBlockProcessFunc;
 };
 } // namespace
@@ -274,23 +384,9 @@ private:
 //==============================================================================
 struct NamEngine::Impl
 {
-    ~Impl()
-    {
-        delete staged.exchange (nullptr, std::memory_order_acq_rel);
-    }
-
-    // Audio thread only.
-    std::unique_ptr<ResamplingNAM> live;
-
-    // Single-slot handoff: the loader thread exchanges a freshly built model in,
-    // the audio thread exchanges it back out. Ownership is transferred by the
-    // exchange itself, so loader and audio thread never touch the same object.
-    std::atomic<ResamplingNAM*> staged { nullptr };
-    std::atomic<bool> shouldRemove { false };
-
-    // Retired models, parked by the audio thread and destroyed by collectGarbage().
-    static constexpr int numGarbageSlots = 4;
-    std::array<std::unique_ptr<ResamplingNAM>, numGarbageSlots> garbage;
+    // The model in the signal path, the one waiting to replace it, the ones it has
+    // replaced, and the fade between them (EngineHandoff.h).
+    EngineHandoff<ResamplingNAM> handoff;
 
     std::atomic<int> latencySamples { 0 };
 
@@ -329,30 +425,73 @@ struct NamEngine::Impl
     double hostSampleRate = kAssumedModelSampleRate;
     int maxBlockSize = kResamplerMaxBlockSize;
 
+    // Serialises everything that builds, stages or re-prepares an engine. Loads are
+    // message-thread work, but prepareToPlay arrives on whatever thread the host
+    // likes: without this it could take a freshly staged engine back, re-prepare it
+    // and stage it again right over a newer one the message thread put there in
+    // between. Never taken on the audio thread; the only lock taken under it is the
+    // info spin lock, so it cannot be part of a cycle with a host's own locks.
+    juce::CriticalSection buildLock;
+
     juce::SpinLock infoLock;
     ModelInfo info;
 
-    /** Audio thread: park a retired model for later destruction on the message thread. */
-    void retire (std::unique_ptr<ResamplingNAM> old)
+    std::atomic<int> faultCount { 0 };
+
+    // See NamEngine::setBypassedWhenEmpty().
+    bool bypassedWhenEmpty = false;
+
+    /** Audio thread: the model on `numSamples` of mono audio, in place. Without a
+        model the audio is left alone. Non-finite samples never reach the model (they
+        would poison a recurrent state for good) and never leave it. */
+    void runLive (float* mono, int numSamples) noexcept
     {
-        if (old == nullptr)
+        auto* live = handoff.get();
+
+        if (live == nullptr)
             return;
 
-        for (auto& slot : garbage)
-        {
-            if (slot == nullptr)
-            {
-                slot = std::move (old);
-                return;
-            }
-        }
+        if (! allFinite (mono, numSamples))
+            juce::FloatVectorOperations::clear (mono, numSamples);
 
-        // All slots full: collectGarbage() has not been called between four
-        // consecutive swaps. Shouldn't happen (the processor collects on every
-        // load/clear); destroying here would be a real-time violation, so leak
-        // instead and complain in debug builds.
-        jassertfalse;
-        (void) old.release();
+        float* channels[1] = { mono };
+        live->process (channels, channels, numSamples);
+
+        if (! allFinite (mono, numSamples))
+        {
+            juce::FloatVectorOperations::clear (mono, numSamples);
+            faultCount.fetch_add (1, std::memory_order_relaxed);
+        }
+    }
+
+    /** Audio thread, whenever the live model changed: publish what is live now. */
+    void publish (ResamplingNAM* model)
+    {
+        latencySamples.store (model != nullptr ? model->getLatency() : 0, std::memory_order_release);
+
+        // Published like the latency, and for the same reason: the audio thread gates
+        // the dual-NAM stereo path on hasLiveModel(), so it has to describe the model
+        // that is live here, not the one the message thread staged a moment ago.
+        liveModelPresent.store (model != nullptr, std::memory_order_release);
+        modelPresent.store (model != nullptr, std::memory_order_release);
+
+        // Metadata that fails the plausibility window is published as absent, which
+        // makes the mode that needs it behave as Raw (see the constants above).
+        const bool loudness    = model != nullptr && model->HasLoudness()
+                                 && plausible (model->GetLoudness(), kMinPlausibleLoudnessDb, kMaxPlausibleLoudnessDb);
+        const bool inputLevel  = model != nullptr && model->HasInputLevel()
+                                 && plausible (model->GetInputLevel(), -kMaxPlausibleLevelDbu, kMaxPlausibleLevelDbu);
+        const bool outputLevel = model != nullptr && model->HasOutputLevel()
+                                 && plausible (model->GetOutputLevel(), -kMaxPlausibleLevelDbu, kMaxPlausibleLevelDbu);
+
+        loudnessDb.store (loudness ? (float) model->GetLoudness() : 0.0f, std::memory_order_relaxed);
+        inputLevelDbu.store (inputLevel ? (float) model->GetInputLevel() : 0.0f, std::memory_order_relaxed);
+        outputLevelDbu.store (outputLevel ? (float) model->GetOutputLevel() : 0.0f, std::memory_order_relaxed);
+
+        // Published last: the "has" flags gate every read of the values above.
+        hasLoudness.store (loudness, std::memory_order_release);
+        hasInputLevel.store (inputLevel, std::memory_order_release);
+        hasOutputLevel.store (outputLevel, std::memory_order_release);
     }
 };
 
@@ -363,6 +502,8 @@ NamEngine::~NamEngine() = default;
 juce::String NamEngine::loadModel (const juce::File& namFile)
 {
     // Message/background thread: file IO, JSON parse, weight load and prewarm.
+    const juce::ScopedLock build (impl->buildLock);
+
     if (! namFile.existsAsFile())
         return "Model file not found: " + namFile.getFullPathName();
 
@@ -445,13 +586,10 @@ juce::String NamEngine::loadModel (const juce::File& namFile)
         impl->info = newInfo;
     }
 
-    // A pending "clear" must not eat the model we are about to stage.
-    impl->shouldRemove.store (false, std::memory_order_release);
-
-    // Anything the audio thread has not adopted yet is ours to destroy, right here.
-    // That may be the model impl->slimmable currently aliases, so re-point it in the
-    // same breath — nothing dereferences it in between.
-    delete impl->staged.exchange (wrapped.release(), std::memory_order_acq_rel);
+    // Anything the audio thread has not adopted yet is destroyed by stage(), right
+    // here. That may be the model impl->slimmable currently aliases, so re-point it
+    // in the same breath — nothing dereferences it in between.
+    impl->handoff.stage (std::move (wrapped));
     impl->slimmable = slimmable;
     impl->slimmablePresent.store (slimmable != nullptr, std::memory_order_release);
     impl->modelPresent.store (true, std::memory_order_release);
@@ -461,111 +599,186 @@ juce::String NamEngine::loadModel (const juce::File& namFile)
 
 void NamEngine::clearModel()
 {
+    const juce::ScopedLock build (impl->buildLock);
     collectGarbage();
 
     impl->slimmable = nullptr;
     impl->slimmablePresent.store (false, std::memory_order_release);
 
-    delete impl->staged.exchange (nullptr, std::memory_order_acq_rel);
-    impl->shouldRemove.store (true, std::memory_order_release);
+    impl->handoff.requestRemove();
     impl->modelPresent.store (false, std::memory_order_release);
 
-    // Dropped here rather than at the next applyStaging(): false is the fail-safe
-    // direction for the stereo gate, and it costs at most one block of stereo.
+    // Dropped here rather than when the audio thread lets go of the model: false is
+    // the fail-safe direction for everything that reads it off the audio thread
+    // (latency, UI). The audio thread itself gates on isRunning(), which stays true
+    // until the model has faded out.
     impl->liveModelPresent.store (false, std::memory_order_release);
 
     const juce::SpinLock::ScopedLockType lock (impl->infoLock);
     impl->info = {};
 }
 
-bool NamEngine::applyStaging()
+bool NamEngine::applyStaging (bool audible)
 {
-    bool changed = false;
+    using Begin = EngineHandoff<ResamplingNAM>::Begin;
 
-    if (impl->shouldRemove.exchange (false, std::memory_order_acq_rel))
+    return impl->handoff.begin (audible, [this] (ResamplingNAM* model) { impl->publish (model); })
+           == Begin::swapped;
+}
+
+int NamEngine::process (float* monoChannel, int numSamples)
+{
+    if (numSamples <= 0)
+        return -1;
+
+    auto& handoff = impl->handoff;
+    auto& fade = handoff.fade;
+    handoff.noteHeard();
+
+    int swappedAt = -1;
+
+    for (int offset = 0; offset < numSamples;)
     {
-        if (impl->live != nullptr)
+        float* x = monoChannel + offset;
+
+        if (fade.isIdle())
         {
-            impl->retire (std::move (impl->live));
-            changed = true;
+            impl->runLive (x, numSamples - offset);
+            break;
+        }
+
+        // A fade is running: short slices, so the swap lands within a millisecond
+        // of the ramp reaching silence.
+        const int n = std::min (numSamples - offset, kFadeSlice);
+        const bool closing = fade.phase() == SwapFade::Phase::out;
+
+        impl->runLive (x, n);
+        fade.apply (x, n);
+        offset += n;
+
+        if (closing && fade.isSilent())
+        {
+            handoff.swapNow ([this] (ResamplingNAM* model) { impl->publish (model); });
+            fade.startIn();
+            swappedAt = offset;
+
+            // The model is gone and the owner does not run a model-less engine
+            // through here: what comes next is its untouched signal, which opens
+            // through fadeUnprocessed() from the next block. This path stays silent.
+            if (impl->bypassedWhenEmpty && handoff.get() == nullptr)
+            {
+                juce::FloatVectorOperations::clear (monoChannel + offset, numSamples - offset);
+                break;
+            }
         }
     }
 
-    if (auto* fresh = impl->staged.exchange (nullptr, std::memory_order_acq_rel))
-    {
-        impl->retire (std::move (impl->live));
-        impl->live.reset (fresh);
-        changed = true;
-    }
-
-    if (changed)
-    {
-        impl->latencySamples.store (impl->live != nullptr ? impl->live->getLatency() : 0,
-                                    std::memory_order_release);
-
-        // Published like the latency, and for the same reason: the audio thread gates
-        // the dual-NAM stereo path on hasLiveModel(), so it has to describe the model
-        // that is live here, not the one the message thread staged a moment ago.
-        impl->liveModelPresent.store (impl->live != nullptr, std::memory_order_release);
-        impl->modelPresent.store (impl->live != nullptr, std::memory_order_release);
-
-        auto* live = impl->live.get();
-
-        const bool loudness    = live != nullptr && live->HasLoudness();
-        const bool inputLevel  = live != nullptr && live->HasInputLevel();
-        const bool outputLevel = live != nullptr && live->HasOutputLevel();
-
-        impl->loudnessDb.store (loudness ? (float) live->GetLoudness() : 0.0f,
-                                std::memory_order_relaxed);
-        impl->inputLevelDbu.store (inputLevel ? (float) live->GetInputLevel() : 0.0f,
-                                   std::memory_order_relaxed);
-        impl->outputLevelDbu.store (outputLevel ? (float) live->GetOutputLevel() : 0.0f,
-                                    std::memory_order_relaxed);
-
-        // Published last: the "has" flags gate every read of the values above.
-        impl->hasLoudness.store (loudness, std::memory_order_release);
-        impl->hasInputLevel.store (inputLevel, std::memory_order_release);
-        impl->hasOutputLevel.store (outputLevel, std::memory_order_release);
-    }
-
-    return changed;
+    return swappedAt;
 }
 
-void NamEngine::process (float* monoChannel, int numSamples)
+bool NamEngine::fadeUnprocessed (float* const* channels, int numChannels, int numSamples)
 {
-    if (impl->live == nullptr || numSamples <= 0)
-        return; // pass-through
+    auto& handoff = impl->handoff;
+    auto& fade = handoff.fade;
+    handoff.noteHeard();
 
-    float* channels[1] = { monoChannel };
-    impl->live->process (channels, channels, numSamples);
+    for (int offset = 0; offset < numSamples;)
+    {
+        if (fade.isIdle())
+            return false;
+
+        const int n = std::min (numSamples - offset, kFadeSlice);
+        const bool closing = fade.phase() == SwapFade::Phase::out;
+
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = fade.next();
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                channels[ch][offset + i] *= g;
+        }
+
+        offset += n;
+
+        if (closing && fade.isSilent())
+        {
+            handoff.swapNow ([this] (ResamplingNAM* model) { impl->publish (model); });
+            fade.startIn();
+
+            if (handoff.get() != nullptr)
+            {
+                for (int ch = 0; ch < numChannels; ++ch)
+                    juce::FloatVectorOperations::clear (channels[ch] + offset, numSamples - offset);
+
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool NamEngine::hasModelInPath() const noexcept
+{
+    return impl->handoff.get() != nullptr;
+}
+
+void NamEngine::setBypassedWhenEmpty (bool bypassed) noexcept
+{
+    impl->bypassedWhenEmpty = bypassed;
+}
+
+bool NamEngine::isRunning() const noexcept
+{
+    return impl->handoff.isRunning();
+}
+
+int NamEngine::getFaultCount() const noexcept
+{
+    return impl->faultCount.load (std::memory_order_relaxed);
 }
 
 void NamEngine::prepare (double sampleRate, int maxBlockSize)
 {
+    const juce::ScopedLock build (impl->buildLock);
+
     impl->hostSampleRate = sampleRate > 0.0 ? sampleRate : kAssumedModelSampleRate;
     impl->maxBlockSize = std::max (1, maxBlockSize);
 
-    if (impl->live != nullptr)
-        impl->live->Reset (impl->hostSampleRate, impl->maxBlockSize);
+    auto& handoff = impl->handoff;
+    handoff.restart (impl->hostSampleRate);
+
+    auto* live = handoff.get();
+
+    if (live != nullptr)
+        live->Reset (impl->hostSampleRate, impl->maxBlockSize);
 
     // A model staged but not yet adopted was prepared for the *previous* rate.
     // The audio thread is stopped during prepareToPlay, so it is safe to take it
     // back, re-Reset it (which prewarms — allocating, hence not audio-thread work)
     // and hand it over again.
-    if (auto* pending = impl->staged.exchange (nullptr, std::memory_order_acq_rel))
+    if (auto pending = handoff.takeStaged())
     {
         pending->Reset (impl->hostSampleRate, impl->maxBlockSize);
-        delete impl->staged.exchange (pending, std::memory_order_acq_rel);
+        handoff.stage (std::move (pending));
     }
 
-    impl->latencySamples.store (impl->live != nullptr ? impl->live->getLatency() : 0,
-                                std::memory_order_release);
+    // Audio is stopped, so whatever is pending becomes the live model right here
+    // instead of in the first block: the processor seeds its gain smoothers and
+    // reports latency straight after this call, and both have to describe the model
+    // that will be playing — a session restore stages its model before
+    // prepareToPlay, and adopting it a block late would start the stream with the
+    // output gain ramping in from the wrong value and the latency changing mid-way.
+    if (! handoff.swapNow ([this] (ResamplingNAM* model) { impl->publish (model); }))
+    {
+        live = handoff.get();
+        impl->latencySamples.store (live != nullptr ? live->getLatency() : 0, std::memory_order_release);
+    }
 }
 
 void NamEngine::collectGarbage()
 {
-    for (auto& slot : impl->garbage)
-        slot.reset();
+    impl->handoff.collectGarbage();
 }
 
 bool NamEngine::hasModel() const noexcept
@@ -596,7 +809,8 @@ float NamEngine::getOutputCompensationDb (params::OutputMode mode,
     {
         case params::OutputMode::normalized:
             if (impl->hasLoudness.load (std::memory_order_acquire))
-                return (float) kTargetLoudnessDb - impl->loudnessDb.load (std::memory_order_relaxed);
+                return juce::jlimit (-kMaxNormalizationDb, kMaxNormalizationDb,
+                                     (float) kTargetLoudnessDb - impl->loudnessDb.load (std::memory_order_relaxed));
 
             return 0.0f;
 
@@ -622,6 +836,7 @@ float NamEngine::getInputCalibrationDb (bool calibrateInput, float calibrationLe
 
 void NamEngine::setSlimSize (double size01)
 {
+    const juce::ScopedLock build (impl->buildLock);
     impl->slimSize = juce::jlimit (0.0, 1.0, size01);
 
     // Thread-safe but not real-time safe; message thread only, hence no staging dance.

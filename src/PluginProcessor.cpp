@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "library/ToneSidecar.h"
 
 // Console targets (tubamp_smoke) compile the DSP/state/library sources with
 // JUCE_WEB_BROWSER=0, where the WebView editor cannot compile at all. They set
@@ -34,6 +35,18 @@ enum class SplitMode { copy = 0, leftRight = 1, crossover = 2 };
 // means default", so a v1 preset loads correctly without ever consulting it. It is
 // here for the first change that cannot be expressed that way.
 constexpr int kStateVersion = 2;
+
+/** The "slot" tag of a MEDIA child in the session state (EmbeddedMedia.h). */
+const char* mediaSlotName (TubampAudioProcessor::Media slot) noexcept
+{
+    switch (slot)
+    {
+        case TubampAudioProcessor::Media::model:  return "model";
+        case TubampAudioProcessor::Media::modelB: return "modelB";
+        case TubampAudioProcessor::Media::ir:     return "ir";
+        default:                                  return "";
+    }
+}
 
 /** Applies a smoothed gain to the whole buffer as a single ramp — one pass, no zipper. */
 void applySmoothedGain (juce::AudioBuffer<float>& buffer, int numSamples,
@@ -227,6 +240,10 @@ TubampAudioProcessor::TubampAudioProcessor()
 {
     const auto raw = [this] (const char* id) { return apvts.getRawParameterValue (id); };
 
+    // amp2 without a model is an untouched pass-through (see its case in the block
+    // dispatcher), unlike the amp block, which always runs its own path.
+    namEngineB.setBypassedWhenEmpty (true);
+
     pp.gateOn        = raw (params::gateOn);
     pp.ampOn         = raw (params::ampOn);
     pp.cabOn         = raw (params::cabOn);
@@ -264,6 +281,7 @@ TubampAudioProcessor::TubampAudioProcessor()
 
     pp.cabLowCut     = raw (params::cabLowCut);
     pp.cabHighCut    = raw (params::cabHighCut);
+    pp.cabMix        = raw (params::cabMix);
 
     pp.fxOn[0]       = raw (params::fx1On);
     pp.fxOn[1]       = raw (params::fx2On);
@@ -958,8 +976,27 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // chain looks like: a swap staged into B must never sit there going stale because
     // the amp2 block happens to be out of the chain this block. The latency report moves
     // below, once the decoded order says which blocks are actually in the path.
-    namEngine.applyStaging();
-    namEngineB.applyStaging();
+    //
+    // "Audible" is last block's answer — the order for this one is decoded further
+    // down — which is exact for every block but the one in which a block enters or
+    // leaves the chain, and there the difference is a fade more or less.
+    //
+    // A swap done right here is one nobody hears (bypassed, not in the chain, stream
+    // starting), so the amp gains — which carry the model's own calibration and
+    // loudness compensation — jump to the new model's values instead of ramping
+    // there over the first audible milliseconds.
+    if (namEngine.applyStaging (prevPresent[(size_t) chain::BlockId::amp] && isOn (pp.ampOn)))
+    {
+        ampInLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampInputDb()));
+        ampOutLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampOutputDb()));
+    }
+
+    if (namEngineB.applyStaging (prevPresent[(size_t) chain::BlockId::amp2] && isOn (pp.amp2On)))
+    {
+        amp2InLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2InputDb()));
+        amp2OutLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2OutputDb()));
+    }
+    cab.applyStaging (prevPresent[(size_t) chain::BlockId::cab] && isOn (pp.cabOn));
     fxHost.applyStaging();
 
     auto* const playHead = getPlayHead();
@@ -994,7 +1031,7 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const int numBlocks = chain::unpackTo (packedChain.load (std::memory_order_relaxed), order);
 
     std::array<bool, chain::numBlockTypes> present {};
-    int gateIndex = -1, ampIndex = -1;
+    int gateIndex = -1, ampIndex = -1, amp2Index = -1, cabIndex = -1;
 
     // chain::findStructure's rule, applied to the decoded stack array: the Order-taking
     // helper would have to build a vector to run here. No id occurs twice, so every
@@ -1011,6 +1048,10 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             gateIndex = i;
         else if (id == chain::BlockId::amp)
             ampIndex = i;
+        else if (id == chain::BlockId::amp2)
+            amp2Index = i;
+        else if (id == chain::BlockId::cab)
+            cabIndex = i;
         else if (id == chain::BlockId::split)
             structure.splitAt = i;
         else if (id == chain::BlockId::lane2)
@@ -1063,6 +1104,20 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // split every entry is in segment 0 and this is exactly the old rule.
     const bool deferGateToAmp = gateOn && ampOn && gateIndex >= 0 && ampIndex > gateIndex
                                 && segmentOf (gateIndex) == segmentOf (ampIndex);
+
+    // A stereo IR runs as true stereo only where the path stays stereo: an amp folds
+    // to mono, so with one downstream of the cab the right kernel could never be
+    // heard as such and the left kernel is used on both channels instead (the
+    // reference plugin's rule). "Downstream" is later in the order, except that lane
+    // B is not downstream of lane A.
+    const auto foldsAfterCab = [&] (int index, bool active) noexcept
+    {
+        return active && cabIndex >= 0 && index > cabIndex
+               && ! (segmentOf (cabIndex) == 1 && segmentOf (index) == 2);
+    };
+
+    cabAllowStereo = ! (foldsAfterCab (ampIndex, ampOn)
+                        || foldsAfterCab (amp2Index, amp2On && namEngineB.hasModelInPath()));
 
     // A block that left the chain and comes back must not replay what it was holding
     // when it left — a delay line keeps minutes of audio. The reset is deferred through
@@ -1248,7 +1303,7 @@ void TubampAudioProcessor::processAmpMono (NamEngine& engine, juce::dsp::AudioBl
     for (int n = 0; n < numSamples; ++n)
         mono[n] *= inGain.getNextValue();
 
-    engine.process (mono, numSamples);
+    const int swappedAt = engine.process (mono, numSamples);
 
     // Gate reduction lands on the model's output, before the amp-out gain.
     if (applyDeferredGate)
@@ -1267,8 +1322,27 @@ void TubampAudioProcessor::processAmpMono (NamEngine& engine, juce::dsp::AudioBl
         ampEq.process (juce::dsp::AudioBlock<float> (&mono, 1, (size_t) numSamples));
     }
 
-    for (int n = 0; n < numSamples; ++n)
-        mono[n] *= outGain.getNextValue();
+    if (swappedAt < 0)
+    {
+        for (int n = 0; n < numSamples; ++n)
+            mono[n] *= outGain.getNextValue();
+    }
+    else
+    {
+        // The model changed inside this block, on a sample where the engine's fade
+        // has the signal at silence. The output gain carries the model's own
+        // compensation (normalization can be 20 dB and more), so it switches there,
+        // in one step nobody can hear, instead of ramping: a ramp would play the end
+        // of one model, or the unprocessed signal, at the other's gain.
+        for (int n = 0; n < swappedAt; ++n)
+            mono[n] *= outGain.getNextValue();
+
+        outGain.setCurrentAndTargetValue (
+            juce::Decibels::decibelsToGain (&engine == &namEngineB ? amp2OutputDb() : ampOutputDb()));
+
+        for (int n = swappedAt; n < numSamples; ++n)
+            mono[n] *= outGain.getNextValue();
+    }
 
     for (int ch = 0; ch < numChannels; ++ch)
         if (block.getChannelPointer ((size_t) ch) != mono)
@@ -1379,20 +1453,50 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
             amp2InLin.setTargetValue (juce::Decibels::decibelsToGain (amp2InputDb()));
             amp2OutLin.setTargetValue (juce::Decibels::decibelsToGain (amp2OutputDb()));
 
-            // hasLiveModel(), not hasModel(): hasModel() goes true the moment a model is
-            // staged, and running the block on that would collapse to mono and apply
-            // both gains for one block with the engine still passing audio through dry.
-            // No live model = pass-through, which is also the zero this block then
-            // contributes to the reported latency.
-            if (amp2On && namEngineB.hasLiveModel())
+            // hasModelInPath(), the audio thread's own view — not hasModel(), which
+            // goes true the moment a model is staged (running the block on that would
+            // collapse to mono and apply both gains with the engine still passing
+            // audio through), and not hasLiveModel(), which drops the moment the
+            // message thread clears the model, before the engine has faded it out.
+            // No model and no fade = pass-through, which is also the zero this block
+            // then contributes to the reported latency.
+            if (amp2On && namEngineB.hasModelInPath())
             {
                 processAmpMono (namEngineB, block, numSamples, monoScratchData,
                                 amp2InLin, amp2OutLin, false, false);
             }
             else
             {
-                amp2InLin.skip (numSamples);
-                amp2OutLin.skip (numSamples);
+                // No model in the path. If a swap fade is running, this is its
+                // model-less side: the lane's own signal — stereo, no gains, exactly
+                // what the block passes when it is empty — closing before a first
+                // model or opening after a cleared one. Running it through
+                // processAmpMono instead would fold it to mono and apply the amp
+                // gains for the length of the fade, and step back when it ends.
+                bool adopted = false;
+
+                if (amp2On && namEngineB.isRunning())
+                {
+                    std::array<float*, 8> channels {};
+                    const int numChannels = juce::jmin ((int) channels.size(), (int) block.getNumChannels());
+
+                    for (int ch = 0; ch < numChannels; ++ch)
+                        channels[(size_t) ch] = block.getChannelPointer ((size_t) ch);
+
+                    adopted = namEngineB.fadeUnprocessed (channels.data(), numChannels, numSamples);
+                }
+
+                if (adopted)
+                {
+                    // The model opens from the next block: start it at its own gains.
+                    amp2InLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2InputDb()));
+                    amp2OutLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2OutputDb()));
+                }
+                else
+                {
+                    amp2InLin.skip (numSamples);
+                    amp2OutLin.skip (numSamples);
+                }
             }
 
             break;
@@ -1401,10 +1505,13 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         // --- cab IR
         case chain::BlockId::cab:
         {
-            if (isOn (pp.cabOn) && cab.hasImpulseResponse())
+            // isRunning(), not hasImpulseResponse(): a cleared IR still has its fade
+            // to finish, and a staged one is not in the path yet.
+            if (isOn (pp.cabOn) && cab.isRunning())
             {
-                cab.setParameters (valueOf (pp.cabLowCut, 80.0f), valueOf (pp.cabHighCut, 8000.0f));
-                cab.process (block);
+                cab.setParameters (valueOf (pp.cabLowCut, 80.0f), valueOf (pp.cabHighCut, 8000.0f),
+                                   valueOf (pp.cabMix, 100.0f) * 0.01f);
+                cab.process (block, cabAllowStereo);
             }
 
             break;
@@ -1947,6 +2054,8 @@ juce::String TubampAudioProcessor::loadModel (const juce::File& namFile)
     {
         const juce::ScopedLock sl (pathLock);
         loadedModelPath = namFile.getFullPathName();
+        mediaState[(size_t) Media::model].missingPath = {};
+        mediaState[(size_t) Media::model].packedFor = {};   // re-read on the next save
     }
 
     updateLatency();
@@ -1961,6 +2070,7 @@ void TubampAudioProcessor::clearModel()
     {
         const juce::ScopedLock sl (pathLock);
         loadedModelPath = {};
+        mediaState[(size_t) Media::model] = {};
     }
 
     updateLatency();
@@ -1982,6 +2092,8 @@ juce::String TubampAudioProcessor::loadModelB (const juce::File& namFile)
     {
         const juce::ScopedLock sl (pathLock);
         loadedModelPathB = namFile.getFullPathName();
+        mediaState[(size_t) Media::modelB].missingPath = {};
+        mediaState[(size_t) Media::modelB].packedFor = {};   // re-read on the next save
     }
 
     updateLatency();
@@ -1996,6 +2108,7 @@ void TubampAudioProcessor::clearModelB()
     {
         const juce::ScopedLock sl (pathLock);
         loadedModelPathB = {};
+        mediaState[(size_t) Media::modelB] = {};
     }
 
     updateLatency();
@@ -2011,6 +2124,8 @@ juce::String TubampAudioProcessor::loadIr (const juce::File& wavFile)
     {
         const juce::ScopedLock sl (pathLock);
         loadedIrPath = wavFile.getFullPathName();
+        mediaState[(size_t) Media::ir].missingPath = {};
+        mediaState[(size_t) Media::ir].packedFor = {};   // re-read on the next save
     }
 
     return {};
@@ -2022,14 +2137,167 @@ void TubampAudioProcessor::clearIr()
 
     const juce::ScopedLock sl (pathLock);
     loadedIrPath = {};
+    mediaState[(size_t) Media::ir] = {};
+}
+
+void TubampAudioProcessor::collectRetiredEngines()
+{
+    namEngine.collectGarbage();
+    namEngineB.collectGarbage();
+    cab.collectGarbage();
+}
+
+//==============================================================================
+juce::String TubampAudioProcessor::loadedPathLocked (Media slot) const
+{
+    switch (slot)
+    {
+        case Media::model:  return loadedModelPath;
+        case Media::modelB: return loadedModelPathB;
+        case Media::ir:     return loadedIrPath;
+        default:            return {};
+    }
+}
+
+juce::String TubampAudioProcessor::getMissingMediaPath (Media slot) const
+{
+    const juce::ScopedLock sl (pathLock);
+    return mediaState[(size_t) slot].missingPath;
+}
+
+void TubampAudioProcessor::setMissingMedia (Media slot, const juce::String& path)
+{
+    const juce::ScopedLock sl (pathLock);
+    mediaState[(size_t) slot].missingPath = path;
+}
+
+juce::String TubampAudioProcessor::mediaPathForState (Media slot) const
+{
+    const juce::ScopedLock sl (pathLock);
+    const auto loaded = loadedPathLocked (slot);
+
+    // A file that could not be restored is still what this session is made of:
+    // writing an empty path here would make one failed open permanent.
+    return loaded.isNotEmpty() ? loaded : mediaState[(size_t) slot].missingPath;
+}
+
+EmbeddedMedia TubampAudioProcessor::packedMedia (Media slot)
+{
+    juce::String path;
+
+    {
+        const juce::ScopedLock sl (pathLock);
+        path = loadedPathLocked (slot);
+        const auto& state = mediaState[(size_t) slot];
+
+        // Nothing loaded. A slot that is missing its file still hands on the copy it
+        // was restored with, if there was one: dropping it here would lose the only
+        // copy the first time the session is saved on a machine that could not
+        // rebuild it (an unwritable library, a full disk).
+        if (path.isEmpty())
+            return state.missingPath.isNotEmpty() ? state.packed : EmbeddedMedia();
+
+        if (state.packedFor == path)
+            return state.packed;
+    }
+
+    // File IO and compression, outside the lock: a host calls getStateInformation
+    // from its save thread, and megabytes of deflate must not hold up a model load.
+    auto packed = EmbeddedMedia::fromFile (juce::File (path));
+
+    const juce::ScopedLock sl (pathLock);
+
+    if (loadedPathLocked (slot) == path)
+    {
+        auto& state = mediaState[(size_t) slot];
+        state.packed = packed;
+        state.packedFor = path;
+    }
+
+    return packed;
+}
+
+void TubampAudioProcessor::restoreMedia (Media slot, const juce::String& path, const EmbeddedMedia& embedded)
+{
+    const auto load = [this, slot] (const juce::File& file)
+    {
+        return slot == Media::model ? loadModel (file) : slot == Media::modelB ? loadModelB (file) : loadIr (file);
+    };
+
+    const auto clear = [this, slot]
+    {
+        if (slot == Media::model)       clearModel();
+        else if (slot == Media::modelB) clearModelB();
+        else                            clearIr();
+    };
+
+    if (path.isEmpty())
+    {
+        clear();
+        return;
+    }
+
+    // A state blob can hold anything; juce::File asserts on a relative path.
+    juce::File file;
+
+    if (juce::File::isAbsolutePath (path))
+        file = juce::File (path);
+
+    bool rebuilt = false;
+
+    if (! file.existsAsFile())
+    {
+        // The session moved (another machine, another user) or the file left the
+        // library. First choice is the copy the session carries; failing that, a file
+        // of the same name in this machine's library is the same capture in all
+        // likelihood — which is how the reference plugin re-roots a lost path.
+        const auto directory = slot == Media::ir ? ModelLibrary::getIrsDir() : ModelLibrary::getModelsDir();
+        const auto leaf = path.replaceCharacter ('\\', '/').fromLastOccurrenceOf ("/", false, false);
+
+        if (! embedded.isEmpty())
+        {
+            bool created = false;
+            file = embedded.materialiseIn (directory, slot == Media::ir ? "wav" : "nam", &created);
+            rebuilt = created;
+
+            if (created)
+                library.noteExternalChange();
+        }
+
+        if (! file.existsAsFile() && leaf.isNotEmpty())
+            file = directory.getChildFile (juce::File::createLegalFileName (leaf));
+    }
+
+    if (file.existsAsFile() && load (file).isEmpty())
+        return;
+
+    // A file this call wrote and that then would not load is not left in the library
+    // as a broken entry.
+    if (rebuilt)
+    {
+        file.deleteFile();
+        ToneSidecar::remove (file);
+        library.noteExternalChange();
+    }
+
+    clear();
+
+    const juce::ScopedLock sl (pathLock);
+    auto& state = mediaState[(size_t) slot];
+    state.missingPath = path;
+    state.packed = embedded;    // see packedMedia(): the copy travels on
+    state.packedFor = {};
 }
 
 //==============================================================================
 void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // Copy the paths under the lock (the copies are safe to use outside it —
-    // juce::String's refcount is atomic; only concurrent reassignment races).
-    juce::String modelPathCopy, modelPathBCopy, irPathCopy;
+    // Copied under the lock (the copies are safe to use outside it — juce::String's
+    // refcount is atomic; only concurrent reassignment races). A slot whose file
+    // could not be restored keeps writing the path it wants.
+    const auto modelPathCopy  = mediaPathForState (Media::model);
+    const auto modelPathBCopy = mediaPathForState (Media::modelB);
+    const auto irPathCopy     = mediaPathForState (Media::ir);
 
     // Hosts may call this from a save thread, where reading a hosted plugin's state is
     // not safe — the cached blob is used instead. On the message thread (Cmd-S, project
@@ -2037,13 +2305,6 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     // made in an open plugin window seconds before saving would be lost.
     if (juce::MessageManager::getInstance()->isThisTheMessageThread())
         refreshAllFxState();
-
-    {
-        const juce::ScopedLock sl (pathLock);
-        modelPathCopy = loadedModelPath;
-        modelPathBCopy = loadedModelPathB;
-        irPathCopy = loadedIrPath;
-    }
 
     // Order and rows in one acquisition: a host autosave that lands in the middle of a
     // state restore must not write the new order against the old row layout. The packed
@@ -2081,6 +2342,13 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 
     root.appendChild (apvts.copyState(), nullptr);
     root.appendChild (fxSlotsTree(), nullptr);
+
+    // The files themselves, so the session opens where they are not (EmbeddedMedia.h).
+    // Absent in everything written before this existed, and for a slot whose file is
+    // gone or too large to carry: such a slot restores by path alone, as it always did.
+    for (const auto slot : { Media::model, Media::modelB, Media::ir })
+        if (const auto packed = packedMedia (slot); ! packed.isEmpty())
+            root.appendChild (packed.toTree (mediaSlotName (slot)), nullptr);
 
     if (auto xml = root.createXml())
         copyXmlToBinary (*xml, destData);
@@ -2132,24 +2400,27 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
     // the same contract as a missing modelPath clearing the model.
     const auto fxIncoming = parseFxSlotsTree (root.getChildWithName ("FXSLOTS"));
 
+    std::array<EmbeddedMedia, 3> embedded;
+
+    for (const auto& child : root)
+    {
+        if (! child.hasType (EmbeddedMedia::treeType))
+            continue;
+
+        const auto name = child.getProperty (EmbeddedMedia::slotProperty).toString();
+
+        for (const auto slot : { Media::model, Media::modelB, Media::ir })
+            if (name == mediaSlotName (slot))
+                embedded[(size_t) slot] = EmbeddedMedia::fromTree (child);
+    }
+
     // Model/IR loading does file IO and prewarm; it must never happen here if the
     // host restores state from a non-message thread.
-    auto restore = [this, modelPath, modelPathB, irPath, order, rows, fxIncoming]
+    auto restore = [this, modelPath, modelPathB, irPath, embedded, order, rows, fxIncoming]
     {
-        if (modelPath.isNotEmpty() && juce::File (modelPath).existsAsFile())
-            loadModel (juce::File (modelPath));
-        else
-            clearModel();
-
-        if (modelPathB.isNotEmpty() && juce::File (modelPathB).existsAsFile())
-            loadModelB (juce::File (modelPathB));
-        else
-            clearModelB();
-
-        if (irPath.isNotEmpty() && juce::File (irPath).existsAsFile())
-            loadIr (juce::File (irPath));
-        else
-            clearIr();
+        restoreMedia (Media::model,  modelPath,  embedded[(size_t) Media::model]);
+        restoreMedia (Media::modelB, modelPathB, embedded[(size_t) Media::modelB]);
+        restoreMedia (Media::ir,     irPath,     embedded[(size_t) Media::ir]);
 
         applyFxRecords (fxIncoming);
         adoptChainOrder (order, rows);
@@ -2198,9 +2469,9 @@ juce::var TubampAudioProcessor::captureStateVar()
     auto* state = new juce::DynamicObject();
     state->setProperty ("version", kStateVersion);
     state->setProperty ("params", juce::var (paramValues));
-    state->setProperty ("modelPath", loadedModelPath);
-    state->setProperty ("modelPathB", loadedModelPathB);
-    state->setProperty ("irPath", loadedIrPath);
+    state->setProperty ("modelPath", mediaPathForState (Media::model));
+    state->setProperty ("modelPathB", mediaPathForState (Media::modelB));
+    state->setProperty ("irPath", mediaPathForState (Media::ir));
     state->setProperty ("chainOrder", serialized.v1);
 
     if (serialized.v2.isNotEmpty())
@@ -2261,36 +2532,27 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
 
     const juce::String modelPath = obj->getProperty ("modelPath").toString();
 
-    if (modelPath != loadedModelPath)
-    {
-        if (modelPath.isNotEmpty() && juce::File (modelPath).existsAsFile())
-            loadModel (juce::File (modelPath));
-        else
-            clearModel();
-    }
+    // Presets and A/B slots carry references only (EmbeddedMedia.h): a file that is
+    // gone is looked for by name in the library and otherwise reported as missing.
+    //
+    // A slot that is reported missing is always re-evaluated, even when this state
+    // names no file for it ("" equals the empty loaded path): otherwise the stale
+    // reference would survive, be shown as missing and be saved into this preset.
+    if (modelPath != loadedModelPath || getMissingMediaPath (Media::model).isNotEmpty())
+        restoreMedia (Media::model, modelPath, {});
 
     // A preset written before engine B existed has no "modelPathB": the void var
     // stringifies to "", which clears engine B — the same treatment an absent modelPath
     // gets, and the state such a preset was captured in.
     const juce::String modelPathB = obj->getProperty ("modelPathB").toString();
 
-    if (modelPathB != loadedModelPathB)
-    {
-        if (modelPathB.isNotEmpty() && juce::File (modelPathB).existsAsFile())
-            loadModelB (juce::File (modelPathB));
-        else
-            clearModelB();
-    }
+    if (modelPathB != loadedModelPathB || getMissingMediaPath (Media::modelB).isNotEmpty())
+        restoreMedia (Media::modelB, modelPathB, {});
 
     const juce::String irPath = obj->getProperty ("irPath").toString();
 
-    if (irPath != loadedIrPath)
-    {
-        if (irPath.isNotEmpty() && juce::File (irPath).existsAsFile())
-            loadIr (juce::File (irPath));
-        else
-            clearIr();
-    }
+    if (irPath != loadedIrPath || getMissingMediaPath (Media::ir).isNotEmpty())
+        restoreMedia (Media::ir, irPath, {});
 
     // Presets and A/B slots written before the fx slots existed have no "fxSlots":
     // the void var stringifies to "", which parses to three empty records and clears

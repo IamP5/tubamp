@@ -253,6 +253,7 @@ target_link_libraries(tubamp
 juce_add_console_app(tubamp_smoke PRODUCT_NAME "tubamp_smoke")
 target_sources(tubamp_smoke PRIVATE
     tests/ProcessorSmokeTest.cpp
+    tests/EngineTests.cpp
     ${tubamp_core_sources})
 target_include_directories(tubamp_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_definitions(tubamp_smoke PRIVATE

@@ -131,28 +131,4 @@ private:
     float rate = 1.0f, depth = 0.5f, mix = 0.5f;
     double sampleRate = 44100.0;
 };
-
-/** Cab IR loader: juce::dsp::Convolution + post low/high cut filters.
-    loadImpulseResponse() is safe from the message thread (Convolution swaps
-    internally in a background thread). */
-class CabSim
-{
-public:
-    void prepare (const juce::dsp::ProcessSpec& spec);
-    void reset();
-    /** Returns error string, empty on success. */
-    juce::String loadImpulseResponse (const juce::File& wavFile);
-    void clearImpulseResponse();
-    bool hasImpulseResponse() const noexcept { return irLoaded; }
-    juce::String getImpulseResponseName() const { return irName; }
-    void setParameters (float lowCutHz, float highCutHz);
-    void process (juce::dsp::AudioBlock<float> block);
-
-private:
-    juce::dsp::Convolution convolution;
-    juce::dsp::StateVariableTPTFilter<float> lowCut, highCut;
-    bool irLoaded = false;
-    juce::String irName;
-    double sampleRate = 44100.0;
-};
 } // namespace tubamp

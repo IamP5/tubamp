@@ -2176,6 +2176,9 @@ bool runDelaySyncTests (tubamp::TubampAudioProcessor& proc, double sampleRate, i
 }
 } // namespace
 
+// tests/EngineTests.cpp
+bool runEngineTests (const juce::File& modelFile, double sampleRate, int blockSize);
+
 int main (int argc, char** argv)
 {
     if (argc < 2)
@@ -2186,6 +2189,19 @@ int main (int argc, char** argv)
 
     const juce::ScopedJuceInitialiser_GUI juceInit;
     const juce::File modelFile { juce::String { argv[1] } };
+
+    // Everything below creates presets, restores sessions and rebuilds files: none of
+    // it belongs in the library of whoever runs the suite.
+    const auto libraryDir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getChildFile ("tubamp-smoke-library-"
+                                               + juce::String::toHexString (juce::Random::getSystemRandom().nextInt64()));
+    tubamp::ModelLibrary::setRootDirOverride (libraryDir);
+
+    struct LibraryCleanup
+    {
+        juce::File dir;
+        ~LibraryCleanup() { dir.deleteRecursively(); }
+    } libraryCleanup { libraryDir };
     const double sampleRate = argc > 2 ? atof (argv[2]) : 48000.0;
     const int blockSize = 512;
 
@@ -2296,7 +2312,11 @@ int main (int argc, char** argv)
     std::printf (delaySyncPass ? "PASS: delay tempo sync lands on the note length\n"
                                : "FAIL: delay tempo sync behaviour is wrong\n");
 
-    return modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
+    const bool enginePass = runEngineTests (modelFile, sampleRate, blockSize);
+    std::printf (enginePass ? "PASS: NAM and IR engines behave like the reference\n"
+                            : "FAIL: NAM / IR engine behaviour is wrong\n");
+
+    return enginePass && modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
                    && ampEqPass && factoryPass && concurrentPass && fxPass
                    && modelPathBPass && delayModePass
                    && splitPathPass && dualAmpLanePass && splitLatencyPass && splitStatePass

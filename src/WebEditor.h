@@ -90,6 +90,8 @@ private:
         model loaded. */
     juce::var modelVarB() const;
     juce::var irVar() const;
+    /** `{ model, modelB, ir }`: the path each slot wanted and could not get, or null. */
+    juce::var missingMediaVar() const;
     juce::var t3kVar() const;
     juce::var fxSlotVar (int slot) const;
     juce::var fxSlotsVar() const;
@@ -109,6 +111,7 @@ private:
         change" reasoning — the processor has no B-side change notification either. */
     void emitModelBChanged();
     void emitIrChanged();
+    void emitMissingMediaChanged();
     void emitT3kStatus();
     void emitT3kError (const juce::String& message);
     /** Failure of a per-model download. The modelId lets the UI drop that model's
@@ -163,6 +166,10 @@ private:
         state restore can swap either behind our back. Poll and emit on change. */
     void pollModelAndIr (bool forceEmit);
 
+    /** proc.loadIr() for a load the user asked for, plus the reference plugin's
+        starting mix when the cab was empty: a cabinet fully wet, a room at half. */
+    juce::String loadIrFromUi (const juce::File& wavFile);
+
     TubampAudioProcessor& proc;
 
     // --- 1. relays: must outlive `web`, whose dtor calls back into them.
@@ -189,6 +196,14 @@ private:
 
     juce::String lastModelPath, lastModelPathB, lastIrPath;
     int lastLatencySamples = -1;
+
+    // What the last irChanged / missingMediaChanged said, for change detection: the
+    // cab's stereo/mono verdict moves with the chain, not with the file.
+    int lastIrImage = -1;
+    juce::String lastMissingMedia;
+
+    // What the last t3kStatus said about being signed in (see timerCallback).
+    bool lastT3kAuthenticated = false;
     int pollDivider = 0;
 
     // --- external AudioUnit slots

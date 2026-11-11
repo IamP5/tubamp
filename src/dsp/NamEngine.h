@@ -16,14 +16,23 @@ namespace tubamp
     real-time-safe staged swap into the audio thread, output-mode gain compensation
     and the A2 slimmable-size control.
 
+    Swapping is click-free, the way the reference TONE3000 plugin does it: the model
+    that is playing keeps playing while the new one loads, then the block's output
+    closes over 25 ms, the swap happens on the silent sample and the new model opens
+    over another 25 ms (EngineHandoff.h). The same goes for a first model (the
+    unprocessed signal closes, the model opens) and for removing one. A swap nobody
+    can hear — block bypassed, stream starting — skips the ramps.
+
     Threading contract:
       - loadModel(), clearModel(), collectGarbage() and setSlimSize() are message-thread
         only, and must not run concurrently with each other.
       - loadModel() performs file IO, JSON parsing and prewarm synchronously, then stages
         the result. Never call it from processBlock.
-      - process()/applyStaging() are audio-thread only. applyStaging() must be the
-        first call each block; it adopts a staged model and parks the old one in a
-        garbage slot (released later on the message thread via collectGarbage()).
+      - process()/applyStaging()/isRunning() are audio-thread only. applyStaging()
+        must be the first call each block: it starts the swap fade (or swaps at once
+        when nothing is audible). process() finishes the swap on the sample the fade
+        reaches silence and parks the old model in a garbage slot (released later on
+        the message thread via collectGarbage()).
       - prepare() is called from prepareToPlay (audio thread stopped).
 
     The engine processes MONO in place: callers collapse the input to channel 0
@@ -64,13 +73,52 @@ public:
     /** Request removal of the current model (pass-through afterwards). */
     void clearModel();
 
-    /** Audio-thread: adopt a freshly staged model / drop a cleared one.
-        Returns true when the live model changed (caller updates latency). */
-    bool applyStaging();
+    /** Audio-thread, once per block before anything else: act on a staged model or
+        a pending clear. `audible` says whether the block this engine belongs to is
+        in the signal path; a swap there is faded (and happens later, inside
+        process()), anywhere else it is done right here. Returns true when the live
+        model changed in this call. */
+    bool applyStaging (bool audible);
 
     /** Audio-thread: run the model on buffer channel 0 (mono), numSamples frames.
-        No-op pass-through when no model is loaded. */
-    void process (float* monoChannel, int numSamples);
+        No-op pass-through when no model is loaded. Non-finite samples are replaced
+        by silence on the way in and on the way out.
+
+        Returns the offset in this block at which the live model changed behind a
+        fade, or -1. The block is silent at that sample, which makes it the one
+        place where the caller can switch a gain that belongs to the model (the
+        output-mode compensation) without ramping it across two models. */
+    int process (float* monoChannel, int numSamples);
+
+    /** Audio-thread only: the engine has something to do in the signal path this
+        block — a live model, or the tail of a swap fade. A caller that skips
+        process() for a model-less engine (the amp2 block) gates on this, not on
+        hasLiveModel(), so a cleared model still gets to fade out. */
+    bool isRunning() const noexcept;
+
+    /** Audio-thread only: a model is in the path right now (it may be fading). */
+    bool hasModelInPath() const noexcept;
+
+    /** For an owner that leaves the signal completely alone while the engine has no
+        model — the amp2 block: untouched stereo, no gains, no latency — instead of
+        running it through process() like the amp block does. Such an owner calls
+        fadeUnprocessed() for the model-less side of a swap, and process() then keeps
+        the rest of a block silent once it has dropped the model, so the two paths
+        (mono, gained / stereo, untouched) only ever meet at silence. Set once,
+        before audio starts. */
+    void setBypassedWhenEmpty (bool bypassed) noexcept;
+
+    /** Audio-thread: the swap fade over the unprocessed channels of a
+        bypassed-when-empty owner, for a block in which isRunning() is true and
+        hasModelInPath() is false. Closes the signal before a first model, opens it
+        again after a removed one. Returns true when the model was adopted in this
+        call: the rest of the block is silent and the model opens through process()
+        from the next block on. */
+    bool fadeUnprocessed (float* const* channels, int numChannels, int numSamples);
+
+    /** Blocks whose model output had to be silenced because it was not finite.
+        Diagnostic; any thread. */
+    int getFaultCount() const noexcept;
 
     /** prepareToPlay: reconfigures the resampler for the host rate/block size.
         Safe to call with a live model (audio is stopped during prepareToPlay). */
@@ -89,7 +137,8 @@ public:
         so it never claims a model the audio thread has not adopted — which is what the
         dual-NAM stereo gate needs (docs/STEREO.md §1). */
     bool hasLiveModel() const noexcept;
-    /** Resampler latency in samples at the host rate (0 when rates match). */
+    /** Resampler latency in samples at the host rate (0 when rates match), measured
+        through the resampler pair rather than taken from its priming length. */
     int getLatencySamples() const noexcept;
     /** Info for the currently *live or staged* model (UI display). */
     ModelInfo getModelInfo() const;
@@ -102,8 +151,10 @@ public:
           Calibrated modelOutputLevel - calibrationLevelDbu
                                               (only when the model reports an output level)
 
-        Returns 0 when there is no live model or the mode's metadata is missing, which
-        makes the knob behave exactly as in Raw. */
+        Returns 0 when there is no live model or the mode's metadata is missing or
+        implausible (non-finite, loudness outside -100..0 dB, a level beyond +-60 dBu),
+        which makes the knob behave exactly as in Raw. The normalization gain is
+        limited to +-24 dB, as in the TONE3000 plugin. */
     float getOutputCompensationDb (params::OutputMode mode, float calibrationLevelDbu) const noexcept;
 
     /** Audio-thread-safe: dB to add to the Amp Input knob, a port of the official

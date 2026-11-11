@@ -4,6 +4,7 @@
 #include "dsp/ChainOrder.h"
 #include "library/ModelLibrary.h"
 #include "library/Tone3000Client.h"
+#include "library/ToneSidecar.h"
 
 #include <cstring>
 #include <iterator>
@@ -87,7 +88,9 @@ const char* const kSliderIds[] = {
     params::reverb2PreDelay, params::reverb2Decay,   params::reverb2LowCut,
     params::reverb2HighCut,  params::reverb2ModAmt,
     params::reverb3PreDelay, params::reverb3Decay,   params::reverb3LowCut,
-    params::reverb3HighCut,  params::reverb3ModAmt };
+    params::reverb3HighCut,  params::reverb3ModAmt,
+    // Cab dry/wet (hint 3).
+    params::cabMix };
 
 const char* const kToggleIds[] = {
     params::gateOn,  params::compOn,  params::driveOn, params::ampOn,
@@ -117,7 +120,7 @@ const char* const kComboIds[] = { params::ampOutMode, params::modType,
                                   params::delay3Type, params::delay3Sync,
                                   params::reverbType, params::reverb2Type, params::reverb3Type };
 
-static_assert (std::size (kSliderIds) == 119, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params + 30 reverb/delay engine params");
+static_assert (std::size (kSliderIds) == 120, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params + 30 reverb/delay engine params + cab_mix");
 static_assert (std::size (kToggleIds) == 30, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables + 4 split/mix enables (amp_stereo removed)");
 static_assert (std::size (kComboIds) == 17, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode + delay type/sync x3 + reverb type x3");
 
@@ -168,6 +171,39 @@ juce::var fileEntryVar (const juce::File& file, const juce::String& displayName)
     return makeObject ({ { "path", file.getFullPathName() }, { "name", displayName } });
 }
 
+/** What TONE3000 said about a downloaded file, from its sidecar: who made it and
+    which tone it belongs to. Void for a file that did not come from there. */
+juce::var toneRefVar (const juce::String& mediaPath)
+{
+    if (mediaPath.isEmpty())
+        return {};
+
+    const auto sidecar = ToneSidecar::read (juce::File (mediaPath));
+
+    if (! sidecar.has_value())
+        return {};
+
+    return makeObject ({ { "toneId",  sidecar->toneId },
+                         { "title",   sidecar->title },
+                         { "creator", sidecar->creator },
+                         { "gear",    sidecar->gear },
+                         { "size",    sidecar->size },
+                         { "license", sidecar->license },
+                         { "url",     sidecar->toneUrl() } });
+}
+
+const char* irImageName (CabSim::Image image) noexcept
+{
+    switch (image)
+    {
+        case CabSim::Image::stereo:   return "stereo";
+        case CabSim::Image::monoFile: return "mono-file";
+        case CabSim::Image::monoPath: return "mono-path";
+        case CabSim::Image::none:
+        default:                      return "none";
+    }
+}
+
 juce::var optionalVar (const std::optional<double>& value)
 {
     return value.has_value() ? juce::var { *value } : juce::var();
@@ -216,7 +252,62 @@ juce::var t3kToneVar (const Tone3000Client::Tone& tone)
                          { "tags",           stringArrayVar (tone.tags) },
                          { "sizes",          stringArrayVar (tone.sizes) },
                          { "modelsCount",    tone.modelsCount },
-                         { "createdAt",      tone.createdAt } });
+                         { "createdAt",      tone.createdAt },
+                         { "license",        nullableStringVar (tone.license) },
+                         { "url",            nullableStringVar (tone.url) } });
+}
+
+/** What t3kDownloadModel(model, tone?) records beside the saved file. The tone
+    half is optional (the select flow has none); gear stays the API's raw value. */
+ToneSidecar t3kSidecarFor (const Tone3000Client::Model& model, const juce::var& tone)
+{
+    ToneSidecar sidecar;
+    sidecar.modelId      = model.id;
+    sidecar.modelName    = model.name;
+    sidecar.size         = model.size;
+    sidecar.architecture = model.architecture;
+    sidecar.format       = model.kind == "wav" ? "ir" : "nam";
+
+    if (auto* object = tone.getDynamicObject())
+    {
+        const auto id = object->getProperty ("id");
+        sidecar.toneId  = id.isDouble() ? (juce::int64) (double) id : (juce::int64) id;
+        sidecar.title   = object->getProperty ("title").toString();
+        sidecar.gear    = object->getProperty ("gear").toString();
+        sidecar.creator = object->getProperty ("creator").getProperty ("username", {}).toString();
+
+        const auto format  = object->getProperty ("format").toString();
+        const auto license = object->getProperty ("license");
+        if (format.isNotEmpty())
+            sidecar.format = format;
+        if (! license.isVoid())
+            sidecar.license = license.toString();
+    }
+
+    return sidecar;
+}
+
+/** Library files that carry a TONE3000 sidecar: what the browser needs to offer
+    "already installed" and "in chain" across sessions. */
+juce::var t3kInstalledVar()
+{
+    juce::Array<juce::var> files;
+
+    const auto scan = [&files] (const juce::File& dir, const char* wildcard)
+    {
+        for (const auto& media : dir.findChildFiles (juce::File::findFiles, false, wildcard))
+        {
+            if (const auto sidecar = ToneSidecar::read (media))
+                files.add (makeObject ({ { "path",    media.getFullPathName() },
+                                         { "toneId",  sidecar->toneId },
+                                         { "modelId", sidecar->modelId },
+                                         { "format",  sidecar->format } }));
+        }
+    };
+
+    scan (ModelLibrary::getModelsDir(), "*.nam");
+    scan (ModelLibrary::getIrsDir(), "*.wav");
+    return makeObject ({ { "files", juce::var { files } } });
 }
 
 //==============================================================================
@@ -405,6 +496,7 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
     lastModelPathB = proc.getLoadedModelPathB();
     lastIrPath = proc.getLoadedIrPath();
     lastLatencySamples = proc.getLatencySamples();
+    lastT3kAuthenticated = proc.tone3000.isAuthenticated(); // what getUiState will report
 
     // The peaks are monotonic maxima that only this editor's timer ever resets, so
     // with the window closed they accumulate the loudest moment of the whole
@@ -778,6 +870,7 @@ juce::var WebEditor::modelVar() const
                          { "gearType",       nullableStringVar (info.gearType) },
                          { "includesCab",    info.includesCab },
                          { "isSlimmable",    proc.namEngine.isSlimmable() },
+                         { "tone",           toneRefVar (info.filePath) },
                          { "latencySamples", proc.getLatencySamples() } });
 }
 
@@ -797,6 +890,7 @@ juce::var WebEditor::modelVarB() const
                          { "gearType",       nullableStringVar (info.gearType) },
                          { "includesCab",    info.includesCab },
                          { "isSlimmable",    proc.namEngineB.isSlimmable() },
+                         { "tone",           toneRefVar (info.filePath) },
                          // No separate B-side latency accessor: the L/R compensation
                          // ring makes proc.getLatencySamples() the truthful scalar for
                          // both channels (docs/STEREO.md §Latency reporting).
@@ -810,8 +904,29 @@ juce::var WebEditor::irVar() const
     if (path.isEmpty())
         return {};
 
+    // A FileEntry (path, name) plus what the cab made of the file.
     const juce::File file { path };
-    return fileEntryVar (file, file.getFileNameWithoutExtension());
+    const auto info = proc.cab.getInfo();
+
+    return makeObject ({ { "path",         path },
+                         { "name",         file.getFileNameWithoutExtension() },
+                         { "channels",     info.channels },
+                         { "sampleRateHz", info.sampleRate },
+                         { "seconds",      info.seconds },
+                         { "reverbLike",   info.reverbLike },
+                         { "gainDb",       (double) info.gainDb },
+                         { "truncated",    info.truncated },
+                         { "image",        irImageName (proc.cab.getImage()) },
+                         { "tone",         toneRefVar (path) } });
+}
+
+juce::var WebEditor::missingMediaVar() const
+{
+    using Media = TubampAudioProcessor::Media;
+
+    return makeObject ({ { "model",  nullableStringVar (proc.getMissingMediaPath (Media::model)) },
+                         { "modelB", nullableStringVar (proc.getMissingMediaPath (Media::modelB)) },
+                         { "ir",     nullableStringVar (proc.getMissingMediaPath (Media::ir)) } });
 }
 
 juce::var WebEditor::t3kVar() const
@@ -828,6 +943,7 @@ juce::var WebEditor::uiStateVar() const
                          { "model",             modelVar() },
                          { "modelB",            modelVarB() },
                          { "ir",                irVar() },
+                         { "missingMedia",      missingMediaVar() },
                          { "models",            modelsVar() },
                          { "irs",               irsVar() },
                          { "presets",           presetListVar() },
@@ -954,11 +1070,20 @@ void WebEditor::emitModelBChanged()
 void WebEditor::emitIrChanged()
 {
     lastIrPath = proc.getLoadedIrPath();
+    lastIrImage = (int) proc.cab.getImage();
     emit ("irChanged", makeObject ({ { "ir", irVar() } }));
+}
+
+void WebEditor::emitMissingMediaChanged()
+{
+    const auto missing = missingMediaVar();
+    lastMissingMedia = juce::JSON::toString (missing, true);
+    emit ("missingMediaChanged", makeObject ({ { "missingMedia", missing } }));
 }
 
 void WebEditor::emitT3kStatus()
 {
+    lastT3kAuthenticated = proc.tone3000.isAuthenticated();
     emit ("t3kStatus", t3kVar());
 }
 
@@ -993,6 +1118,20 @@ void WebEditor::closeFxWindow (int slot)
         gestureSlot = gestureParam = -1;
 }
 
+juce::String WebEditor::loadIrFromUi (const juce::File& wavFile)
+{
+    const bool wasEmpty = proc.getLoadedIrPath().isEmpty();
+    const auto error = proc.loadIr (wavFile);
+
+    // Only into an empty block: swapping one IR for another keeps the mix the user
+    // dialled in, and so does every restore (which does not come through here).
+    if (error.isEmpty() && wasEmpty)
+        if (auto* mix = proc.apvts.getParameter (params::cabMix))
+            mix->setValueNotifyingHost (mix->convertTo0to1 (proc.cab.getInfo().reverbLike ? 50.0f : 100.0f));
+
+    return error;
+}
+
 void WebEditor::pollModelAndIr (bool forceEmit)
 {
     const auto modelPath = proc.getLoadedModelPath();
@@ -1011,8 +1150,13 @@ void WebEditor::pollModelAndIr (bool forceEmit)
     if (forceEmit || modelPathB != lastModelPathB || latencyChanged)
         emitModelBChanged();
 
-    if (forceEmit || irPath != lastIrPath)
+    // The stereo/mono verdict is the audio thread's and follows the chain (an amp
+    // moved behind the cab folds it to mono), so it is polled like the paths.
+    if (forceEmit || irPath != lastIrPath || (int) proc.cab.getImage() != lastIrImage)
         emitIrChanged();
+
+    if (forceEmit || juce::JSON::toString (missingMediaVar(), true) != lastMissingMedia)
+        emitMissingMediaChanged();
 }
 
 void WebEditor::timerCallback()
@@ -1028,6 +1172,14 @@ void WebEditor::timerCallback()
     {
         pollDivider = 0;
         pollModelAndIr (false);
+        proc.collectRetiredEngines();
+
+        // The client can end the session on its own — a refresh the server rejects,
+        // on any of its background requests — and none of those paths reports here.
+        // Without this the UI keeps believing it is signed in and every retry just
+        // answers "sign in" with no way to do so.
+        if (proc.tone3000.isAuthenticated() != lastT3kAuthenticated)
+            emitT3kStatus();
     }
 
     // Hosted parameter values, 10 Hz, for the one slot the user is looking at. A
@@ -1162,7 +1314,7 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
         })
         .withNativeFunction ("loadIr", [this] (const juce::Array<juce::var>& args, auto complete)
         {
-            const auto error = proc.loadIr (juce::File (args[0].toString()));
+            const auto error = loadIrFromUi (juce::File (args[0].toString()));
             emitIrChanged();
             complete (resultVar (error));
         })
@@ -1258,7 +1410,7 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                         return;
                     }
 
-                    const auto loadError = safeThis->proc.loadIr (installed);
+                    const auto loadError = safeThis->loadIrFromUi (installed);
                     safeThis->emitIrChanged();
 
                     if (loadError.isNotEmpty())
@@ -1461,6 +1613,7 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                 request.sort  = object->getProperty ("sort").toString();
                 request.query = object->getProperty ("query").toString();
                 request.gear  = object->getProperty ("gear").toString();   // null -> empty = all
+                request.calibrated = (bool) object->getProperty ("calibrated");
                 request.page  = juce::jmax (1, (int) object->getProperty ("page"));
             }
 
@@ -1496,7 +1649,11 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
         {
             const auto toneId = (juce::int64) args[0];
             const auto entry = toneIsIr.find (toneId);
-            const auto isIr = entry != toneIsIr.end() && entry->second;
+            // Optional second argument: the tone's format, for tones this editor
+            // never saw in a browse page (e.g. a remembered detail level).
+            const auto format = args.size() > 1 ? args[1].toString() : juce::String();
+            const auto isIr = format.isNotEmpty() ? format == "ir"
+                                                  : (entry != toneIsIr.end() && entry->second);
 
             juce::Component::SafePointer<WebEditor> safeThis (this);
 
@@ -1518,6 +1675,50 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                     if (safeThis != nullptr)
                         complete (resultVar (error));
                 });
+        })
+        .withNativeFunction ("t3kPromptSearch", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            // Hosts such as Logic give the WebView no keyboard; a native prompt
+            // does get one. Same async AlertWindow shape as t3kConfigure.
+            auto* alert = new juce::AlertWindow ("Search TONE3000",
+                                                 "Title, gear, make or creator:",
+                                                 juce::MessageBoxIconType::NoIcon);
+            alert->addTextEditor ("query", args.size() > 0 ? args[0].toString() : juce::String());
+            alert->addButton ("Search", 1, juce::KeyPress (juce::KeyPress::returnKey));
+            alert->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+            juce::Component::SafePointer<WebEditor> safeThis (this);
+
+            alert->enterModalState (true, juce::ModalCallbackFunction::create (
+                [safeThis, alert, complete] (int result)
+                {
+                    const std::unique_ptr<juce::AlertWindow> owned (alert);
+
+                    if (safeThis == nullptr)
+                        return;
+
+                    complete (makeObject ({ { "text", result == 1 ? juce::var (alert->getTextEditorContents ("query").trim())
+                                                                  : juce::var() } }));
+                }), false);
+        })
+        .withNativeFunction ("t3kInstalled", [] (auto&, auto complete)
+        {
+            complete (t3kInstalledVar());
+        })
+        .withNativeFunction ("openExternal", [] (const juce::Array<juce::var>& args, auto complete)
+        {
+            // Only TONE3000 pages: this must never become a general "open any URL"
+            // primitive for whatever ends up in the WebView.
+            const auto url = args[0].toString().trim();
+
+            if (! url.startsWith ("https://www.tone3000.com/") || url.containsAnyOf ("\r\n\\ "))
+            {
+                complete (resultVar ("Only tone3000.com links can be opened."));
+                return;
+            }
+
+            complete (resultVar (juce::URL (url).launchInDefaultBrowser() ? juce::String()
+                                                                         : juce::String ("Could not open the system browser.")));
         })
         //======================================================================
         // External AudioUnit slots. Hosted parameters deliberately do not go through
@@ -1728,7 +1929,9 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
             const auto destDir = model.kind == "wav" ? ModelLibrary::getIrsDir()
                                                      : ModelLibrary::getModelsDir();
 
-            proc.tone3000.downloadModel (model, destDir,
+            // The sidecar is written on the download thread before completion is
+            // posted, so libraryChanged/t3kComplete below already find it.
+            proc.tone3000.downloadModel (model, destDir, t3kSidecarFor (model, args.size() > 1 ? args[1] : juce::var()),
                 [safeThis, modelId] (float progress)
                 {
                     if (safeThis != nullptr)
