@@ -65,6 +65,12 @@ other swap, because of the gain coupling above.
   `GetLatency()` is only its priming length and leaves out the group delay of the two
   kernels — a few samples, which inside a split is a comb filter between the lanes.
   Per-model latency is not compensated (nor is it in the reference).
+- **Resampler block size.** The container is never prepared for fewer than 2048
+  samples, whatever the host buffer is. It primes itself from a scratch buffer one
+  block long with a length that does not depend on the block (about 70 samples at
+  192 kHz into a 48 kHz model), so at small buffers it read uninitialised memory —
+  noise in the first samples after a load — and below that wrote past its mid-rate
+  buffer. The block size is only an upper bound; the output does not depend on it.
 - **Output modes** (`amp_out_mode`): Raw; Normalized = `-18 dB − loudness`, limited to
   **±24 dB**; Calibrated = `output_level_dbu − cal level`. Input calibration
   (`amp_cal_input`) = `cal level − input_level_dbu`.

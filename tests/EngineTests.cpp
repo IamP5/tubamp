@@ -1100,6 +1100,37 @@ bool runTransitionEdgeTests (const juce::File& modelFile, const juce::File& dir,
         ok &= expect (worst < 1.0e-4, "...and its gains in place from the first sample");
     }
 
+    // --- the resampler starts from silence at any host buffer size. Its container
+    // primes itself out of a scratch buffer one block long, with a length that does
+    // not shrink with the block: at small buffers and high rates it used to read
+    // uninitialised memory there, and the first samples after a load were whatever
+    // the heap held. Two fresh instances must render the same start, sample for
+    // sample (a model's own output on silence is not zero, so "the same" is the test).
+    for (const int smallBlock : { 16, 32, 64 })
+    {
+        std::vector<float> renders[2];
+        bool finite = true;
+
+        for (auto& render : renders)
+        {
+            Proc proc;
+            proc.setChainOrder ({ BlockId::amp }, {});
+            proc.loadModel (modelFile);
+            proc.prepareToPlay (sampleRate, smallBlock);
+
+            SineRun run (proc, sampleRate, smallBlock, 0.0f, 220.0);
+            run.runFor (0.05);
+            render = run.left;
+
+            for (const float v : render)
+                finite &= std::isfinite (v);
+        }
+
+        ok &= expect (finite && renders[0] == renders[1],
+                      ("a start on silence is the same on every instance at a "
+                       + juce::String (smallBlock) + "-sample buffer").toRawUTF8());
+    }
+
     // --- amp2's model-less side of a fade is the lane's untouched signal: no fold
     // to mono, no amp gains, and so no step where the fade meets the pass-through.
     const auto quiet = modelFile.getSiblingFile ("wavenet.nam");

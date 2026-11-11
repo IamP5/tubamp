@@ -46,6 +46,17 @@ constexpr double kAssumedModelSampleRate = 48000.0;
 constexpr double kTargetLoudnessDb = -18.0;
 constexpr int kResamplerMaxBlockSize = 2048; // conservative default before prepareToPlay
 
+// The smallest block size the resampling container is ever prepared for, whatever
+// the host's. Its Reset() primes itself by pushing GetLatency() samples of "silence"
+// out of a scratch buffer that is only one block long, and pops the mid-rate result
+// into a buffer one *encapsulated* block long. The priming length does not depend on
+// the block size (about 70 samples at 192 kHz into a 48 kHz model), so a small host
+// buffer made it read past the scratch buffer -- uninitialised heap, played through
+// the model as the first samples after a load -- and, smaller still, write past the
+// other one. The block size is only an upper bound to the container, so preparing
+// it for more than the host will send costs a few kilobytes and changes no output.
+constexpr int kResamplerMinPreparedBlock = 2048;
+
 // The reference plugin's guards on what a .nam claims about itself
 // (tone3000-plugin Processor.cpp, the per-block post-model gain). A file can say
 // anything: a loudness of +40 or NaN would turn "normalize" into a 60 dB boost or a
@@ -289,7 +300,7 @@ public:
         // the next render from a different resampler state than the first (audible as a
         // first-block glitch at 44.1k; bit-exact renders only at the model's own rate).
         mResampler.emplace (getEncapsulatedSampleRate());
-        mResampler->Reset (sampleRate, maxBlockSize);
+        mResampler->Reset (sampleRate, std::max (maxBlockSize, kResamplerMinPreparedBlock));
         mLatency = needToResample() ? measureLatency (sampleRate, maxBlockSize) : 0;
 
         const double upRatio = sampleRate / getEncapsulatedSampleRate();
@@ -320,7 +331,7 @@ private:
         const int block = std::max (1, maxBlockSize);
 
         ::dsp::ResamplingContainer<NAM_SAMPLE, 1, 12> probe (getEncapsulatedSampleRate());
-        probe.Reset (sampleRate, block);
+        probe.Reset (sampleRate, std::max (block, kResamplerMinPreparedBlock));
 
         const double sigma = 6.0 * std::max (1.0, sampleRate / getEncapsulatedSampleRate());
         const int centre = (int) std::ceil (8.0 * sigma);
