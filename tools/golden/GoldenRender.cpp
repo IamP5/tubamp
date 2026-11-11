@@ -297,6 +297,10 @@ Result renderPrepared (tubamp::TubampAudioProcessor& proc, const Case& c, const 
         interleaved[(size_t) (2 * i + 1)] = audio.getSample (1, i);
     }
 
+    // The processor reports its latency from the message thread (a timer hands over what the
+    // audio thread applies), so read it the way a host does: after the message loop has run.
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (60);
+
     const juce::SHA256 sha (interleaved.get(), (size_t) numFrames * 2 * sizeof (float));
     return { sha.toHexString().toStdString(), proc.getLatencySamples() };
 }
@@ -561,12 +565,16 @@ int writeParams (const juce::File& file)
 // EQ or amp EQ at exactly 5/5/5 is now an exact pass-through (FX-ENGINES.md D2 a), so those
 // cases compare with the legacy chain minus the EQ; a knob move is now smoothed (D-4), so a
 // case that steps an EQ knob compares only up to its first step; a mod_type change now
-// crossfades from the outgoing type (D-5). Leaving the fade's samples out of the comparison
-// would not do for that one: the always-on DC blocker carries any difference on for good. So
-// the legacy side runs the old class once per type, resets the incoming one where the old
-// block reset everything, and mixes the two over the fade exactly as Modulation does; it then
-// proves, before its DC blocker, that this differs from the old single-instance jump only
-// inside the fades.
+// crossfades from the outgoing type (D-5); and a block switched on or off, or coming back into
+// the chain, now starts from its reset and crossfades with its input over 10 ms, Classic types
+// included (§2.6). Leaving those samples out of the comparison would not do: the always-on DC
+// blocker carries any difference on for good, and the reset changes what follows. So the
+// legacy side runs the legacy class through the processor's own BypassFader, reset where
+// engineStarts() and resetBlockInstance() reset it (a Classic drive's input path sliding
+// between 0 and its 3 samples as the processor's does); for mod_type it runs the old class
+// once per type, resets the incoming one where the old block reset everything, and mixes the
+// two exactly as Modulation does, and proves, before its DC blocker, that this differs from
+// the old single-instance jump (switched on and off the same way) only inside the fades.
 /** PluginProcessor.cpp's applySmoothedGain, verbatim. */
 void applySmoothedGain (juce::AudioBuffer<float>& buffer, int numSamples,
                         juce::SmoothedValue<float>& smoothed)
@@ -720,6 +728,14 @@ std::vector<LegacyCase> buildLegacyCases()
            { 4.0, "mod_type", 2.0f } });
     cases.back().dumpable = false;
 
+    // A block switched on or off crossfades through BypassFader now, which tubamp_fxbench
+    // --legacy (the legacy class alone) does not model: its dumped command would not reproduce
+    // such a case.
+    for (auto& c : cases)
+        for (const auto& step : c.steps)
+            if (c.kind != LegacyKind::ampEq && step.id.size() > 3 && step.id.compare (step.id.size() - 3, 3, "_on") == 0)
+                c.dumpable = false;
+
     return cases;
 }
 
@@ -778,8 +794,9 @@ struct LegacyOutcome
 /** The legacy side of a mod case: tubamp::legacy::Modulation once per mod_type, switched and
     crossfaded the way tubamp::Modulation switches its engines. The old block reset all three
     types and jumped; here the incoming type alone is reset (the others are not running, and
-    are reset when they come back) and the outgoing one keeps its last parameters while it
-    fades out. */
+    are reset when they come back), the outgoing one keeps its last parameters and is heard
+    alone for the hold, then the two go through the same PowerCrossfade. `spans` collects each
+    fade as [first sample, end) on the case's timeline. */
 struct LegacyModCrossfade
 {
     void prepare (const juce::dsp::ProcessSpec& spec)
@@ -790,6 +807,7 @@ struct LegacyModCrossfade
         outgoingAudio.setSize ((int) spec.numChannels, (int) spec.maximumBlockSize);
         sampleRate = spec.sampleRate;
         fadeLength = tubamp::Modulation::crossfadeSamples (spec.sampleRate);
+        crossfade.prepare (spec.sampleRate);
         reset();
     }
 
@@ -802,13 +820,12 @@ struct LegacyModCrossfade
         outgoing = -1;
     }
 
-    /** Returns true when this block starts a crossfade. */
-    bool process (juce::dsp::AudioBlock<float> block, int type, float rate, float depth, float mix)
+    /** `start` is the block's first sample on the case's timeline. */
+    void process (juce::dsp::AudioBlock<float> block, int start, int type, float rate, float depth, float mix)
     {
         using Type = tubamp::legacy::Modulation::Type;
         const auto n = block.getNumSamples();
         const auto channels = block.getNumChannels();
-        bool started = false;
 
         if (active < 0)
         {
@@ -816,17 +833,23 @@ struct LegacyModCrossfade
         }
         else if (type != active)
         {
+            // A switch inside a fade cuts it short.
+            if (outgoing >= 0)
+                spans.back().second = start;
+
             outgoing = active;
             active = type;
             perType[active].reset();
-            fadePosition = 0;
-            started = true;
 
             tubamp::ModParams incoming;
             incoming.type = type;
             incoming.chorusMode = 0;
+            incoming.phaserModel = 0;
+            incoming.tremVoice = 0;
             incoming.depth = depth;
-            fadeHold = tubamp::Modulation::crossfadeHoldSamples (incoming, sampleRate);
+            crossfade.start (tubamp::Modulation::crossfadeHoldSamples (incoming, sampleRate), fadeLength,
+                             tubamp::Modulation::crossfadeWaitSamples (sampleRate));
+            spans.push_back ({ start, -1 });
         }
 
         last[active] = { rate, depth, mix };
@@ -835,7 +858,7 @@ struct LegacyModCrossfade
         if (outgoing < 0)
         {
             perType[active].process (block);
-            return started;
+            return;
         }
 
         juce::dsp::AudioBlock<float> old (outgoingAudio.getArrayOfWritePointers(), channels, n);
@@ -845,33 +868,32 @@ struct LegacyModCrossfade
         perType[outgoing].process (old);
         perType[active].process (block);
 
-        const int count = juce::jmin ((int) n, fadeHold + fadeLength - fadePosition);
+        float* heard[2] { old.getChannelPointer (0), channels > 1 ? old.getChannelPointer (1) : nullptr };
+        const float* coming[2] { block.getChannelPointer (0), channels > 1 ? block.getChannelPointer (1) : nullptr };
+        int count = (int) n;
 
-        for (size_t ch = 0; ch < channels; ++ch)
+        for (int i = 0; i < (int) n; ++i)
         {
-            auto* data = block.getChannelPointer (ch);
-            const auto* o = old.getChannelPointer (ch);
-
-            for (int i = 0; i < count; ++i)
+            if (crossfade.mix (heard, coming, (int) channels, i))
             {
-                const float w = (float) juce::jmax (0, fadePosition + i - fadeHold) / (float) fadeLength;
-                data[i] = o[i] + w * (data[i] - o[i]);
+                count = i + 1;
+                outgoing = -1;
+                spans.back().second = spans.back().first + crossfade.span();
+                break;
             }
         }
 
-        fadePosition += count;
-
-        if (fadePosition >= fadeHold + fadeLength)
-            outgoing = -1;
-
-        return started;
+        for (size_t ch = 0; ch < channels; ++ch)
+            juce::FloatVectorOperations::copy (block.getChannelPointer (ch), old.getChannelPointer (ch), count);
     }
 
     tubamp::legacy::Modulation perType[3];
     std::array<float, 3> last[3] {};
     juce::AudioBuffer<float> outgoingAudio;
+    tubamp::PowerCrossfade crossfade;
+    std::vector<std::pair<int, int>> spans;
     double sampleRate = 44100.0;
-    int active = -1, outgoing = -1, fadePosition = 0, fadeLength = 1, fadeHold = 0;
+    int active = -1, outgoing = -1, fadeLength = 1;
 };
 
 LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce::File& dumpDir, juce::String& commands)
@@ -918,6 +940,16 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
     modCrossfade.prepare (spec);
     dc.prepare (spec);
 
+    // The processor's BypassFader for the case's block (and a second one for the mod jump
+    // reference), with engineStarts()'s bookkeeping: an engine that ran, then did not, holds
+    // stale audio and is reset when it runs again.
+    tubamp::BypassFader fader, jumpFader;
+    fader.prepare (spec);
+    jumpFader.prepare (spec);
+    bool stale = false, ranBefore = false;
+    std::vector<float> classicDriveDelay ((size_t) cfg.block,
+                                          (float) tubamp::DriveFx::latencyFor ((int) tubamp::DriveFx::Type::classic, cfg.sampleRate));
+
     for (auto* smoothed : { &inputTrimLin, &outputLevelLin, &ampInLin, &ampOutLin })
         smoothed->reset (cfg.sampleRate, 0.02);
 
@@ -934,7 +966,6 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
     legacyOut.makeCopyOf (procOut);
     legacyPreDc.makeCopyOf (procOut);
     jumpPreDc.makeCopyOf (procOut);
-    std::vector<std::pair<int, int>> fadeSpans;
     std::vector<float> mono ((size_t) cfg.block), plainMono ((size_t) cfg.block);
 
     juce::MidiBuffer midi;
@@ -980,23 +1011,76 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
         juce::AudioBuffer<float> legacyView (lp, 2, n);
         juce::dsp::AudioBlock<float> block (legacyView);
         const bool on = present && raw (onId) > 0.5f;
+        bool ranNow = false;
+
+        // resetBlockInstance(): the engine starts clean and the block fades in from its input.
+        if (reentered)
+        {
+            switch (c.kind)
+            {
+                case LegacyKind::gate:
+                case LegacyKind::gateDeferred: gate.reset(); break;
+                case LegacyKind::comp:         comp.reset(); break;
+                case LegacyKind::drive:        drive.reset(); break;
+                case LegacyKind::eq:           eq.reset(); break;
+                case LegacyKind::ampEq:        break;
+                case LegacyKind::mod:          modulation.reset(); modCrossfade.reset(); jumpFader.reset (false); break;
+            }
+
+            fader.reset (false);
+            stale = false;
+        }
+
+        const auto engineStarts = [&]
+        {
+            ranNow = true;
+            const bool starts = stale;
+            stale = false;
+            return starts;
+        };
 
         inputTrimLin.setTargetValue (juce::Decibels::decibelsToGain (raw ("input_trim")));
         applySmoothedGain (legacyView, n, inputTrimLin);
 
+        const bool engine = present && fader.needsEngine (on);
+        const auto noEngine = [] (juce::dsp::AudioBlock<float>) {};
+
         switch (c.kind)
         {
             case LegacyKind::gate:
-                if (on)
+                if (! present)
+                    break;
+
+                if (! engine)
                 {
-                    gate.measure (block, n, raw ("gate_threshold"));
-                    gate.apply (block, n);
+                    fader.process (block, false, 0, noEngine);
+                    break;
                 }
+
+                if (engineStarts())
+                {
+                    gate.reset();
+                    fader.restart();
+                }
+
+                gate.measure (block, n, raw ("gate_threshold"));
+                fader.process (block, on, 0, [&] (juce::dsp::AudioBlock<float> sub) { gate.apply (sub, (int) sub.getNumSamples()); });
                 break;
 
             case LegacyKind::gateDeferred:
-                if (on)
+                if (present && ! engine)
+                    fader.process (block, false, 0, noEngine);
+
+                if (engine)
+                {
+                    if (engineStarts())
+                    {
+                        gate.reset();
+                        fader.restart();
+                    }
+
                     gate.measure (block, n, raw ("gate_threshold"));
+                }
 
                 // The dump is what tubamp_fxbench's deferred=1 renders: collapse, curve,
                 // expand, without the amp block's gains around the (absent) model.
@@ -1030,8 +1114,13 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
                 for (int i = 0; i < n; ++i)
                     mono[(size_t) i] *= ampInLin.getNextValue();
 
-                if (on)
-                    gate.apply (mono.data(), n);
+                if (engine)
+                {
+                    float* monoPtr = mono.data();
+                    fader.process (juce::dsp::AudioBlock<float> (&monoPtr, 1, (size_t) n), on, 0,
+                                   [&] (juce::dsp::AudioBlock<float> sub)
+                                   { gate.apply (sub.getChannelPointer (0), (int) sub.getNumSamples()); });
+                }
 
                 for (int i = 0; i < n; ++i)
                     mono[(size_t) i] *= ampOutLin.getNextValue();
@@ -1041,34 +1130,71 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
                 break;
 
             case LegacyKind::comp:
+                // The compressor's re-entry and switch-on reset never touch the makeup.
                 comp.setParameters (raw (idOf ("comp", k, "threshold")), raw (idOf ("comp", k, "ratio")),
                                     raw (idOf ("comp", k, "attack")), raw (idOf ("comp", k, "release")),
                                     raw (idOf ("comp", k, "makeup")));
-                // The processor's re-entry reset: the compressor, never the makeup.
-                if (reentered)
-                    comp.reset();
 
-                if (on)
-                    comp.process (block);
+                if (engine)
+                {
+                    if (engineStarts())
+                    {
+                        comp.reset();
+                        fader.restart();
+                    }
+
+                    fader.process (block, on, 0, [&] (juce::dsp::AudioBlock<float> sub) { comp.process (sub); });
+                }
                 else
+                {
+                    if (present)
+                        fader.process (block, false, 0, noEngine);
+
                     comp.skip (n);
+                }
                 break;
 
             case LegacyKind::drive:
-                if (on)
+                if (! present)
+                    break;
+
+                if (engine)
                 {
+                    if (engineStarts())
+                    {
+                        drive.reset();
+                        fader.restart();
+                    }
+
                     drive.setParameters (raw (idOf ("drive", k, "gain")), raw (idOf ("drive", k, "tone")),
                                          raw (idOf ("drive", k, "level")));
-                    drive.process (block);
                 }
+
+                // A Classic drive delays nothing while off and its 3 samples while it runs.
+                fader.process (block, on, 0.0, classicDriveDelay.data(),
+                               [&] (juce::dsp::AudioBlock<float> sub) { drive.process (sub); }, nullptr);
                 break;
 
             case LegacyKind::eq:
-                if (on && ! c.flat)
+                if (! present)
+                    break;
+
+                if (engine)
                 {
+                    if (engineStarts())
+                    {
+                        eq.reset();
+                        fader.restart();
+                    }
+
                     eq.setParameters (raw (idOf ("eq", k, "bass")), raw (idOf ("eq", k, "mid")), raw (idOf ("eq", k, "treble")));
-                    eq.process (block);
                 }
+
+                fader.process (block, on, 0, [&] (juce::dsp::AudioBlock<float> sub)
+                {
+                    if (! c.flat)
+                        eq.process (sub);
+                });
                 break;
 
             case LegacyKind::ampEq:
@@ -1110,26 +1236,40 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
                 for (int ch = 0; ch < 2; ++ch)
                     juce::FloatVectorOperations::copy (jp[ch], lp[ch], n);
 
-                if (reentered)
+                if (! present)
+                    break;
+
+                const int type = juce::jlimit (0, 2, (int) raw (idOf ("mod", k, "type")));
+                const float rate = raw (idOf ("mod", k, "rate")), depth = raw (idOf ("mod", k, "depth")),
+                            mix = raw (idOf ("mod", k, "mix"));
+                const bool starts = engine && engineStarts();
+
+                if (starts)
                 {
                     modulation.reset();
                     modCrossfade.reset();
+                    fader.restart();
+                    jumpFader.restart();
                 }
 
-                if (on)
+                jumpFader.process (juce::dsp::AudioBlock<float> (jp, 2, (size_t) n), on, 0, [&] (juce::dsp::AudioBlock<float> sub)
                 {
-                    const int type = juce::jlimit (0, 2, (int) raw (idOf ("mod", k, "type")));
-                    const float rate = raw (idOf ("mod", k, "rate")), depth = raw (idOf ("mod", k, "depth")),
-                                mix = raw (idOf ("mod", k, "mix"));
                     modulation.setParameters ((legacy::Modulation::Type) type, rate, depth, mix);
-                    modulation.process (juce::dsp::AudioBlock<float> (jp, 2, (size_t) n));
+                    modulation.process (sub);
+                });
 
-                    if (modCrossfade.process (block, type, rate, depth, mix))
-                        fadeSpans.push_back ({ start, start + modCrossfade.fadeHold + modCrossfade.fadeLength });
-                }
+                fader.process (block, on, 0, [&] (juce::dsp::AudioBlock<float> sub)
+                {
+                    modCrossfade.process (sub, start, type, rate, depth, mix);
+                });
                 break;
             }
         }
+
+        if (ranBefore && ! ranNow)
+            stale = true;
+
+        ranBefore = ranNow;
 
         for (int ch = 0; ch < 2; ++ch)
             juce::FloatVectorOperations::copy (legacyPreDc.getWritePointer (ch, start),
@@ -1146,6 +1286,12 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
     if (c.kind == LegacyKind::mod)
     {
         std::vector<bool> inFade ((size_t) numFrames, false);
+        auto fadeSpans = modCrossfade.spans;
+
+        // A fade the block was switched off in, or left the chain in, ends with the block.
+        for (auto& span : fadeSpans)
+            if (span.second < 0)
+                span.second = numFrames;
 
         for (const auto& [from, to] : fadeSpans)
             for (int i = from; i < juce::jmin (to, numFrames); ++i)

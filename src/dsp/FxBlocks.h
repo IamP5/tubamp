@@ -29,12 +29,66 @@ private:
     juce::dsp::StateVariableTPTFilter<float> filter;
 };
 
-/** How a gate, comp, drive, EQ or mod block running a non-Classic type goes in and out of the
-    signal (docs/FX-ENGINES.md §6.0): its input and its engine's output are crossfaded over
-    10 ms when it is switched on or off, because the engines alone step at a hard switch under
-    signal. The input is delayed by the engine's latency so the two line up, and stays delayed
-    while the block is off when that latency stays counted (a non-Classic drive), so the audio
-    is where the host was told it is. Audio thread after prepare(), allocation-free. */
+/** A delay in samples that follows a target: a target that moves smoothly (a drive's own
+    latency slide, under 0.05 sample per sample at any supported rate) is followed exactly, and
+    a jump in it (more than half a sample from one sample to the next) is taken out over a 10 ms
+    cornerless slide that starts from wherever the delay is at that moment, so a second jump
+    inside a slide retargets from the current fractional position. Allocation-free. */
+class DelayGlide
+{
+public:
+    static constexpr double kJumpSamples = 0.5;
+
+    void prepare (double sampleRate) noexcept;
+    /** The next next() lands on its target with no slide. */
+    void reset() noexcept { snapNext = true; }
+    /** One sample: the delay to apply, given this sample's target. */
+    double next (double target) noexcept
+    {
+        if (snapNext)
+        {
+            snapNext = false;
+            last = target;
+            offset = start = 0.0;
+            done = length;
+        }
+        else if (std::abs (target - last) > kJumpSamples)
+        {
+            start = offset = last + offset - target;
+            done = 0;
+        }
+
+        last = target;
+
+        if (done < length)
+        {
+            ++done;
+            const double x = (double) done / (double) length;
+            offset = start * (1.0 - x * x * (3.0 - 2.0 * x));
+        }
+
+        return last + offset;
+    }
+
+    bool sliding() const noexcept { return done < length; }
+    /** The larger end of the slide in progress, or the target when there is none. */
+    double reach() const noexcept { return last + (sliding() ? juce::jmax (0.0, start) : 0.0); }
+    double current() const noexcept { return last + offset; }
+
+private:
+    double last = 0.0, offset = 0.0, start = 0.0;
+    int length = 1, done = 1;
+    bool snapNext = true;
+};
+
+/** How a gate, comp, drive, EQ or mod block goes in and out of the signal (docs/FX-ENGINES.md
+    §6.0): its input and its engine's output are crossfaded over 10 ms when it is switched on or
+    off, because the engines alone step at a hard switch under signal. The input is delayed by
+    the engine's latency so the two line up, and stays delayed while the block is off when that
+    latency stays counted (a non-Classic drive), so the audio is where the host was told it is.
+    A delay that changes (a drive retyped while bypassed, a Classic drive whose 3 samples count
+    only while it runs) moves through a DelayGlide, read with 4-point Lagrange interpolation,
+    exact at whole samples. Audio thread after prepare(), allocation-free. */
 class BypassFader
 {
 public:
@@ -52,23 +106,37 @@ public:
     void restart() noexcept { settle = settleSamples; }
     /** The engine has to run this block: the block is on, or still fading out. */
     bool needsEngine (bool on) const noexcept { return on || (wet > 0.0f && ! snap); }
-    /** A Classic block, which switches hard: only keeps the input history and the rest state
-        current, so a switch to a non-Classic type finds both. The audio is not touched. */
-    void follow (const juce::dsp::AudioBlock<float>& block, bool on) noexcept;
+    /** Where the input path's delay is heading: the slide in progress taken to its larger end. */
+    double delayReach() const noexcept { return glide.reach(); }
+    bool delaySliding() const noexcept { return glide.sliding(); }
 
-    /** In place. `engine (subBlock)` runs the block's engine; it is called whenever
-        needsEngine (on) was true, on sub-blocks no larger than prepare() promised. */
+    /** In place, the input delayed by a fixed `delaySamples`. `engine (subBlock)` runs the
+        block's engine; it is called whenever needsEngine (on) was true, on sub-blocks no larger
+        than prepare() promised. */
     template <typename Engine>
     void process (juce::dsp::AudioBlock<float> block, bool on, int delaySamples, Engine&& engine) noexcept
     {
+        process (block, on, (double) delaySamples, nullptr, engine, nullptr);
+    }
+
+    /** In place. The input path is delayed by `restDelay` while the engine is not running and
+        by `engineDelay[i]` (sample i of the block, written by `engine` for the sub-block it
+        runs, before it returns) while it is; null means restDelay throughout. `applied`, when
+        not null, receives the input path's delay per sample: the block's own delay. */
+    template <typename Engine>
+    void process (juce::dsp::AudioBlock<float> block, bool on, double restDelay, const float* engineDelay,
+                  Engine&& engine, float* applied) noexcept
+    {
         const int numChannels = juce::jmin ((int) block.getNumChannels(), history.getNumChannels());
-        const int delay = juce::jlimit (0, kMaxDelaySamples, delaySamples);
         const float target = on ? 1.0f : 0.0f;
+        const bool fixedZero = restDelay == 0.0 && engineDelay == nullptr && ! glide.sliding()
+                               && glide.current() == 0.0;
 
         if (snap)
         {
             snap = false;
             wet = target;
+            glide.reset();
         }
 
         for (int offset = 0; offset < (int) block.getNumSamples();)
@@ -77,19 +145,37 @@ public:
             auto sub = block.getSubBlock ((size_t) offset, (size_t) count);
             remember (sub, numChannels);
 
+            const bool runs = wet != target || on;
+
+            if (runs)
+                engine (sub);
+
+            const float* engineAt = runs && engineDelay != nullptr ? engineDelay + offset : nullptr;
+            const auto delayAt = [&] (int n)
+            {
+                if (fixedZero)
+                    return 0.0;
+
+                const double d = glide.next (engineAt != nullptr ? (double) engineAt[n] : restDelay);
+                return juce::jlimit (0.0, (double) kMaxDelaySamples, d);
+            };
+
             if (wet == target)
             {
-                if (on)
-                    engine (sub);
-                else if (delay > 0)
-                    for (int ch = 0; ch < numChannels; ++ch)
-                        for (int n = 0; n < count; ++n)
-                            sub.getChannelPointer ((size_t) ch)[n] = history.getSample (ch, indexOf (n, delay));
+                for (int n = 0; n < count && ! (fixedZero && applied == nullptr); ++n)
+                {
+                    const double d = delayAt (n);
+
+                    if (! on && d != 0.0)
+                        for (int ch = 0; ch < numChannels; ++ch)
+                            sub.getChannelPointer ((size_t) ch)[n] = read (ch, n, d);
+
+                    if (applied != nullptr)
+                        applied[offset + n] = (float) d;
+                }
             }
             else
             {
-                engine (sub);
-
                 for (int n = 0; n < count; ++n)
                 {
                     if (settle > 0 && target > wet)
@@ -100,13 +186,17 @@ public:
                     // Smoothstep over the linear ramp: no corner at either end of the fade, so a
                     // boosted block fading out leaves nothing above the music's own band.
                     const float gain = wet * wet * (3.0f - 2.0f * wet);
+                    const double d = delayAt (n);
 
                     for (int ch = 0; ch < numChannels; ++ch)
                     {
-                        const float dry = history.getSample (ch, indexOf (n, delay));
+                        const float dry = read (ch, n, d);
                         auto& y = sub.getChannelPointer ((size_t) ch)[n];
                         y = dry + gain * (y - dry);
                     }
+
+                    if (applied != nullptr)
+                        applied[offset + n] = (float) d;
                 }
             }
 
@@ -119,10 +209,61 @@ private:
     void remember (const juce::dsp::AudioBlock<float>& block, int numChannels) noexcept;
     int indexOf (int n, int delay) const noexcept { return (write + n - delay + capacity) % capacity; }
 
+    /** The input `d` samples before sample n of the chunk being processed. Taps whole - 1 ...
+        whole + 2, shifted up where whole - 1 would be in the future. */
+    float read (int ch, int n, double d) const noexcept
+    {
+        const int whole = (int) d;
+
+        if (juce::exactlyEqual ((double) whole, d))
+            return history.getSample (ch, indexOf (n, whole));
+
+        const int b = juce::jmax (0, whole - 1);
+        const double x = d - b;
+        const double w0 = -(x - 1.0) * (x - 2.0) * (x - 3.0) * (1.0 / 6.0);
+        const double w1 = x * (x - 2.0) * (x - 3.0) * 0.5;
+        const double w2 = -x * (x - 1.0) * (x - 3.0) * 0.5;
+        const double w3 = x * (x - 1.0) * (x - 2.0) * (1.0 / 6.0);
+        return (float) (w0 * history.getSample (ch, indexOf (n, b)) + w1 * history.getSample (ch, indexOf (n, b + 1))
+                        + w2 * history.getSample (ch, indexOf (n, b + 2)) + w3 * history.getSample (ch, indexOf (n, b + 3)));
+    }
+
     juce::AudioBuffer<float> history;
+    DelayGlide glide;
     int capacity = 1, chunkSamples = 1, write = 0, settle = 0, settleSamples = 0;
     float wet = 0.0f, step = 1.0f;
     bool snap = true;
+};
+
+/** A crossfade between two outputs that keeps their sum's short-term power on the straight line
+    in dB between the two (Drive.cpp's type switch, the chorus's mode switch): equal-power gains
+    on a cornerless ramp, scaled by the measured powers and correlation of the two (two cascaded
+    4 ms one-poles each), the correction bounded at +18 dB where they nearly cancel. The
+    outgoing output is heard alone for a hold first. Two outputs in antiphase (two effects on one
+    held note sweep through it) cancel where their gained amplitudes meet, and no gain undoes a
+    null, so the ramp starts on a moment where they correlate no worse than kMinCorrelation, or
+    after maxWait samples regardless. The powers are measured from start() on, so the fade starts
+    on settled figures. Allocation-free. */
+class PowerCrossfade
+{
+public:
+    static constexpr double kMinCorrelation = -0.5;
+
+    void prepare (double sampleRate) noexcept;
+    /** A fade starts: `hold` samples of the outgoing output alone, then a ramp of `length`
+        samples, which waits up to `maxWait` samples for the two to stop cancelling. */
+    void start (int hold, int length, int maxWait) noexcept;
+    /** Sample i of both channels' outputs: `out` (heard now) and `in` (coming in) give one
+        result in `out`. True when the fade is over with this sample: from the next one on, `in`
+        alone is the output. */
+    bool mix (float* const* out, const float* const* in, int numChannels, int i) noexcept;
+    /** Samples from start() to the end of the fade. */
+    int span() const noexcept { return elapsed; }
+
+private:
+    double coefficient = 1.0;
+    double power[2][3] {};   // two smoothing stages of: outgoing power, incoming power, their product
+    int hold = 0, length = 1, maxWait = 0, elapsed = 0, advanced = 0, waited = 0;
 };
 
 /** Note values for mod_sync in quarter-note beats per LFO cycle; index 0 is "Off". The
@@ -166,17 +307,18 @@ struct ModParams
     float shape = 0.5f;
     float wave = 0.0f;
     bool color = true;
-    double bpm = 120.0;           // host tempo; <= 1 (or none) means 120, as for the delay
+    double bpm = 120.0;           // host tempo as reported; <= 1 (none, 0, negative) means 120, free-running
     double ppqPosition = 0.0;     // host position at the block's first sample, in quarter notes
     bool playing = false;         // the host is playing and gave ppqPosition
 };
 
 /** The mod block (docs/FX-ENGINES.md §6.5): ChorusFx, PhaserFx or TremoloFx, chosen by
-    mod_type. Each engine fades its own voicing switches. A mod_type change does what the
-    old block did — the incoming engine is reset and runs from this block on — and also
-    crossfades from the outgoing engine over crossfadeSamples() (after
-    crossfadeHoldSamples()), so once the fade is over the output is the old block's, bit for
-    bit. */
+    mod_type. Each engine fades its own voicing switches; the dispatcher passes them straight
+    on. A mod_type change does what the old block did — the incoming engine is reset and runs
+    from this block on — while the outgoing engine stays heard alone for
+    crossfadeHoldSamples() (the incoming one settling unheard), then a PowerCrossfade over
+    crossfadeSamples() hands over, so once the fade is over the output is the old block's, bit
+    for bit. */
 class Modulation
 {
 public:
@@ -197,11 +339,17 @@ public:
     static Timing resolveTiming (const ModParams& params, bool classic) noexcept;
     /** Length of a mod_type crossfade at `sampleRate`, in samples. */
     static int crossfadeSamples (double sampleRate) noexcept;
+    /** The longest a mod_type crossfade waits after its hold for the two engines to correlate
+        well enough to fade (PowerCrossfade), in samples. */
+    static int crossfadeWaitSamples (double sampleRate) noexcept;
     /** How long a mod_type crossfade holds the outgoing engine alone before it starts, in
-        samples, for the type and voicing in `params`: a Classic chorus starts from an empty
-        delay line and its wet steps in when the line reaches it (7 + 10 x depth ms, the most
-        juce::dsp::Chorus delays at the centre delay ChorusFx sets), so the fade waits for that.
-        0 for every other voicing, which starts clean from its reset. */
+        samples, for the incoming type and voicing in `params`: the time the incoming engine
+        needs from its reset to its steady output. A Classic chorus starts from an empty delay
+        line and its wet steps in when the line reaches it (7 + 10 x depth ms, the most
+        juce::dsp::Chorus delays at the centre delay ChorusFx sets), and 10 ms more lets the
+        power estimates catch that step; the other chorus modes fade their wet in once their
+        lines hold enough history (at most 34 + 10 ms); a phaser or tremolo settles in 30 ms
+        (the phaser's own switch warms its incoming voicing that long). */
     static int crossfadeHoldSamples (const ModParams& params, double sampleRate) noexcept;
 
     void prepare (const juce::dsp::ProcessSpec& spec);
@@ -213,7 +361,7 @@ public:
 private:
     void resetEngine (int type);
     /** Hands an engine its parameters: the current ones, or for the outgoing engine of a
-        crossfade the last ones it had, free-running. */
+        crossfade the last ones it had, still following the song if it was synced. */
     void configure (int type, bool current);
     void runEngine (int type, juce::dsp::AudioBlock<float> block);
 
@@ -225,8 +373,9 @@ private:
     TremoloParams tremoloSent;
     ModParams params;
     juce::AudioBuffer<float> outgoingAudio;
+    PowerCrossfade crossfade;
     double sampleRate = 44100.0;
-    int active = 0, outgoing = -1, fadePosition = 0, fadeLength = 1, fadeHold = 0;
+    int active = 0, outgoing = -1, fadeLength = 1;
     bool snapType = true;
 };
 

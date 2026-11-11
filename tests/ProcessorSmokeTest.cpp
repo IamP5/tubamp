@@ -28,6 +28,9 @@
 #include <tuple>
 #include <vector>
 
+#include <chrono>
+#include <thread>
+
 #include <pthread.h>
 
 //==============================================================================
@@ -293,6 +296,14 @@ void setFloatParam (tubamp::TubampAudioProcessor& proc, const char* paramId, flo
 {
     if (auto* p = proc.apvts.getParameter (paramId))
         p->setValueNotifyingHost (p->convertTo0to1 (rawValue));
+}
+
+/** The latency a host reads once the message thread has had its turn: it is reported from
+    there (a timer hands over what the audio thread applies), never from processBlock. */
+int reportedLatency (tubamp::TubampAudioProcessor& proc)
+{
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (60);
+    return proc.getLatencySamples();
 }
 
 /** Current choice index of a parameter, read the way the audio thread reads it. */
@@ -3901,24 +3912,45 @@ bool runDriveLatencyTests (double sampleRate, int blockSize)
 
         juce::AudioBuffer<float> buffer (2, blockSize);
         juce::MidiBuffer midi;
-        const auto latencyAfterBlock = [&]
+        const auto latencyAfter = [&] (double seconds)
         {
-            buffer.clear();
-            fresh.processBlock (buffer, midi);
-            return fresh.getLatencySamples();
-        };
+            int done = 0;
 
-        bool follows = true;
+            do
+            {
+                buffer.clear();
+                fresh.processBlock (buffer, midi);
+                done += blockSize;
+            }
+            while (done < (int) std::ceil (seconds * sampleRate));
+
+            return reportedLatency (fresh);
+        };
+        const auto latencyAfterBlock = [&] { return latencyAfter (0.0); };
+
+        // The drive's own switch runs both types for 30 ms lined up at the larger latency and slides
+        // a drop out over the 10 ms after that: the figure is the larger one until then, the new
+        // type's once it is over.
+        bool follows = true, holds = true;
+        int previous = 3;
+
+        // The drive runs Classic before the first switch, so each step below is a real switch.
+        latencyAfter (0.05);
 
         for (const int type : { 1, 4, 2, 5, 3, 0 })
         {
             setFloatParam (fresh, params::driveType, (float) type);
-            const int got = latencyAfterBlock();
-            std::printf ("  drive_type -> %s: latency %d\n", params::driveTypeNames[type], got);
-            follows &= got == tubamp::DriveFx::latencyFor (type, sampleRate);
+            const int during = latencyAfterBlock();
+            const int after = latencyAfter (0.05);
+            const int expected = tubamp::DriveFx::latencyFor (type, sampleRate);
+            std::printf ("  drive_type -> %s: latency %d during the switch, %d after it\n", params::driveTypeNames[type], during, after);
+            follows &= after == expected;
+            holds &= during == juce::jmax (previous, expected);
+            previous = expected;
         }
 
-        ok &= expect (follows, "the reported latency follows every drive_type change on the next block");
+        ok &= expect (follows, "the reported latency follows every drive_type change once the drive's switch is over (50 ms)");
+        ok &= expect (holds, "...and while it runs it is the larger of the two types' latencies, what the drive applies");
 
         setBoolParam (fresh, params::driveOn, false);
         ok &= expect (latencyAfterBlock() == 0, "drive_on off: latency 0 (only a drive that runs counts, like the amp)");
@@ -3936,9 +3968,9 @@ bool runDriveLatencyTests (double sampleRate, int blockSize)
         setBoolParam (fresh, params::drive2On, true);
         setFloatParam (fresh, params::drive2Type, 0.0f);
         fresh.setChainOrder ({ BlockId::drive, BlockId::drive2 }, {});
-        std::snprintf (what, sizeof (what), "two drives in series add: Screamer + Classic = %d",
-                       tubamp::DriveFx::latencyFor (1, sampleRate) + 3);
-        ok &= expect (latencyAfterBlock() == tubamp::DriveFx::latencyFor (1, sampleRate) + 3, what);
+        std::snprintf (what, sizeof (what), "two drives in series add: Screamer + Classic = %d (once the first drive's own "
+                       "switch from Classic is over)", tubamp::DriveFx::latencyFor (1, sampleRate) + 3);
+        ok &= expect (latencyAfter (0.05) == tubamp::DriveFx::latencyFor (1, sampleRate) + 3, what);
     }
 
     // --- the gate's deferred Tight curve waits for a drive between the gate and the amp, by
@@ -4894,11 +4926,11 @@ bool runModEngineTests (double sampleRate, int blockSize)
     }
 
     // --- the mod_type crossfade itself (FX-ENGINES.md D-5): the incoming engine is reset in
-    // the block the change arrives in and runs from there, as the old block did, and the
-    // output moves linearly from the outgoing engine to it over exactly 20 ms.
+    // the block the change arrives in and runs from there, as the old block did, unheard for its
+    // settle time while the outgoing one is heard alone, then a 40 ms PowerCrossfade hands over.
     {
         const int fade = tubamp::Modulation::crossfadeSamples (sampleRate);
-        ok &= expect (fade == at (0.02), "a mod_type crossfade lasts 20 ms");
+        ok &= expect (fade == at (0.04), "a mod_type crossfade lasts 40 ms");
 
         const auto input = chordSignal (sampleRate, 1.0);
         struct TypeSwitch { const char* label; int fromType, toType; int chorusMode, tremVoice; };
@@ -4918,9 +4950,12 @@ bool runModEngineTests (double sampleRate, int blockSize)
             fresh.prepareToPlay (sampleRate, blockSize);
 
             const int requestAt = at (0.4);
-            int switchBlock = -1, blockStart = 0;
+            int switchBlock = -1, blockStart = 0, hold = 0;
+            bool fading = false;
             ModEnginesAlone alone (sampleRate, blockSize);
             juce::AudioBuffer<float> outgoing (2, blockSize);
+            tubamp::PowerCrossfade crossfade;
+            crossfade.prepare (sampleRate);
 
             const auto r = renderLockstep (fresh, input, sampleRate, blockSize, [&] (int start)
             {
@@ -4930,38 +4965,51 @@ bool runModEngineTests (double sampleRate, int blockSize)
                 {
                     setFloatParam (fresh, params::modType, (float) s.toType);
                     switchBlock = start;
+
+                    tubamp::ModParams incoming;
+                    incoming.type = s.toType;
+                    incoming.chorusMode = s.chorusMode;
+                    incoming.depth = rawValue (fresh, params::modDepth);
+                    hold = tubamp::Modulation::crossfadeHoldSamples (incoming, sampleRate);
                 }
             },
             [&] (juce::dsp::AudioBlock<float> block)
             {
                 const int n = (int) block.getNumSamples();
 
-                if (switchBlock < 0 || blockStart >= switchBlock + fade)
+                if (blockStart == switchBlock)
+                {
+                    alone.reset (s.toType);
+                    crossfade.start (hold, fade, tubamp::Modulation::crossfadeWaitSamples (sampleRate));
+                    fading = true;
+                }
+
+                if (! fading)
                 {
                     alone.runFree (fresh, 0, block);
                     return;
                 }
-
-                if (blockStart == switchBlock)
-                    alone.reset (s.toType);
 
                 juce::dsp::AudioBlock<float> old (outgoing.getArrayOfWritePointers(), 2, (size_t) n);
                 old.copyFrom (block);
                 alone.runFree (fresh, 0, old, s.fromType);
                 alone.runFree (fresh, 0, block, s.toType);
 
-                for (size_t ch = 0; ch < 2; ++ch)
-                    for (int i = 0; i < n && blockStart + i < switchBlock + fade; ++i)
-                    {
-                        const float w = (float) (blockStart + i - switchBlock) / (float) fade;
-                        auto& y = block.getChannelPointer (ch)[i];
-                        const float o = old.getChannelPointer (ch)[i];
-                        y = o + w * (y - o);
-                    }
+                float* heard[2] { old.getChannelPointer (0), old.getChannelPointer (1) };
+                const float* coming[2] { block.getChannelPointer (0), block.getChannelPointer (1) };
+
+                for (int i = 0; i < n && fading; ++i)
+                {
+                    fading = ! crossfade.mix (heard, coming, 2, i);
+
+                    for (size_t ch = 0; ch < 2; ++ch)
+                        block.getChannelPointer (ch)[i] = old.getChannelPointer (ch)[i];
+                }
             });
 
             std::snprintf (what, sizeof (what), "mod_type %s through the processor equals the engines alone with the incoming one "
-                           "reset at the switch and a linear %d-sample crossfade", s.label, fade);
+                           "reset at the switch, the outgoing one heard alone for %d samples (or until the two stop cancelling), "
+                           "then a %d-sample power-matched crossfade", s.label, hold, fade);
             ok &= expectIdentical (r.processor, r.engine, what);
         }
     }
@@ -5360,11 +5408,11 @@ bool runNonFiniteInputTests (double sampleRate, int blockSize)
     return ok;
 }
 
-/** A gate, comp, drive, EQ or mod block running a non-Classic type, switched off for a
-    second and back on under a sustained chord, neither pops (high band at the edges no more
-    than 60 dB below full scale over the steady on and off renders) nor, switched back on over
-    silence, replays what it held when it went off. Classic keeps its old hard switch: its
-    numbers are printed as the metric's control. */
+/** A gate, comp, drive, EQ or mod block of any type, switched off for a second and back on
+    under a sustained chord, neither pops (high band at the edges no more than 60 dB below full
+    scale over the steady on and off renders) nor, switched back on over silence, replays what
+    it held when it went off (non-Classic: -60 dBFS; Classic, which kept its old hard switch and
+    replayed up to +0.9 dBFS before it went through the same fader and reset: -100 dBFS). */
 bool runBlockToggleTests (double sampleRate, int blockSize)
 {
     std::printf ("block on/off:\n");
@@ -5425,8 +5473,12 @@ bool runBlockToggleTests (double sampleRate, int blockSize)
 
         if (c.classic)
         {
-            std::printf ("  (control, unchanged) %-20s off %7.1f dB, on %7.1f dB, back on over silence %7.1f dBFS\n",
-                         c.label.c_str(), popOff, popOn, staleDb);
+            std::snprintf (what, sizeof (what), "%s: off then on under a chord pops %.1f / %.1f dBFS over the steady high band "
+                           "(bound -60); back on over silence %.1f dBFS (bound -100)", c.label.c_str(), popOff, popOn, staleDb);
+            const bool pass = popOff <= -60.0 && popOn <= -60.0 && staleDb <= -100.0;
+            failing += pass ? 0 : 1;
+            ++tested;
+            ok &= expect (pass, what);
             continue;
         }
 
@@ -5440,7 +5492,7 @@ bool runBlockToggleTests (double sampleRate, int blockSize)
         ok &= expect (pass, what);
     }
 
-    std::printf ("  %d of %d non-Classic block types fail; worst pop %.1f dBFS, worst replay %.1f dBFS\n",
+    std::printf ("  %d of %d block types fail; worst non-Classic pop %.1f dBFS, worst non-Classic replay %.1f dBFS\n",
                  failing, tested, worstPop, worstStale);
 
     // Not a switch: a reorder keeps every block's state (no reset, no fade), and a type change
@@ -5649,9 +5701,13 @@ bool runModSwitchTests (double sampleRate, int blockSize)
     // jumps included, and free-runs at the synced rate when the transport stops or when the
     // host reports no usable tempo (<= 1 BPM: 120 BPM, and no phase to follow).
     {
+        // A host tempo of 0 or below comes with a song position that does not move: the LFO must
+        // run free at 120 BPM's rate, not lock to the frozen position (it crawled at 0.075 Hz).
         struct Scenario { const char* label; double bpm; };
         static constexpr Scenario scenarios[] { { "120 BPM with a locate, a loop, a stop and a restart", 120.0 },
-                                                { "a host tempo of 0.5 BPM (120 BPM, free-running)", 0.5 } };
+                                                { "a host tempo of 0.5 BPM (120 BPM, free-running)", 0.5 },
+                                                { "a host tempo of 0 with a frozen position (120 BPM, free-running)", 0.0 },
+                                                { "a negative host tempo with a frozen position (120 BPM, free-running)", -120.0 } };
 
         for (const auto& s : scenarios)
             for (const auto& v : { Voicing { 0, 2, "CE" }, Voicing { 1, 2, "Small Stone" }, Voicing { 2, 1, "Smooth" } })
@@ -5676,7 +5732,7 @@ bool runModSwitchTests (double sampleRate, int blockSize)
 
                 const auto r = renderLockstep (fresh, input, sampleRate, blockSize, [&] (int start)
                 {
-                    if (start > 0)
+                    if (start > 0 && s.bpm > 0.0)
                         playHead.advance (blockSize, sampleRate);
 
                     if (start >= at (0.3) && start < at (0.3) + blockSize) playHead.ppq = 7.3;
@@ -5756,7 +5812,7 @@ bool runLaneLatencyChangeTests (double sampleRate, int blockSize)
                 for (const auto& [id, value] : c.after)
                     setFloatParam (fresh, id, value);
         });
-        latencyAfter = fresh.getLatencySamples();
+        latencyAfter = reportedLatency (fresh);
 
         double largest = 0.0;
         int zeroRun = 0, longestZeroRun = 0;
@@ -5879,7 +5935,7 @@ bool runLatencyAccountingTests (int blockSize)
         buffer.setSample (0, 0, 0.001f);
         buffer.setSample (1, 0, 0.001f);
         fresh.processBlock (buffer, midi);
-        const int waiting = fresh.getLatencySamples();
+        const int waiting = reportedLatency (fresh);
         int appliedWaiting = 0;
 
         for (int i = 0; i < blockSize; ++i)
@@ -5888,7 +5944,7 @@ bool runLatencyAccountingTests (int blockSize)
 
         buffer.clear();
         fresh.processBlock (buffer, midi);
-        const int running = fresh.getLatencySamples();
+        const int running = reportedLatency (fresh);
         const int engine = tubamp::DriveFx::latencyFor (type, 48000.0);
         const int expectedWaiting = type == 0 ? 0 : engine;
 
@@ -6024,6 +6080,821 @@ bool runStartingPointTests()
     ok &= expect (drive, "drive gain, tone and level start at Classic's and Screamer's entries");
     ok &= expect (juce::approximatelyEqual (tubamp::kDriveLevelDefault[(int) tubamp::DriveFx::Type::fuzz], 5.0f),
                   "the Fuzz level starting point is 5.0 dB");
+    return ok;
+}
+
+//==============================================================================
+// Processor round 2 (.audit/fx-verify/r2-processor.md sections 6 and 7).
+
+/** Counts latency changes the processor announces, and on which thread. */
+struct LatencyWatch final : juce::AudioProcessorListener
+{
+    std::atomic<int> fromMessageThread { 0 }, fromOtherThreads { 0 };
+
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
+
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details) override
+    {
+        if (! details.latencyChanged)
+            return;
+
+        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+            ++fromMessageThread;
+        else
+            ++fromOtherThreads;
+    }
+};
+
+/** 6.1, 6.6, two threads: setLatencySamples is never reached from the audio thread (it takes
+    JUCE's listener lock and makes the AU wrapper post a message) nor from a host's restore
+    thread; the message thread reports what the audio thread applies, and with no audio
+    running works the figure out itself when a latency-changing parameter, the chain or the
+    state changes. */
+bool runLatencyThreadTests (double sampleRate, int blockSize)
+{
+    std::printf ("latency from the message thread:\n");
+    bool ok = true;
+    char what[300];
+
+    // --- drive_on and drive_type automated on an audio thread of its own, every block, with the
+    // message thread pumping as a host's would.
+    {
+        tubamp::TubampAudioProcessor fresh;
+        LatencyWatch watch;
+        fresh.addListener (&watch);
+        setBoolParam (fresh, params::driveOn, true);
+        setFloatParam (fresh, params::driveType, (float) tubamp::DriveFx::Type::boost);
+        setBoolParam (fresh, params::drive2On, true);
+        setFloatParam (fresh, params::drive2Type, (float) tubamp::DriveFx::Type::classic);
+        setFloatParam (fresh, params::drive3Type, (float) tubamp::DriveFx::Type::fuzz);
+        fresh.setChainOrder ({ BlockId::split, BlockId::drive, BlockId::lane2, BlockId::drive2, BlockId::mix, BlockId::drive3 }, {});
+        fresh.prepareToPlay (sampleRate, blockSize);
+        watch.fromMessageThread = 0;
+
+        std::atomic<bool> done { false };
+        std::atomic<long> allocations { 0 }, changes { 0 }, blocks { 0 };
+
+        std::thread audio ([&]
+        {
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            const auto chord = powerChord (sampleRate, (double) blockSize / sampleRate * 400.0);
+            const int types[] { 4, 2, 1, 0, 5, 3 };
+
+            for (int b = 0; b < 400; ++b)
+            {
+                // Host automation arrives on the audio thread, between callbacks.
+                if (b % 2 == 0)
+                    setBoolParam (fresh, params::drive2On, (b / 2) % 2 == 0);
+                else
+                    setFloatParam (fresh, params::driveType, (float) types[(b / 2) % 6]);
+
+                setFloatParam (fresh, params::drive3On, (float) (b % 3 == 0));
+                ++changes;
+
+                for (int ch = 0; ch < 2; ++ch)
+                    std::copy (chord.begin() + (long) b * blockSize, chord.begin() + (long) (b + 1) * blockSize,
+                               buffer.getWritePointer (ch));
+
+                allocCount.store (0);
+                {
+                    AllocationGuard guard;
+                    fresh.processBlock (buffer, midi);
+                }
+                allocations += allocCount.load();
+                ++blocks;
+            }
+
+            done = true;
+        });
+
+        while (! done)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        audio.join();
+        const int settled = reportedLatency (fresh);
+        fresh.removeListener (&watch);
+
+        std::snprintf (what, sizeof (what), "drive_on and drive_type automated every block for %ld blocks on an audio thread: "
+                       "%ld allocations there, %d latency changes announced from it, %d from the message thread",
+                       blocks.load(), allocations.load(), watch.fromOtherThreads.load(), watch.fromMessageThread.load());
+        ok &= expect (allocations == 0 && watch.fromOtherThreads == 0 && watch.fromMessageThread > 0, what);
+        ok &= expect (settled == fresh.getLatencySamples() && settled >= 0, "...and the message thread hands the figure over");
+    }
+
+    // --- 6.6: no audio running. A latency-changing parameter moved on the message thread is
+    // reported at once; moved on another thread, by the next timer tick.
+    {
+        tubamp::TubampAudioProcessor fresh;
+        setBoolParam (fresh, params::driveOn, true);
+        setFloatParam (fresh, params::driveType, (float) tubamp::DriveFx::Type::screamer);
+        fresh.setChainOrder ({ BlockId::drive }, {});
+        fresh.prepareToPlay (sampleRate, blockSize);
+        const int screamer = fresh.getLatencySamples();
+
+        setFloatParam (fresh, params::driveType, (float) tubamp::DriveFx::Type::boost);
+        const int boost = fresh.getLatencySamples();
+
+        setFloatParam (fresh, params::driveType, (float) tubamp::DriveFx::Type::classic);
+        setBoolParam (fresh, params::driveOn, false);
+        const int classicOff = fresh.getLatencySamples();
+
+        std::thread other ([&] { setBoolParam (fresh, params::driveOn, true); });
+        other.join();
+        const int classicOnElsewhere = reportedLatency (fresh);
+
+        std::snprintf (what, sizeof (what), "no audio running: Screamer %d, drive_type Boost %d at once, Classic off %d at once, "
+                       "Classic on from another thread %d after a timer tick (expected %d, 0, 0, %d)", screamer, boost, classicOff,
+                       classicOnElsewhere, tubamp::DriveFx::latencyFor (1, sampleRate), tubamp::DriveFx::latencyFor (0, sampleRate));
+        ok &= expect (screamer == tubamp::DriveFx::latencyFor (1, sampleRate) && boost == 0 && classicOff == 0
+                          && classicOnElsewhere == tubamp::DriveFx::latencyFor (0, sampleRate), what);
+    }
+
+    // --- a state restore on a host thread, while audio runs on another: no latency is
+    // announced from either; the message thread reports the restored chain's.
+    {
+        tubamp::TubampAudioProcessor source;
+        setBoolParam (source, params::driveOn, true);
+        setFloatParam (source, params::driveType, (float) tubamp::DriveFx::Type::distortion);
+        source.setChainOrder ({ BlockId::comp, BlockId::drive }, {});
+        juce::MemoryBlock state;
+        source.getStateInformation (state);
+
+        tubamp::TubampAudioProcessor fresh;
+        LatencyWatch watch;
+        fresh.addListener (&watch);
+        fresh.setChainOrder ({ BlockId::eq }, {});
+        fresh.prepareToPlay (sampleRate, blockSize);
+
+        std::atomic<bool> stop { false };
+        std::thread audio ([&]
+        {
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+
+            while (! stop)
+            {
+                buffer.clear();
+                fresh.processBlock (buffer, midi);
+                std::this_thread::sleep_for (std::chrono::milliseconds (2));
+            }
+        });
+
+        std::thread restore ([&] { fresh.setStateInformation (state.getData(), (int) state.getSize()); });
+        restore.join();
+        const int restored = reportedLatency (fresh);
+        stop = true;
+        audio.join();
+        fresh.removeListener (&watch);
+
+        std::snprintf (what, sizeof (what), "a state restored on a host thread while audio runs: %d latency changes announced off the "
+                       "message thread; reported %d (the restored Distortion's %d)", watch.fromOtherThreads.load(), restored,
+                       tubamp::DriveFx::latencyFor (2, sampleRate));
+        ok &= expect (watch.fromOtherThreads == 0 && restored == tubamp::DriveFx::latencyFor (2, sampleRate), what);
+    }
+
+    return ok;
+}
+
+/** A -12 dBFS chord: the power chord, which has nothing above 1 kHz. */
+std::vector<float> quieterChord (double sampleRate, double seconds)
+{
+    auto x = powerChord (sampleRate, seconds);
+
+    for (auto& v : x)
+        v *= juce::Decibels::decibelsToGain (-2.0f);
+
+    return x;
+}
+
+double largestStep (const std::vector<float>& x, size_t from, size_t to)
+{
+    double largest = 0.0;
+
+    for (size_t i = from; i + 1 < std::min (to, x.size()); ++i)
+        largest = std::max (largest, (double) std::abs (x[i + 1] - x[i]));
+
+    return largest;
+}
+
+/** 6.2: drive_type changed on a bypassed drive slides the bypass delay to its new length over
+    10 ms instead of jumping it by the latency difference. */
+bool runBypassedDriveTypeTests (double sampleRate, int blockSize)
+{
+    std::printf ("drive type changed while bypassed:\n");
+    bool ok = true;
+    char what[300];
+
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const auto chord = quieterChord (sampleRate, 1.0);
+    const int changeAt = ((at (0.5) + blockSize - 1) / blockSize) * blockSize;
+    using T = tubamp::DriveFx::Type;
+    const std::pair<T, T> changes[] { { T::boost, T::screamer }, { T::screamer, T::boost }, { T::classic, T::fuzz },
+                                      { T::distortion, T::treble } };
+
+    for (const auto& [from, to] : changes)
+    {
+        const auto render = [&] (bool change)
+        {
+            tubamp::TubampAudioProcessor fresh;
+            setBoolParam (fresh, params::driveOn, false);
+            setFloatParam (fresh, params::driveType, (float) from);
+            fresh.setChainOrder ({ BlockId::drive }, {});
+            fresh.prepareToPlay (sampleRate, blockSize);
+
+            return renderSignal (fresh, chord, blockSize, [&] (int start)
+            {
+                if (change && start == changeAt)
+                    setFloatParam (fresh, params::driveType, (float) to);
+            });
+        };
+
+        const auto changed = render (true), steady = render (false);
+        const auto band = highBand (changed, sampleRate, 5000.0);
+        const double click = toDb (peakIn (band, (size_t) (changeAt - at (0.005)), (size_t) (changeAt + at (0.05))));
+        const double step = largestStep (changed, (size_t) (changeAt - at (0.005)), (size_t) (changeAt + at (0.05)));
+        const double steadyStep = largestStep (steady, (size_t) (changeAt - at (0.005)), (size_t) (changeAt + at (0.05)));
+
+        std::snprintf (what, sizeof (what), "bypassed drive %s -> %s (delay %d -> %d) on a -12 dBFS chord: above 5 kHz %.1f dBFS "
+                       "(bound -70); largest step %.5f against the steady %.5f (bound x1.05)", params::driveTypeNames[(int) from],
+                       params::driveTypeNames[(int) to], from == T::classic ? 0 : tubamp::DriveFx::latencyFor ((int) from, sampleRate),
+                       tubamp::DriveFx::latencyFor ((int) to, sampleRate), click, step, steadyStep);
+        ok &= expect (click <= -70.0 && step <= 1.05 * steadyStep, what);
+    }
+
+    return ok;
+}
+
+/** 6.3: two lane-latency changes inside 10 ms, and a discrete parameter swept at block rate,
+    move the waiting lane smoothly: every slide starts from where the tap is. */
+bool runLaneRetargetTests (const juce::File& modelFile, double sampleRate)
+{
+    std::printf ("lane latency changes in quick succession:\n");
+    bool ok = true;
+    char what[300];
+
+    const int blockSize = 64;
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const int changeAt = ((at (0.6) + blockSize - 1) / blockSize) * blockSize;
+    const double pi = juce::MathConstants<double>::pi;
+
+    // A sine at fs / 10 (the verifier's) and a 100 Hz one: lane B, which waits, must stay one.
+    for (const double hz : { sampleRate / 10.0, 100.0 })
+    {
+        std::vector<float> tone ((size_t) at (1.4));
+
+        for (size_t i = 0; i < tone.size(); ++i)
+            tone[i] = 0.25f * (float) std::sin (2.0 * pi * hz * (double) i / sampleRate);
+
+        const double steadyStep = 2.0 * 0.25 * std::sin (pi * hz / sampleRate);
+
+        struct Case { std::string label; std::function<void (tubamp::TubampAudioProcessor&, int)> automate; bool needsModel; };
+        const std::vector<Case> cases {
+            { "drive_type Boost -> Distortion -> Boost 3 ms apart",
+              [&] (tubamp::TubampAudioProcessor& p, int start)
+              {
+                  if (start == changeAt) setFloatParam (p, params::driveType, 2.0f);
+                  if (start == changeAt + ((at (0.003) + blockSize - 1) / blockSize) * blockSize) setFloatParam (p, params::driveType, 4.0f);
+              }, false },
+            { "drive_type swept Boost / Distortion every block for 0.4 s",
+              [&] (tubamp::TubampAudioProcessor& p, int start)
+              {
+                  if (start >= changeAt && start < changeAt + at (0.4))
+                      setFloatParam (p, params::driveType, ((start - changeAt) / blockSize) % 2 == 0 ? 2.0f : 4.0f);
+              }, false },
+            { "Classic drive_on toggled every block for 0.4 s",
+              [&] (tubamp::TubampAudioProcessor& p, int start)
+              {
+                  if (start == changeAt) setFloatParam (p, params::driveType, 0.0f);
+                  if (start >= changeAt && start < changeAt + at (0.4))
+                      setBoolParam (p, params::driveOn, ((start - changeAt) / blockSize) % 2 == 1);
+              }, false },
+            { "amp_on (resampled model) toggled every block for 0.4 s",
+              [&] (tubamp::TubampAudioProcessor& p, int start)
+              {
+                  if (start >= changeAt && start < changeAt + at (0.4))
+                      setBoolParam (p, params::ampOn, ((start - changeAt) / blockSize) % 2 == 1);
+              }, true } };
+
+        for (const auto& c : cases)
+        {
+            tubamp::TubampAudioProcessor fresh;
+            setBoolParam (fresh, params::driveOn, true);
+            setFloatParam (fresh, params::driveType, 4.0f);
+            setFloatParam (fresh, params::mixAPan, -1.0f);
+            setFloatParam (fresh, params::mixBPan, 1.0f);
+            fresh.prepareToPlay (sampleRate, blockSize);
+
+            if (c.needsModel)
+            {
+                if (fresh.loadModel (modelFile).isNotEmpty())
+                    continue;
+
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+                fresh.setChainOrder ({ BlockId::split, BlockId::amp, BlockId::lane2, BlockId::mix }, {});
+                setBoolParam (fresh, params::ampEqOn, false);
+            }
+            else
+            {
+                fresh.setChainOrder ({ BlockId::split, BlockId::drive, BlockId::lane2, BlockId::mix }, {});
+            }
+
+            fresh.prepareToPlay (sampleRate, blockSize);
+
+            if (c.needsModel && fresh.namEngine.getLatencySamples() == 0)
+                continue;   // the model runs at this rate: amp_on moves no latency
+
+            const auto out = renderStereo (fresh, tone, tone, blockSize, [&] (int start) { c.automate (fresh, start); });
+            const double largest = largestStep (out.r, (size_t) (changeAt - at (0.05)), (size_t) (changeAt + at (0.6)));
+            int zeroRun = 0, longest = 0;
+
+            for (size_t i = (size_t) (changeAt - at (0.05)); i < out.r.size(); ++i)
+            {
+                zeroRun = out.r[i] == 0.0f ? zeroRun + 1 : 0;
+                longest = std::max (longest, zeroRun);
+            }
+
+            std::snprintf (what, sizeof (what), "%s in lane A, %.0f Hz: lane B's largest step %.4f (steady %.4f, bound x1.1), "
+                           "longest silent run %d", c.label.c_str(), hz, largest, steadyStep, longest);
+            ok &= expect (largest <= 1.1 * steadyStep && longest <= 1, what);
+        }
+    }
+
+    return ok;
+}
+
+/** 6.4 (drive fixer): in a split with a drive in one lane, a type switch keeps the lanes in
+    line while the drive runs both types and slides its latency: at most 1 sample apart for at
+    most 10 ms, and no comb deeper than 1 dB below 8 kHz in the sum. */
+bool runDriveSwitchLaneTests (double sampleRate)
+{
+    std::printf ("drive type switches in a split lane:\n");
+    bool ok = true;
+    char what[300];
+
+    const int blockSize = 64;
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const int changeAt = ((at (0.5) + blockSize - 1) / blockSize) * blockSize;
+    const double pi = juce::MathConstants<double>::pi;
+    static constexpr double tones[] { 1000, 2000, 3000, 4000, 4800, 6000, 7000, 8000 };
+    const int window = at (0.01);   // whole cycles of every tone (multiples of 100 Hz)
+
+    std::vector<float> input ((size_t) at (0.9), 0.0f);
+
+    for (size_t i = 0; i < input.size(); ++i)
+        for (const double f : tones)
+            input[i] += 0.0025f * (float) std::sin (2.0 * pi * f * (double) i / sampleRate + f * 0.001);
+
+    using T = tubamp::DriveFx::Type;
+    const std::pair<T, T> switches[] { { T::boost, T::distortion }, { T::distortion, T::boost }, { T::treble, T::screamer },
+                                       { T::screamer, T::classic }, { T::classic, T::treble }, { T::boost, T::classic },
+                                       { T::classic, T::boost } };
+    // Classic (gain 0, its low-pass at 12 kHz), Boost and Treble are close to pure delays at 1 kHz,
+    // so the 1 kHz phase between the lanes is their misalignment; a circuit type's own phase there
+    // (several samples at 192 kHz) is not, and for those the comb against the steady types is the
+    // measure.
+    const auto plain = [] (T type) { return type == T::classic || type == T::boost || type == T::treble; };
+
+    const auto render = [&] (T from, T to, bool doSwitch)
+    {
+        tubamp::TubampAudioProcessor fresh;
+        setBoolParam (fresh, params::driveOn, true);
+        setFloatParam (fresh, params::driveType, (float) from);
+        setFloatParam (fresh, params::driveGain, 0.0f);
+        setFloatParam (fresh, params::driveTone, 12000.0f);
+        setFloatParam (fresh, params::driveLevel, 0.0f);
+        setFloatParam (fresh, params::mixAPan, -1.0f);
+        setFloatParam (fresh, params::mixBPan, 1.0f);
+        fresh.setChainOrder ({ BlockId::split, BlockId::drive, BlockId::lane2, BlockId::mix }, {});
+        fresh.prepareToPlay (sampleRate, blockSize);
+
+        return renderStereo (fresh, input, input, blockSize, [&] (int start)
+        {
+            if (doSwitch && start == changeAt)
+                setFloatParam (fresh, params::driveType, (float) to);
+        });
+    };
+
+    // Lane A's lag behind lane B (samples) from the 1 kHz phase, and per tone the sum against
+    // the two lanes in phase, |a + b| / (|a| + |b|) in dB.
+    constexpr size_t numTones = std::size (tones);
+    const auto measure = [&] (const StereoRender& r, int from, double& lag, std::array<double, numTones>& comb)
+    {
+        const auto a = toneAt (r.l, sampleRate, 1000.0, (size_t) from, (size_t) (from + window));
+        const auto b = toneAt (r.r, sampleRate, 1000.0, (size_t) from, (size_t) (from + window));
+        lag = -std::arg (a / b) / (2.0 * pi * 1000.0) * sampleRate;
+
+        for (size_t t = 0; t < numTones; ++t)
+        {
+            const auto fa = toneAt (r.l, sampleRate, tones[t], (size_t) from, (size_t) (from + window));
+            const auto fb = toneAt (r.r, sampleRate, tones[t], (size_t) from, (size_t) (from + window));
+            comb[t] = toDb (std::abs (fa + fb) / (std::abs (fa) + std::abs (fb)));
+        }
+    };
+
+    for (const auto& [from, to] : switches)
+    {
+        // The drive's own circuit sits a fraction of a sample off its reported latency (Classic
+        // 0.9 at 48 kHz, the circuits' filters more at 1 kHz), which steady renders show as a
+        // shallow comb of their own: the switch is judged against the shallower of the two.
+        double lagOld = 0.0, lagNew = 0.0;
+        std::array<double, numTones> combOld {}, combNew {};
+        measure (render (from, from, false), changeAt - at (0.1), lagOld, combOld);
+        measure (render (to, to, false), changeAt - at (0.1), lagNew, combNew);
+
+        const auto r = render (from, to, true);
+        double worstComb = 0.0, worstAbsolute = 0.0, worstApart = 0.0;
+        int apartWindows = 0;
+        const int hop = at (0.001);
+
+        for (int f = changeAt - window; f < changeAt + at (0.08); f += hop)
+        {
+            double lag = 0.0;
+            std::array<double, numTones> comb {};
+            measure (r, f, lag, comb);
+            const double apart = std::min (std::abs (lag - lagOld), std::abs (lag - lagNew));
+            worstApart = std::max (worstApart, apart);
+            apartWindows += apart > 1.0 ? 1 : 0;
+
+            for (size_t t = 0; t < numTones; ++t)
+            {
+                worstAbsolute = std::min (worstAbsolute, comb[t]);
+                worstComb = std::min (worstComb, comb[t] - std::min (combOld[t], combNew[t]));
+            }
+        }
+
+        const bool judgeApart = plain (from) && plain (to);
+        std::snprintf (what, sizeof (what), "%s -> %s in lane A (latency %d -> %d): lanes apart at most %.2f samples, more than 1 "
+                       "for %d ms (%s); comb below 8 kHz %.2f dB deeper than the steady types' (bound 1; %.2f dB absolute)",
+                       params::driveTypeNames[(int) from], params::driveTypeNames[(int) to],
+                       tubamp::DriveFx::latencyFor ((int) from, sampleRate), tubamp::DriveFx::latencyFor ((int) to, sampleRate),
+                       worstApart, apartWindows, judgeApart ? "bound 10" : "a circuit's own phase, printed", -worstComb, worstAbsolute);
+        ok &= expect ((! judgeApart || apartWindows <= 10) && worstComb >= -1.0, what);
+    }
+
+    return ok;
+}
+
+/** A plucked, decaying take: E2, A2, D3, G3, B3 and a low E chord, five harmonics each. */
+std::vector<float> pluckedTake (double sampleRate, double seconds)
+{
+    std::vector<float> x ((size_t) std::lround (seconds * sampleRate), 0.0f);
+    static constexpr double notes[] { 82.41, 110.0, 146.83, 196.0, 246.94, 82.41 };
+    const double pi = juce::MathConstants<double>::pi;
+
+    for (size_t k = 0; k < std::size (notes); ++k)
+    {
+        const auto onset = (size_t) std::lround ((0.05 + 0.12 * (double) k) * sampleRate);
+
+        for (size_t i = onset; i < x.size(); ++i)
+        {
+            const double t = (double) (i - onset) / sampleRate;
+            double v = 0.0;
+
+            for (int h = 1; h <= 5; ++h)
+                v += std::sin (2.0 * pi * notes[k] * h * t + 0.3 * h) * std::exp (-t * (2.0 + 1.5 * h)) / h;
+
+            x[i] += (float) (0.08 * v);
+        }
+    }
+
+    return x;
+}
+
+/** 6.5: a mod_type switch runs the incoming engine unheard until it settles and then hands
+    over with a power-matched crossfade: every ordered pair of voicings across the three types,
+    on held notes at 82, 196 and 440 Hz (-12 dBFS) and on a plucked take, stays within 1.5 dB
+    above the higher steady level and 3 dB below the lower, and clicks at most -60 dBFS over the
+    steady renders. Held notes, the verifier's measure (r2-processor 6.5): one-period levels
+    against the band the two voicings' steady renders span over their whole steady part. The
+    take's level follows its notes and each engine's own LFO, so it is held to the two engines
+    alone in lockstep, 10 ms window by window (the outgoing one running on, the incoming one
+    reset at the switch, as the dispatcher runs them). Printed for the held notes as well: that
+    lockstep measure, which two effects in antiphase on one note cannot always meet, since no
+    crossfade avoids the null between them. */
+bool runModTypeLevelTests (double sampleRate)
+{
+    std::printf ("mod_type switch levels:\n");
+    bool ok = true;
+    char what[300];
+
+    const int blockSize = 128;
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const int switchAt = ((at (0.8) + blockSize - 1) / blockSize) * blockSize;
+    const int length = at (1.6);
+
+    struct Voicing { int type, index; const char* name; };
+    std::vector<Voicing> voicings;
+
+    for (int i = 0; i < tubamp::ChorusFx::numModes; ++i)    voicings.push_back ({ 0, i, params::modChorusModeNames[i] });
+    for (int i = 0; i < tubamp::PhaserFx::numModels; ++i)   voicings.push_back ({ 1, i, params::modPhaserModelNames[i] });
+    for (int i = 0; i < tubamp::TremoloFx::numVoices; ++i)  voicings.push_back ({ 2, i, params::modTremVoiceNames[i] });
+
+    static constexpr const char* typeNames[] { "chorus", "phaser", "tremolo" };
+    const char* const voicingIds[] { params::modChorusMode, params::modPhaserModel, params::modTremVoice };
+
+    struct Signal { std::string label; std::vector<float> x; int period; bool held; };
+    std::vector<Signal> signals;
+
+    for (const double hz : { 82.41, 196.0, 440.0 })
+        signals.push_back ({ juce::String (hz, 0).toStdString() + " Hz note",
+                             sineSignal (sampleRate, hz, juce::Decibels::decibelsToGain (-12.0f), length),
+                             (int) std::lround (sampleRate / hz), true });
+
+    {
+        // The take's notes arrive around the switch.
+        auto take = pluckedTake (sampleRate, 1.0);
+        std::vector<float> x ((size_t) length, 0.0f);
+        std::copy (take.begin(), take.end(), x.begin() + (switchAt - at (0.45)));
+        signals.push_back ({ "plucked take", x, at (0.01), false });
+    }
+
+    struct Renders { std::vector<float> switched, outgoing, incoming; };
+
+    const auto render = [&] (const Voicing& a, const Voicing& b, bool doSwitch, const std::vector<float>& x)
+    {
+        tubamp::TubampAudioProcessor fresh;
+        setFloatParam (fresh, voicingIds[a.type], (float) a.index);
+        setFloatParam (fresh, voicingIds[b.type], (float) b.index);
+        setFloatParam (fresh, params::modType, (float) a.type);
+        setFloatParam (fresh, params::modMix, 0.5f);
+        fresh.setChainOrder ({ BlockId::mod }, {});
+        fresh.prepareToPlay (sampleRate, blockSize);
+
+        ModEnginesAlone alone (sampleRate, blockSize);
+        juce::AudioBuffer<float> buffers[3] { juce::AudioBuffer<float> (2, blockSize), juce::AudioBuffer<float> (2, blockSize),
+                                              juce::AudioBuffer<float> (2, blockSize) };
+        juce::MidiBuffer midi;
+        Renders out;
+
+        for (int start = 0; start < (int) x.size(); start += blockSize)
+        {
+            const int n = std::min (blockSize, (int) x.size() - start);
+
+            if (doSwitch && start == switchAt)
+            {
+                setFloatParam (fresh, params::modType, (float) b.type);
+                alone.reset (b.type);
+            }
+
+            juce::AudioBuffer<float> views[3];
+
+            for (int r = 0; r < 3; ++r)
+            {
+                float* channels[2] { buffers[r].getWritePointer (0), buffers[r].getWritePointer (1) };
+                views[r].setDataToReferTo (channels, 2, n);
+
+                for (int ch = 0; ch < 2; ++ch)
+                    std::copy (x.begin() + start, x.begin() + start + n, channels[ch]);
+            }
+
+            fresh.processBlock (views[0], midi);
+
+            if (doSwitch)
+            {
+                juce::dsp::AudioBlock<float> outgoingBlock (views[1]), incomingBlock (views[2]);
+                alone.runFree (fresh, 0, outgoingBlock, a.type);
+
+                if (start >= switchAt)
+                    alone.runFree (fresh, 0, incomingBlock, b.type);
+                else
+                    views[2].clear();
+
+                out.outgoing.insert (out.outgoing.end(), views[1].getReadPointer (0), views[1].getReadPointer (0) + n);
+                out.incoming.insert (out.incoming.end(), views[2].getReadPointer (0), views[2].getReadPointer (0) + n);
+            }
+
+            out.switched.insert (out.switched.end(), views[0].getReadPointer (0), views[0].getReadPointer (0) + n);
+        }
+
+        return out;
+    };
+
+    const auto rmsDb = [] (const std::vector<float>& y, int from, int n) { return toDb (rmsOf (y, (size_t) from, (size_t) (from + n))); };
+    int failing = 0, pairs = 0;
+    double worstAbove = -100.0, worstBelow = -100.0, worstClick = -240.0, lockAbove = -100.0, lockBelow = -100.0;
+
+    for (const auto& sig : signals)
+    {
+        std::vector<std::vector<float>> steady;
+
+        for (const auto& v : voicings)
+            steady.push_back (render (v, v, false, sig.x).switched);
+
+        for (size_t i = 0; i < voicings.size(); ++i)
+            for (size_t j = 0; j < voicings.size(); ++j)
+            {
+                if (voicings[i].type == voicings[j].type)
+                    continue;
+
+                const auto r = render (voicings[i], voicings[j], true, sig.x);
+                const int step = std::max (1, sig.period / 4);
+                double low = 1000.0, high = -1000.0;
+
+                if (sig.held)
+                    for (int g = at (0.3); g + sig.period <= length - at (0.3); g += step)
+                        for (const auto* y : { &steady[i], &steady[j] })
+                        {
+                            low = std::min (low, rmsDb (*y, g, sig.period));
+                            high = std::max (high, rmsDb (*y, g, sig.period));
+                        }
+
+                double above = -100.0, below = -100.0, againstEnginesAbove = -100.0, againstEnginesBelow = -100.0;
+
+                for (int f = switchAt - sig.period; f + sig.period < switchAt + at (0.5); f += step)
+                {
+                    const double level = rmsDb (r.switched, f, sig.period);
+
+                    if (sig.held)
+                    {
+                        above = std::max (above, level - high);
+                        below = std::max (below, low - level);
+                    }
+
+                    if (f >= switchAt)
+                    {
+                        const double a = rmsDb (r.outgoing, f, sig.period), b = rmsDb (r.incoming, f, sig.period);
+                        againstEnginesAbove = std::max (againstEnginesAbove, level - std::max (a, b));
+                        againstEnginesBelow = std::max (againstEnginesBelow, std::min (a, b) - level);
+                    }
+                }
+
+                if (! sig.held)
+                {
+                    above = againstEnginesAbove;
+                    below = againstEnginesBelow;
+                }
+
+                const auto hfSwitched = highBand (r.switched, sampleRate, 2000.0);
+                const double click = sig.held
+                    ? popExcessDb (hfSwitched, highBand (steady[i], sampleRate, 2000.0), highBand (steady[j], sampleRate, 2000.0),
+                                   (size_t) (switchAt - at (0.005)), (size_t) (switchAt + at (0.3)), (size_t) at (0.5))
+                    : popExcessDb (hfSwitched, highBand (r.outgoing, sampleRate, 2000.0), highBand (r.incoming, sampleRate, 2000.0),
+                                   (size_t) switchAt, (size_t) (switchAt + at (0.3)), (size_t) at (0.002));
+                ++pairs;
+                worstAbove = std::max (worstAbove, above);
+                worstBelow = std::max (worstBelow, below);
+                worstClick = std::max (worstClick, click);
+                if (sig.held)
+                {
+                    lockAbove = std::max (lockAbove, againstEnginesAbove);
+                    lockBelow = std::max (lockBelow, againstEnginesBelow);
+                }
+
+                if (above > 1.5 || below > 3.0 || click > -60.0)
+                {
+                    ++failing;
+                    std::snprintf (what, sizeof (what), "mod_type %s %s -> %s %s, %s: %.2f dB above the higher steady level (bound "
+                                   "1.5), %.2f dB below the lower (bound 3), click %.1f dBFS over the steady renders (bound -60)",
+                                   typeNames[voicings[i].type], voicings[i].name, typeNames[voicings[j].type], voicings[j].name,
+                                   sig.label.c_str(), above, below, click);
+                    ok &= expect (false, what);
+                }
+            }
+    }
+
+    std::snprintf (what, sizeof (what), "every ordered pair of voicings across mod_type on three held notes and a plucked take "
+                   "(%d switches): worst %.2f dB above the higher steady level, %.2f dB below the lower, click %.1f dBFS; %d over",
+                   pairs, worstAbove, worstBelow, worstClick, failing);
+    ok &= expect (failing == 0, what);
+    std::printf ("  (held notes against the two engines in lockstep, window by window: worst %.2f dB above the louder, %.2f dB "
+                 "below the quieter)\n", lockAbove, lockBelow);
+    return ok;
+}
+
+/** 7 / N14: one finite but absurd sample (1e6 or more) is silence at the input, before the
+    trim, on every channel; and anything absurd made inside the chain is silenced at the output
+    before the DC blocker, which recovers by the next block. Below 1e6 nothing is touched. */
+bool runAbsurdSampleTests (double sampleRate, int blockSize)
+{
+    std::printf ("absurd samples:\n");
+    bool ok = true;
+    char what[300];
+
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const auto chord = quieterChord (sampleRate, 1.5);
+    const auto spikeAt = (size_t) at (0.3);
+
+    const auto render = [&] (const std::vector<float>& l, const std::vector<float>& r,
+                             const std::vector<std::pair<const char*, float>>& settings, const tubamp::chain::Order& order)
+    {
+        tubamp::TubampAudioProcessor fresh;
+
+        for (const auto& [id, value] : settings)
+            setFloatParam (fresh, id, value);
+
+        fresh.setChainOrder (order, {});
+        fresh.prepareToPlay (sampleRate, blockSize);
+        return renderStereo (fresh, l, r, blockSize);
+    };
+
+    const auto nonFinite = [] (const StereoRender& y)
+    {
+        long count = 0;
+
+        for (size_t i = 0; i < y.l.size(); ++i)
+            count += (std::isfinite (y.l[i]) ? 0 : 1) + (std::isfinite (y.r[i]) ? 0 : 1);
+
+        return count;
+    };
+
+    // At the input: 3e38 with the trim at +12 dB (which overflowed after the old sanitiser), and
+    // exactly 1e6, on either channel; the render equals the chord with that sample zeroed.
+    for (const bool empty : { true, false })
+        for (const float spike : { 3.0e38f, -3.0e38f, 1.0e6f })
+            for (const bool trim : { false, true })
+            {
+                auto bad = chord, zeroed = chord;
+                bad[spikeAt] = spike;
+                zeroed[spikeAt] = 0.0f;
+                const std::vector<std::pair<const char*, float>> settings { { params::inputTrim, trim ? 12.0f : 0.0f },
+                                                                            { params::modOn, 1.0f }, { params::modType, 1.0f },
+                                                                            { params::modPhaserModel, 2.0f } };
+                const auto order = empty ? tubamp::chain::Order {} : tubamp::chain::Order { BlockId::comp, BlockId::mod };
+                const auto y = render (bad, chord, settings, order), z = render (zeroed, chord, settings, order);
+                const auto y2 = render (chord, bad, settings, order), z2 = render (chord, zeroed, settings, order);
+                const bool same = firstDifference (y.l, z.l) < 0 && firstDifference (y.r, z.r) < 0
+                                  && firstDifference (y2.l, z2.l) < 0 && firstDifference (y2.r, z2.r) < 0;
+                std::snprintf (what, sizeof (what), "%s: one input sample of %g, trim %s: %ld non-finite output samples, %s the "
+                               "input with it zeroed", empty ? "empty chain" : "comp, Small Stone", (double) spike,
+                               trim ? "+12 dB" : "0 dB", nonFinite (y) + nonFinite (y2), same ? "identical to" : "DIFFERENT from");
+                ok &= expect (nonFinite (y) + nonFinite (y2) == 0 && same, what);
+            }
+
+    // Just below: passed on untouched (the render differs from the zeroed one, and is finite).
+    {
+        auto big = chord, zeroed = chord;
+        big[spikeAt] = 9.9e5f;
+        zeroed[spikeAt] = 0.0f;
+        const auto y = render (big, big, {}, {}), z = render (zeroed, zeroed, {}, {});
+        ok &= expect (nonFinite (y) == 0 && firstDifference (y.l, z.l) >= 0,
+                      "an input sample of 9.9e5 is passed on (not zeroed) and the output stays finite");
+    }
+
+    // Made inside the chain: 9e5 passes the input rule, then +12 dB trim and 48 dB of makeup take
+    // it to 1e9. Before the output stage zeroed it, the DC blocker rang at that size for seconds.
+    {
+        auto spiked = chord;
+        spiked[spikeAt] = 9.0e5f;
+        const std::vector<std::pair<const char*, float>> settings { { params::inputTrim, 12.0f }, { params::compOn, 1.0f },
+                                                                    { params::compType, 0.0f }, { params::compMakeup, 48.0f },
+                                                                    { params::compThreshold, 0.0f }, { params::compRatio, 1.0f } };
+        // Ratio 1 makes the compressor memoryless, so a render whose input has that sample at 0 is
+        // exactly what the output stage leaves: the DC blocker never saw the 1e9.
+        auto zeroed = chord;
+        zeroed[spikeAt] = 0.0f;
+        const auto y = render (spiked, spiked, settings, { BlockId::comp }), z = render (zeroed, zeroed, settings, { BlockId::comp });
+        const long first = firstDifference (y.l, z.l);
+
+        std::snprintf (what, sizeof (what), "a value of ~1e9 made inside the chain: %ld non-finite output samples, peak %.3g; %s the "
+                       "render with that sample silent (the DC blocker never rang)", nonFinite (y), (double) peakOf (y.l, 0, y.l.size()),
+                       first < 0 ? "identical to" : "DIFFERENT from");
+        ok &= expect (nonFinite (y) == 0 && first < 0 && firstDifference (y.r, z.r) < 0, what);
+    }
+
+    return ok;
+}
+
+/** 10: the output passes levels far above full scale unclipped and finite (a host handles float
+    overs): the compressor's 48 dB of makeup and the phaser's Small Stone with Color on. */
+bool runHeadroomTests (double sampleRate, int blockSize)
+{
+    std::printf ("headroom:\n");
+    bool ok = true;
+    char what[300];
+
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const auto full = sineSignal (sampleRate, 196.0, 1.0f, at (1.0));
+
+    struct Case { const char* label; tubamp::chain::Order order; std::vector<std::pair<const char*, float>> settings; float expectAbove; };
+    const Case cases[] {
+        { "compressor Classic, ratio 1, full makeup", { BlockId::comp },
+          { { params::compOn, 1.0f }, { params::compType, 0.0f }, { params::compRatio, 1.0f }, { params::compThreshold, 0.0f },
+            { params::compMakeup, 24.0f } }, 10.0f },
+        { "phaser Small Stone, Color on", { BlockId::mod },
+          { { params::modOn, 1.0f }, { params::modType, 1.0f }, { params::modPhaserModel, 2.0f }, { params::modColor, 1.0f } }, 1.0f } };
+
+    for (const auto& c : cases)
+    {
+        tubamp::TubampAudioProcessor fresh;
+
+        for (const auto& [id, value] : c.settings)
+            setFloatParam (fresh, id, value);
+
+        fresh.setChainOrder (c.order, {});
+        fresh.prepareToPlay (sampleRate, blockSize);
+        const auto y = renderStereo (fresh, full, full, blockSize);
+        bool finite = true;
+
+        for (const float v : y.l)
+            finite &= std::isfinite (v);
+
+        const float peak = peakOf (y.l, (size_t) at (0.5), y.l.size());
+        std::snprintf (what, sizeof (what), "%s on a full-scale 196 Hz sine: output peak %+.1f dBFS, finite, not clipped", c.label,
+                       toDb (peak));
+        ok &= expect (finite && peak > c.expectAbove, what);
+    }
+
     return ok;
 }
 
@@ -6217,6 +7088,34 @@ int main (int argc, char** argv)
     std::printf (startingPointPass ? "PASS: per-type starting points come from the engine headers\n"
                                    : "FAIL: per-type starting points are wrong\n");
 
+    const bool latencyThreadPass = runLatencyThreadTests (sampleRate, blockSize);
+    std::printf (latencyThreadPass ? "PASS: latency is reported from the message thread only, and follows changes with no audio running\n"
+                                   : "FAIL: latency reporting threads or staleness are wrong\n");
+
+    const bool bypassedTypePass = runBypassedDriveTypeTests (sampleRate, blockSize);
+    std::printf (bypassedTypePass ? "PASS: a bypassed drive's type change slides its delay without a click\n"
+                                  : "FAIL: a bypassed drive's type change clicks\n");
+
+    const bool laneRetargetPass = runLaneRetargetTests (modelFile, sampleRate);
+    std::printf (laneRetargetPass ? "PASS: lane latency changes in quick succession move the waiting lane smoothly\n"
+                                  : "FAIL: lane latency changes in quick succession step the waiting lane\n");
+
+    const bool driveLanePass = runDriveSwitchLaneTests (sampleRate);
+    std::printf (driveLanePass ? "PASS: a drive type switch in a split keeps the lanes in line\n"
+                               : "FAIL: a drive type switch in a split misaligns the lanes\n");
+
+    const bool modLevelPass = runModTypeLevelTests (sampleRate);
+    std::printf (modLevelPass ? "PASS: mod_type switches keep the level between the two types' and do not click\n"
+                              : "FAIL: mod_type switches dip, bump or click\n");
+
+    const bool absurdPass = runAbsurdSampleTests (sampleRate, blockSize);
+    std::printf (absurdPass ? "PASS: absurd samples at the input or made inside the chain never reach the host\n"
+                            : "FAIL: an absurd sample reaches the host or latches a state\n");
+
+    const bool headroomPass = runHeadroomTests (sampleRate, blockSize);
+    std::printf (headroomPass ? "PASS: levels above full scale leave the plugin unclipped and finite\n"
+                              : "FAIL: levels above full scale are clipped or not finite\n");
+
     return modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
                    && ampEqPass && factoryPass && concurrentPass && fxPass
                    && modelPathBPass && delayModePass
@@ -6227,6 +7126,8 @@ int main (int argc, char** argv)
                    && modEnginePass && modRtPass
                    && nonFinitePass && togglePass && modSwitchPass && laneChangePass && accountingPass
                    && freshInstallPass && startingPointPass
+                   && latencyThreadPass && bypassedTypePass && laneRetargetPass && driveLanePass && modLevelPass
+                   && absurdPass && headroomPass
                ? 0
                : 1;
 }

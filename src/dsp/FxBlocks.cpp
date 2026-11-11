@@ -24,14 +24,127 @@ float clampCutoff (float hz, double sampleRate)
 // --- mod block ----------------------------------------------------------------
 // The rate range every non-Classic voicing clamps to (Chorus.h, Phaser.h, Tremolo.h).
 constexpr double kModMinRateHz = 0.01, kModMaxRateHz = 20.0;
-// A mod_type change crossfades over the switcher's 20 ms ramp.
-constexpr double kModCrossfadeSeconds = 0.02;
+// A mod_type change crossfades over the engines' own voicing fade [choice: Phaser.cpp and
+// Tremolo.cpp's 40 ms]: two unrelated effects need longer than the drive's 20 ms for the
+// power estimates to ride over a low note's cycle.
+constexpr double kModCrossfadeSeconds = 0.04;
 // ChorusFx's Classic: juce::dsp::Chorus at a 7 ms centre delay swings up to 20 x 0.5 x depth ms.
 constexpr double kClassicChorusCentreMs = 7.0, kClassicChorusSwingMs = 10.0;
+// ChorusFx modes 1-4: the longest line a mode reads (Chorus.cpp, 34 ms) plus its 10 ms wet
+// fade-in after reset, rounded up.
+constexpr double kChorusSettleSeconds = 0.05;
+// The longest a mod_type fade waits for the two engines to stop cancelling [choice: a quarter of
+// the 1 s LFO cycle mod_rate starts at].
+constexpr double kModCrossfadeWaitSeconds = 0.25;
+// Classic chorus: after its wet steps in, ChorusFx's 10 ms fade-in time of the other modes.
+constexpr double kClassicChorusWetSettleSeconds = 0.01;
+// PhaserFx and TremoloFx: Phaser.cpp warms an incoming voicing for 30 ms before it fades.
+constexpr double kModSettleSeconds = 0.03;
 
 // A block switched on or off crossfades its input and its engine over 10 ms.
 constexpr double kBypassFadeSeconds = 0.01;
+
+// PowerCrossfade: Drive.cpp's power estimate and floor (kSwitchPowerSeconds, kSwitchPowerFloor);
+// the correction is bounded at +18 dB as Phaser.cpp's is, not the drive's +10.4 dB: two
+// effects on one note can sit near antiphase for the whole fade, where the drive's two types
+// of one pedal hardly do.
+constexpr double kPowerSeconds = 0.004;
+constexpr double kPowerSlack = 1.0 / (7.943 * 7.943 - 1.0);
+constexpr double kPowerFloor = 1.0e-12;
 } // namespace
+
+//==============================================================================
+// DelayGlide
+//==============================================================================
+void DelayGlide::prepare (double sampleRate) noexcept
+{
+    length = juce::jmax (1, (int) std::lround (kBypassFadeSeconds * sampleRate));
+    done = length;
+    snapNext = true;
+}
+
+//==============================================================================
+// PowerCrossfade
+//==============================================================================
+void PowerCrossfade::prepare (double sampleRate) noexcept
+{
+    coefficient = 1.0 - std::exp (-1.0 / (kPowerSeconds * sampleRate));
+    start (0, 1, 0);
+}
+
+void PowerCrossfade::start (int holdSamples, int lengthSamples, int maxWaitSamples) noexcept
+{
+    std::fill (&power[0][0], &power[0][0] + 6, 0.0);
+    hold = juce::jmax (0, holdSamples);
+    length = juce::jmax (1, lengthSamples);
+    maxWait = juce::jmax (0, maxWaitSamples);
+    elapsed = advanced = waited = 0;
+}
+
+bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChannels, int i) noexcept
+{
+    double a = 0.0, b = 0.0, ab = 0.0;
+
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        const double x = out[ch][i], y = in[ch][i];
+        a += x * x;
+        b += y * y;
+        ab += x * y;
+    }
+
+    const double raw[3] { a, b, ab };
+
+    for (int k = 0; k < 3; ++k)
+    {
+        power[0][k] += coefficient * (raw[k] - power[0][k]);
+        power[1][k] += coefficient * (power[0][k] - power[1][k]);
+    }
+
+    const int position = elapsed++;
+    const double powerOut = power[1][0], powerIn = power[1][1], cross = power[1][2];
+
+    if (position < hold)
+        return false;
+
+    // Two outputs in antiphase cancel where their gained amplitudes meet, and no gain undoes a
+    // null: the ramp starts on a moment where they correlate well enough (or after maxWait).
+    if (advanced == 0)
+    {
+        const double both = std::sqrt (powerOut * powerIn);
+
+        if (both >= kPowerFloor && cross < kMinCorrelation * both && waited < maxWait)
+        {
+            ++waited;
+            return false;
+        }
+    }
+
+    ++advanced;
+
+    const double ramp = advanced / (double) length;
+
+    if (ramp >= 1.0)
+    {
+        for (int ch = 0; ch < numChannels; ++ch)
+            out[ch][i] = in[ch][i];
+
+        return true;
+    }
+
+    const double r = ramp * ramp * (3.0 - 2.0 * ramp);
+    const double gOut = std::cos (0.5 * juce::MathConstants<double>::pi * r);
+    const double gIn = std::sin (0.5 * juce::MathConstants<double>::pi * r);
+    const double want = std::exp ((1.0 - r) * std::log (powerOut + kPowerFloor) + r * std::log (powerIn + kPowerFloor));
+    const double got = gOut * gOut * powerOut + gIn * gIn * powerIn + 2.0 * gOut * gIn * cross;
+    const double slack = kPowerSlack * want + 1.0e-30;
+    const double scale = std::sqrt ((want + slack) / (juce::jmax (0.0, got) + slack));
+
+    for (int ch = 0; ch < numChannels; ++ch)
+        out[ch][i] = (float) (scale * (gOut * out[ch][i] + gIn * in[ch][i]));
+
+    return false;
+}
 
 //==============================================================================
 // BypassFader
@@ -39,10 +152,12 @@ constexpr double kBypassFadeSeconds = 0.01;
 void BypassFader::prepare (const juce::dsp::ProcessSpec& spec)
 {
     chunkSamples = juce::jmax (1, (int) spec.maximumBlockSize);
-    capacity = chunkSamples + kMaxDelaySamples + 1;
+    // The interpolated read reaches two samples past the longest delay.
+    capacity = chunkSamples + kMaxDelaySamples + 4;
     history.setSize (juce::jmax (1, (int) spec.numChannels), capacity);
     step = (float) (1.0 / juce::jmax (1.0, kBypassFadeSeconds * spec.sampleRate));
     settleSamples = (int) std::lround (kBypassFadeSeconds * spec.sampleRate);
+    glide.prepare (spec.sampleRate);
     reset (true);
 }
 
@@ -53,23 +168,7 @@ void BypassFader::reset (bool snapOnFirstUse) noexcept
     wet = 0.0f;
     snap = snapOnFirstUse;
     settle = snapOnFirstUse ? 0 : settleSamples;
-}
-
-void BypassFader::follow (const juce::dsp::AudioBlock<float>& block, bool on) noexcept
-{
-    const int numChannels = juce::jmin ((int) block.getNumChannels(), history.getNumChannels());
-
-    for (int offset = 0; offset < (int) block.getNumSamples();)
-    {
-        const int count = juce::jmin (chunkSamples, (int) block.getNumSamples() - offset);
-        remember (block.getSubBlock ((size_t) offset, (size_t) count), numChannels);
-        write = (write + count) % capacity;
-        offset += count;
-    }
-
-    wet = on ? 1.0f : 0.0f;
-    snap = false;
-    settle = 0;
+    glide.reset();
 }
 
 void BypassFader::remember (const juce::dsp::AudioBlock<float>& block, int numChannels) noexcept
@@ -145,14 +244,23 @@ int Modulation::crossfadeSamples (double sampleRate) noexcept
     return juce::jmax (1, (int) std::lround (kModCrossfadeSeconds * sampleRate));
 }
 
+int Modulation::crossfadeWaitSamples (double sampleRate) noexcept
+{
+    return (int) std::lround (kModCrossfadeWaitSeconds * sampleRate);
+}
+
 int Modulation::crossfadeHoldSamples (const ModParams& p, double sampleRate) noexcept
 {
-    if (juce::jlimit (0, numTypes - 1, p.type) != (int) Type::chorus
-        || juce::jlimit (0, ChorusFx::numModes - 1, p.chorusMode) != (int) ChorusFx::Mode::classic)
-        return 0;
+    if (juce::jlimit (0, numTypes - 1, p.type) != (int) Type::chorus)
+        return (int) std::lround (kModSettleSeconds * sampleRate);
 
+    if (juce::jlimit (0, ChorusFx::numModes - 1, p.chorusMode) != (int) ChorusFx::Mode::classic)
+        return (int) std::lround (kChorusSettleSeconds * sampleRate);
+
+    // ...and then as long again as the others' fade-in, so the power estimates have caught the
+    // wet that just stepped in before the fade leans on them.
     const double longestMs = kClassicChorusCentreMs + kClassicChorusSwingMs * juce::jlimit (0.0, 1.0, (double) p.depth);
-    return (int) std::ceil (longestMs * 0.001 * sampleRate) + 1;
+    return (int) std::ceil (longestMs * 0.001 * sampleRate) + 1 + (int) std::lround (kClassicChorusWetSettleSeconds * sampleRate);
 }
 
 void Modulation::prepare (const juce::dsp::ProcessSpec& spec)
@@ -163,6 +271,7 @@ void Modulation::prepare (const juce::dsp::ProcessSpec& spec)
     outgoingAudio.setSize (juce::jmax (1, (int) spec.numChannels), juce::jmax (1, (int) spec.maximumBlockSize));
     sampleRate = spec.sampleRate;
     fadeLength = crossfadeSamples (spec.sampleRate);
+    crossfade.prepare (spec.sampleRate);
     reset();
 }
 
@@ -201,9 +310,11 @@ void Modulation::configure (int type, bool current)
                 const auto timing = resolveTiming (params, mode == (int) ChorusFx::Mode::classic);
                 chorusSent = { mode, timing.rateHz, params.depth, params.mix, params.width, params.tone, timing.syncPhase };
             }
-            else
+            else if (chorusSent.syncPhase >= 0.0)
             {
-                chorusSent.syncPhase = -1.0;
+                const auto timing = resolveTiming (params, false);
+                chorusSent.rateHz = timing.rateHz;
+                chorusSent.syncPhase = timing.syncPhase;
             }
 
             chorus.setParameters (chorusSent);
@@ -216,9 +327,11 @@ void Modulation::configure (int type, bool current)
                 const auto timing = resolveTiming (params, model == (int) PhaserFx::Model::classic);
                 phaserSent = { model, timing.rateHz, params.depth, params.mix, params.color, timing.syncPhase };
             }
-            else
+            else if (phaserSent.syncPhase >= 0.0)
             {
-                phaserSent.syncPhase = -1.0;
+                const auto timing = resolveTiming (params, false);
+                phaserSent.rateHz = timing.rateHz;
+                phaserSent.syncPhase = timing.syncPhase;
             }
 
             phaser.setParameters (phaserSent);
@@ -232,9 +345,11 @@ void Modulation::configure (int type, bool current)
                 tremoloSent = { voice, timing.rateHz, params.depth, params.mix, params.width, params.tone,
                                 params.shape, params.wave, timing.syncPhase };
             }
-            else
+            else if (tremoloSent.syncPhase >= 0.0)
             {
-                tremoloSent.syncPhase = -1.0;
+                const auto timing = resolveTiming (params, false);
+                tremoloSent.rateHz = timing.rateHz;
+                tremoloSent.syncPhase = timing.syncPhase;
             }
 
             tremolo.setParameters (tremoloSent);
@@ -275,8 +390,7 @@ void Modulation::process (juce::dsp::AudioBlock<float> block)
         outgoing = active;
         active = requested;
         resetEngine (active);
-        fadePosition = 0;
-        fadeHold = crossfadeHoldSamples (params, sampleRate);
+        crossfade.start (crossfadeHoldSamples (params, sampleRate), fadeLength, crossfadeWaitSamples (sampleRate));
     }
 
     // Without room for the outgoing engine's copy (a block larger than prepare() promised)
@@ -298,24 +412,31 @@ void Modulation::process (juce::dsp::AudioBlock<float> block)
     runEngine (outgoing, outgoingBlock);
     runEngine (active, block);
 
-    const int count = juce::jmin ((int) numSamples, fadeHold + fadeLength - fadePosition);
+    constexpr int maxChannels = 8;
+    const int channels = juce::jmin ((int) numChannels, maxChannels);
+    float* heard[maxChannels] {};
+    const float* coming[maxChannels] {};
 
-    for (size_t ch = 0; ch < numChannels; ++ch)
+    for (int ch = 0; ch < channels; ++ch)
     {
-        auto* data = block.getChannelPointer (ch);
-        const auto* old = outgoingBlock.getChannelPointer (ch);
+        heard[ch] = outgoingBlock.getChannelPointer ((size_t) ch);
+        coming[ch] = block.getChannelPointer ((size_t) ch);
+    }
 
-        for (int i = 0; i < count; ++i)
+    int count = (int) numSamples;
+
+    for (int i = 0; i < (int) numSamples; ++i)
+    {
+        if (crossfade.mix (heard, coming, channels, i))
         {
-            const float w = (float) juce::jmax (0, fadePosition + i - fadeHold) / (float) fadeLength;
-            data[i] = old[i] + w * (data[i] - old[i]);
+            count = i + 1;
+            outgoing = -1;
+            break;
         }
     }
 
-    fadePosition += count;
-
-    if (fadePosition >= fadeHold + fadeLength)
-        outgoing = -1;
+    for (int ch = 0; ch < channels; ++ch)
+        juce::FloatVectorOperations::copy (block.getChannelPointer ((size_t) ch), heard[ch], count);
 }
 
 //==============================================================================

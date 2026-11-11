@@ -86,11 +86,14 @@ inline constexpr LegacyTypePin kLegacyTypePins[] {
     without that structure runs exactly the single serial pass it always did.
 
     Latency = the serial section's latency plus the slower lane's, reported via
-    setLatencySamples.
+    setLatencySamples from the message thread only: the audio thread publishes what it applies
+    (audioLatency) and a timer hands it to the host; with no audio running, the message thread
+    works it out itself from the chain and the parameters.
 */
 class TubampAudioProcessor : public juce::AudioProcessor,
                              private juce::AudioProcessorValueTreeState::Listener,
-                             private juce::AsyncUpdater
+                             private juce::AsyncUpdater,
+                             private juce::Timer
 {
 public:
     TubampAudioProcessor();
@@ -246,7 +249,45 @@ public:
     std::array<std::atomic<float>, params::maxInstances> compGrDb {};
 
 private:
+    /** Any thread: the chain, the state or a model changed. On the message thread the figure
+        for the new chain is reported at once; elsewhere the timer picks it up. */
     void updateLatency();
+
+    /** Message thread only, the one place setLatencySamples is called. `chainEdit`: the
+        message thread just changed what the latency depends on, so its own figure stands until
+        the audio thread has run with the change. Otherwise, while audio runs, the audio
+        thread's figure; with none, the message thread's. */
+    void reportLatency (bool chainEdit);
+    void timerCallback() override;
+
+    /** DriveFx's type switch as it moves the drive's output in time (Drive.cpp, DriveFx::Impl::
+        beginSwitch / processSwitch / crossfade), mirrored here because the engine tells only the
+        latency of the type it is heading for. Fed the calls the engine gets, it gives the output
+        delay at every sample: the outgoing type's latency, a rise slid in over the 10 ms the
+        incoming type settles unheard, both at the larger latency through the 20 ms fade, a drop
+        slid out over the 10 ms after it. Audio thread, allocation-free. */
+    class DriveTimeline
+    {
+    public:
+        void prepare (double sampleRate, int maximumBlockSize) noexcept;
+        void reset() noexcept { snap = true; phase = Phase::steady; }
+        /** One DriveFx::process() of `numSamples` with `type` set; `out` (or null) receives the
+            output delay per sample. */
+        void run (int type, int numSamples, float* out) noexcept;
+        bool switching() const noexcept { return phase != Phase::steady; }
+        /** The larger latency of a switch in progress, or the type's own. */
+        int reach() const noexcept { return switching() ? common : latencyOf (active); }
+
+    private:
+        enum class Phase { steady, crossfade, slide };
+        int latencyOf (int type) const noexcept { return DriveFx::latencyFor (type, sampleRate); }
+
+        double sampleRate = 48000.0;
+        int maxBlock = 512, settle = 8, fade = 8, slide = 8;
+        int active = 0, position = 0, common = 0, extraOut = 0, extraIn = 0;
+        Phase phase = Phase::steady;
+        bool snap = true;
+    };
 
     /** Ring capacity for the lanes' latency compensation, and therefore the largest
         lane-to-lane difference that can actually be aligned. Only the DIFFERENCE is
@@ -286,14 +327,16 @@ private:
     ChainLatency computeChainLatency (const chain::BlockId* order, int numBlocks,
                                       bool ampOn, bool amp2On,
                                       bool lanesRunning = true,
-                                      const bool* waiting = nullptr) const noexcept;
+                                      const bool* waiting = nullptr,
+                                      bool audioThread = false) const noexcept;
 
     /** What one chain entry delays the signal by, the term computeChainLatency sums and
-        the gate's deferred curve is delayed by. Any thread (atomics only), except `waiting`:
-        the audio thread passes pendingReset, so a block that waits for its re-entry reset
-        counts what it delays while it waits. */
+        the gate's deferred curve is delayed by. Any thread (atomics only), except `waiting`
+        and `audioThread`: the audio thread passes pendingReset, so a block that waits for its
+        re-entry reset counts what it delays while it waits, and reads a drive's figure from
+        what the drive applies (driveReported) rather than from its parameters. */
     int blockLatency (chain::BlockId id, bool ampOn, bool amp2On,
-                      const bool* waiting = nullptr) const noexcept;
+                      const bool* waiting = nullptr, bool audioThread = false) const noexcept;
 
     /** What the host is told: the serial sections plus the slower lane. */
     int computeWantedLatency (const chain::BlockId* order, int numBlocks,
@@ -309,7 +352,8 @@ private:
     /** The play head, read once per callback. */
     struct HostTransport
     {
-        double bpm = 120.0;        // 120 when the host reports no tempo
+        double bpm = 120.0;        // 120 when the host reports no tempo (the delays' figure)
+        double hostBpm = 0.0;      // the tempo as reported; 0 when none, not positive or not finite
         double ppqPosition = 0.0;  // quarter notes at the callback's first sample
         bool playing = false;      // the host is playing and reported ppqPosition
     };
@@ -319,9 +363,9 @@ private:
     void resetBlockInstance (chain::BlockId id) noexcept;
 
     /** Audio thread: block `id`'s engine processes this callback. True when it must start
-        from its reset first: it holds audio from before it last stopped and runs, or last
-        ran, a non-Classic type. A Classic engine keeps what it held, as it always did. */
-    bool engineStarts (chain::BlockId id, bool classic) noexcept;
+        from its reset first: it holds audio from before it last stopped. Classic types too:
+        a block never replays what it held when it went off. */
+    bool engineStarts (chain::BlockId id) noexcept;
 
     /** Audio thread: runs ONE chain entry over the buffer it is handed. `buf` and
         `block` are two views of the same audio — the host buffer for a serial entry or
@@ -367,12 +411,21 @@ private:
     void mixLanes (juce::AudioBuffer<float>& main, juce::AudioBuffer<float>& lane,
                    int numChannels, int numSamples) noexcept;
 
-    /** Audio thread: delays each lane by its share of the two lanes' latency
-        difference, so the lanes are phase-aligned where they meet and the single
-        latency the host is told about is true for both. Allocation-free — the rings
-        are sized in prepareToPlay. */
+    /** Audio thread: lane A's delay minus lane B's at every sample of this block, into
+        laneDelta: the lanes' blocks by blockLatency, a drive by what it applied sample by
+        sample (driveApplied). */
+    void computeLaneDelta (const chain::BlockId* order, const chain::Structure& structure,
+                           int numSamples, bool ampOn, bool amp2On) noexcept;
+
+    /** Audio thread: delays each lane by its share of the two lanes' latency difference
+        (laneDelta), so the lanes are phase-aligned where they meet and the single latency
+        the host is told about is true for both. A difference that moves smoothly (a drive's
+        own slide) is followed exactly; a jump of up to kLaneSlideSamples slides over 10 ms
+        from wherever the taps are; a larger one crossfades from what is heard to the new
+        taps. Taps are read with 4-point Lagrange interpolation, exact at whole samples.
+        Allocation-free — the rings are sized in prepareToPlay. */
     void compensateLaneLatency (juce::AudioBuffer<float>& laneA, juce::AudioBuffer<float>& laneB,
-                                int numChannels, int numSamples, int delayA, int delayB) noexcept;
+                                int numChannels, int numSamples) noexcept;
 
     // The two amp gains fold the model-metadata compensation into the knob value before
     // it is converted to linear, exactly as the reference plugin's _SetInputGain() /
@@ -644,14 +697,42 @@ private:
     // run last block, so re-entering them cannot replay what the rings were holding.
     std::array<juce::AudioBuffer<float>, 2> laneRing;
     int laneRingWrite = 0;
-    std::array<int, 2> laneRingDelays { 0, 0 };
     bool laneRingPrimed = false;
 
-    /** A lane's alignment delay that changes (the other lane's latency moved) slides from the
-        old tap to the new one over this many samples, reading history the ring already holds:
-        clearing the ring would blank the lane for the length of the delay. */
-    int laneTapFadeSamples = 1, laneTapFadeLeft = 0;
-    std::array<int, 2> laneTapFrom { 0, 0 };
+    /** The largest jump in the lanes' difference that slides rather than crossfades: a drive's
+        latency (5 at most) or a Classic drive's 3 samples, never a model's or a hosted
+        plugin's, whose slide would be heard as a pitch bend. */
+    static constexpr double kLaneSlideSamples = 16.0;
+
+    /** compensateLaneLatency's state. The taps' position is the signed difference (lane A's
+        delay minus lane B's; lane B waits for a positive one, lane A for a negative one):
+        `laneLast` is the previous sample's target, `laneOffset` what a slide still holds back
+        of a jump, and up to two crossfade origins with their weights. Audio thread only. */
+    std::vector<double> laneDelta;
+    double laneLast = 0.0, laneOffset = 0.0, laneOffsetStart = 0.0;
+    int laneSlideLength = 1, laneSlideDone = 1, laneFadeDone = 1;
+    std::array<double, 2> laneFromPos {};
+    std::array<double, 2> laneFromWeight {};
+    int laneFromCount = 0;
+
+    /** Per drive instance: its DriveTimeline, and two rows of driveDelays (engine delay, then
+        the delay the block applied, per sample of the last callback), and the figure the audio
+        thread counts for it (what it applies, a switch or slide taken at its larger end; a
+        Classic drive by the old rule, 3 while drive_on and not waiting). Audio thread only. */
+    std::array<DriveTimeline, params::maxInstances> driveTimeline;
+    juce::AudioBuffer<float> driveDelays;
+    std::array<int, params::maxInstances> driveReported {};
+
+    // The latency hand-over (reportLatency). The audio thread stores, every callback, the
+    // figure it applies with the latencyGeneration it read before decoding the chain, and
+    // counts its callbacks; the message thread bumps the generation whenever it changes the
+    // chain, the state or a model, so it never adopts a figure computed before its own edit.
+    std::atomic<std::uint64_t> audioLatency { 0 };
+    std::atomic<std::uint32_t> latencyGeneration { 0 }, audioCallbacks { 0 };
+    std::atomic<bool> latencyRecheck { false };
+    // Message thread only.
+    std::uint32_t seenCallbacks = 0, lastAudioMs = 0;
+    bool audioSeen = false, idleReported = false;
 
     /** What the previous block ran, for spotting a block re-entering the chain.
         Audio thread only. */
@@ -664,15 +745,15 @@ private:
     std::array<bool, chain::numBlockTypes> pendingReset {};
 
     /** Per block: its engine processed last callback / this callback; it holds audio from
-        before it last stopped; the type it last ran was Classic. Audio thread only. */
+        before it last stopped. Audio thread only. */
     std::array<bool, chain::numBlockTypes> engineRan {}, engineRunsNow {}, engineStale {};
-    std::array<bool, chain::numBlockTypes> engineRanClassic {};
 
-    /** How each block with a non-Classic type goes on and off (one per instance). */
+    /** How each block goes on and off (one per instance), Classic types included. */
     BypassFader gateFader;
     std::array<BypassFader, params::maxInstances> compFader, driveFader, eqFader, modFader;
 
-    /** This callback's gate: whether its gain goes through gateFader, and towards on or off. */
+    /** This callback's gate: whether it is in the chain (its gain goes through gateFader), and
+        towards on or off. */
     bool gateFading = false, gateFadeOn = false;
 
     // Written on the message thread; also read by getStateInformation, which hosts

@@ -27,8 +27,39 @@ constexpr double kGainSmoothingSeconds = 0.02;
 // re-enters many blocks to a few callbacks of extra silence for the stragglers.
 constexpr int kMaxResetsPerCallback = 2;
 
-// A lane whose alignment delay changes slides to the new one over this long (BypassFader's 10 ms).
+// A lane whose alignment delay jumps slides, or crossfades, to the new one over this long
+// (BypassFader's 10 ms).
 constexpr double kLaneTapFadeSeconds = 0.01;
+
+// The parameters a latency depends on besides the chain, the models and the hosted plugins.
+// Their listeners only raise a flag off the message thread (reportLatency).
+constexpr const char* kLatencyParameterIds[] { params::driveOn, params::drive2On, params::drive3On,
+                                               params::driveType, params::drive2Type, params::drive3Type,
+                                               params::ampOn, params::amp2On };
+
+// How often the message thread hands the audio thread's latency to the host, and how long after
+// the last audio callback it counts the audio as stopped (longer than any host's block).
+constexpr int kLatencyTimerMs = 20;
+constexpr std::uint32_t kAudioIdleMs = 500;
+
+// A sample this large or larger is no audio signal (+120 dBFS): the engines treat it as
+// non-finite, and so does the processor, at its input and at its output.
+constexpr float kAbsurdSample = 1.0e6f;
+
+/** Replaces every non-finite sample, and every one of kAbsurdSample or more, with 0; anything
+    else is left as it is, bit for bit. */
+void zeroAbsurd (float* data, int numSamples) noexcept
+{
+    for (int n = 0; n < numSamples; ++n)
+        if (! (std::abs (data[n]) < kAbsurdSample))
+            data[n] = 0.0f;
+}
+
+double smoothstep (double x) noexcept
+{
+    x = juce::jlimit (0.0, 1.0, x);
+    return x * x * (3.0 - 2.0 * x);
+}
 
 /** split_mode's choice order, frozen with the parameter (docs/SPLIT.md §2). */
 enum class SplitMode { copy = 0, leftRight = 1, crossover = 2 };
@@ -413,6 +444,11 @@ TubampAudioProcessor::TubampAudioProcessor()
     pendingSlim.store (valueOf (raw (params::ampSlim)), std::memory_order_relaxed);
     apvts.addParameterListener (params::ampSlim, this);
 
+    for (const auto* id : kLatencyParameterIds)
+        apvts.addParameterListener (id, this);
+
+    startTimer (kLatencyTimerMs);
+
     // Single chokepoint: FxHost fires this before retiring any instance, whatever
     // caused the retire (UI, preset, A/B, host state restore), so the editor always
     // gets to close a hosted plugin's window before the plugin behind it dies.
@@ -427,7 +463,12 @@ TubampAudioProcessor::TubampAudioProcessor()
 
 TubampAudioProcessor::~TubampAudioProcessor()
 {
+    stopTimer();
     apvts.removeParameterListener (params::ampSlim, this);
+
+    for (const auto* id : kLatencyParameterIds)
+        apvts.removeParameterListener (id, this);
+
     cancelPendingUpdate();
     *aliveFlag = false;
 
@@ -451,7 +492,68 @@ void TubampAudioProcessor::parameterChanged (const juce::String& parameterID, fl
     {
         pendingSlim.store (newValue, std::memory_order_relaxed);
         triggerAsyncUpdate();
+        return;
     }
+
+    // One of kLatencyParameterIds. Host automation calls this on the audio thread, where only
+    // the flag may be touched; the timer then reports, or a message-thread change does at once.
+    latencyRecheck.store (true, std::memory_order_release);
+
+    if (juce::MessageManager::existsAndIsCurrentThread())
+        reportLatency (false);
+}
+
+void TubampAudioProcessor::timerCallback()
+{
+    reportLatency (false);
+}
+
+void TubampAudioProcessor::reportLatency (bool chainEdit)
+{
+    const auto now = juce::Time::getMillisecondCounter();
+    const auto callbacks = audioCallbacks.load (std::memory_order_acquire);
+
+    if (callbacks != seenCallbacks)
+    {
+        seenCallbacks = callbacks;
+        lastAudioMs = now;
+        audioSeen = true;
+    }
+
+    const bool audioRunning = audioSeen && now - lastAudioMs < kAudioIdleMs;
+    const bool recheck = latencyRecheck.exchange (false, std::memory_order_acq_rel);
+    int wanted = 0;
+
+    if (audioRunning && ! chainEdit)
+    {
+        idleReported = false;
+        const auto published = audioLatency.load (std::memory_order_acquire);
+
+        // Computed before the message thread's last edit: wait for a callback that saw it.
+        if ((std::uint32_t) (published >> 32) != latencyGeneration.load (std::memory_order_acquire))
+            return;
+
+        wanted = (int) (std::uint32_t) published;
+    }
+    else
+    {
+        if (! chainEdit && ! recheck && idleReported)
+            return;
+
+        idleReported = ! audioRunning;
+
+        chain::Order orderCopy;
+
+        {
+            const juce::ScopedLock sl (chainLock);
+            orderCopy = uiChainOrder;
+        }
+
+        wanted = computeWantedLatency (orderCopy.data(), (int) orderCopy.size(), isOn (pp.ampOn), isOn (pp.amp2On));
+    }
+
+    if (wanted != getLatencySamples())
+        setLatencySamples (wanted);
 }
 
 void TubampAudioProcessor::handleAsyncUpdate()
@@ -917,7 +1019,13 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     engineRan.fill (false);
     engineRunsNow.fill (false);
     engineStale.fill (false);
-    engineRanClassic.fill (true);
+
+    for (auto& timeline : driveTimeline)
+        timeline.prepare (sampleRate, juce::jmax (1, samplesPerBlock));
+
+    driveDelays.setSize (2 * params::maxInstances, juce::jmax (1, samplesPerBlock), false, false, true);
+    driveDelays.clear();
+    driveReported.fill (0);
 
     splitLow.prepare (spec);
     splitLow.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
@@ -960,11 +1068,12 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     }
 
     laneRingWrite = 0;
-    laneRingDelays = { 0, 0 };
     laneRingPrimed = false;
-    laneTapFadeSamples = juce::jmax (1, (int) std::lround (kLaneTapFadeSeconds * sampleRate));
-    laneTapFadeLeft = 0;
-    laneTapFrom = { 0, 0 };
+    laneDelta.assign ((size_t) juce::jmax (1, samplesPerBlock), 0.0);
+    laneSlideLength = juce::jmax (1, (int) std::lround (kLaneTapFadeSeconds * sampleRate));
+    laneSlideDone = laneFadeDone = laneSlideLength;
+    laneLast = laneOffset = laneOffsetStart = 0.0;
+    laneFromCount = 0;
 
     for (auto* smoothed : { &inputTrimLin, &outputLevelLin, &ampInLin, &ampOutLin,
                             &amp2InLin, &amp2OutLin, &mixLevelLin })
@@ -1047,16 +1156,15 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     // A non-finite sample from the host would live on in every recursive state it reached (the
     // always-on DC blocker first) and leave the plugin silent or non-finite until the next
-    // prepare: it becomes silence here, before anything reads it, on every channel and so on
-    // every path. Finite input passes untouched.
+    // prepare, and one near FLT_MAX overflows to infinity in the input trim: either becomes
+    // silence here, before anything reads it, on every channel and so on every path. Input
+    // below kAbsurdSample passes untouched.
     for (int ch = 0; ch < juce::jmin (buffer.getNumChannels(), numOutputChannels); ++ch)
-    {
-        auto* data = buffer.getWritePointer (ch);
+        zeroAbsurd (buffer.getWritePointer (ch), numSamples);
 
-        for (int n = 0; n < numSamples; ++n)
-            if (! std::isfinite (data[n]))
-                data[n] = 0.0f;
-    }
+    // Read before the order is decoded: a figure published with this generation was computed
+    // from an order at least as new as the message thread's edit that set it.
+    const auto generation = latencyGeneration.load (std::memory_order_acquire);
 
     // Adopt a staged model before anything reads it, on both engines and whatever the
     // chain looks like: a swap staged into B must never sit there going stale because
@@ -1075,7 +1183,12 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         if (const auto position = playHead->getPosition())
         {
             if (const auto bpm = position->getBpm(); bpm.hasValue() && *bpm > 0.0)
+            {
                 transport.bpm = *bpm;
+
+                if (std::isfinite (*bpm))
+                    transport.hostBpm = *bpm;
+            }
 
             if (const auto ppq = position->getPpqPosition(); ppq.hasValue() && position->getIsPlaying())
             {
@@ -1182,21 +1295,6 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         ++drained;
     }
 
-    // Report latency from here, where the topology is known and the resets are drained: only
-    // blocks that are actually in the path delay the signal, by what they delay it this block
-    // (a block still waiting for its reset included), and lanes cost what the slower one costs.
-    // Hosts tolerate latency changes reported from the audio thread (same contract as the old
-    // staging-time report).
-    const auto chainLatency = computeChainLatency (order.data(), numBlocks, ampOn, amp2On, lanes,
-                                                   pendingReset.data());
-
-    {
-        const int wantedLatency = chainLatency.reported();
-
-        if (wantedLatency != getLatencySamples())
-            setLatencySamples (wantedLatency);
-    }
-
     // Gate split: the trigger always measures at the gate's own position. The reduction
     // is deferred onto the model's mono output only when the amp runs later in the SAME
     // segment; across a split there is no shared post-model point to gate at (the other
@@ -1204,12 +1302,10 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // split every entry is in segment 0 and this is exactly the old rule. A gate whose
     // re-entry reset is still pending runs as bypassed, like every other block.
     const bool gateRuns = gateOn && ! pendingReset[(size_t) chain::BlockId::gate];
-    const int gateMode = juce::jlimit (0, GateFx::numModes - 1,
-                                       (int) valueOf (pp.gateMode, (float) GateFx::Mode::tight));
 
-    // Tight and Smooth fade their gain in and out; the gate measures, and its curve lands,
-    // until a fade out is over.
-    gateFading = present[(size_t) chain::BlockId::gate] && gateMode != (int) GateFx::Mode::classic;
+    // The gate fades its gain in and out, Classic too; it measures, and its curve lands, until a
+    // fade out is over.
+    gateFading = present[(size_t) chain::BlockId::gate];
     gateFadeOn = gateRuns;
     const bool gateEngine = gateFading ? gateFader.needsEngine (gateRuns) : gateRuns;
     const bool deferGateToAmp = gateEngine && ampOn && gateIndex >= 0 && ampIndex > gateIndex
@@ -1224,7 +1320,7 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
         if (deferGateToAmp)
             for (int i = gateIndex + 1; i <= ampIndex; ++i)
-                curveDelay += blockLatency (order[(size_t) i], ampOn, amp2On, pendingReset.data());
+                curveDelay += blockLatency (order[(size_t) i], ampOn, amp2On, pendingReset.data(), true);
 
         gate.setCurveDelay (juce::jmin (curveDelay, GateFx::kMaxCurveDelaySamples));
     }
@@ -1309,11 +1405,10 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         for (int i = structure.lane2At + 1; i < structure.mixAt; ++i)
             runEntry (i, laneBuffer, laneBlock);
 
-        // The shorter lane waits for the longer one, so the two line up where they meet
-        // and the single figure reported to the host is true for both.
-        const int maxLane = juce::jmax (chainLatency.laneA, chainLatency.laneB);
-        compensateLaneLatency (buffer, laneBuffer, numOutputChannels, numSamples,
-                               maxLane - chainLatency.laneA, maxLane - chainLatency.laneB);
+        // The shorter lane waits for the longer one, sample by sample, so the two line up
+        // where they meet and the single figure reported to the host is true for both.
+        computeLaneDelta (order.data(), structure, numSamples, ampOn, amp2On);
+        compensateLaneLatency (buffer, laneBuffer, numOutputChannels, numSamples);
 
         mixLanes (buffer, laneBuffer, numOutputChannels, numSamples);
 
@@ -1332,6 +1427,23 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     engineRan = engineRunsNow;
     engineRunsNow.fill (false);
+
+    // What the chain applied this callback, counted after it ran (a drive's figure is what it
+    // applies): published for the message thread, which alone reports it (reportLatency).
+    {
+        const auto chainLatency = computeChainLatency (order.data(), numBlocks, ampOn, amp2On, lanes,
+                                                       pendingReset.data(), true);
+        audioLatency.store (((std::uint64_t) generation << 32) | (std::uint32_t) chainLatency.reported(),
+                            std::memory_order_release);
+        audioCallbacks.fetch_add (1, std::memory_order_release);
+    }
+
+    // A non-finite or absurd value made inside the chain (a hosted plugin, the neural model, an
+    // engine pushed past float range) must neither reach the host nor live on in the DC blocker:
+    // it becomes silence here, and the next callback starts clean. Anything below kAbsurdSample
+    // (+120 dBFS, far above a full-scale input through every gain stage) passes untouched.
+    for (int ch = 0; ch < numOutputChannels; ++ch)
+        zeroAbsurd (buffer.getWritePointer (ch), numSamples);
 
     // --- DC blocker: always on, never user-facing (spec §4 step 7)
     dcBlocker.process (block);
@@ -1436,7 +1548,7 @@ ModParams TubampAudioProcessor::modParams (int instance, const HostTransport& tr
     mp.shape       = valueOf (pp.modShape[k], 0.5f);
     mp.wave        = valueOf (pp.modWave[k]);
     mp.color       = valueOf (pp.modColor[k], 1.0f) > 0.5f;
-    mp.bpm         = transport.bpm;
+    mp.bpm         = transport.hostBpm;
     mp.ppqPosition = transport.ppqPosition;
     mp.playing     = transport.playing;
     return mp;
@@ -1544,7 +1656,7 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
             }
             else
             {
-                if (engineStarts (id, ! gateFading))
+                if (engineStarts (id))
                 {
                     gate.reset();
                     gateFader.restart();
@@ -1574,25 +1686,17 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         {
             const auto cp = compParams ((int) k);
             const bool runs = isOn (pp.compOn[k]) && ! pendingReset[(size_t) id];
-            const bool classic = juce::jlimit (0, CompFx::numTypes - 1, cp.type) == (int) CompFx::Type::classic;
 
-            if (classic)
-                compFader[k].follow (block, runs);
-
-            if (classic ? runs : compFader[k].needsEngine (runs))
+            if (compFader[k].needsEngine (runs))
             {
-                if (engineStarts (id, classic))
+                if (engineStarts (id))
                 {
                     comp[k].reset();
                     compFader[k].restart();
                 }
 
                 comp[k].setParameters (cp);
-
-                if (classic)
-                    comp[k].process (block);
-                else
-                    compFader[k].process (block, runs, 0, [this, k] (juce::dsp::AudioBlock<float> sub) { comp[k].process (sub); });
+                compFader[k].process (block, runs, 0, [this, k] (juce::dsp::AudioBlock<float> sub) { comp[k].process (sub); });
 
                 if (runs)
                     publishMax (compGrDb[k], comp[k].getGainReductionDb());
@@ -1600,10 +1704,7 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
             else
             {
                 comp[k].setParameters (cp);
-
-                if (! classic)
-                    compFader[k].process (block, false, 0, [] (juce::dsp::AudioBlock<float>) {});
-
+                compFader[k].process (block, false, 0, [] (juce::dsp::AudioBlock<float>) {});
                 comp[k].skip (numSamples);
             }
 
@@ -1611,7 +1712,10 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         }
 
         // --- drive. A non-Classic drive holds its input back by its latency while it is off
-        // or waiting, which is why its latency stays counted then (blockLatency).
+        // or waiting, which is why its latency stays counted then (blockLatency). A Classic one
+        // delays nothing while off and 3 samples while it runs: its input path slides between
+        // the two while the engine settles unheard (on) and after its fade (off), so the fade
+        // itself always meets the engine in line.
         case chain::BlockId::drive:
         case chain::BlockId::drive2:
         case chain::BlockId::drive3:
@@ -1620,37 +1724,49 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
             const bool runs = isOn (pp.driveOn[k]) && ! pendingReset[(size_t) id];
             const int type = juce::jlimit (0, DriveFx::numTypes - 1, dp.type);
             const bool classic = type == (int) DriveFx::Type::classic;
+            const bool engine = driveFader[k].needsEngine (runs);
+            const double rate = preparedSampleRate.load (std::memory_order_relaxed);
 
-            if (classic)
+            if (engine)
             {
-                driveFader[k].follow (block, runs);
-
-                if (runs)
-                {
-                    if (engineStarts (id, true))
-                        drive[k].reset();
-
-                    drive[k].setParameters (dp);
-                    drive[k].process (block);
-                }
-
-                break;
-            }
-
-            if (driveFader[k].needsEngine (runs))
-            {
-                if (engineStarts (id, false))
+                if (engineStarts (id))
                 {
                     drive[k].reset();
+                    driveTimeline[k].reset();
                     driveFader[k].restart();
                 }
 
                 drive[k].setParameters (dp);
             }
 
-            driveFader[k].process (block, runs,
-                                   DriveFx::latencyFor (type, preparedSampleRate.load (std::memory_order_relaxed)),
-                                   [this, k] (juce::dsp::AudioBlock<float> sub) { drive[k].process (sub); });
+            // Too big a block for the delay rows (larger than prepareToPlay promised: the lanes run
+            // flat then, so nothing reads them): the timeline still follows the engine.
+            const bool tracked = numSamples <= driveDelays.getNumSamples();
+            float* const engineDelay = tracked ? driveDelays.getWritePointer (2 * (int) k) : nullptr;
+            float* const applied = tracked ? driveDelays.getWritePointer (2 * (int) k + 1) : nullptr;
+            const float* const blockStart = block.getChannelPointer (0);
+
+            driveFader[k].process (block, runs, classic ? 0.0 : (double) DriveFx::latencyFor (type, rate), engineDelay,
+                                   [this, k, type, engineDelay, blockStart] (juce::dsp::AudioBlock<float> sub)
+                                   {
+                                       const auto offset = sub.getChannelPointer (0) - blockStart;
+                                       driveTimeline[k].run (type, (int) sub.getNumSamples(),
+                                                             engineDelay != nullptr ? engineDelay + offset : nullptr);
+                                       drive[k].process (sub);
+                                   },
+                                   applied);
+
+            // The figure counted for it: what it applies, a switch or a slide taken at its larger
+            // end; a Classic drive by the old rule, which knows only drive_on (D-7).
+            int reported = classic ? (runs ? DriveFx::latencyFor (type, rate) : 0) : DriveFx::latencyFor (type, rate);
+
+            if (engine && driveTimeline[k].switching())
+                reported = juce::jmax (reported, driveTimeline[k].reach());
+
+            if (! classic)
+                reported = juce::jmax (reported, (int) std::ceil (driveFader[k].delayReach() - 1.0e-6));
+
+            driveReported[k] = reported;
             break;
         }
 
@@ -1721,27 +1837,10 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         {
             const auto ep = eqParams ((int) k);
             const bool runs = isOn (pp.eqOn[k]) && ! pendingReset[(size_t) id];
-            const bool classic = juce::jlimit (0, EqFx::numTypes - 1, ep.type) == (int) EqFx::Type::classic;
-
-            if (classic)
-            {
-                eqFader[k].follow (block, runs);
-
-                if (runs)
-                {
-                    if (engineStarts (id, true))
-                        eq[k].reset();
-
-                    eq[k].setParameters (ep);
-                    eq[k].process (block);
-                }
-
-                break;
-            }
 
             if (eqFader[k].needsEngine (runs))
             {
-                if (engineStarts (id, false))
+                if (engineStarts (id))
                 {
                     eq[k].reset();
                     eqFader[k].restart();
@@ -1759,33 +1858,14 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         case chain::BlockId::mod2:
         case chain::BlockId::mod3:
         {
+            // Voicing and colour switches go straight to the running engine, which fades them
+            // itself: nothing here resets or fades for them.
             const auto mp = modParams ((int) k, transport);
             const bool runs = isOn (pp.modOn[k]) && ! pendingReset[(size_t) id];
-            const int type = juce::jlimit (0, Modulation::numTypes - 1, mp.type);
-            const int voicing = type == (int) Modulation::Type::chorus ? mp.chorusMode
-                              : type == (int) Modulation::Type::phaser ? mp.phaserModel
-                                                                       : mp.tremVoice;
-            const bool classic = voicing <= 0;
-
-            if (classic)
-            {
-                modFader[k].follow (block, runs);
-
-                if (runs)
-                {
-                    if (engineStarts (id, true))
-                        modulation[k].reset();
-
-                    modulation[k].setParameters (mp);
-                    modulation[k].process (block);
-                }
-
-                break;
-            }
 
             if (modFader[k].needsEngine (runs))
             {
-                if (engineStarts (id, false))
+                if (engineStarts (id))
                 {
                     modulation[k].reset();
                     modFader[k].restart();
@@ -1891,14 +1971,13 @@ void TubampAudioProcessor::applyGate (juce::dsp::AudioBlock<float> block, int nu
         gate.apply (block, numSamples);
 }
 
-bool TubampAudioProcessor::engineStarts (chain::BlockId id, bool classic) noexcept
+bool TubampAudioProcessor::engineStarts (chain::BlockId id) noexcept
 {
     const auto index = (size_t) id;
-    const bool startsFresh = engineStale[index] && ! (classic && engineRanClassic[index]);
+    const bool startsFresh = engineStale[index];
 
     engineRunsNow[index] = true;
     engineStale[index] = false;
-    engineRanClassic[index] = classic;
     return startsFresh;
 }
 
@@ -2045,24 +2124,46 @@ void TubampAudioProcessor::mixLanes (juce::AudioBuffer<float>& main, juce::Audio
     applySmoothedGain (main, numSamples, mixLevelLin);
 }
 
+void TubampAudioProcessor::computeLaneDelta (const chain::BlockId* order, const chain::Structure& structure,
+                                             int numSamples, bool ampOn, bool amp2On) noexcept
+{
+    const int n = juce::jmin (numSamples, (int) laneDelta.size());
+    int fixed = 0;
+
+    for (int i = structure.splitAt + 1; i < structure.mixAt; ++i)
+        if (i != structure.lane2At && chain::kindOf (order[i]) != chain::BlockId::drive)
+            fixed += (i < structure.lane2At ? 1 : -1) * blockLatency (order[i], ampOn, amp2On, pendingReset.data(), true);
+
+    std::fill (laneDelta.begin(), laneDelta.begin() + n, (double) fixed);
+
+    for (int i = structure.splitAt + 1; i < structure.mixAt; ++i)
+    {
+        if (i == structure.lane2At || chain::kindOf (order[i]) != chain::BlockId::drive)
+            continue;
+
+        const float* applied = driveDelays.getReadPointer (2 * chain::instanceOf (order[i]) + 1);
+        const double sign = i < structure.lane2At ? 1.0 : -1.0;
+
+        for (int s = 0; s < n; ++s)
+            laneDelta[(size_t) s] += sign * applied[s];
+    }
+}
+
 void TubampAudioProcessor::compensateLaneLatency (juce::AudioBuffer<float>& laneA,
                                                   juce::AudioBuffer<float>& laneB,
-                                                  int numChannels, int numSamples,
-                                                  int delayA, int delayB) noexcept
+                                                  int numChannels, int numSamples) noexcept
 {
     const int capacity = laneRing[0].getNumSamples();
 
-    if (numChannels < 1 || laneRing[1].getNumSamples() != capacity || capacity < 2)
+    if (numChannels < 1 || laneRing[1].getNumSamples() != capacity || capacity < 8
+        || numSamples > (int) laneDelta.size())
         return;
 
     // The ring is sized for realistic hosted-plugin lookahead (kLaneLatencyRingSamples),
     // and ChainLatency::reported() caps what the host is told at the same figure — so a
     // pairing that lands here is one neither the ring nor the report can align, and the
     // clamp keeps it quiet rather than out of bounds.
-    jassert (delayA < capacity && delayB < capacity);
-
-    const std::array<int, 2> delays { juce::jlimit (0, capacity - 1, delayA),
-                                      juce::jlimit (0, capacity - 1, delayB) };
+    const double limit = (double) (capacity - 4);
 
     if (! laneRingPrimed)
     {
@@ -2070,82 +2171,149 @@ void TubampAudioProcessor::compensateLaneLatency (juce::AudioBuffer<float>& lane
         laneRing[0].clear();
         laneRing[1].clear();
         laneRingWrite = 0;
-        laneRingDelays = delays;
-        laneTapFadeLeft = 0;
-    }
-    else if (delays != laneRingDelays)
-    {
-        // A latency moved in one lane (a model swap, a drive switched or retyped, a hosted
-        // plugin landing): each lane's tap slides from its old delay to the new one over the
-        // history the ring already holds, so neither lane drops or skips a sample. A change in
-        // the middle of a slide starts the next one from where that one was going.
-        laneTapFrom = laneRingDelays;
-        laneRingDelays = delays;
-        laneTapFadeLeft = laneTapFadeSamples;
+        laneLast = juce::jlimit (-limit, limit, laneDelta[0]);
+        laneOffset = laneOffsetStart = 0.0;
+        laneSlideDone = laneFadeDone = laneSlideLength;
+        laneFromCount = 0;
     }
 
     juce::AudioBuffer<float>* const lanes[2] { &laneA, &laneB };
-    const int fadeLeft = laneTapFadeLeft;
+    const int channels = juce::jmin (numChannels, laneRing[0].getNumChannels());
+    const double length = (double) laneSlideLength;
 
-    for (int lane = 0; lane < 2; ++lane)
+    // Lane 0 (A) waits for a negative difference, lane 1 (B) for a positive one.
+    const auto delayOf = [] (int lane, double position) { return juce::jmax (0.0, lane == 0 ? -position : position); };
+
+    const auto read = [&] (const float* ring, int write, double d) noexcept
     {
-        const int delay = delays[(size_t) lane];
-        const int from = laneTapFrom[(size_t) lane];
-        const bool sliding = fadeLeft > 0 && from != delay;
+        const auto at = [&] (int back) { int index = write - back; if (index < 0) index += capacity; return ring[index]; };
+        const int whole = (int) d;
 
-        for (int ch = 0; ch < juce::jmin (numChannels, laneRing[(size_t) lane].getNumChannels()); ++ch)
+        if (juce::exactlyEqual ((double) whole, d))
+            return at (whole);
+
+        // Taps whole - 1 ... whole + 2, shifted up where whole - 1 would be in the future.
+        const int b = juce::jmax (0, whole - 1);
+        const double x = d - b;
+        const double w0 = -(x - 1.0) * (x - 2.0) * (x - 3.0) * (1.0 / 6.0);
+        const double w1 = x * (x - 2.0) * (x - 3.0) * 0.5;
+        const double w2 = -x * (x - 1.0) * (x - 3.0) * 0.5;
+        const double w3 = x * (x - 1.0) * (x - 2.0) * (1.0 / 6.0);
+        return (float) (w0 * at (b) + w1 * at (b + 1) + w2 * at (b + 2) + w3 * at (b + 3));
+    };
+
+    int write = laneRingWrite;
+
+    for (int n = 0; n < numSamples; ++n)
+    {
+        const double target = juce::jlimit (-limit, limit, laneDelta[(size_t) n]);
+        const double jump = target - laneLast;
+
+        if (std::abs (jump) > DelayGlide::kJumpSamples)
         {
-            auto* ring = laneRing[(size_t) lane].getWritePointer (ch);
-            auto* data = lanes[lane]->getWritePointer (ch);
-            int write = laneRingWrite, left = fadeLeft;
+            const double heard = laneLast + laneOffset;
 
-            for (int n = 0; n < numSamples; ++n)
+            if (std::abs (jump) <= kLaneSlideSamples)
             {
-                // Written before it is read, so the read (at least one sample behind) can never
-                // see what this iteration just stored — which is what makes a block longer than
-                // the ring harmless. A lane that waits for nothing is still written: its history
-                // is what a later delay, or a slide, reads.
-                ring[write] = data[n];
+                // A small jump slides out from where the taps are now (a second one retargets).
+                laneOffset = laneOffsetStart = heard - target;
+                laneSlideDone = 0;
+            }
+            else
+            {
+                // A large one crossfades from what is heard now. Inside a crossfade that is
+                // three taps; the weakest is dropped (two large jumps within 10 ms).
+                std::array<double, 3> pos { heard, 0.0, 0.0 }, weight { 1.0, 0.0, 0.0 };
+                int count = 1;
 
-                if (delay != 0 || sliding)
+                if (laneFadeDone < laneSlideLength)
                 {
-                    int read = write - delay;
+                    const double h = smoothstep (laneFadeDone / length);
+                    weight[0] = h;
 
-                    if (read < 0)
-                        read += capacity;
-
-                    const float now = ring[read];
-
-                    if (sliding && left > 0)
+                    for (int j = 0; j < laneFromCount; ++j, ++count)
                     {
-                        int readFrom = write - from;
-
-                        if (readFrom < 0)
-                            readFrom += capacity;
-
-                        data[n] = now + ((float) left / (float) laneTapFadeSamples) * (ring[readFrom] - now);
-                        --left;
-                    }
-                    else
-                    {
-                        data[n] = now;
+                        pos[(size_t) count] = laneFromPos[(size_t) j];
+                        weight[(size_t) count] = (1.0 - h) * laneFromWeight[(size_t) j];
                     }
                 }
 
-                if (++write == capacity)
-                    write = 0;
+                if (count == 3)
+                {
+                    const auto weakest = (size_t) std::distance (weight.begin(), std::min_element (weight.begin(), weight.end()));
+                    pos[weakest] = pos[2];
+                    weight[weakest] = weight[2];
+                    count = 2;
+                }
+
+                const double total = juce::jmax (1.0e-12, weight[0] + (count > 1 ? weight[1] : 0.0));
+                laneFromCount = count;
+
+                for (int j = 0; j < count; ++j)
+                {
+                    laneFromPos[(size_t) j] = pos[(size_t) j];
+                    laneFromWeight[(size_t) j] = weight[(size_t) j] / total;
+                }
+
+                laneOffset = laneOffsetStart = 0.0;
+                laneSlideDone = laneSlideLength;
+                laneFadeDone = 0;
             }
         }
+
+        laneLast = target;
+
+        if (laneSlideDone < laneSlideLength)
+            laneOffset = laneOffsetStart * (1.0 - smoothstep (++laneSlideDone / length));
+
+        const bool fading = laneFadeDone < laneSlideLength;
+        const double h = fading ? smoothstep (++laneFadeDone / length) : 1.0;
+        const double position = target + laneOffset;
+
+        for (int lane = 0; lane < 2; ++lane)
+        {
+            const double d = delayOf (lane, position);
+
+            for (int ch = 0; ch < channels; ++ch)
+            {
+                auto* ring = laneRing[(size_t) lane].getWritePointer (ch);
+                auto& sample = lanes[lane]->getWritePointer (ch)[n];
+
+                // Written before it is read, so the read (at least one sample behind, or this
+                // very sample at no delay) never sees a sample from a ring's length ago — which
+                // is what makes a block longer than the ring harmless. A lane that waits for
+                // nothing is still written: its history is what a later delay reads.
+                ring[write] = sample;
+
+                if (! fading)
+                {
+                    if (d != 0.0)
+                        sample = read (ring, write, d);
+
+                    continue;
+                }
+
+                double mixed = h * read (ring, write, d);
+
+                for (int j = 0; j < laneFromCount; ++j)
+                    mixed += (1.0 - h) * laneFromWeight[(size_t) j] * read (ring, write, delayOf (lane, laneFromPos[(size_t) j]));
+
+                sample = (float) mixed;
+            }
+        }
+
+        if (++write == capacity)
+            write = 0;
     }
 
-    laneTapFadeLeft = juce::jmax (0, fadeLeft - numSamples);
-    laneRingWrite = (laneRingWrite + numSamples) % capacity;
+    laneRingWrite = write;
 }
 
 TubampAudioProcessor::ChainLatency
 TubampAudioProcessor::computeChainLatency (const chain::BlockId* order, int numBlocks,
                                            bool ampOn, bool amp2On,
-                                           bool lanesRunning, const bool* waiting) const noexcept
+                                           bool lanesRunning, const bool* waiting,
+                                           bool audioThread) const noexcept
 {
     ChainLatency result;
 
@@ -2176,7 +2344,7 @@ TubampAudioProcessor::computeChainLatency (const chain::BlockId* order, int numB
 
     for (int i = 0; i < numBlocks; ++i)
     {
-        const int latency = blockLatency (order[i], ampOn, amp2On, waiting);
+        const int latency = blockLatency (order[i], ampOn, amp2On, waiting, audioThread);
 
         if (latency == 0)
             continue;
@@ -2193,7 +2361,7 @@ TubampAudioProcessor::computeChainLatency (const chain::BlockId* order, int numB
 }
 
 int TubampAudioProcessor::blockLatency (chain::BlockId id, bool ampOn, bool amp2On,
-                                        const bool* waiting) const noexcept
+                                        const bool* waiting, bool audioThread) const noexcept
 {
     // A resampler's latency only reaches the signal when its block actually runs:
     // in the published order AND enabled. Otherwise it contributes zero, so hosts
@@ -2210,10 +2378,16 @@ int TubampAudioProcessor::blockLatency (chain::BlockId id, bool ampOn, bool amp2
     // chain, the FX-slot rule: bypassed or waiting for its reset it holds its input back by the
     // same amount (BypassFader), so switching it crossfades without moving the audio in time.
     // Classic keeps the amp's rule (FX-ENGINES.md D-7) — delaying a bypassed Classic drive
-    // would change old sessions — and counts only while it runs.
+    // would change old sessions — and counts only while it runs. The audio thread counts what
+    // the drive applies instead (driveReported): during a type switch, or a slide of its delay,
+    // the larger of the two figures until it is over.
     if (chain::kindOf (id) == chain::BlockId::drive)
     {
         const auto k = (size_t) chain::instanceOf (id);
+
+        if (audioThread)
+            return driveReported[k];
+
         const int type = juce::jlimit (0, DriveFx::numTypes - 1, (int) valueOf (pp.driveType[k]));
         const int latency = DriveFx::latencyFor (type, preparedSampleRate.load (std::memory_order_relaxed));
 
@@ -2244,30 +2418,104 @@ int TubampAudioProcessor::computeWantedLatency (const chain::BlockId* order, int
 
 void TubampAudioProcessor::updateLatency()
 {
-    // The mirror, not the packed word: this runs on the message thread (and on the
-    // host's restore threads), where the pair behind chainLock is the source of truth.
-    // The audio thread reports its own latency inline in processBlock, through the same
-    // rule — lane membership included, which is why the whole order is copied here and
-    // not just a present[] table.
-    chain::Order orderCopy;
+    // Whatever the audio thread published before this edit is now out of date.
+    latencyGeneration.fetch_add (1, std::memory_order_acq_rel);
 
+    // Restores and offline prepares come from the host's own threads, where the latency must
+    // not be reported (setLatencySamples from two threads): the timer picks it up.
+    if (juce::MessageManager::existsAndIsCurrentThread())
+        reportLatency (true);
+    else
+        latencyRecheck.store (true, std::memory_order_release);
+}
+
+void TubampAudioProcessor::DriveTimeline::prepare (double rate, int maximumBlockSize) noexcept
+{
+    sampleRate = rate;
+    maxBlock = juce::jmax (1, maximumBlockSize);
+    // Drive.cpp's kSwitchSettleSeconds, kSwitchFadeSeconds, kSwitchSlideSeconds, as it rounds them.
+    const auto samples = [rate] (double seconds) { return juce::jmax (8, (int) std::lround (seconds * rate)); };
+    settle = samples (0.010);
+    fade = samples (0.020);
+    slide = samples (0.010);
+    reset();
+}
+
+void TubampAudioProcessor::DriveTimeline::run (int type, int numSamples, float* out) noexcept
+{
+    type = juce::jlimit (0, DriveFx::numTypes - 1, type);
+
+    for (int start = 0; start < numSamples; start += maxBlock)
     {
-        const juce::ScopedLock sl (chainLock);
-        orderCopy = uiChainOrder;
-    }
+        const int piece = juce::jmin (maxBlock, numSamples - start);
 
-    setLatencySamples (computeWantedLatency (orderCopy.data(), (int) orderCopy.size(),
-                                             isOn (pp.ampOn), isOn (pp.amp2On)));
+        if (snap)
+        {
+            snap = false;
+            active = type;
+            phase = Phase::steady;
+        }
+
+        // A type asked for while a switch runs waits for it to finish (DriveFx::process).
+        if (phase == Phase::steady && type != active)
+        {
+            const int latencyOut = latencyOf (active), latencyIn = latencyOf (type);
+            common = juce::jmax (latencyOut, latencyIn);
+            extraOut = common - latencyOut;
+            extraIn = common - latencyIn;
+            phase = Phase::crossfade;
+            position = 0;
+            active = type;   // the incoming type; latencyOut is common - extraOut from here on
+        }
+
+        for (int offset = 0; offset < piece;)
+        {
+            float* const o = out != nullptr ? out + start + offset : nullptr;
+
+            if (phase == Phase::steady)
+            {
+                if (o != nullptr)
+                    std::fill (o, o + (piece - offset), (float) latencyOf (active));
+
+                break;
+            }
+
+            const bool crossfading = phase == Phase::crossfade;
+            const int left = crossfading ? settle + fade - position : slide - position;
+            const int length = juce::jmin (piece - offset, left);
+
+            for (int i = 0; o != nullptr && i < length; ++i)
+            {
+                const int pos = position + i;
+
+                // Outgoing alone (its rise slid in from 4 samples on) until the fade starts; then
+                // both at the common latency; after it, the incoming type's drop slid out.
+                if (crossfading)
+                    o[i] = (float) (pos + 1 <= settle ? (common - extraOut) + extraOut * smoothstep ((pos - 4) / (double) (settle - 4))
+                                                      : (double) common);
+                else
+                    o[i] = (float) (latencyOf (active) + extraIn * (1.0 - smoothstep ((pos + 1) / (double) slide)));
+            }
+
+            position += length;
+            offset += length;
+
+            if (position >= (crossfading ? settle + fade : slide))
+            {
+                position = 0;
+                phase = crossfading && extraIn > 0 ? Phase::slide : Phase::steady;
+            }
+        }
+    }
 }
 
 void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
 {
     const auto k = (size_t) chain::instanceOf (id);
 
-    // The engine below starts clean, so engineStarts() has nothing to reset; a non-Classic
-    // block fades in from its input as it comes back.
+    // The engine below starts clean, so engineStarts() has nothing to reset; the block fades
+    // in from its input as it comes back.
     engineStale[(size_t) id] = false;
-    engineRanClassic[(size_t) id] = true;
 
     switch (id)
     {
@@ -2281,7 +2529,7 @@ void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
 
         case chain::BlockId::drive:
         case chain::BlockId::drive2:
-        case chain::BlockId::drive3:  drive[k].reset();      driveFader[k].reset (false); break;
+        case chain::BlockId::drive3:  drive[k].reset();      driveFader[k].reset (false); driveTimeline[k].reset(); break;
 
         case chain::BlockId::eq:
         case chain::BlockId::eq2:
