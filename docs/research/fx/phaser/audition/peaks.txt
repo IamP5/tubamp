@@ -1,11 +1,11 @@
 # file	length	peak	rms
 dry_noise.wav	10.00 s	peak -8.33 dBFS	rms -22.00 dBFS
 dry_riff.wav	7.62 s	peak -6.02 dBFS	rms -30.41 dBFS
-phase90-script_noise.wav	10.00 s	peak -7.08 dBFS	rms -21.05 dBFS
-phase90-script_riff.wav	7.62 s	peak -4.71 dBFS	rms -30.72 dBFS
-phase90-block_noise.wav	10.00 s	peak -7.27 dBFS	rms -21.14 dBFS
-phase90-block_riff.wav	7.62 s	peak -3.66 dBFS	rms -30.78 dBFS
-smallstone_noise.wav	10.00 s	peak -6.58 dBFS	rms -21.04 dBFS
-smallstone_riff.wav	7.62 s	peak -4.80 dBFS	rms -30.61 dBFS
-smallstone-color_noise.wav	10.00 s	peak -4.05 dBFS	rms -19.32 dBFS
-smallstone-color_riff.wav	7.62 s	peak -3.41 dBFS	rms -31.23 dBFS
+phase90-script_noise.wav	10.00 s	peak -7.40 dBFS	rms -21.38 dBFS
+phase90-script_riff.wav	7.62 s	peak -5.03 dBFS	rms -31.04 dBFS
+phase90-block_noise.wav	10.00 s	peak -6.41 dBFS	rms -20.27 dBFS
+phase90-block_riff.wav	7.62 s	peak -2.79 dBFS	rms -29.91 dBFS
+smallstone_noise.wav	10.00 s	peak -6.96 dBFS	rms -21.36 dBFS
+smallstone_riff.wav	7.62 s	peak -5.35 dBFS	rms -31.08 dBFS
+smallstone-color_noise.wav	10.00 s	peak -4.74 dBFS	rms -20.01 dBFS
+smallstone-color_riff.wav	7.62 s	peak -4.14 dBFS	rms -31.92 dBFS

@@ -14,7 +14,7 @@ prototype's coeff_table(), the solved discretisation that voicings.md describes:
   one-pole (TPT)    s' = (1 - 1/z) / (1 + 1/z), lowpass g / (g + s'), g_k from the end rows of coeff_table()
   Phase 90 script   H = M (0.5 + 0.5 A1 A2 A3 A4),  A_k = (s' - g_k) / (s' + g_k)
   Phase 90 block    H = M (0.5 + 0.5 A1 S2 A3 A4 / (1 + beta L A3 A4)),  S2 = ((1 + beta) s' - g_2) / (s' + g_2), L the lag lowpass
-  Small Stone off   H = M (dry + wet P1 P2 P3 P4),  P_k = (g_k - s') / (g_k + s')
+  Small Stone off   H = M (dry + wet Hp P1 P2 P3 P4),  P_k = (g_k - s') / (g_k + s'),  Hp = 1 - lp_hp (the wet input's highpass)
   Small Stone on    H = M (dry + wet Ha P^4 / (1 - c F P^4)),  Ha = (1 - ka lp_p1)(1 - kb lp_p2),  F = (1 - lp_p1)(1 - kf lp_p2)
   M the voicing's make-up gain; "analog" rows: s' = j f and g = the analog break (no discretisation).
 
@@ -62,8 +62,8 @@ def H_ss(f, g, fs, color):
     sp = sprime(f, fs); P4 = 1.0
     for gk in g[:4]: P4 = P4 * (gk - sp) / (gk + sp)
     p = P.SS_ON if color else P.SS_OFF
-    if not color: return P.SS_OFF_MAKEUP * (p["dry"] + p["wet"] * P4)
     def lp(fx): gx = fx if fs is None else math.tan(math.pi * fx / fs); return gx / (gx + sp)
+    if not color: return P.SS_OFF_MAKEUP * (p["dry"] + p["wet"] * (1 - lp(p["f_hp"])) * P4)
     ka, kb, kf = 1 - p["f_za"] / p["f_p1"], 1 - p["f_zb"] / p["f_p2"], 1 - p["f_zf"] / p["f_p2"]
     Ha = (1 - ka * lp(p["f_p1"])) * (1 - kb * lp(p["f_p2"])); F = (1 - lp(p["f_p1"])) * (1 - kf * lp(p["f_p2"]))
     return P.SS_ON_MAKEUP * (p["dry"] + p["wet"] * Ha * P4 / (1 - p["c"] * F * P4))

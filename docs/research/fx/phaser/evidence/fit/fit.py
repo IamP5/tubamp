@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fit.py: regenerate the fitted voicing constants from targets.tsv and trajectories.tsv (numpy only).
 
-    python3 fit.py [--targets targets.tsv] [--traj trajectories.tsv] [--skip-color] [--skip-range]
+    python3 fit.py [--targets targets.tsv] [--traj trajectories.tsv] [--snapshots snapshots.tsv] [--skip-color] [--skip-range]
 
 Phase 90 (block):
   1. beta (block feedback ratio) so that the closed-form block response peaks at the median
@@ -28,10 +28,26 @@ Phase 90 (block):
      rises (-30.3 dB near 510 Hz to -27.2 dB near 1380 Hz at noon), the signature of a small
      delay in its feedback loop. Step 2's notch table uses the prototype's current f_lag (the lag
      moves notch 1 by < 0.2 %).
-Small Stone, Color off (ss_off_* rows): dry and wet gains from the median notch depth and
-  peak: dry - wet = 10^(depth/20), dry + wet = 10^(peak/20). Then f_lo, f_hi and the LFO curvature
-  kappa (shared with Color on) from the ss_off trajectories: with dry > wet the notches sit where
-  P^4 = -1, so notch 1 is tan(pi/8) fc (analog, and so rendered, at every rate).
+Small Stone, Color off, on the complex response (snapshots.tsv). Magnitudes alone cannot tell
+  dry 0.75 + wet 0.50 from dry 0.50 + wet 0.75 (|a + b e^jt| = |b + a e^jt|), and the earlier fit to
+  the median notch depth and peak picked the first; the phase tells them apart (round-2 verification).
+  1. Structure from the snapshots of ss_off_r040 and ss_off_r050 (every third), model
+         H = (dry + wet * s/(s + w_hp) * P^4) e^(-j w D),  P = (w_c - s)/(w_c + s)
+     free: dry, wet, f_hp, the delay D (Guitar Rig's latency) and one break frequency per snapshot.
+     Levenberg-Marquardt on the complex error, from the old weights (0.75 / 0.50) and from the swapped
+     ones; the variant without the highpass is fitted too and printed for comparison.
+  2. With the structure fixed, the break frequency of every snapshot of the three Color-off takes
+     (golden section on the complex error).
+  3. Sweep law against those break frequencies:
+         ln fc = (ln f_lo + ln f_hi)/2 + ln(f_hi/f_lo)/2 * v + curve * (v^2 - 1)
+     v the RC triangle at kappa = SS_KAPPA (shared with Color on), phase = phase0 + rate t, one phase0
+     per take, t the snapshot's time plus D. Free: f_lo, f_hi, curve, the three phase0. Printed
+     again with kappa free (it lands within its flat direction) and with curve = 0.
+  4. Check: the Color-off trajectories of trajectories.tsv against notch 1 of the fitted analog
+     response along the fitted law (the highpass moves notch 1 off tan(pi/8) fc near the bottom).
+  Phase 90 block and Small Stone Color on are checked the same way (snapshots of p9_block_p010 and
+  ss_on_r040, structure and constants fixed, dry and wet free): their weights and signs are printed
+  against the prototype's.
 Small Stone, Color on, in two steps.
   1. Structure constants from the six static frames (the `static` rows: frozen LFO, sweep
      turning points of three sweep windows). Model, the prototype's own analog equations in
@@ -41,7 +57,10 @@ Small Stone, Color on, in two steps.
      Free: c, f_p1, f_p2, f_zf, f_za, f_zb, dry, wet, and one break frequency per frame (nuisance).
      Levenberg-Marquardt on the dB error at the 56 static_hz points of every frame, from three
      generic starts; the best is kept.
-  2. Sweep range f_lo, f_hi against the trajectory rows ss_on_r000 (quasi-static), r040, r050,
+  2. Sweep range f_lo, f_hi from the complex snapshots (color_range_from_snapshots: the break
+     frequency of every snapshot of ss_on_r040 and ss_on_r050 with the structure fixed, then the
+     exponential law at kappa = SS_KAPPA). The previous step, kept behind --range-from-tracks:
+     sweep range against the trajectory rows ss_on_r000 (quasi-static), r040, r050,
      r075. f_lo is the break frequency fitted to the frozen frame at the sweep bottom (stock
      window). The minima cannot set it: at 0.01 Hz both notches fade below the 3 dB prominence
      before the sweep bottom (notch 2 into a flat valley about 5 dB deep), and at 1.78 Hz notch 1
@@ -173,8 +192,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--targets", default=os.path.join(HERE, "targets.tsv"))
     ap.add_argument("--traj", default=os.path.join(HERE, "trajectories.tsv"))
+    ap.add_argument("--snapshots", default=os.path.join(HERE, "snapshots.tsv"))
     ap.add_argument("--skip-color", action="store_true", help="skip the Color-on fit")
-    ap.add_argument("--skip-range", action="store_true", help="Color on: structure only, no renders")
+    ap.add_argument("--skip-range", action="store_true", help="Color on: structure only")
+    ap.add_argument("--range-from-tracks", action="store_true",
+                    help="Color on: the previous range step (multitone tracks of the prototype, needs W)")
     a = ap.parse_args()
     T = read_targets(a.targets); P = load_proto()
     blk = [v for k, v in sorted(T.items()) if k.startswith("p9_block")]
@@ -235,45 +257,137 @@ def main():
         if k.startswith("p9_block"): print(f"#   {k}: model median depth {depth_median(f_lag, v):.2f} dB, measured {v['depth']:.2f} dB")
     print(f"P90_FB_LAG_HZ = {f_lag:.0f}")
 
-    off = [v for k, v in sorted(T.items()) if k.startswith("ss_off")]
-    dep = float(np.median([v["depth"] for v in off])); pk = float(np.median([v["peak"] for v in off]))
-    dmw, dpw = 10 ** (dep / 20), 10 ** (pk / 20)
-    print(f"# Small Stone Color off: depth {dep:.2f} dB, peak {pk:.2f} dB -> dry {(dpw+dmw)/2:.4f}, wet {(dpw-dmw)/2:.4f}")
-    print(f"SS_OFF dry = {(dpw+dmw)/2:.2f}, wet = {(dpw-dmw)/2:.2f}")
-    ss_off_fit(P, TJ.read_tsv(a.traj))
+    ss_off_complex_fit(P, a.snapshots, TJ.read_tsv(a.traj))
+    weight_check(P, a.snapshots)
 
     if a.skip_color: return
     color_fit(a, T, P)
 
 
-def ss_off_fit(P, TR):
-    """Small Stone Color off sweep range and LFO curvature fitted to the ss_off trajectories. With
-    dry > wet the notches sit where P^4 = -1, so notch 1 is tan(pi/8) fc at every instant (analog, and
-    rendered at every rate); the model is the prototype's smallstone_break_hz() sampled at the 200 bin
-    phases. Least squares on ln f1 with the best phase shift. Sets P.SS_OFF f_lo, f_hi and P.SS_KAPPA
-    (the LFO is shared with Color on)."""
-    import trajectory as TJ
-    rows = [(k, v) for k, v in sorted(TR.items()) if k.startswith("ss_off")]
-    if not rows: return
+SR = 48000
 
-    def model(q, per):
-        P.SS_OFF["f_lo"], P.SS_OFF["f_hi"] = q[0], q[1]; P.SS_KAPPA = q[2]
-        n = 4000; t = np.arange(n) / n * per
+
+def complex_levmar(model, H, q0):
+    """Levenberg-Marquardt on the complex error model(q) - H (both arrays of snapshot spectra)."""
+    def resid(q):
+        r = (model(q) - H).ravel(); return np.concatenate([r.real, r.imag])
+    q, _ = levmar(resid, np.array(q0, float))
+    e = model(q) - H
+    return q, 10 * math.log10(np.sum(np.abs(e) ** 2) / np.sum(np.abs(H) ** 2))
+
+
+def stage4(s, fc): return ((fc - s) / (fc + s)) ** 4
+
+
+def ss_off_complex_fit(P, path, TR):
+    import snapshots, trajectory as TJ
+    freqs, takes = snapshots.read(path); s = 1j * freqs
+    delay = lambda D: np.exp(-2j * math.pi * freqs * D / SR)  # noqa: E731
+    clamp = lambda lf: math.exp(min(max(lf, 3.0), 10.5))  # noqa: E731
+    H = np.concatenate([takes[t][2][::3] for t in ("ss_off_r040", "ss_off_r050")])
+
+    def fc_grid(Hk, resp):
+        grid = np.exp(np.linspace(math.log(80.0), math.log(15000.0), 400))
+        return math.log(grid[int(np.argmin([np.sum((np.log(np.abs(Hk)) - np.log(np.abs(resp(g)) + 1e-12)) ** 2) for g in grid]))])
+
+    def variant(hp, d0, w0):
+        k = 3 if hp else 2
+        def model(q):
+            g = s / (s + math.exp(q[2])) if hp else 1.0
+            return np.array([(q[0] + q[1] * g * stage4(s, clamp(lf))) * delay(q[k]) for lf in q[k + 1:]])
+        lfc = [fc_grid(Hk, lambda g: d0 + w0 * stage4(s, g)) for Hk in H]
+        return complex_levmar(model, H, [d0, w0] + ([math.log(40.0)] if hp else []) + [16.0] + lfc)
+    print(f"# Small Stone Color off, complex snapshots ({len(H)} of ss_off_r040/r050, {len(freqs)} frequencies "
+          f"{freqs[0]:.0f}-{freqs[-1]:.0f} Hz); model (dry + wet [s/(s+w_hp)] P^4) e^(-jwD):")
+    best = None
+    for hp in (False, True):
+        for d0, w0 in ((0.75, 0.50), (0.50, 0.75)):
+            q, rel = variant(hp, d0, w0)
+            txt = f"dry {q[0]:.4f}, wet {q[1]:.4f}" + (f", f_hp {math.exp(q[2]):.2f} Hz" if hp else ", no highpass") + f", D {q[3 if hp else 2]:.3f} samples"
+            print(f"#   start dry {d0} wet {w0}: {txt}, residual {rel:.1f} dB re |H|")
+            if hp and (best is None or rel < best[1]): best = (q, rel)
+    q = best[0]; dry, wet, f_hp, D = q[0], q[1], math.exp(q[2]), q[3]
+    hp = s / (s + f_hp)
+
+    def fc_of(Hk):
+        cost = lambda lf: float(np.sum(np.abs((dry + wet * hp * stage4(s, math.exp(lf))) * delay(D) - Hk) ** 2))  # noqa: E731
+        grid = np.linspace(math.log(150.0), math.log(15000.0), 800); k = int(np.argmin([cost(g) for g in grid]))
+        lo, hi = grid[max(k - 1, 0)], grid[min(k + 1, len(grid) - 1)]
+        for _ in range(50):
+            a, b = lo + 0.382 * (hi - lo), lo + 0.618 * (hi - lo)
+            lo, hi = (lo, b) if cost(a) < cost(b) else (a, hi)
+        return 0.5 * (lo + hi)
+    tags = ("ss_off_r040", "ss_off_r050", "ss_off_r075")
+    data = [(takes[t][0], takes[t][1] + D / SR, np.array([fc_of(Hk) for Hk in takes[t][2]])) for t in tags]
+
+    def law(q, rate, t, kappa):
+        v = P.rc_triangle((q[3] + rate * t) % 1.0, kappa)
+        return 0.5 * (math.log(q[0]) + math.log(q[1])) + 0.5 * math.log(q[1] / q[0]) * v + q[2] * (v * v - 1.0)
+
+    def sweep_fit(kappa_free, curve):
+        def cost(x):
+            kap = x[3] if kappa_free else P.SS_KAPPA
+            if not (50 < x[0] < 2000 and 1000 < x[1] < 20000 and 0.01 < kap < 3): return 1e9
+            c = x[2] if curve else 0.0
+            return sum(float(np.sum((law([x[0], x[1], c, x[4 + j]], r, t, kap) - lf) ** 2)) for j, (r, t, lf) in enumerate(data))
+        x0 = [P.SS_OFF["f_lo"], P.SS_OFF["f_hi"], 0.0, P.SS_KAPPA, 0.0, 0.0, 0.0]
+        x, _ = nelder_mead(cost, x0, [20.0, 400.0, 0.005, 0.05, 0.005, 0.005, 0.005], iters=3000)
+        x, _ = nelder_mead(cost, x, [2.0, 40.0, 0.001, 0.005, 0.001, 0.001, 0.001], iters=3000)
+        kap = x[3] if kappa_free else P.SS_KAPPA
+        errs = [law([x[0], x[1], x[2] if curve else 0.0, x[4 + j]], r, t, kap) - lf for j, (r, t, lf) in enumerate(data)]
+        e = np.concatenate(errs)
+        print(f"#   kappa {'free' if kappa_free else 'fixed'}, curve {'free' if curve else '0'}: f_lo {x[0]:.1f} Hz, f_hi {x[1]:.1f} Hz, "
+              f"curve {x[2] if curve else 0.0:.4f}, kappa {kap:.3f}, phase0 " + "/".join(f"{(x[4 + j] + 0.5) % 1.0 - 0.5:+.4f}" for j in range(3))
+              + f"; ln fc error {100 * np.sqrt(np.mean(e ** 2)):.3f} % rms, {100 * np.max(np.abs(e)):.2f} % largest")
+        return x
+    print(f"# Structure: dry {dry:.4f}, wet {wet:.4f}, f_hp {f_hp:.2f} Hz, D {D:.3f} samples. Break frequency per snapshot, "
+          f"all {sum(len(d[2]) for d in data)} snapshots of " + ", ".join(tags) + ", then the sweep law:")
+    sweep_fit(False, False)
+    sweep_fit(True, True)
+    x = sweep_fit(False, True)
+    P.SS_OFF.update(f_lo=float(x[0]), f_hi=float(x[1]), curve=float(x[2]), dry=float(dry), wet=float(wet), f_hp=float(f_hp))
+
+    # 4. notch-1 trajectories of trajectories.tsv against the analog response along the fitted law
+    def n1_of(fc):
+        f = fc * np.exp(np.linspace(math.log(0.25), math.log(0.8), 3000)); sv = 1j * f
+        h = np.abs(dry + wet * sv / (sv + f_hp) * stage4(sv, fc)); k = int(np.argmin(h))
+        return f[k]
+    fcg = np.exp(np.linspace(math.log(P.SS_OFF["f_lo"] * 0.98), math.log(P.SS_OFF["f_hi"] * 1.02), 200))
+    n1g = np.array([n1_of(f) for f in fcg])
+    for k, v in sorted(TR.items()):
+        if not k.startswith("ss_off"): continue
+        per = v["period"]; n = 4000; t = np.arange(n) / n * per
         fc = P.smallstone_break_hz(n, n / per, 1 / per, 0.5, False)
-        n1 = fc * math.tan(math.pi / 8)
-        return TJ.fold(t, n1, per, skip=0.0)[1]
-    def cost(q):
-        if not (50 < q[0] < 2000 and 1000 < q[1] < 20000 and 0.01 < q[2] < 3): return 1e9
-        return sum(TJ.traj_error(v["f1"], model(q, v["period"]), max_shift=0.03, steps=61)[0] ** 2 for _, v in rows)
-    used = (P.SS_OFF["f_lo"], P.SS_OFF["f_hi"], P.SS_KAPPA)
-    q, _ = nelder_mead(cost, list(used), [20.0, 400.0, 0.1], iters=300)
-    print(f"# Small Stone Color off: trajectories.tsv gives f_lo {q[0]:.1f} Hz, f_hi {q[1]:.0f} Hz, kappa {q[2]:.3f} "
-          f"(start: {used[0]:.1f} Hz, {used[1]:.0f} Hz, {used[2]:.3f})")
-    for k, v in rows:
-        r_fit = TJ.traj_error(v["f1"], model(q, v["period"]))
-        print(f"#   {k}: trajectory {r_fit[0]:.2f} % rms ({r_fit[1]:+.2f} % largest)")
-    P.SS_OFF["f_lo"], P.SS_OFF["f_hi"] = float(q[0]), float(q[1]); P.SS_KAPPA = float(q[2])
-    print(f"SS_OFF f_lo={q[0]:.1f}, f_hi={q[1]:.1f}\nSS_KAPPA = {q[2]:.3f}")
+        n1 = np.exp(np.interp(np.log(fc), np.log(fcg), np.log(n1g)))
+        r = TJ.traj_error(v["f1"], TJ.fold(t, n1, per, skip=0.0)[1])
+        print(f"#   {k}: notch-1 trajectory {r[0]:.2f} % rms ({r[1]:+.2f} % largest) against trajectories.tsv")
+    print(f"SS_OFF = dict(f_lo={x[0]:.1f}, f_hi={x[1]:.1f}, curve={x[2]:.4f}, c=0.0, dry={dry:.4f}, wet={wet:.4f}, f_hp={f_hp:.1f})")
+
+
+def weight_check(P, path):
+    """Dry and wet of Phase 90 block and Small Stone Color on from their complex snapshots, the rest of
+    each structure fixed at the prototype's constants."""
+    import snapshots
+    freqs, takes = snapshots.read(path); s = 1j * freqs
+    p = P.SS_ON
+    wets = {"p9_block_p010": ("Phase 90 block", 0.5 * 1.862, 0.5 * 1.862,
+                              lambda fc: (P.h_block(s, (fc,) * 4, P.P90_FB_LAG_HZ) - 0.5) / 0.5),
+            "ss_on_r040": ("Small Stone Color on", p["dry"], p["wet"],
+                           lambda fc: (P.h_stone_on(s, (fc,) * 4, p["f_p1"], p["f_p2"]) - p["dry"]) / p["wet"])}
+    for tag, (name, d_used, w_used, wet) in wets.items():
+        H = takes[tag][2]
+        best = None
+        for d0, w0 in ((d_used, w_used), (w_used, d_used), (d_used, -w_used)):
+            lfc = []
+            for Hk in H:
+                grid = np.exp(np.linspace(math.log(60.0), math.log(8000.0), 300))
+                lfc.append(math.log(grid[int(np.argmin([np.sum((np.log(np.abs(Hk)) - np.log(np.abs(d0 + w0 * wet(g)) + 1e-12)) ** 2) for g in grid]))]))
+            model = lambda q: np.array([(q[0] + q[1] * wet(math.exp(min(max(lf, 3.0), 10.5)))) * np.exp(-2j * math.pi * freqs * q[2] / SR) for lf in q[3:]])  # noqa: E731
+            q, rel = complex_levmar(model, H, [d0, w0, 16.0] + lfc)
+            if best is None or rel < best[1]: best = (q, rel, (d0, w0))
+        q, rel, st = best
+        print(f"# {name}, complex snapshots of {tag} ({len(H)}): dry {q[0]:.4f}, wet {q[1]:.4f} (dry/wet {q[0] / q[1]:.4f}; "
+              f"prototype {d_used / w_used:.4f}), residual {rel:.1f} dB re |H|, best of three starts (from {st[0]:.3f}/{st[1]:.3f})")
 
 
 # ------------------------------------------------------------------ Small Stone, Color on
@@ -359,6 +473,61 @@ def color_track(P, rows, f_lo, f_hi, quasi):
     return out
 
 
+def color_range_from_snapshots(P, path):
+    """Color on sweep range against the complex snapshots of ss_on_r040 and ss_on_r050: the structure
+    fixed at the static-frame fit, the break frequency of every snapshot by golden section on the
+    complex error (delay fitted once on the first take), then f_lo, f_hi and one phase0 per take with
+    kappa = SS_KAPPA (Nelder-Mead on ln fc). The curvature term of Color off is fitted too and printed:
+    it is not resolved here, so Color on keeps the plain exponential law."""
+    import snapshots
+    freqs, takes = snapshots.read(path); s = 1j * freqs
+    p = P.SS_ON
+    resp = lambda fc: P.h_stone_on(s, (fc,) * 4, p["f_p1"], p["f_p2"])  # noqa: E731
+    H0 = takes["ss_on_r040"][2]
+    lfc = []
+    for Hk in H0[::4]:
+        grid = np.exp(np.linspace(math.log(60.0), math.log(5000.0), 300))
+        lfc.append(math.log(grid[int(np.argmin([np.sum((np.log(np.abs(Hk)) - np.log(np.abs(resp(g)))) ** 2) for g in grid]))]))
+    model = lambda q: np.array([resp(math.exp(min(max(lf, 3.0), 10.5))) * np.exp(-2j * math.pi * freqs * q[0] / SR) for lf in q[1:]])  # noqa: E731
+    q, rel = complex_levmar(model, H0[::4], [16.0] + lfc)
+    D = q[0]
+
+    def fc_of(Hk):
+        cost = lambda lf: float(np.sum(np.abs(resp(math.exp(lf)) * np.exp(-2j * math.pi * freqs * D / SR) - Hk) ** 2))  # noqa: E731
+        grid = np.linspace(math.log(60.0), math.log(5000.0), 600); k = int(np.argmin([cost(g) for g in grid]))
+        lo, hi = grid[max(k - 1, 0)], grid[min(k + 1, len(grid) - 1)]
+        for _ in range(50):
+            x1, x2 = lo + 0.382 * (hi - lo), lo + 0.618 * (hi - lo)
+            lo, hi = (lo, x2) if cost(x1) < cost(x2) else (x1, hi)
+        return 0.5 * (lo + hi)
+    tags = ("ss_on_r040", "ss_on_r050")
+    data = [(takes[t][0], takes[t][1] + D / SR, np.array([fc_of(Hk) for Hk in takes[t][2]])) for t in tags]
+
+    def law(x, rate, t, curve):
+        v = P.rc_triangle((x[3] + rate * t) % 1.0, P.SS_KAPPA)
+        return 0.5 * (math.log(x[0]) + math.log(x[1])) + 0.5 * math.log(x[1] / x[0]) * v + curve * (v * v - 1.0)
+
+    def fit(curve_free):
+        def cost(x):
+            if not (20 < x[0] < 1000 and 500 < x[1] < 20000): return 1e9
+            return sum(float(np.sum((law([x[0], x[1], 0, x[3 + j]], r, t, x[2] if curve_free else 0.0) - lf) ** 2))
+                       for j, (r, t, lf) in enumerate(data))
+        x, _ = nelder_mead(cost, [p["f_lo"], p["f_hi"], 0.0, 0.0, 0.0], [5.0, 100.0, 0.005, 0.005, 0.005], iters=3000)
+        x, _ = nelder_mead(cost, x, [0.5, 10.0, 0.001, 0.001, 0.001], iters=3000)
+        e = np.concatenate([law([x[0], x[1], 0, x[3 + j]], r, t, x[2] if curve_free else 0.0) - lf for j, (r, t, lf) in enumerate(data)])
+        print(f"#   curve {'free' if curve_free else '0'}: f_lo {x[0]:.1f} Hz, f_hi {x[1]:.1f} Hz, curve {x[2] if curve_free else 0.0:.4f}, "
+              f"phase0 {(x[3] + 0.5) % 1 - 0.5:+.4f}/{(x[4] + 0.5) % 1 - 0.5:+.4f}; ln fc error {100 * np.sqrt(np.mean(e ** 2)):.3f} % rms, "
+              f"{100 * np.max(np.abs(e)):.2f} % largest")
+        return x
+    old = [law([p["f_lo"], p["f_hi"], 0, 0.0], r, t, 0.0) - lf for r, t, lf in data]
+    print(f"# Small Stone Color on, sweep range from the complex snapshots of {', '.join(tags)} (delay {D:.3f} samples, "
+          f"residual {rel:.1f} dB re |H| on every fourth snapshot of the first); the previous range ({p['f_lo']:.1f}-{p['f_hi']:.1f} Hz, "
+          f"phase0 0) reads {100 * np.sqrt(np.mean(np.concatenate(old) ** 2)):.3f} % rms:")
+    fit(True)
+    x = fit(False)
+    return float(x[0]), float(x[1])
+
+
 def color_fit(a, T, P):
     hz, frames = read_static(a.targets)
     par, fcs, err = color_structure(hz, frames)
@@ -368,6 +537,11 @@ def color_fit(a, T, P):
     for k, v in zip(names, par): P.SS_ON[k] = float(v)
     if a.skip_range:
         print("SS_ON " + " ".join(f"{k}={v:.4g}" for k, v in zip(names, par))); return
+    if not a.range_from_tracks:
+        lo, hi = color_range_from_snapshots(P, a.snapshots)
+        print("SS_ON = dict(f_lo=%.1f, f_hi=%.1f, c=%.4f, dry=%.4f, wet=%.4f,\n             f_p1=%.1f, f_p2=%.1f, f_zf=%.1f, f_za=%.1f, f_zb=%.1f)"
+              % (lo, hi, par[0], par[6], par[7], par[1], par[2], par[3], par[4], par[5]))
+        return
     rows = {}
     for line in open(a.targets):
         c = line.rstrip("\n").split("\t")

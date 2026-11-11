@@ -1,37 +1,44 @@
 # Phase 90 block: target resonance 3.52 dB -> beta 0.3957 (with a 10 kOhm op-amp feedback resistor, a fitted feedback-resistor equivalent of 25.27 kOhm), analog notch-1/fc 0.4502
-# Phase 90 sweep: 6 trajectories (p9_block_p010, p9_block_p025, p9_block_p050, p9_block_p075, p9_block_p090, p9_block_p100), notch table with lag 14758 Hz
-#   start m=1: cost 0.003818  P90_RS=722.83  P90_R1=1512.5  P90_GAMMA=1.0178  P90_KNEE=1.5814  P90_KAPPA=0.19326  P90_GATE_HZ=3.7632
-#   start m=3: cost 0.000870  P90_RS=916.84  P90_R1=1777.7  P90_GAMMA=0.89522  P90_KNEE=3.8762  P90_KAPPA=-0.0067974  P90_GATE_HZ=3.5416
+# Phase 90 sweep: 6 trajectories (p9_block_p010, p9_block_p025, p9_block_p050, p9_block_p075, p9_block_p090, p9_block_p100), notch table with lag 14746 Hz
+#   start m=1: cost 0.004958  P90_RS=639.37  P90_R1=1260.5  P90_GAMMA=1.1204  P90_KNEE=1.1009  P90_KAPPA=0.19019  P90_GATE_HZ=3.8559
+#   start m=3: cost 0.000877  P90_RS=912.41  P90_R1=1773.8  P90_GAMMA=0.89739  P90_KNEE=3.7707  P90_KAPPA=0.010948  P90_GATE_HZ=3.5469
 # Phase 90 sweep, best start: trajectory rms / largest error and sweep ends per rate
-#   p9_block_p010: trajectory 0.70 % rms, -1.21 % largest; ends 425.0-1582.8 Hz, target 423.6-1590.2 Hz (+0.33 %, -0.47 %)
-#   p9_block_p025: trajectory 0.70 % rms, -1.13 % largest; ends 429.2-1577.4 Hz, target 428.0-1580.8 Hz (+0.27 %, -0.21 %)
-#   p9_block_p050: trajectory 0.67 % rms, +1.04 % largest; ends 463.7-1529.7 Hz, target 464.1-1522.8 Hz (-0.08 %, +0.45 %)
-#   p9_block_p075: trajectory 0.61 % rms, +0.98 % largest; ends 502.8-1470.6 Hz, target 504.0-1461.4 Hz (-0.24 %, +0.63 %)
-#   p9_block_p090: trajectory 0.57 % rms, -1.14 % largest; ends 583.1-1341.8 Hz, target 585.0-1351.5 Hz (-0.33 %, -0.72 %)
-#   p9_block_p100: trajectory 0.41 % rms, +0.73 % largest; ends 736.9-1111.9 Hz, target 737.8-1105.9 Hz (-0.12 %, +0.54 %)
-P90_RS = 916.8
-P90_R1 = 1777.7
-P90_GAMMA = 0.8952
-P90_KNEE = 3.876
-P90_KAPPA = -0.007
-P90_GATE_HZ = 3.542
+#   p9_block_p010: trajectory 0.68 % rms, -1.16 % largest; ends 425.0-1583.2 Hz, target 423.6-1590.2 Hz (+0.32 %, -0.44 %)
+#   p9_block_p025: trajectory 0.67 % rms, -1.10 % largest; ends 429.1-1577.8 Hz, target 428.0-1580.8 Hz (+0.26 %, -0.19 %)
+#   p9_block_p050: trajectory 0.64 % rms, +1.04 % largest; ends 463.6-1529.6 Hz, target 464.1-1522.8 Hz (-0.11 %, +0.44 %)
+#   p9_block_p075: trajectory 0.59 % rms, +0.99 % largest; ends 502.6-1470.2 Hz, target 504.0-1461.4 Hz (-0.28 %, +0.60 %)
+#   p9_block_p090: trajectory 0.57 % rms, -1.16 % largest; ends 583.0-1341.5 Hz, target 585.0-1351.5 Hz (-0.35 %, -0.74 %)
+#   p9_block_p100: trajectory 0.44 % rms, +0.88 % largest; ends 737.1-1112.2 Hz, target 737.8-1105.9 Hz (-0.09 %, +0.57 %)
+P90_RS = 912.4
+P90_R1 = 1773.8
+P90_GAMMA = 0.8974
+P90_KNEE = 3.771
+P90_KAPPA = 0.011
+P90_GATE_HZ = 3.547
 P90_BETA = 0.3957
-# Phase 90 block: measured notch-1 depth -28.85 dB (mean of medians) -> feedback lag 14746 Hz (a 10.8 us delay at low frequencies)
+# Phase 90 block: measured notch-1 depth -28.85 dB (mean of medians) -> feedback lag 14754 Hz (a 10.8 us delay at low frequencies)
 #   p9_block_p010: model median depth -28.85 dB, measured -28.89 dB
 #   p9_block_p025: model median depth -28.85 dB, measured -28.70 dB
 #   p9_block_p050: model median depth -28.85 dB, measured -28.89 dB
 #   p9_block_p075: model median depth -28.85 dB, measured -28.90 dB
 #   p9_block_p090: model median depth -28.85 dB, measured -28.85 dB
 #   p9_block_p100: model median depth -28.85 dB, measured -28.86 dB
-P90_FB_LAG_HZ = 14746
-# Small Stone Color off: depth -12.09 dB, peak 1.94 dB -> dry 0.7494, wet 0.5008
-SS_OFF dry = 0.75, wet = 0.50
-# Small Stone Color off: trajectories.tsv gives f_lo 347.7 Hz, f_hi 8931 Hz, kappa 0.702 (start: 347.7 Hz, 8932 Hz, 0.702)
-#   ss_off_r040: trajectory 1.23 % rms (-3.05 % largest)
-#   ss_off_r050: trajectory 1.24 % rms (-3.11 % largest)
-#   ss_off_r075: trajectory 1.34 % rms (-4.64 % largest)
-SS_OFF f_lo=347.7, f_hi=8931.5
-SS_KAPPA = 0.702
+P90_FB_LAG_HZ = 14754
+# Small Stone Color off, complex snapshots (62 of ss_off_r040/r050, 40 frequencies 50-6000 Hz); model (dry + wet [s/(s+w_hp)] P^4) e^(-jwD):
+#   start dry 0.75 wet 0.5: dry 0.5194, wet 0.7011, no highpass, D 16.026 samples, residual -14.8 dB re |H|
+#   start dry 0.5 wet 0.75: dry 0.5194, wet 0.7011, no highpass, D 16.026 samples, residual -14.8 dB re |H|
+#   start dry 0.75 wet 0.5: dry 0.5003, wet 0.7500, f_hp 44.18 Hz, D 16.012 samples, residual -46.7 dB re |H|
+#   start dry 0.5 wet 0.75: dry 0.5003, wet 0.7500, f_hp 44.18 Hz, D 16.012 samples, residual -46.7 dB re |H|
+# Structure: dry 0.5003, wet 0.7500, f_hp 44.18 Hz, D 16.012 samples. Break frequency per snapshot, all 277 snapshots of ss_off_r040, ss_off_r050, ss_off_r075, then the sweep law:
+#   kappa fixed, curve 0: f_lo 323.6 Hz, f_hi 9009.9 Hz, curve 0.0000, kappa 0.702, phase0 +0.0003/+0.0003/+0.0005; ln fc error 0.426 % rms, 1.65 % largest
+#   kappa free, curve free: f_lo 326.4 Hz, f_hi 9084.8 Hz, curve 0.0128, kappa 0.704, phase0 +0.0003/+0.0003/+0.0005; ln fc error 0.181 % rms, 0.95 % largest
+#   kappa fixed, curve free: f_lo 326.4 Hz, f_hi 9086.3 Hz, curve 0.0128, kappa 0.702, phase0 +0.0003/+0.0004/+0.0006; ln fc error 0.183 % rms, 0.90 % largest
+#   ss_off_r040: notch-1 trajectory 0.14 % rms (-0.49 % largest) against trajectories.tsv
+#   ss_off_r050: notch-1 trajectory 0.17 % rms (-0.63 % largest) against trajectories.tsv
+#   ss_off_r075: notch-1 trajectory 0.51 % rms (-1.79 % largest) against trajectories.tsv
+SS_OFF = dict(f_lo=326.4, f_hi=9086.3, curve=0.0128, c=0.0, dry=0.5003, wet=0.7500, f_hp=44.2)
+# Phase 90 block, complex snapshots of p9_block_p010 (58): dry 0.9275, wet 0.9306 (dry/wet 0.9967; prototype 1.0000), residual -37.0 dB re |H|, best of three starts (from 0.931/0.931)
+# Small Stone Color on, complex snapshots of ss_on_r040 (58): dry 0.1309, wet 0.4392 (dry/wet 0.2980; prototype 0.2999), residual -41.6 dB re |H|, best of three starts (from 0.132/-0.440)
 # Small Stone Color on, structure from 6 static frames (rms / max dB error per frame):
 #   ss_on_full_bot: break frequency 99.4 Hz, 0.02 / 0.03 dB
 #   ss_on_full_top: break frequency 3080.2 Hz, 0.09 / 0.30 dB
@@ -39,13 +46,8 @@ SS_KAPPA = 0.702
 #   ss_on_mid_top: break frequency 1386.0 Hz, 0.06 / 0.25 dB
 #   ss_on_narrow_bot: break frequency 489.7 Hz, 0.05 / 0.19 dB
 #   ss_on_narrow_top: break frequency 622.4 Hz, 0.05 / 0.21 dB
-#   f_hi 3080.2: maximum errors -1.10 % to +1.51 %
-#   f_hi 3074.1: maximum errors -1.19 % to +1.40 %
-#   f_hi 3067.7: maximum errors -1.31 % to +1.28 %
-#   f_hi 3068.3: maximum errors -1.29 % to +1.30 %
-#   ss_on_r000: n1 140.3-1289.3 (-0.05 %, -1.28 %), n2 429-7221 (+0.40 %, +1.30 %)
-#   ss_on_r040: n1 138.6-1288.3 (-0.65 %, -1.29 %), n2 425-7239 (-0.68 %, +0.87 %)
-#   ss_on_r050: n1 138.7-1286.2 (-0.91 %, -1.01 %), n2 425-7234 (-1.87 %, +0.84 %)
-#   ss_on_r075: n1 158.8-1287.2 (+2.73 %, +0.25 %), n2 436-7189 (-0.28 %, +0.73 %)
-SS_ON = dict(f_lo=99.4, f_hi=3068.3, c=0.7548, dry=0.1318, wet=0.4395,
+# Small Stone Color on, sweep range from the complex snapshots of ss_on_r040, ss_on_r050 (delay 16.012 samples, residual -41.6 dB re |H| on every fourth snapshot of the first); the previous range (98.5-3105.4 Hz, phase0 0) reads 0.628 % rms:
+#   curve free: f_lo 98.7 Hz, f_hi 3111.4 Hz, curve 0.0030, phase0 +0.0006/+0.0010; ln fc error 0.257 % rms, 0.79 % largest
+#   curve 0: f_lo 98.5 Hz, f_hi 3105.5 Hz, curve 0.0000, phase0 +0.0006/+0.0009; ln fc error 0.273 % rms, 0.77 % largest
+SS_ON = dict(f_lo=98.5, f_hi=3105.5, c=0.7548, dry=0.1318, wet=0.4395,
              f_p1=49.8, f_p2=267.9, f_zf=12.0, f_za=12.7, f_zb=862.1)

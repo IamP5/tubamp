@@ -40,8 +40,9 @@ public:
 
     void prepare (const juce::dsp::ProcessSpec& spec);
     /** Clears every state (filters, feedback, LFO to phase 0 = the sweep bottom, gate smoothing,
-        sync glide, model switcher, parameter smoothers): the next block is a fresh engine's.
-        The processor calls it when a Phase 90 / Small Stone block is switched back on. */
+        sync glide and lock, any model switch in flight, parameter smoothers): the next block is
+        a fresh engine's. The processor calls it when a Phase 90 / Small Stone block is switched
+        back on. */
     void reset();
     /** Audio thread, once per block before process(). */
     void setParameters (const PhaserParams& params);
@@ -52,9 +53,11 @@ public:
     /** Test hooks for tubamp_fxbench, not for the plugin. freezeSweep holds the Phase 90 /
         Small Stone sweep at `position` in [-1, 1] (-1 = bottom; Phase 90: after the gate
         smoothing); NaN releases it. getLfoPhase is the LFO phase, in cycles, of the last
-        sample processed. */
+        sample processed. getSyncJumpCount counts the song-position jumps glided since
+        prepare(). */
     void freezeSweep (double position) noexcept;
     double getLfoPhase() const noexcept;
+    int getSyncJumpCount() const noexcept;
 
 private:
     struct Impl;

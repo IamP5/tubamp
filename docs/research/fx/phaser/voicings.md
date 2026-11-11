@@ -25,11 +25,11 @@ against a freshly loaded Guitar Rig component will not match.
 
 Source tags on constants:
 - `[circuit: <source>]`: the value is given by an opened circuit reference.
-- `[fit: evidence/fit/targets.tsv]`, `[fit: evidence/fit/trajectories.tsv]`: fitted to Guitar Rig 6
-  by `evidence/fit/fit.py`, which regenerates it from that file (a rerun lands within 0.2 %,
-  optimizer tolerance; flat directions are named where they occur). Two older Small Stone values
-  name their own file; their original fit scripts were not kept, and `fit.py` now re-derives them
-  from `trajectories.tsv` as a check.
+- `[fit: evidence/fit/targets.tsv]`, `[fit: evidence/fit/trajectories.tsv]`,
+  `[fit: evidence/fit/snapshots.tsv]`: fitted to Guitar Rig 6 by `evidence/fit/fit.py`, which
+  regenerates it from that file (a rerun lands within 0.2 %, optimizer tolerance; flat directions
+  are named where they occur). `snapshots.tsv` holds complex responses (magnitude and phase) along
+  the sweep, written by `evidence/fit/snapshots.py`.
 - `[guess]`: neither; the reason for the choice is given.
 - `[choice]`: a design decision of ours (discretisation, make-up, glide), with its reason and,
   where it rests on one, the measurement.
@@ -37,6 +37,52 @@ Structural statements keep the `[literature]`, `[decompiled]` and `[measured]` t
 `tools/re/README.md`.
 
 ## Measured accuracy
+
+### Motion: phase, pitch and waveform
+
+A phaser's magnitude response does not fix its sound. `dry + wet·P⁴` and `wet + dry·P⁴` have the same
+magnitude at every instant (|a + b·e^jθ| = |b + a·e^jθ|) and opposite motion: with the wet path
+dominant the output phase follows the all-pass chain all the way round, and a held note wobbles in
+pitch several times more. Until this round every fit targeted magnitudes only, and Small Stone Color
+off had picked the wrong one of the pair (dry 0.75, wet 0.50; round-2 verification, N2). Every voicing
+with a reference is now fitted or checked on the complex response and on its motion:
+
+- **Complex snapshots** (`evidence/fit/snapshots.py` → `snapshots.tsv`; fitted by `fit.py`): the
+  impulse response of Guitar Rig 6 every 43 to 171 ms along a slow sweep, as magnitude and phase at
+  40 frequencies (50 Hz to 6 kHz). Each voicing's structure is fitted with a pure delay (Guitar Rig's
+  latency, 16.01 samples) and one break frequency per snapshot. Residual re |H|: Small Stone Color
+  off −46.7 dB with the structure below (−14.8 dB without its highpass, the same for either weight
+  order as a start), Color on −41.6 dB, Phase 90 block −37.0 dB. Weights from the phase: Color off
+  dry 0.5003, wet 0.7500 (was 0.75 / 0.50); Color on dry/wet 0.2980 (prototype 0.2999); Phase 90 block
+  dry/wet 0.997 (prototype 1), sign as ours (the swapped and the negated starts land at worse minima).
+- **Pitch deviation of a held note** (`check_phaser.py` P13, `evidence/fit/motion.tsv`): a 196 Hz
+  sine at −12 dBFS, instantaneous frequency of the output (`refmeasure.cents()`), p99 of |cents|,
+  ours against Guitar Rig 6 at three rates; bar 15 %:
+
+  | Voicing | Rates (Hz) | Guitar Rig 6 | Before | Now |
+  | --- | --- | --- | --- | --- |
+  | Phase 90 block | 0.247 / 1.071 / 3.721 | 0.7 / 2.6 / 5.7 | 0.6 / 2.5 / 5.8 (−13.8 % worst) | the same |
+  | Small Stone off | 0.316 / 1.778 / 5.012 | 12.4 / 57.9 / 158.5 | 2.6 / 17.8 / 60.6 (−79 %) | 12.7 / 65.9 / 165.7 (+13.6 %) |
+  | Small Stone on | 0.316 / 1.778 / 5.012 | 24.9 / 134.9 / 379.9 | 24.9 / 136.1 / 369.8 (−2.7 %) | 25.0 / 136.8 / 372.6 (−1.9 %) |
+
+- **Waveform null** (P14, `evidence/fit/gr6_takes/`): the same 8 s guitar-like take
+  (`refmeasure.guitar`, the round-2 verifier's generator) through Guitar Rig 6 and through ours, our
+  LFO started at the phase that nulls best (Guitar Rig starts within 0.001 cycle of 0), one
+  least-squares gain; residual re Guitar Rig's output, at noon and a fast rate. The dry signal alone
+  nulls at −3 to −5 dB.
+
+  | Voicing | Rates (Hz) | Before | Now | Bar |
+  | --- | --- | --- | --- | --- |
+  | Phase 90 block | 1.071 / 3.721 | −26.7 / −27.1 dB | the same | −25.9 dB |
+  | Small Stone off | 0.316 / 1.778 | −11.6 / −11.0 dB | −40.8 / −37.3 dB | −24 dB |
+  | Small Stone on | 0.316 / 1.778 | −31.5 / −29.2 dB | −36.0 / −31.7 dB | −29.2 dB |
+
+Phase 90 script has no reference: Phaser Nine at Color 0 keeps its modified stage 2, and its
+snapshots fit our script structure at only −2 dB (scratch measurement), so neither its weights nor
+its motion can be checked. Its weights are equal (0.5 / 0.5), so the dominance question above does
+not arise, and A⁴ = (−A)⁴, so neither does its sign.
+
+### Notch tracks
 
 Prototype against Guitar Rig 6 (`evidence/fit/compare.txt`, produced by `evidence/fit/compare.py`).
 Sweep ends, period, depth and peak: same multitone probes, same tracker (`track.py`). Trajectory:
@@ -49,19 +95,21 @@ column checks the prototype's LFO, not a knob law.
 | Voicing / reference | Rates (Hz) | Notch-1 min | Notch-1 max | Trajectory rms / largest | Notch-2 min / max | Period | Resonance peak | Notch-1 depth |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Phase 90 block / Phaser Nine, Color 0.4217 | 0.143, 0.247, 1.071, 1.930, 3.720, 9.756 | −0.32 to +0.31 % | −0.75 to +0.62 % | 0.41 to 0.70 % / 1.18 % | (not a target) +0.28 to +0.80 % / +1.57 to +3.34 % | 0.00 % | −0.05 dB (+3.48 against +3.52/3.53) | −0.07 to −0.04 dB (−28.9) |
-| Small Stone / Stoned Phaser, Color off | 0.159, 0.316, 1.778 | −3.13 to −2.42 % | −2.28 to −2.24 % | 1.24 to 1.25 % / 3.36 % | (n2 max leaves the 12 kHz band) +4.4 to +4.5 % at the bottom | 0.00 % | 0.00 dB (+1.94) | +0.04 to +0.09 dB (−12.1) |
-| Small Stone Color / Stoned Phaser, Color on | 0.159, 0.316, 1.778 | −0.64, −0.90, **+2.78** % | −1.29 to +0.25 % | 0.80 to 0.85 % / 1.53 % | −1.85 to −0.27 % / +0.73 to +0.87 % | 0.00 % | −0.00 to +0.01 dB (+6.29 to +6.84) | +0.03 to +0.06 dB |
-| Small Stone Color, Rate 0 (0.01 Hz, quasi-static) | 0.010 | −0.00 % | −0.89 % | | +1.46 % / +1.36 % | (set) | +0.01 dB | +0.17 dB |
+| Small Stone / Stoned Phaser, Color off | 0.159, 0.316, 1.778 | −0.02 to +0.53 % | −0.17 to −0.14 % | 0.12 to 0.21 % / 0.53 % | (n2 max leaves the 12 kHz band) −0.09 to −0.05 % at the bottom | 0.00 % | 0.00 dB (+1.94) | −0.03 to −0.01 dB (−12.1) |
+| Small Stone Color / Stoned Phaser, Color on | 0.159, 0.316, 1.778 | −0.63, −0.89, **+2.84** % | −0.45 to +1.40 % | 0.30 to 0.44 % / 1.21 % | −2.58 to −0.20 % / +2.04 to +2.12 % | 0.00 % | −0.00 to +0.00 dB (+6.29 to +6.84) | −0.02 to +0.02 dB |
+| Small Stone Color, Rate 0 (0.01 Hz, quasi-static) | 0.010 | −0.03 % | −0.72 % | | +1.26 % / +2.28 % | (set) | +0.01 dB | +0.00 dB |
 | Phase 90 script / Phaser Nine, Color 0 (informational) | 0.143, 1.071, 9.756 | +4.9 to +5.3 % | +4.5 to +5.5 % | | | 0.00 % | −0.83 dB | much deeper |
 
-This table is for the notch-matched discretisation and the analog refit (`compare.txt`); the
-previous spec's numbers, all fitted and measured at 48 kHz only, are in
-`evidence/fit/compare_before_rate_fix.txt` (trajectory rms 0.38 to 0.72 % block, 1.89 to 1.90 %
-Color off, 1.08 to 1.12 % Color on; Color-on notch-2 top −3.0 %, notch-1 minimum at 1.78 Hz
-+4.19 %). Every voicing's trajectory got closer to Guitar Rig 6. Color off traded a range offset
-for shape: notch 1's ends now sit 2.2 to 3.1 % low (they were 0.6 to 1.1 % low) while the whole
-trajectory is a third closer; its remaining error is a structure Guitar Rig has and we do not
-(below). Rates: the prototype at 48 kHz; the engine renders the same notches at 44.1 to 192 kHz
+This table is for the complex-response refit of the Small Stone (`compare.txt`). Before it
+(`evidence/fit/compare_before_complex.txt`), Color off read notch 1's ends 2.2 to 3.1 % low,
+notch 2 at the bottom 4.4 to 4.5 % high and the trajectory 1.24 to 1.25 % rms (3.36 % largest):
+the structure lacked the wet highpass and had the weights the wrong way round. Color on read
+0.80 to 0.85 % rms (1.53 % largest) with notch 2 at the top +0.73 to +0.87 %; its range now comes
+from the complex snapshots instead of a balance of tracked maxima, which halves the trajectory
+error, improves the null and the pitch match ("Motion"), and puts notch 2 at the top +2.0 to
++2.3 % high (a trade the previous fit made the other way). Phase 90 is unchanged. Earlier
+history, all fitted and measured at 48 kHz only: `evidence/fit/compare_before_rate_fix.txt`.
+Rates: the prototype at 48 kHz; the engine renders the same notches at 44.1 to 192 kHz
 (`check_phaser.py` P9).
 
 History: Phase 90 block, round 2 (square-root law) against round 3, per rate, both before the
@@ -101,20 +149,19 @@ in the top frame. The same structure fitted with 48 kHz TPT one-poles gave 0.05 
   resonance. Guitar Rig computes its stages with `a = 2πf/fs − 1` at what measures as 96 kHz
   [decompiled: 0x2a9838], whose own warp narrows the spacing by a few tenths [inferred]; we keep
   the circuit's equal stages.
-- Small Stone Color off, now refitted (f_lo, f_hi, κ from the three Color-off trajectories,
-  applied this time because the old 48 kHz fit no longer holds once the warp is gone): 1.24 to
-  1.25 % rms (was 1.9 %). Its notch 1's ends sit 2.2 to 3.1 % low and notch 2 at the bottom 4.4 %
-  high: the shape of Guitar Rig's Color-off trajectory, a first-order highpass near 44 Hz on its
-  wet path (below), is not in our structure, and the least-squares fit trades the ends for the
-  middle.
+- Small Stone Color off, refitted on the complex response: wet input highpass at 44.2 Hz, dry
+  0.5003 and wet 0.7500 (was 0.75 / 0.50), sweep 326.4 to 9086.3 Hz with a curvature term. Its
+  trajectory reads 0.12 to 0.21 % rms (was 1.24 to 1.25 %), notch 1's ends within −0.17 to +0.53 %
+  (were 2.2 to 3.1 % low) and notch 2 at the bottom within 0.1 % (was 4.4 % high): what the previous
+  fit traded away was the highpass Guitar Rig has on its wet path.
 - Phaser Nine at Color 0 is not a script reference: it keeps its modified stage 2, which our
   script (no feedback resistor, four plain stages) does not have. The +5 % is that difference.
 - Small Stone Color on: the earlier notch-2 gap (+17 % at the sweep bottom) was the structure, and
-  is gone. With the structure fitted in analog terms the two cells that were outside 3 % are in:
-  notch 2 at the sweep top went from −3.0 % to +0.7 to +0.9 %, which the previous spec could not
-  close at 48 kHz ("Guitar Rig 6 runs this component at twice the session rate": the analog fit is
-  what its 96 kHz response is close to), and the notch-1 minimum at 1.78 Hz went from +4.2 % to
-  +2.8 %. That reading is where notch 1 fades below 3 dB prominence before the sweep bottom; Guitar
+  is gone. With the structure fitted in analog terms the two cells that were outside 3 % came in
+  (notch 2 at the sweep top from −3.0 % to +0.7 to +0.9 %, the notch-1 minimum at 1.78 Hz from
+  +4.2 % to +2.8 %); with the range from the complex snapshots notch 2 at the top reads +2.0 to
+  +2.3 % and the notch-1 minimum at 1.78 Hz +2.8 %. That reading is where notch 1 fades below 3 dB
+  prominence before the sweep bottom; Guitar
   Rig 6 realises the loop as factored second-order sections, which narrows the tracked sweep at fast
   rates while the TPT chain does not [inferred: analysis transcription,
   `evidence/stoned_color_structure.md`], and the tracker's own bias on this sharp corner is +6.2 %
@@ -179,8 +226,9 @@ ones (prototype `stage_g`):
   there would bend the whole band below. At 44.1 kHz and up no matched notch is capped]. If the
   pair has no real solution (never inside 22.05-192 kHz) both stages take `warped_g` at f_a.
 - **Phase 90 script, Small Stone Color off**: pair_g at f_a = tan(π/8)·fc and f_b = tan(3π/8)·fc,
-  where four analog stages give −180° and −540°. With the dry path these are the notches, so both
-  notches are analog at every rate.
+  where four analog stages give −180° and −540°. With the dry path these are the script's notches,
+  so both are analog at every rate. Color off's wet highpass moves its notch 1 off f_a near the
+  bottom of the sweep only, where the warp is below 10⁻⁴ (Voicing 2), so its notches hold too.
 - **Small Stone Color on**: the same pair, then one common factor k on both coefficients so that
   notch 1 of the whole Color loop lands on the analog loop's notch 1 (1-D Newton on the notch
   condition). k = 1 where the analog response has no notch 1 (the bottom of the sweep, below
@@ -219,11 +267,25 @@ and the prototype build the same table; the prototype's `--depth` widens the tab
 like P4, 0.05 % (Phase 90) and 0.17 % / 0.15 % (Small Stone off / on) rms at worst, where the
 old structure was 0.7 % and 2.4 % rms (closed form); frozen notches below 10 kHz at five sweep
 positions within 0.16 % (old: up to 7.7 %). The frozen magnitude response does not hold to
-0.1 dB: the responses differ by 1.06 dB (Small Stone off) to 1.69 dB (Phase 90 script), at the
-top half of the sweep, between 48 and 192 kHz (old structure: 1.3 to 42 dB on the same
-measure). The same limit moves the Color-on resonance at the sweep top by +2.7 % at 48 kHz
-(3288 against 3203 Hz analog; peak height within 0.01 dB), where the old rule, exact at fc, did
-not; matching at fc instead would put notch 2 1 % off at mid-sweep. Notch positions were chosen.
+0.1 dB (old structure: 1.3 to 42 dB on the same measure). Against 192 kHz, 20 Hz to 10 kHz where
+the response is within 20 dB of its peak, at sweep positions −1, −0.5, 0, 0.5, 1
+[computed: `evidence/fit/d30.py`, `d30.txt`; closed form, it matches the bench row]:
+
+| Voicing | 48 kHz: largest, where | 44.1 kHz: largest | Inside the top 3 dB, 48 / 44.1 kHz | Band of the difference (more than half the largest) |
+| --- | --- | --- | --- | --- |
+| Phase 90 script | +1.69 dB at 9.9 kHz, sweep top | +2.05 dB | +0.67 / +0.83 dB at 5.5 kHz, top | from 1.8 kHz (bottom) or 6.0 kHz (top) to 10 kHz |
+| Phase 90 block | +1.40 dB at 8.1 kHz, top | +1.70 dB | +0.81 / +0.98 dB at 4.6 kHz, top | from 1.8 kHz (bottom) or 4.4 kHz (top) to 10 kHz |
+| Small Stone off | +1.02 dB at 7.5 kHz, position +0.5 | +1.24 dB | +0.81 / +0.99 dB at 6.2 kHz, +0.5 | 1.0 to 10 kHz at the bottom, 5.4 to 8.7 kHz at +0.5 |
+| Small Stone on | +1.66 dB at 3.5 kHz, top (the resonance) | +2.00 dB | +1.54 / +1.93 dB at 3.4 kHz, top | 2.7 to 4.6 kHz at the top, from 3.5 kHz upward at the bottom |
+
+The lower rate is always the high one, and except for Color on, whose resonance sits in it, the
+difference lies on the upper slopes of the response rather than inside its top 3 dB. Row P9
+"frozen response" compares every rate against 48 kHz, so it reads the 48-against-192 kHz figure
+(1.02 to 1.69 dB, under its 1.8 dB bar); 44.1 kHz against 192 kHz is over 1.8 dB for the script
+(2.05) and Color on (2.00). The same limit moves the Color-on resonance at the sweep top by +2.6 %
+at 48 kHz (3259 against 3176 Hz analog; peak height within 0.02 dB), where the old rule, exact at
+fc, did not; matching at fc instead would put notch 2 1 % off at mid-sweep. Notch positions were
+chosen.
 
 Where that error comes from, and what would close it [computed: `evidence/fit/rate_limit.py`,
 `rate_limit.txt`; closed form, it reproduces the bench row to the third decimal]:
@@ -269,28 +331,79 @@ uses `(1 − mix)·x + mix·wet`); the output is multiplied by the voicing's mak
 
 The prototype has no song position, no bypass and no bad input; the engine adds:
 
-- **Song-position jumps** (transport start, locate, loop, a sync-value change). The phase is set
-  to the host's, but the sweep position glides from where it was to the new phase's position:
-  offset = (old position + any glide still running) − new position, added to the LFO value and
-  faded out with a raised cosine, `0.5 − 0.5 cos(π n/N)`, over N = 10 ms of samples
-  (`kGlideSeconds`) [choice: the worst case, a full bottom-to-top jump of Small Stone Color on with a
-  220 Hz tone at −12 dBFS, leaves −70.5 dBFS above 2 kHz at 10 ms against −64.3 at 5 ms and
-  −35.6 at 3 ms; 10 ms is the shortest with 10 dB in hand under the −60 dBFS bar, and still a
-  fifth of the fastest LFO period, 50 ms at 20 Hz]. Before: −16.4 dBFS (Color on) and −20.3 dBFS
-  (Color off) on the same signal (P10). The Phase 90 glides too, before its gate smoothing.
-  Offsets below 10⁻⁶ of the sweep range (`kGlideThreshold`; the per-block rounding of a running
-  transport) are taken directly [choice: a 10⁻⁶ step is 2·10⁻⁶ in fc]. The first phase after
-  `reset()` or a model switch is taken directly. Free-running behaviour is unchanged (P2).
+- **Song position** (the processor passes the host's LFO phase for each block's first sample).
+  Two things are kept apart: a discontinuity in the host's own phase, and the engine's error
+  against it. The engine keeps the host phase and rate of the last block that brought one and
+  predicts this block's host phase as `previous + rate × samples since / fs`; the host's phase minus
+  that prediction, wrapped to ±0.5 cycle, is the host's step.
+  - A step of at least 0.01 cycle and at least 2 ms of LFO time (`kJumpCycles`,
+    `kJumpLfoSeconds`) is a **jump**: transport start, locate, a loop that is not a whole number of
+    cycles, a note-value change; switching sync on counts as one. [choice: the smallest real jump
+    tested is 0.1 cycle, and at the fastest rate, 20 Hz, 2 ms is 0.04 cycle; what must not count is
+    below 0.004 cycle: host jitter of ±8 samples is 0.18 ms at 44.1 kHz (0.0036 cycle at 20 Hz),
+    and a tempo ramp mispredicts by half the rate change over one block, under 0.003 cycle for
+    100 to 140 BPM in 4 s at 1/16 notes and 4096-sample blocks.] The phase is set to the host's
+    and the sweep position glides from where it is (any glide still running included, so a second
+    jump retargets from the current position) to the new phase's position: offset = current
+    position − new position, added to the LFO value and faded out with a raised cosine,
+    `0.5 − 0.5 cos(π n/N)`, over N samples counted per sample, so the glide does not depend on the
+    host block. N is 10 ms for Phase 90 and Color off and 40 ms for Color on (`kGlideSeconds`)
+    [choice, measured with P15 (tones of 82, 147, 220 and 330 Hz at −12 dBFS, jumps of 0.1, 0.25
+    and 0.5 cycle from four sweep positions, blocks 16 to 4096 at 44.1 to 192 kHz): Color on
+    sweeps its resonance through up to five octaves on a half-cycle jump, and at 10 ms that zipped
+    at −31 dBFS once the block was long enough for the glide really to last 10 ms (round-2 N3);
+    at 40 ms the worst tick is −81 dBFS. The glide is in the sweep variable, which for the Small
+    Stone is log frequency: its fastest point moves π/2 × 4.98 octaves / 40 ms = 196 octaves per
+    second on a half-cycle jump, about the LFO's own average sweep speed at 20 Hz (199). Phase 90 glides before
+    its gate smoothing, which rounds the step anyway]. Time to within −40 dB of the voicing running
+    at the new phase all along, for a half-cycle jump from the sweep bottom, blocks 16 to 4096 at 48
+    and 192 kHz: Phase 90 script 172 ms, block 140 ms (the gate smoothing's 45 ms time constant
+    dominates), Color off 8 ms, Color on 41 ms, each within 1.1 ms over every block size (P15).
+  - Any smaller step is **no jump**: the LFO runs at the tempo's rate and its own error against
+    the host is pulled in by bending the rate, never by a glide: `nudge = (|e| − d)·sign(e) / τ`,
+    τ = 0.15 s (`kLockSeconds`), at most ±3 % of the rate (`kLockMaxNudge`), with a dead band
+    d = min(0.002 cycle, 0.5 ms of LFO time) (`kLockDeadCycles`, `kLockDeadLfoSeconds`) [choice:
+    τ in the middle of 0.1 to 0.25 s; the dead band takes host jitter of a few samples out of the
+    LFO (±8 samples at 44.1 kHz is 0.18 ms) and leaves at most 0.002 cycle of error standing]. The
+    nudge is set once per block. P16: song position jittered by ±2 and ±8 samples per block, tempo
+    stepped by 1 BPM from 120 to 135, ramped from 100 to 140 BPM over 4 s, 1/4 and 1/16 notes,
+    44.1 kHz/64 to 192 kHz/16: no glide, the high-passed difference from an exact host (or from
+    the free-running LFO at the same rates) at most −86.6 dBFS, phase error after one second at
+    most 0.0058 cycle (the 1/16-note ramp at 4096-sample blocks).
+  The first phase after `reset()` or the start of a model switch is taken directly. Free-running
+  behaviour is unchanged (P2).
+- **Model and Color switches** (all five voicings, Classic included): the outgoing voicing keeps
+  running on one copy of the input; the incoming one is reset and runs on another copy, unheard,
+  for 30 ms (`kSwitchWarmSeconds`: its states and the power estimates below settle), then the two
+  cross over in 40 ms (`kSwitchFadeSeconds`) with a raised cosine s: out = g·((1 − s)·A + s·B).
+  g makes the power of the sum, predicted from short-term powers of A and B and their cross term
+  (two cascaded one-poles of 2.5 ms each, `kSwitchStatSeconds`), follow the straight line between
+  the two powers: g² = P_t / (P_sum + 4s(1 − s)·P_t / 8²), P_t = (1 − s)·P_A + s·P_B,
+  P_sum = (1 − s)²·P_A + s²·P_B + 2s(1 − s)·P_AB. On one held note two phasers can sit in
+  antiphase, where every crossfade of the two passes a null; the bound term caps g at +18 dB
+  (`kSwitchMaxGain` 8) and vanishes at both ends of the fade, so the gains have no corner. [choice,
+  measured with P17: every ordered pair of the five voicings, held notes at 82, 196 and 440 Hz at
+  −12 dBFS and a guitar-like take, switched at two times: the level, in 20 ms frames, stays within
+  +0.95 dB of the higher and −2.88 dB of the lower of the two voicings' own levels (bars +1.5 and
+  −3 dB), click at most −93.8 dBFS above 2 kHz. With a hard cap at +12 dB and 4 ms estimates (and the old make-ups): +1.20
+  / −3.28 dB and a −54.6 dBFS click where the cap engaged. The old switch faded through the dry
+  input: +11.5 dB above and 20.3 dB below both levels (round-2 N6)]. Classic's own output is
+  untouched (it is the same code path whenever no switch is in flight). A request that arrives
+  during a switch is taken when it ends. The engine holds two Phase 90 / Small Stone instances
+  that share one set of coefficient tables, and a scratch buffer of four channels of the
+  maximum block size, all allocated in `prepare()`.
 - **Reset**: `reset()` clears every stage, lag and Color-network state, the LFO phase (to the
-  sweep bottom), the gate smoothing, any glide, the switcher (next block starts on the requested
-  model) and the parameter smoothers (next `setParameters()` snaps). The processor calls it when a
-  Phase 90 / Small Stone block is switched back on; the first block after it is the same as a
-  freshly prepared engine's (P11: bit-identical; silent input gives exact silence where the frozen
-  state used to replay at −3.2 dBFS, Color on, to −19.4 dBFS, block).
-- **Non-finite input**: a NaN or infinite input sample is replaced by 0 before any model sees it,
-  so it cannot enter a state (P12; Classic's `juce::dsp::Phaser` used to latch on one). Finite
-  input is untouched, so Classic stays bit-identical. Recursive states are still flushed once per
-  block below 10⁻¹⁵ and dropped above 10⁶.
+  sweep bottom), the gate smoothing, any glide and the phase lock, any switch in flight (the next
+  block starts on the requested model) and the parameter smoothers (next `setParameters()`
+  snaps). The processor calls it when a Phase 90 / Small Stone block is switched back on; the
+  first block after it is the same as a freshly prepared engine's (P11: bit-identical; silent
+  input gives exact silence where the frozen state used to replay at −3.2 dBFS, Color on, to
+  −19.4 dBFS, block).
+- **Bad input**: a sample that is not finite or whose magnitude is 10⁶ or more (no instrument
+  produces it) is replaced by 0 before any model sees it, so it cannot enter a state (P12; one
+  pair of ±3·10³⁸ used to latch Classic's `juce::dsp::Phaser` to NaN for good, round-2 N14).
+  Everything below is untouched, so Classic stays bit-identical. Recursive states are still
+  flushed once per block below 10⁻¹⁵ and dropped above 10⁶.
 
 ## Voicing 1: Phase 90
 
@@ -318,7 +431,7 @@ The prototype has no song position, no bypass and no bad input; the engine adds:
 | Block result | quasi-static sweep ends, without the make-up [`spec_check.txt` less 1.50 dB]: resonance +3.52 dB at the bottom to +3.43 dB at the top (48 kHz; 192 kHz +3.38, analog +3.37), DC −1.32 dB, notch 1 at 0.4502·fc (bottom) to 0.4495·fc (top), −30.68 dB to −26.77 dB, notch 2 at 2.076·fc to 2.115·fc, notch-2/notch-1 spacing 4.61 to 4.71, the same at every sample rate. Notch-2 depth is not matched: −16.8 dB (bottom) to −20.0 dB (top) at 48 kHz, −21.7 dB analog at the top | closed form of the equation above; Guitar Rig 6 +3.52 dB peak, median notch depth −28.9 dB [measured: evidence/fit/targets.tsv], DC −1.4 dB, spacing 4.58 [measured: evidence/gr6_snapshots.tsv]. Without L the loop gives −32.60 dB at every frequency (analog) |
 | Sample rate | the notches, the notch-1 depth and so the sweep are the same at every rate (P9: trajectory within 0.05 % rms, notches within 0.001 % between 44.1 and 192 kHz); the response above about 3 kHz is not (up to 1.7 dB, "Shared building block") | notch-matched discretisation |
 | Saturation | none in v1 | both commercial models are linear: harmonics of a −3 dBFS sine below −150 dB relative [measured: evidence/gr6_thd.tsv, verification.md C09]; no signal term in AmpliTube's JFET resistance [decompiled: AmpliTube 5 0xd8984c]. The hardware does distort [literature: Eichas, section 3.1] |
-| Level | make-up gain ×1.365 (+2.70 dB) script, ×1.189 (+1.50 dB) block | [choice: unity loudness when engaged, as the pedals are designed to be; see "Level" below]. Guitar Rig adds ×1.862 (+5.4 dB) [decompiled: Guitar Rig 6 0x2a8e5c]; ours stays 3.9 dB (block) below it |
+| Level | make-up gain ×1.3152 (+2.38 dB) script, ×1.3137 (+2.37 dB) block | [choice: unity loudness against bypass on guitar, averaged over registers; see "Level" below]. Guitar Rig adds ×1.862 (+5.4 dB) [decompiled: Guitar Rig 6 0x2a8e5c]; ours stays 3.0 dB (block) below it |
 | Filtering | none | Guitar Rig's 16.4 kHz lowpass is not reproduced; a linear TPT phaser cannot alias |
 | Oversampling | none | see "Shared building block"; the discretisation, not oversampling, keeps the notches analog |
 | Stereo | one LFO for both channels | Guitar Rig's Rotate defaults to zero offset [decompiled: Guitar Rig 6 0x2a92b8] |
@@ -358,15 +471,16 @@ to Guitar Rig 6's "Stoned Phaser". The Color-on structure follows what its code 
 | Item | Color off | Color on | Source |
 | --- | --- | --- | --- |
 | Stages | 4, one break frequency | 4, one break frequency | four stages as two second-order sections, all with one `g` [decompiled: Guitar Rig 6 0x6985b4, 0x698600]; exactly two notches measured [measured: verification.md, Part 1]. Our stage coefficients differ per stage only to keep the notches analog ("Shared building block") |
-| Sweep law | exponential: `fc = sqrt(lo·hi) · (hi/lo)^(v/2)`, v in [−1, 1] | same | form: `centre · 32^x` [decompiled: Guitar Rig 6 0x2d9774, 0x2d9f7c]; log-f triangle fits the track (R² 0.993 against 0.85 for linear f) [measured: verification.md C12] |
-| Sweep range | 347.7 Hz to 8931.5 Hz | 99.4 Hz to 3068.3 Hz | Color off: [fit: evidence/fit/trajectories.tsv] by `fit.py` (`ss_off_fit`: notch 1 = tan(π/8)·fc, least squares on the three Color-off trajectories with f_lo, f_hi and κ free; three starts land on the same values). Before the discretisation change these were 355 / 8300 Hz from an older 48 kHz fit (original script not kept), which held at 48 kHz only. Color on: [fit: evidence/fit/targets.tsv]: f_lo is the break frequency of the frozen sweep-bottom frame, f_hi the value that centres the notch-1/notch-2 maximum errors (see "Measured accuracy") |
-| LFO shape | RC triangle, κ = 0.702 (the same formula as the Phase 90's) | same | [fit: evidence/fit/trajectories.tsv, the Color-off rows, with the sweep range]; it was 0.70 [fit: evidence/phasis_tracks.tsv column stoned_phaser; original script not kept], best of the shapes tried, R² 0.9998 [measured: verification.md C12]. Guitar Rig's LFO code has no Color branch [decompiled: Guitar Rig 6 0x6983fc-0x698558], so Color on uses the same κ |
+| Sweep law | `ln fc = (ln lo + ln hi)/2 + ln(hi/lo)/2 · v + curve·(v² − 1)`, v in [−1, 1]: exponential, plus a curvature that leaves the ends at lo and hi | exponential (curve 0) | form: `centre · 32^x` [decompiled: Guitar Rig 6 0x2d9774, 0x2d9f7c]; log-f triangle fits the track (R² 0.993 against 0.85 for linear f) [measured: verification.md C12]. Color off curve = 0.0128 [fit: evidence/fit/snapshots.tsv]: against the break frequency of 277 complex snapshots the pure exponential leaves a systematic error, +0.8 % at both turning points and −0.4 to −0.6 % in mid-sweep, the same at 0.16, 0.32 and 1.78 Hz; the curvature term takes the rms from 0.43 % to 0.18 %, and the pitch deviation at 1.78 Hz from +16 % to +13.6 % of Guitar Rig's. Fitted the same way, Color on's curvature is 0.003 and does nothing, so Color on keeps the plain law |
+| Sweep range | 326.4 Hz to 9086.3 Hz | 98.5 Hz to 3105.4 Hz | Both [fit: evidence/fit/snapshots.tsv] by `fit.py`: the break frequency of every complex snapshot (structure fixed), then the law at κ = 0.702 with one start phase per take (Guitar Rig's LFO starts within 0.001 cycle of 0). Color off: three takes (0.16, 0.32, 1.78 Hz), 0.18 % rms; was 347.7 to 8931.5 Hz from the notch-1 trajectories under the wrong structure, and before that 355 / 8300 Hz (48 kHz only). Color on: two takes (0.16, 0.32 Hz), 0.27 % rms, where the previous range (99.4 to 3068.3 Hz: the frozen sweep-bottom frame and a balance of tracked notch maxima, `fit.py --range-from-tracks`) read 0.89 % rms at start phase 0 (fit.py run before the change; the new range reads 0.63 % at phase 0). Checked against the notch trajectories (P4): Color off 0.12 to 0.21 % rms (was 1.24 to 1.25), Color on 0.30 to 0.44 % rms (was 0.80 to 0.85) |
+| LFO shape | RC triangle, κ = 0.702 (the same formula as the Phase 90's) | same | [fit: evidence/fit/trajectories.tsv, the Color-off rows, with the previous sweep range]; the complex snapshots, κ free, give 0.704 at the same cost (its flat direction), so it was kept. It was 0.70 before that [fit: evidence/phasis_tracks.tsv column stoned_phaser; original script not kept], best of the shapes tried, R² 0.9998 [measured: verification.md C12]. Guitar Rig's LFO code has no Color branch [decompiled: Guitar Rig 6 0x6983fc-0x698558], so Color on uses the same κ |
 | Rate range | existing `mod_rate` | same | Guitar Rig 0.01·1000^knob Hz: 0.1585, 0.3162, 1.778 Hz at 0.4, 0.5, 0.75 [measured: evidence/fit/targets.tsv]. Noon is 0.316 Hz. Color does not change the rate [decompiled: Guitar Rig 6 0x611e80-0x611fa4; measured period error 0.00 %] |
 | Feedback | none | c = 0.7548 around all four stages, through the network's feedback branch F, no delay | [fit: evidence/fit/targets.tsv]. Taken from the fourth stage, injected before the first [decompiled: Guitar Rig 6 0x6983a4, 0x6985a0] |
 | Color network poles | none | f_p1 = 49.8 Hz, f_p2 = 267.9 Hz, shared by both branches | [fit: evidence/fit/targets.tsv]. One second-order network with two outputs on a shared denominator [decompiled: Guitar Rig 6 0x6980b0-0x6982e4] |
 | Feedback branch F | none | `s (s + w_zf) / ((s + w_p1)(s + w_p2))`, f_zf = 12.0 Hz: zero at DC, unity well above 300 Hz | [fit: evidence/fit/targets.tsv]. Guitar Rig forms it as `1 − z⁻¹·BB` with BB unity at DC [decompiled: Guitar Rig 6 0x69859c-0x6985a8] |
+| Wet input highpass | first order, `s / (s + w_hp)`, f_hp = 44.2 Hz, before the stages | (the input branch Ha below) | [fit: evidence/fit/snapshots.tsv]: with it the complex snapshots fit to −46.7 dB re \|H\|, without it −14.8 dB. Guitar Rig's input branch reduces to a first-order highpass near 44 Hz with gain 1.5 on the wet path when Color is off [decompiled: `evidence/stoned_color_structure.md`]; the gain is the 0.75 below. It moves notch 1 up near the bottom of the sweep (148.7 Hz at f_lo, 0.456·fc instead of tan(π/8) = 0.414) and takes the wet out at DC (−5.5 dB DC gain, the dry alone). TPT one-pole, exact at its pole |
 | Input branch Ha | none | `(s + w_za)(s + w_zb) / ((s + w_p1)(s + w_p2))`, f_za = 12.7 Hz, f_zb = 862.1 Hz: unity at HF, +10.2 dB shelf below about 270 Hz, cut below 50 Hz. Wet path only | [fit: evidence/fit/targets.tsv]. In Guitar Rig the dry is the unfiltered input [decompiled: Guitar Rig 6 0x6983b0] |
-| Mix | dry 0.75, wet 0.50, then ×1.059 (+0.50 dB) | dry 0.1318, wet 0.4395, no make-up | Color off: [fit: evidence/fit/targets.tsv] (median notch depth −12.09 dB and peak +1.94 dB give dry 0.749, wet 0.501). Color on: [fit: evidence/fit/targets.tsv]. Make-up: [choice], "Level" below |
+| Mix | dry 0.5003, wet 0.7500, then ×1.0186 (+0.16 dB) | dry 0.1318, wet 0.4395, then ×0.9237 (−0.69 dB) | Color off: [fit: evidence/fit/snapshots.tsv], from the phase: the earlier fit to the median notch depth and peak gave dry 0.749, wet 0.501, the same magnitudes with the weights the wrong way round (section "Motion"). Color on: [fit: evidence/fit/targets.tsv]; the complex snapshots give dry/wet 0.2980 against 0.2999. Make-up: [choice], "Level" below |
 | Saturation | none in v1 | none in v1 | harmonics below −120 dB [measured: evidence/gr6_thd.tsv]. The OTA stage is a tanh device [literature: http://dafx.de/paper-archive/2005/P_155.pdf, eq. 1-8] |
 | Player controls | Rate (`mod_rate`), Color switch | | the pedal has one knob and one switch |
 
@@ -423,57 +537,68 @@ out = M·(dry·x + wet·y4)                 ; M the make-up gain
 `c·aF·|p⁴| ≤ 0.755` always, so the divisor never reaches zero. Guitar Rig puts one sample of delay
 into the filtered part of its loop; we do not, and the fitted constants absorb the difference.
 
-Notch 2 with Color off sits 4.4 to 4.5 % above Guitar Rig's at the sweep bottom (840 against
-805 Hz; it was 6 to 7 % with the previous constants): Guitar Rig's notch ratio is about 5.4,
-ours is the ideal 5.83. The cause is known: with Color off Guitar Rig's input branch is a
-first-order highpass near 44 Hz on the wet path (`evidence/stoned_color_structure.md`), which
-shifts notch 1 upward. It is not in this spec.
+Color off, per sample: `u = x − lp_hp(x)` (the wet input's highpass, one TPT one-pole), then the
+four stages, `out = M·(dry·x + wet·y4)`. Its notch 2 at the sweep bottom is now 803 Hz against
+Guitar Rig's 805 Hz, a notch ratio of 5.40 (the previous structure, without the highpass, had
+840 Hz and the ideal 5.83). The pair design of the stages ("Shared building block") still
+matches the four analog stages at tan(π/8)·fc and tan(3π/8)·fc; the highpass moves notch 1 off the
+first of those points only near the bottom of the sweep, below 400 Hz, where the stages' warp is
+under 10⁻⁴, so the rendered notches stay on the analog ones (P3, P9).
 
 ## Level
 
-Engaging a pedal should be about unity loudness, as the pedals are built to be (both have a
-make-up stage after the mix), and a player switching from Classic to Phase 90 should not hear a
-drop. Loudness against bypass, ITU-R BS.1770 K-weighting, ungated, whole take, engine renders at
-48 kHz, noon rates, before any make-up (scratch `loud4c.py`):
+**Rule [choice]: every Phase 90 and Small Stone voicing is unity loudness against bypass on guitar
+material, averaged over registers.** The make-up is the negated mean, over three guitar-like takes
+(`refmeasure.guitar`: a mixed take, a low riff on 82 to 147 Hz and a high-register take on 330 to
+784 Hz, 12 s each), of the ungated ITU-R BS.1770 K-weighted loudness of the output against the
+input, at the voicing's starting rate, rounded to 0.01 dB (`check_phaser.py` P18, bar ±0.25 dB).
+Why this and not the reference's level: no hardware was measured, so "the pedal's level" is only
+Guitar Rig's, and Guitar Rig's own make-up is a choice of its own (Phaser Nine ×1.862, about
++3 dB over bypass on guitar; its Stoned Phaser is within 0.7 dB of unity). A phaser that jumps in
+level when engaged, or between its five voicings, gets judged on the jump. Classic stays as it
+was (frozen).
 
-| Voicing | pink noise −18 dBFS | plucked riff (`audition.py`) | fxbench music |
+| Voicing | Before (make-up) and mixed / low / high, register mean | Make-up now | Now: mixed / low / high, register mean |
 | --- | --- | --- | --- |
-| Classic (defaults 1 Hz, depth 0.4, mix 0.35) | −1.83 dB | −1.95 dB | −2.30 dB |
-| Phase 90 script | −2.40 dB | −3.05 dB | −2.03 dB |
-| Phase 90 block | −1.55 dB | −1.54 dB | −1.83 dB |
-| Small Stone off | −0.16 dB | −0.80 dB | +0.03 dB |
-| Small Stone on | +0.99 dB | −0.76 dB | +1.38 dB |
+| Phase 90 script | +2.70 dB: +0.59 / +1.73 / −1.36, **+0.32 dB** | ×1.3152 (+2.38 dB) | +0.27 / +1.40 / −1.68, 0.00 dB |
+| Phase 90 block | +1.50 dB: −1.01 / −0.50 / −1.10, **−0.87 dB** | ×1.3137 (+2.37 dB) | −0.15 / +0.37 / −0.24, −0.01 dB |
+| Small Stone off | +0.50 dB: +0.42 / +1.13 / −0.59, **+0.32 dB** (old structure) | ×1.0186 (+0.16 dB) | +0.12 / +0.74 / −0.86, 0.00 dB |
+| Small Stone on | 0 dB: +1.51 / +2.85 / −2.32, **+0.68 dB** | ×0.9237 (−0.69 dB) | +0.83 / +2.16 / −3.01, 0.00 dB |
 
-A 50/50 phaser loses about 1.5 to 3 dB to its notches; the Small Stone's dry-heavy mix (off) and
-its resonance (on) roughly make up their own. Decision [choice]: a fixed make-up per voicing,
-the negated mean of the noise and riff figures rounded to 0.1 dB, and none under 0.25 dB: Phase 90
-script +2.70 dB (×1.365), block +1.50 dB (×1.189), Small Stone off +0.50 dB (×1.059), Small Stone
-on 0 dB. Measured again with the make-up in the engine (noise / riff / music): script +0.30 /
-−0.34 / +0.67 dB, block −0.04 / −0.03 / −0.32 dB, Small Stone off +0.34 / −0.31 / +0.53 dB,
-Small Stone on +0.99 / −0.76 / +1.38 dB (its level depends most on the programme, through the
-bass shelf and the resonance). The script and block positions of the Phase 90 now match each
-other within 0.4 dB. Classic stays as it was (frozen),
-so switching Classic → Phase 90 now gains about 1.5 dB instead of losing up to 1 dB. Guitar Rig
-adds +5.4 dB to its Phaser Nine (about +3.9 dB over bypass); we do not follow it there.
+(The previous rule took the mean of pink noise and a plucked riff at 0.1 dB and skipped make-ups
+under 0.25 dB, so on guitar no voicing was within its own figures across registers; round-2 P6,
+N8.) What one fixed gain cannot remove is the register dependence, which is the voicing: the
+Color-on bass shelf lifts a low riff by +2.2 dB and leaves a high take −3.0 dB; Phase 90 script
+spans +1.4 to −1.7 dB, block +0.4 to −0.2 dB. Against Guitar Rig the level is now: Phaser Nine
+about 3.0 dB louder than our block (it was 3.9), Stoned Phaser Color off 0.16 dB quieter, Color on
+0.69 dB louder.
+
+**Headroom.** Nothing saturates and there is no limiter: a full-scale input can leave the engine
+above 0 dBFS. Worst peak of the output for a full-scale input (squares of 41.2, 82.4 and 110 Hz,
+sines of 97 Hz to 3.3 kHz, a guitar-like take peaking at 0 dBFS; starting rate and 10 Hz; P18):
+Phase 90 script 1.32 (+2.4 dB, 1.3 kHz sine), block 1.97 (+5.9 dB, 1.3 kHz sine, the resonance),
+Small Stone off 1.93 (+5.7 dB, 41 Hz square), Small Stone on 4.77 (**+13.6 dB**, 82 Hz square at
+10 Hz). The processor's documentation should say that the phaser needs up to 14 dB of headroom
+after it (6 dB for every voicing but Small Stone Color on), and that the chain after it sees these
+peaks.
 
 ## Peaks on a low square wave
 
 Small Stone Color on peaks well above its input on a low square wave: the input branch lifts the
-bass by 10 dB and the resonant loop rings on every edge. Same signal through Guitar Rig 6
-(black box, `auhost`, the study's Color-on state at 0.316 Hz) and the prototype, peak and rms of
-the output against the input after the first second, −6 dBFS squares (scratch `sq4b.py`):
+bass by 10 dB and the resonant loop rings on every edge. Same signal through Guitar Rig 6 (black
+box, `auhost`, the study's Color-on state at 0.316 Hz) and the engine, peak and rms of the output
+against the input after the first second, −6 dBFS squares (scratch `squares.py`; ours with and
+without its −0.69 dB make-up):
 
-| Signal | Guitar Rig 6 | ours (this spec) | ours (previous spec) |
+| Signal | Guitar Rig 6 | ours (make-up removed) | ours |
 | --- | --- | --- | --- |
-| 82.4 Hz square | +12.72 / +2.21 dB | +13.00 / +2.21 dB | +12.87 / +2.22 dB |
-| 82.4 Hz square, band-limited | +10.96 / +2.21 dB | +11.04 / +2.21 dB | +10.92 / +2.22 dB |
-| 41.2 Hz square | +9.20 / +0.83 dB | +9.10 / +0.85 dB | +9.08 / +0.85 dB |
-| 110 Hz square | +12.20 / +2.52 dB | +12.51 / +2.52 dB | +12.39 / +2.55 dB |
+| 82.4 Hz square | +12.72 / +2.24 dB | +13.00 / +2.24 dB | +12.31 / +1.55 dB |
+| 41.2 Hz square | +9.20 / +0.84 dB | +9.10 / +0.85 dB | +8.41 / +0.16 dB |
+| 110 Hz square | +12.20 / +2.56 dB | +12.51 / +2.56 dB | +11.82 / +1.87 dB |
 
 The reference does the same within 0.3 dB, so the peak is the voicing, not an error in ours
 [measured]. The +14.1 dB the verifier read was a full-scale 82 Hz square at another rate and
-LFO position; the model is linear, so the level does not change the ratio. Nothing saturates
-in v1; the chain's later stages see these peaks.
+LFO position; the model is linear, so the level does not change the ratio.
 
 ## Mapping to tubamp parameters
 

@@ -18,10 +18,22 @@ namespace
 constexpr double kPi = 3.141592653589793238462643383279502884;
 constexpr float kParamSmoothSeconds = 0.02f;
 constexpr double kStateFloor = 1.0e-15;        // recursive states below this are flushed once per block
-constexpr int kSwitchPiece = 16;               // samples per run while a model switch is in flight
-constexpr double kSwitchSpanSeconds = 0.045;   // 20 ms out, the reset, 20 ms in, with margin
-constexpr double kGlideSeconds = 0.010;        // a song-position jump glides the sweep over this [choice: voicings.md]
-constexpr double kGlideThreshold = 1.0e-6;     // sweep-position steps below this are taken as they come [choice: voicings.md]
+
+// Song position (voicings.md, "Engine behaviour outside the prototype").
+constexpr double kJumpCycles = 0.01;           // a host phase step at least this large is a jump [choice: voicings.md]
+constexpr double kJumpLfoSeconds = 0.002;      // ... and at least this much LFO time [choice: voicings.md]
+constexpr double kLockSeconds = 0.15;          // time constant of the phase lock between jumps [choice: voicings.md]
+constexpr double kLockMaxNudge = 0.03;         // the lock bends the rate by at most this fraction [choice: voicings.md]
+constexpr double kLockDeadCycles = 0.002;      // errors below this much of a cycle ... [choice: voicings.md]
+constexpr double kLockDeadLfoSeconds = 0.0005; // ... or this much LFO time, whichever is less, are host jitter [choice: voicings.md]
+// A jump glides the sweep over this many seconds: script, block, Small Stone off, on [choice: voicings.md].
+constexpr double kGlideSeconds[4] { 0.010, 0.010, 0.010, 0.040 };
+
+// Model and Color switches: the incoming voicing runs unheard from reset, then a crossfade.
+constexpr double kSwitchWarmSeconds = 0.030;   // [choice: voicings.md]
+constexpr double kSwitchFadeSeconds = 0.040;   // [choice: voicings.md]
+constexpr double kSwitchStatSeconds = 0.0025;  // each of the two one-poles of the power estimates [choice: voicings.md]
+constexpr double kSwitchMaxGain = 8.0;         // bound of the constant-power correction (+18 dB) [choice: voicings.md]
 
 // Discretisation (voicings.md, "Shared building block").
 constexpr int kTableN = 256;                   // coefficient table intervals over the sweep position [choice]
@@ -41,18 +53,19 @@ constexpr double kP90Kappa = -0.007;           // LFO curvature [fit]
 constexpr double kP90GateHz = 3.542;           // one-pole smoothing between LFO and JFET gates [fit]
 constexpr double kP90FbLagHz = 14746.0;        // block logo: lag in the feedback-resistor path [fit]
 constexpr double kP90Dry = 0.5, kP90Wet = 0.5; // [guess]
-constexpr double kP90ScriptMakeup = 1.365, kP90BlockMakeup = 1.189; // +2.7 / +1.5 dB [choice]
+constexpr double kP90ScriptMakeup = 1.3152, kP90BlockMakeup = 1.3137; // +2.38 / +2.37 dB [choice: voicings.md, Level]
 
 // Small Stone (SS_*).
 constexpr double kSsKappa = 0.702;              // LFO curvature [fit]
 
 struct StoneVoicing
 {
-    double loHz, hiHz, feedback, dry, wet, makeup;
+    double loHz, hiHz, curve, feedback, dry, wet, makeup;
 };
 
-constexpr StoneVoicing kStoneOff { 347.7, 8931.5, 0.0, 0.75, 0.50, 1.059 };    // [fit], make-up +0.5 dB [choice]
-constexpr StoneVoicing kStoneOn { 99.4, 3068.3, 0.7548, 0.1318, 0.4395, 1.0 }; // [fit], make-up 0 dB [choice]
+constexpr StoneVoicing kStoneOff { 326.4, 9086.3, 0.0128, 0.0, 0.5003, 0.7500, 1.0186 }; // [fit], make-up +0.16 dB [choice]
+constexpr StoneVoicing kStoneOn { 98.5, 3105.4, 0.0, 0.7548, 0.1318, 0.4395, 0.9237 };    // [fit], make-up -0.69 dB [choice]
+constexpr double kStoneOffHighpassHz = 44.2;    // Color off: the wet input's first-order highpass [fit]
 
 // Color network, Hz: two poles shared by both branches, the feedback branch's zero (its
 // second zero is at DC) and the input branch's two zeros [fit].
@@ -66,6 +79,12 @@ inline void settle (double& state) noexcept
 {
     const double a = std::abs (state);
     state = a < 1.0e6 && a >= kStateFloor ? state : 0.0; // false for NaN as well
+}
+
+/** x wrapped to [-0.5, 0.5). */
+inline double wrapHalf (double x) noexcept
+{
+    return x - std::floor (x + 0.5);
 }
 
 //==============================================================================
@@ -447,6 +466,7 @@ Coefficients designStages (Design design, double fc, double fs, double (&solutio
     return c;
 }
 
+
 /** Relaxation-oscillator triangle in [-1, 1] whose halves are RC charge curves
     (prototype rc_triangle); phase 0 is the bottom. */
 double rcTriangle (double p, double kappa, double norm) noexcept
@@ -465,28 +485,32 @@ double phase90BreakHz (double u) noexcept
     return (1.0 / kP90RFix + 1.0 / leg) / (2.0 * kPi * kP90C);
 }
 
+/** Exponential in w, plus a curvature term that leaves the ends at loHz and hiHz. */
 double stoneBreakHz (const StoneVoicing& v, double w) noexcept
 {
-    return std::sqrt (v.loHz * v.hiHz) * std::exp (0.5 * std::log (v.hiHz / v.loHz) * w);
+    return std::sqrt (v.loHz * v.hiHz) * std::exp (0.5 * std::log (v.hiHz / v.loHz) * w + v.curve * (w * w - 1.0));
 }
 
-//==============================================================================
-/** Phase 90 and Small Stone: four TPT one-pole allpass stages whose coefficients follow the
-    sweep position through a table built in prepare(); feedback loops are solved per sample in
-    closed form, without a unit delay. */
-class PedalPhaser
+enum class Voicing { script = 0, block = 1, stoneOff = 2, stoneOn = 3 };
+
+/** PedalPhaser::process: free running, synced with the host's phase at the run's first sample,
+    or synced with nothing new (a run that does not start the host block). */
+enum class Sync { off, update, hold };
+
+/** What every PedalPhaser of one PhaserFx shares: the coefficient tables built in prepare(). */
+struct PedalTables
 {
-public:
-    enum class Voicing { script, block, stoneOff, stoneOn };
+    using Table = std::array<std::array<double, 5>, kTableN + 1>;
 
     void prepare (double sampleRate)
     {
         invSampleRate = 1.0 / sampleRate;
-        glideSamples = std::max (1, (int) std::lround (kGlideSeconds * sampleRate));
-
         p90Norm = 1.0 / (1.0 - std::exp (-kP90Kappa));
         stoneNorm = 1.0 / (1.0 - std::exp (-kSsKappa));
         gateCoeff = 1.0 - std::exp (-2.0 * kPi * kP90GateHz / sampleRate);
+
+        for (size_t v = 0; v < 4; ++v)
+            glideSamples[v] = std::max (1, (int) std::lround (kGlideSeconds[v] * sampleRate));
 
         const Design designs[4] { Design::script, Design::block, Design::stoneOff, Design::stoneOn };
 
@@ -511,10 +535,29 @@ public:
         const auto tpt = [sampleRate] (double hz) { const double g = std::tan (kPi * hz / sampleRate); return g / (1.0 + g); };
         poleG1 = tpt (kStonePole1Hz);
         poleG2 = tpt (kStonePole2Hz);
+        highpassG = tpt (kStoneOffHighpassHz);
         inShelfA = 1.0 - kStoneInZeroAHz / kStonePole1Hz;
         inShelfB = 1.0 - kStoneInZeroBHz / kStonePole2Hz;
         fbShelf = 1.0 - kStoneFbZeroHz / kStonePole2Hz;
+    }
 
+    Table tables[4] {};
+    double invSampleRate = 1.0 / 48000.0;
+    double p90Norm = 1.0, stoneNorm = 1.0, gateCoeff = 1.0;
+    double poleG1 = 0.0, poleG2 = 0.0, highpassG = 0.0, inShelfA = 0.0, inShelfB = 0.0, fbShelf = 0.0;
+    int glideSamples[4] { 1, 1, 1, 1 };
+};
+
+//==============================================================================
+/** Phase 90 and Small Stone: four TPT one-pole allpass stages whose coefficients follow the
+    sweep position through the shared tables; feedback loops are solved per sample in closed
+    form, without a unit delay. */
+class PedalPhaser
+{
+public:
+    void prepare (const PedalTables& sharedTables, double sampleRate)
+    {
+        t = &sharedTables;
         rate.prepare (kParamSmoothSeconds, (float) sampleRate, 1.0f);
         reset();
     }
@@ -529,7 +572,8 @@ public:
         gatePrimed = false;
         glideOffset = 0.0;
         glideLeft = 0;
-        phasePrimed = false;
+        phasePrimed = synced = false;
+        nudge = 0.0;
         rate.snapToTarget();
     }
 
@@ -543,29 +587,27 @@ public:
 
     void freeze (double position) noexcept { frozen = position; }
     double getLastPhase() const noexcept { return lastPhase; }
+    int getJumpCount() const noexcept { return jumps; }
 
-    void process (juce::dsp::AudioBlock<float> block, Voicing voicing, double syncPhase) noexcept
+    /** hostPhase: the host's LFO phase at the first sample (Sync::update); hostRate: the rate it
+        advances at (the clamped rate parameter). */
+    void process (juce::dsp::AudioBlock<float> block, Voicing voicing, Sync sync, double hostPhase, double hostRate) noexcept
     {
-        const bool phase90 = voicing == Voicing::script || voicing == Voicing::block;
+        const int numSamples = (int) block.getNumSamples();
 
-        if (syncPhase >= 0.0)
+        if (sync == Sync::update)
         {
-            // A song-position jump is honoured, but the sweep glides from where it was to the new
-            // phase's position instead of stepping the break frequency.
-            if (phasePrimed)
-            {
-                const double kappa = phase90 ? kP90Kappa : kSsKappa, norm = phase90 ? p90Norm : stoneNorm;
-                glideOffset = rcTriangle (phase, kappa, norm) + pendingGlide() - rcTriangle (syncPhase, kappa, norm);
-                glideLeft = std::abs (glideOffset) > kGlideThreshold ? glideSamples : 0;
-            }
-
-            phase = syncPhase;
+            follow (hostPhase, hostRate, voicing);
+        }
+        else if (sync == Sync::off)
+        {
+            synced = false;
+            nudge = 0.0;
         }
 
         phasePrimed = true;
 
         const int numChannels = juce::jmin (2, (int) block.getNumChannels());
-        const int numSamples = (int) block.getNumSamples();
         float* data[2] { block.getChannelPointer (0), numChannels > 1 ? block.getChannelPointer (1) : nullptr };
 
         switch (voicing)
@@ -576,12 +618,15 @@ public:
             case Voicing::stoneOn:  runStone<true> (data, numChannels, numSamples); break;
         }
 
+        samplesSinceHost += numSamples;
+
         for (auto& c : channels)
         {
             for (auto& s : c.stage)
                 settle (s);
 
             settle (c.lag);
+            settle (c.highpass);
             settle (c.inA);
             settle (c.inB);
             settle (c.fbA);
@@ -594,11 +639,65 @@ private:
     {
         double stage[4] {};
         double lag = 0.0;              // Phase 90 block: feedback lag
+        double highpass = 0.0;         // Small Stone Color off: the wet input's highpass
         double inA = 0.0, inB = 0.0;   // Small Stone Color: input branch
         double fbA = 0.0, fbB = 0.0;   // Small Stone Color: feedback branch
     };
 
-    using Table = std::array<std::array<double, 5>, kTableN + 1>;
+    /** A step in the host's own phase (transport start, locate, a loop that is not a whole number
+        of cycles, a note-value change, sync switched on) is one jump, honoured with one glide. Any
+        smaller difference, the engine's own drift, is pulled in by bending the rate; a difference
+        within a few samples' worth (host jitter) is left alone. */
+    void follow (double host, double hostRate, Voicing voicing) noexcept
+    {
+        if (! phasePrimed)
+        {
+            phase = host;
+        }
+        else if (! synced)
+        {
+            jump (host, voicing);
+        }
+        else
+        {
+            const double predicted = hostLast + hostRateLast * (double) samplesSinceHost * t->invSampleRate;
+            const double step = wrapHalf (host - predicted);
+
+            if (std::abs (step) >= std::max (kJumpCycles, hostRate * kJumpLfoSeconds))
+            {
+                jump (host, voicing);
+            }
+            else
+            {
+                const double error = wrapHalf (host - phase);
+                const double dead = std::min (kLockDeadCycles, hostRate * kLockDeadLfoSeconds);
+                const double pull = std::max (0.0, std::abs (error) - dead) * (error < 0.0 ? -1.0 : 1.0);
+                const double limit = kLockMaxNudge * hostRate;
+                nudge = juce::jlimit (-limit, limit, pull / kLockSeconds);
+            }
+        }
+
+        synced = true;
+        hostLast = host;
+        hostRateLast = hostRate;
+        samplesSinceHost = 0;
+    }
+
+    /** The phase is set to the host's; the sweep glides from where it is (a glide still running
+        included) to the new phase's position with a raised cosine of fixed length. */
+    void jump (double host, Voicing voicing) noexcept
+    {
+        const bool phase90 = voicing == Voicing::script || voicing == Voicing::block;
+        const double kappa = phase90 ? kP90Kappa : kSsKappa, norm = phase90 ? t->p90Norm : t->stoneNorm;
+        const double from = rcTriangle (phase, kappa, norm) + pendingGlide();
+
+        phase = host;
+        glideOffset = from - rcTriangle (host, kappa, norm);
+        glideSamples = t->glideSamples[(size_t) voicing];
+        glideLeft = glideSamples;
+        nudge = 0.0;
+        ++jumps;
+    }
 
     /** Raised-cosine remainder of the glide offset at the current sample. */
     double pendingGlide() const noexcept
@@ -614,11 +713,13 @@ private:
             return frozen;
 
         lastPhase = phase;
-        double sweep = phase90 ? rcTriangle (phase, kP90Kappa, p90Norm) : rcTriangle (phase, kSsKappa, stoneNorm);
-        phase += (double) rate.next() * invSampleRate;
+        double sweep = phase90 ? rcTriangle (phase, kP90Kappa, t->p90Norm) : rcTriangle (phase, kSsKappa, t->stoneNorm);
+        phase += ((double) rate.next() + nudge) * t->invSampleRate;
 
         if (phase >= 1.0)
             phase -= 1.0;
+        else if (phase < 0.0)
+            phase += 1.0;
 
         if (glideLeft > 0)
         {
@@ -635,7 +736,7 @@ private:
                 gatePrimed = true;
             }
 
-            gate += gateCoeff * (sweep - gate);
+            gate += t->gateCoeff * (sweep - gate);
             sweep = gate;
         }
 
@@ -643,12 +744,12 @@ private:
     }
 
     /** Linear interpolation of the voicing's table at sweep position w (prototype lookup). */
-    static void lookup (const Table& table, double w, double* G, int count) noexcept
+    static void lookup (const PedalTables::Table& table, double w, double* G, int count) noexcept
     {
-        double t = (w + 1.0) * (0.5 * kTableN);
-        t = t >= 0.0 ? std::min (t, (double) kTableN) : 0.0; // false for NaN as well
-        const int i = std::min ((int) t, kTableN - 1);
-        const double fr = t - i;
+        double tt = (w + 1.0) * (0.5 * kTableN);
+        tt = tt >= 0.0 ? std::min (tt, (double) kTableN) : 0.0; // false for NaN as well
+        const int i = std::min ((int) tt, kTableN - 1);
+        const double fr = tt - i;
 
         for (int k = 0; k < count; ++k)
             G[k] = table[(size_t) i][(size_t) k] + fr * (table[(size_t) i + 1][(size_t) k] - table[(size_t) i][(size_t) k]);
@@ -658,7 +759,7 @@ private:
     void runPhase90 (float* const* data, int numChannels, int numSamples) noexcept
     {
         constexpr double beta = kP90Beta;
-        const auto& table = tables[block ? 1 : 0];
+        const auto& table = t->tables[block ? 1 : 0];
         const double makeup = block ? kP90BlockMakeup : kP90ScriptMakeup;
 
         for (int i = 0; i < numSamples; ++i)
@@ -721,9 +822,10 @@ private:
     void runStone (float* const* data, int numChannels, int numSamples) noexcept
     {
         const auto& voicing = color ? kStoneOn : kStoneOff;
-        const auto& table = tables[color ? 3 : 2];
+        const auto& table = t->tables[color ? 3 : 2];
         const double fb = voicing.feedback, dry = voicing.makeup * voicing.dry, wet = voicing.makeup * voicing.wet;
-        const double g1 = poleG1, g2 = poleG2;
+        const double g1 = t->poleG1, g2 = t->poleG2, gh = t->highpassG;
+        const double inShelfA = t->inShelfA, inShelfB = t->inShelfB, fbShelf = t->fbShelf;
         // The feedback branch F is affine in y4 for the current sample: F = fbGain * y4 + bF.
         const double fbGain = (1.0 - fbShelf * g2) * (1.0 - g1);
         const double fbHold = fbShelf * (1.0 - g2);
@@ -748,7 +850,7 @@ private:
                 auto& c = channels[ch];
                 auto& st = c.stage;
                 const double x = (double) data[ch][i];
-                double u = x;
+                double u;
 
                 if constexpr (color)
                 {
@@ -781,6 +883,13 @@ private:
                     c.fbB = lp + v;
                     u = xs + fb * (h - fbShelf * lp);
                 }
+                else
+                {
+                    const double v = (x - c.highpass) * gh;
+                    const double lp = v + c.highpass;
+                    c.highpass = lp + v;
+                    u = x - lp;
+                }
 
                 for (int k = 0; k < 4; ++k)
                 {
@@ -795,34 +904,31 @@ private:
         }
     }
 
+    const PedalTables* t = nullptr;
     Channel channels[2];
-    Table tables[4] {};
-    double invSampleRate = 1.0 / 48000.0;
     double phase = 0.0, lastPhase = 0.0, gate = 0.0, frozen = std::numeric_limits<double>::quiet_NaN();
-    double glideOffset = 0.0;
-    int glideLeft = 0, glideSamples = 480;
-    bool gatePrimed = false, phasePrimed = false;
-
-    double p90Norm = 1.0, stoneNorm = 1.0, gateCoeff = 1.0;
-    double poleG1 = 0.0, poleG2 = 0.0, inShelfA = 0.0, inShelfB = 0.0, fbShelf = 0.0;
+    double glideOffset = 0.0, nudge = 0.0;
+    double hostLast = 0.0, hostRateLast = 0.0;
+    int glideLeft = 0, glideSamples = 1, samplesSinceHost = 0, jumps = 0;
+    bool gatePrimed = false, phasePrimed = false, synced = false;
 
     fx::Smoother rate;
 };
 
-/** The switcher key: Classic ignores color; the other models fade on a color change too. */
+/** 0 for Classic (it ignores color), else one key per voicing. */
 int engineKey (const PhaserParams& p) noexcept
 {
     return p.model == (int) PhaserFx::Model::classic ? 0 : p.model * 2 + (p.color ? 1 : 0);
 }
 
-PedalPhaser::Voicing voicingFor (int key) noexcept
+Voicing voicingFor (int key) noexcept
 {
     switch (key)
     {
-        case 2:  return PedalPhaser::Voicing::script;
-        case 3:  return PedalPhaser::Voicing::block;
-        case 4:  return PedalPhaser::Voicing::stoneOff;
-        default: return PedalPhaser::Voicing::stoneOn;
+        case 2:  return Voicing::script;
+        case 3:  return Voicing::block;
+        case 4:  return Voicing::stoneOff;
+        default: return Voicing::stoneOn;
     }
 }
 } // namespace
@@ -830,58 +936,141 @@ PedalPhaser::Voicing voicingFor (int key) noexcept
 //==============================================================================
 struct PhaserFx::Impl
 {
-    /** Runs `block` (which starts `offset` samples into the host block) on the requested
-        engine through the switcher. */
-    void run (juce::dsp::AudioBlock<float> block, int key, size_t offset)
+    /** Runs `block`, which starts `offset` samples into the host block, on the voicing `key`
+        (pedal instance `pedal` for the Phase 90 and Small Stone keys). */
+    void runKey (int key, int pedal, juce::dsp::AudioBlock<float> block, size_t offset)
     {
-        const int active = switcher.begin (block, key, [this] (int k, bool)
+        if (key == 0)
         {
-            if (k == 0)
-            {
-                classic.reset();
-            }
-            else
-            {
-                pedal.reset();
-                pedalWasReset = true;
-            }
-
-            return true;
-        });
-
-        if (! switcher.isHolding())
-        {
-            if (active == 0)
-            {
-                classic.process (block);
-            }
-            else
-            {
-                // The song position is given for the host block's first sample; a pedal reset
-                // further in picks it up where the transport is by then.
-                double sync = -1.0;
-
-                if (params.syncPhase >= 0.0 && (offset == 0 || pedalWasReset))
-                {
-                    sync = params.syncPhase + (double) offset * (double) juce::jlimit (0.01f, 20.0f, params.rateHz) / sampleRate;
-                    sync -= std::floor (sync);
-                }
-
-                pedal.process (block, voicingFor (active), sync);
-            }
+            classic.process (block);
+            return;
         }
 
-        pedalWasReset = false;
-        switcher.end (block);
+        const double hostRate = (double) juce::jlimit (0.01f, 20.0f, params.rateHz);
+        const Sync sync = params.syncPhase < 0.0 ? Sync::off : offset == 0 ? Sync::update : Sync::hold;
+        pedals[pedal].process (block, voicingFor (key), sync, params.syncPhase, hostRate);
     }
 
+    void startSwitch (int key)
+    {
+        incomingKey = key;
+        incomingPedal = activeKey == 0 ? activePedal : 1 - activePedal;
+
+        if (key == 0)
+            classic.reset();
+        else
+            pedals[incomingPedal].reset();
+
+        switchPos = 0;
+        std::fill (std::begin (power), std::end (power), 0.0);
+    }
+
+    /** A switch in flight: the outgoing voicing on one copy of the input, the incoming one on
+        another. The incoming one is not heard for its first kSwitchWarmSeconds; then the two
+        cross over with a raised cosine, the pair of gains scaled so that the power of the sum,
+        predicted from short-term powers and the cross term of the two outputs, follows the
+        straight line between their powers. Two phasers can sit near antiphase on one note,
+        where any crossfade of the two passes a null: the scale is bounded by kSwitchMaxGain, with a
+        soft bound that vanishes at both ends of the fade so the gains have no corner. */
+    void processSwitch (juce::dsp::AudioBlock<float> block)
+    {
+        const int numChannels = juce::jmin (2, (int) block.getNumChannels());
+        const auto total = block.getNumSamples();
+        const auto capacity = (size_t) scratch.getNumSamples();
+
+        for (size_t start = 0; start < total; start += capacity)
+        {
+            const auto n = juce::jmin (capacity, total - start);
+            auto sub = block.getSubBlock (start, n);
+
+            if (incomingKey < 0)
+            {
+                runKey (activeKey, activePedal, sub, start);
+                continue;
+            }
+
+            float* a[2] {}, *b[2] {};
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                a[ch] = scratch.getWritePointer (ch);
+                b[ch] = scratch.getWritePointer (2 + ch);
+                juce::FloatVectorOperations::copy (a[ch], sub.getChannelPointer ((size_t) ch), (int) n);
+                juce::FloatVectorOperations::copy (b[ch], sub.getChannelPointer ((size_t) ch), (int) n);
+            }
+
+            runKey (activeKey, activePedal, juce::dsp::AudioBlock<float> (a, (size_t) numChannels, n), start);
+            runKey (incomingKey, incomingPedal, juce::dsp::AudioBlock<float> (b, (size_t) numChannels, n), start);
+
+            for (size_t i = 0; i < n; ++i)
+            {
+                double aa = 0.0, bb = 0.0, ab = 0.0;
+
+                for (int ch = 0; ch < numChannels; ++ch)
+                {
+                    const double x = a[ch][i], y = b[ch][i];
+                    aa += x * x;
+                    bb += y * y;
+                    ab += x * y;
+                }
+
+                const double in[3] { aa, bb, ab };
+
+                for (int k = 0; k < 3; ++k)
+                {
+                    power[2 * k] += powerCoeff * (in[k] - power[2 * k]);
+                    power[2 * k + 1] += powerCoeff * (power[2 * k] - power[2 * k + 1]);
+                }
+
+                const int pos = switchPos + (int) i;
+
+                if (pos < warmSamples)
+                {
+                    for (int ch = 0; ch < numChannels; ++ch)
+                        sub.getChannelPointer ((size_t) ch)[i] = a[ch][i];
+                }
+                else if (pos < warmSamples + fadeSamples)
+                {
+                    const double s = 0.5 - 0.5 * std::cos (kPi * (pos - warmSamples) / fadeSamples);
+                    const double pa = power[1], pb = power[3], pab = power[5];
+                    const double target = (1.0 - s) * pa + s * pb;
+                    const double sum = (1.0 - s) * (1.0 - s) * pa + s * s * pb + 2.0 * s * (1.0 - s) * pab;
+                    const double floor = 4.0 * s * (1.0 - s) * target / (kSwitchMaxGain * kSwitchMaxGain);
+                    const double g = target > 1.0e-20 ? std::sqrt (target / (std::max (sum, 0.0) + floor)) : 1.0;
+                    const double ga = g * (1.0 - s), gb = g * s;
+
+                    for (int ch = 0; ch < numChannels; ++ch)
+                        sub.getChannelPointer ((size_t) ch)[i] = (float) (ga * a[ch][i] + gb * b[ch][i]);
+                }
+                else
+                {
+                    for (int ch = 0; ch < numChannels; ++ch)
+                        sub.getChannelPointer ((size_t) ch)[i] = b[ch][i];
+                }
+            }
+
+            switchPos += (int) n;
+
+            if (switchPos >= warmSamples + fadeSamples)
+            {
+                activeKey = incomingKey;
+                activePedal = incomingPedal;
+                incomingKey = -1;
+            }
+        }
+    }
+
+    PedalTables tables;
     ClassicPhaser classic;
-    PedalPhaser pedal;
-    fx::EngineSwitcher switcher;
+    PedalPhaser pedals[2];
+    juce::AudioBuffer<float> scratch;        // outgoing L/R, incoming L/R
     PhaserParams params;
-    double sampleRate = 48000.0;
-    int requestedKey = -1, switchSamplesLeft = 0, switchSpan = 0;
-    bool snapEngine = true, snapParams = true, pedalWasReset = false;
+    double sampleRate = 48000.0, powerCoeff = 1.0;
+    double power[6] {};                      // two one-poles each of |A|^2, |B|^2, A.B
+    int activeKey = 0, activePedal = 0;      // the voicing heard and its pedal instance
+    int incomingKey = -1, incomingPedal = 1; // a switch is in flight while incomingKey >= 0
+    int switchPos = 0, warmSamples = 1, fadeSamples = 1;
+    bool snapEngine = true, snapParams = true;
 };
 
 PhaserFx::PhaserFx() : impl (std::make_unique<Impl>()) {}
@@ -889,23 +1078,32 @@ PhaserFx::~PhaserFx() = default;
 
 void PhaserFx::prepare (const juce::dsp::ProcessSpec& spec)
 {
-    impl->sampleRate = spec.sampleRate;
-    impl->switchSpan = (int) std::ceil (kSwitchSpanSeconds * spec.sampleRate) + kSwitchPiece;
-    impl->classic.prepare (spec);
-    impl->pedal.prepare (spec.sampleRate);
-    impl->switcher.prepare (spec.sampleRate, (int) spec.maximumBlockSize, (int) spec.numChannels,
-                            engineKey (impl->params));
-    impl->snapEngine = impl->snapParams = true;
+    auto& s = *impl;
+    s.sampleRate = spec.sampleRate;
+    s.warmSamples = (int) std::lround (kSwitchWarmSeconds * spec.sampleRate);
+    s.fadeSamples = std::max (1, (int) std::lround (kSwitchFadeSeconds * spec.sampleRate));
+    s.powerCoeff = 1.0 - std::exp (-1.0 / (kSwitchStatSeconds * spec.sampleRate));
+    s.scratch.setSize (4, juce::jmax (1, (int) spec.maximumBlockSize), false, true, false);
+    s.classic.prepare (spec);
+    s.tables.prepare (spec.sampleRate);
+
+    for (auto& p : s.pedals)
+        p.prepare (s.tables, spec.sampleRate);
+
+    s.incomingKey = -1;
+    s.snapEngine = s.snapParams = true;
 }
 
 void PhaserFx::reset()
 {
-    impl->classic.reset();
-    impl->pedal.reset();
-    impl->snapEngine = impl->snapParams = true;
-    impl->requestedKey = -1;
-    impl->switchSamplesLeft = 0;
-    impl->pedalWasReset = false;
+    auto& s = *impl;
+    s.classic.reset();
+
+    for (auto& p : s.pedals)
+        p.reset();
+
+    s.incomingKey = -1;
+    s.snapEngine = s.snapParams = true;
 }
 
 void PhaserFx::setParameters (const PhaserParams& params)
@@ -925,7 +1123,9 @@ void PhaserFx::setParameters (const PhaserParams& params)
     if (s.params.model == (int) Model::classic)
         s.classic.setParameters (s.params.rateHz, s.params.depth, s.params.mix);
 
-    s.pedal.setRate (juce::jlimit (0.01f, 20.0f, s.params.rateHz), s.snapParams);
+    for (auto& p : s.pedals)
+        p.setRate (juce::jlimit (0.01f, 20.0f, s.params.rateHz), s.snapParams);
+
     s.snapParams = false;
 }
 
@@ -937,16 +1137,15 @@ void PhaserFx::process (juce::dsp::AudioBlock<float> block)
     if (numSamples == 0)
         return;
 
-    // A non-finite input sample would live on in the filter states (for good, in Classic's
-    // juce::dsp::Phaser): it is replaced by silence before anything sees it. Finite input is
-    // untouched, so Classic stays bit-identical.
+    // A sample no instrument can produce (non-finite, or beyond 1e6) would live on in the filter
+    // states (for good, in Classic's juce::dsp::Phaser): it is replaced by silence before anything
+    // sees it. Everything else is untouched, so Classic stays bit-identical.
     for (size_t ch = 0; ch < block.getNumChannels(); ++ch)
     {
         auto* d = block.getChannelPointer (ch);
 
         for (size_t i = 0; i < numSamples; ++i)
-            if (! std::isfinite (d[i]))
-                d[i] = 0.0f;
+            d[i] = fx::sanitise (d[i]);
     }
 
     const int key = engineKey (s.params);
@@ -955,32 +1154,26 @@ void PhaserFx::process (juce::dsp::AudioBlock<float> block)
     {
         // Nothing has been heard since prepare() or reset(): start on the requested model.
         s.snapEngine = false;
-        s.switcher.snapTo (key);
-        s.requestedKey = key;
-        s.switchSamplesLeft = 0;
+        s.activeKey = key;
+        s.activePedal = 0;
+        s.incomingKey = -1;
     }
 
-    if (key != s.requestedKey)
-    {
-        s.requestedKey = key;
-        s.switchSamplesLeft = s.switchSpan;
-    }
+    if (s.incomingKey < 0 && key != s.activeKey)
+        s.startSwitch (key);
 
-    if (s.switchSamplesLeft <= 0)
-    {
-        s.run (block, key, 0);
-        return;
-    }
-
-    // While a switch is in flight the block runs in short pieces: the switcher resets the
-    // incoming engine at the start of a run, so the fade back in then begins within one
-    // piece of the fade out ending instead of waiting for the next host block.
-    for (size_t start = 0; start < numSamples; start += (size_t) kSwitchPiece)
-        s.run (block.getSubBlock (start, juce::jmin ((size_t) kSwitchPiece, numSamples - start)), key, start);
-
-    s.switchSamplesLeft -= (int) numSamples;
+    if (s.incomingKey < 0)
+        s.runKey (s.activeKey, s.activePedal, block, 0);
+    else
+        s.processSwitch (block);
 }
 
-void PhaserFx::freezeSweep (double position) noexcept { impl->pedal.freeze (position); }
-double PhaserFx::getLfoPhase() const noexcept { return impl->pedal.getLastPhase(); }
+void PhaserFx::freezeSweep (double position) noexcept
+{
+    for (auto& p : impl->pedals)
+        p.freeze (position);
+}
+
+double PhaserFx::getLfoPhase() const noexcept { return impl->pedals[impl->activePedal].getLastPhase(); }
+int PhaserFx::getSyncJumpCount() const noexcept { return impl->pedals[0].getJumpCount() + impl->pedals[1].getJumpCount(); }
 } // namespace tubamp
