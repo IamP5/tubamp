@@ -71,18 +71,52 @@ constexpr float kSin120 = 0.866025404f;
 // While settings move, every voice delay is slope-limited to the largest peak slope of the
 // settings involved plus this much [choice: 4 cents, under the 5-cent acceptance margin].
 constexpr float kPitchAllowance = 0.0023131618f;   // 2^(4/1200) - 1
-// A change the slope limit cannot finish in kSettleSeconds is made by fading the wet out,
-// moving every delay to its new law in the silence, and fading back in. Two taps of one
-// signal at different delays cannot overlap: their sum swings in phase by up to pi during
-// the fade, hundreds of cents on a steady tone. kDipSeconds per side [choice: 5 ms fades
-// read as a 40-cent wobble on a 220 Hz tone, 10 ms as under 8].
-constexpr float kDipSeconds = 0.010f;
-constexpr float kSettleSeconds = 0.200f;           // [spec: settle within 250 ms, minus the dip]
-// A knob that stopped moving this long ago is a step; while it moves, nothing dips.
-constexpr float kQuietSeconds = 0.080f;
-// A sync phase that differs from the running LFO by more than this is a jump (transport
-// start, locate, loop, note value), honoured through a dip instead of a slide.
-constexpr double kSyncSlackCycles = 1.0e-3;
+// A change the slope limit cannot finish soon is made by a tap crossfade: every voice
+// starts a second read tap on the new law, the outgoing tap moves on with it a fixed
+// distance away, and the two are crossfaded (directly, or through the taps half way between
+// when those are more alike: readVoices, crossfade). Two taps of one signal a fixed distance
+// apart carry no pitch of their own, only a comb while both sound, so the fade keeps the
+// wet's short-term power on the straight line between the two taps' own (measured, as for a
+// mode switch). Fading the wet out and back in instead leaves a hole at mix 1.
+// A knob that stopped this long ago is a step [choice: a hand's knob move pauses longer]...
+constexpr float kQuietSeconds = 0.030f;
+// ...and a step whose glide would need longer than this is crossfaded instead.
+constexpr float kGlideSeconds = 0.050f;
+// A moving knob is followed by the glide; once the glide falls this far behind, the rest
+// is crossfaded without waiting for the knob to stop, but not sooner than kCatchUpGapSeconds
+// after the last crossfade ended [choice: a hand's move then starts one or two, not one per
+// glide that falls behind].
+constexpr float kCatchUpSeconds = 0.100f;
+constexpr float kCatchUpGapSeconds = 0.100f;
+// The new tap's power is measured this long before it fades in [choice: as the mode switch].
+constexpr float kTapMeasureSeconds = 0.010f;
+// A retarget restarts the measurement only inside this much pre-roll; later ones wait for
+// the fade to end, so a knob in motion cannot postpone the fade indefinitely.
+constexpr float kTapPrerollSeconds = 0.020f;
+constexpr float kTapFadeSeconds = 0.030f;          // [spec: 20 - 30 ms, cornerless]
+constexpr float kTapPowerSeconds = 0.004f;         // two cascaded one-poles, as kSwitchPowerSeconds
+// Headroom of the power correction: at most +8.8 dB. The path choice keeps a tone's two faded
+// taps no worse than -0.5 correlated, which this lifts to -0.53 dB at the midpoint.
+constexpr float kTapSlack = 0.15f;
+// After reset() the wet fades in over this once the lines hold enough history.
+constexpr float kFadeInSeconds = 0.010f;
+
+// Song-position lock. A host's song position is taken as continuous when it lands within
+// this much of where the last one predicts (last + rate x elapsed): 0.01 cycle or 5 ms of
+// LFO time, whichever is larger [choice: hosts report positions to the sample, a +-16
+// sample jitter is 0.33 ms at 48 kHz and 0.73 ms at 22.05 kHz, a tempo change between two
+// blocks of 4096 a few hundredths of a ms; a locate, a loop that is not a whole number of
+// cycles or a note-value change moves the phase by more]. Anything larger is a jump.
+constexpr double kLockSlackCycles = 0.01;
+constexpr double kLockSlackSeconds = 0.005;
+// Inside that, the LFO runs free at the tempo's rate and its own error against the host is
+// pulled in with this time constant, by a rate nudge that keeps every voice inside its
+// steady slope + 0.9 kPitchAllowance and the rate within kLockMaxRatio of its own.
+constexpr float kLockSeconds = 0.150f;
+constexpr double kLockMaxRatio = 0.25;
+// An error this large is not drift: it is taken as a jump.
+constexpr double kLockLostCycles = 0.25;
+
 // Mode switches crossfade the outgoing and incoming wets [choice: §2.4's 20 ms], scaled so
 // the wet's short-term power moves straight from one mode's to the other's whatever the two
 // wets' correlation (a chord gives -0.3 to +0.45 between modes, so a plain equal-power fade
@@ -302,13 +336,22 @@ public:
         sampleRate = (float) newSampleRate;
         invSampleRate = 1.0 / newSampleRate;
         smoothA = 1.0f - std::exp (-1.0f / std::max (1.0f, kSmoothSeconds * sampleRate));
-        dipStep = 1.0f / std::max (1.0f, kDipSeconds * sampleRate);
+        fadeInStep = 1.0f / std::max (1.0f, kFadeInSeconds * sampleRate);
+        tapStep = 1.0f / std::max (1.0f, kTapFadeSeconds * sampleRate);
+        tapPowerA = 1.0f - std::exp (-1.0f / std::max (1.0f, kTapPowerSeconds * sampleRate));
+        tapMeasure = (int) std::ceil (kTapMeasureSeconds * sampleRate);
+        tapPreroll = (int) std::ceil (kTapPrerollSeconds * sampleRate);
+        slopeBlend = 2.0f / (float) std::max (2, tapMeasure);
+        lockA = 1.0 - std::exp (-1.0 / std::max (1.0, (double) kLockSeconds * newSampleRate));
         quietSamples = quietNeeded = (int) std::ceil (kQuietSeconds * sampleRate);
-        settleSamples = (int) std::ceil (kSettleSeconds * sampleRate);
+        glideSamples = kGlideSeconds * sampleRate;
+        catchUpSamples = kCatchUpSeconds * sampleRate;
+        fadeGapSamples = (int) std::ceil (kCatchUpGapSeconds * sampleRate);
 
         for (auto& line : lines)
             line.setSize ((int) std::ceil (kLineSeconds * sampleRate) + 8);
 
+        oldMax = (float) lines[0].capacity() - 2.0f;
         clear();
     }
 
@@ -329,13 +372,23 @@ public:
         std::fill (std::begin (hold), std::end (hold), 0.0f);
         std::fill (std::begin (rateCap), std::end (rateCap), kNoCap);
         std::fill (std::begin (delay), std::end (delay), 0.0f);
+        std::fill (std::begin (step), std::end (step), 0.0f);
+        std::fill (std::begin (oldDelay), std::end (oldDelay), 0.0f);
+        std::fill (std::begin (oldSlope), std::end (oldSlope), 0.0f);
+        std::fill (std::begin (oldStep), std::end (oldStep), 0.0f);
         std::fill (std::begin (voiceLimit), std::end (voiceLimit), kNoCap);
         tick = 0;
         snapControl = true;
         clamped = false;
         rawDirty = true;
-        sinceMove = settleSamples;
-        phasePending = dipPending = false;
+        sinceMove = sinceFade = 1 << 30;
+        xf = XFade::none;
+        xfSamples = 0;
+        xfPos = 0.0f;
+        jumpPending = syncLand = viaMid = false;
+        hostValid = false;
+        sinceHost = 0;
+        lockError = lockMax = 0.0;
         wet = Wet::silent;
         wetPos = wetStep = 0.0f;
         refilling = autoFadeIn = true;
@@ -364,40 +417,51 @@ public:
     }
 
     /** An incoming instance continues the outgoing one's mix (so their dry gains stay
-        equal) and LFO. */
+        equal), LFO and song-position lock. */
     void continueFrom (const ModernChorus& other) noexcept
     {
         mix = other.mix;
         phase[0] = other.phase[0];
         phase[1] = other.phase[1];
+        hostPhase = other.hostPhase;
+        hostRate = other.hostRate;
+        sinceHost = other.sinceHost;
+        hostValid = other.hostValid;
+        lockError = other.lockError;
     }
 
-    /** Song-position lock. A small difference is the running LFO's own drift and is taken
-        as is; a jump is made inside a dip, so no voice slides across it. */
+    /** Song-position lock (kLockSlackCycles): the host's phase is compared with where its
+        previous one predicts. A discontinuity there is one jump, made by a tap crossfade;
+        otherwise the LFO runs free and its own error is pulled in by the lock. */
     void syncTo (double cycles) noexcept
     {
         const double wrapped = cycles - std::floor (cycles);
-        double offset = wrapped - phase[0];
-        offset -= std::floor (offset + 0.5);
+        const double error = wrapHalf (wrapped - phase[0]);
+        const double slack = std::max (kLockSlackCycles, kLockSlackSeconds * (double) rate.target);
+        const double jump = hostValid ? wrapHalf (wrapped - (hostPhase + hostRate * (double) sinceHost * invSampleRate))
+                                      : error;
 
-        if (std::abs (offset) <= kSyncSlackCycles)
+        hostPhase = wrapped;
+        hostRate = (double) rate.target;
+        sinceHost = 0;
+        hostValid = true;
+
+        if (std::abs (jump) > slack || std::abs (error) > kLockLostCycles)
         {
-            phase[0] = wrapped;
-            phasePending = false;
-            return;
+            ++counts.syncJumps;
+            requestJump (true);
         }
-
-        if (wet == Wet::silent && ! dipPending)
+        else if (! syncLand)
         {
-            phase[0] = wrapped;
-            snapControl = true;
-            return;
+            lockError = error;
         }
+    }
 
-        syncAnchor = wrapped;
-        sinceSync = 0;
-        phasePending = true;
-        startDip();
+    /** No song position this block: the LFO runs free. */
+    void unlock() noexcept
+    {
+        hostValid = syncLand = false;
+        lockError = 0.0;
     }
 
     static int reachSamples (int mode, double fs) noexcept
@@ -415,9 +479,10 @@ public:
         quietNeeded = std::max (quietSamples, numSamples + kControlInterval);
     }
 
-    void process (juce::dsp::AudioBlock<float>& block, int mode, int solo) noexcept
+    void process (juce::dsp::AudioBlock<float>& block, int mode, int solo, float* const* trace) noexcept
     {
         const bool stereo = block.getNumChannels() > 1;
+        traceOut = solo >= 0 ? trace : nullptr;
 
         switch ((ChorusFx::Mode) mode)
         {
@@ -446,9 +511,23 @@ public:
     bool autoFadeIn = true;
     // During a switch: the wet term goes here and only the dry term into the block.
     float* wetTap[2] { nullptr, nullptr };
+    ChorusFx::DebugCounts counts;
 
 private:
     enum class Wet { steady, fading, silent };
+    // landing: the outgoing taps alone, the new ones land on their law at the next control
+    // tick; measuring: both run, the new ones silent; fading: the crossfade.
+    enum class XFade { none, landing, measuring, fading };
+
+    struct Pair
+    {
+        float l, r;
+    };
+
+    static double wrapHalf (double x) noexcept
+    {
+        return x - std::floor (x + 0.5);
+    }
 
     /** Once per kControlInterval samples: filter coefficients, the delay swings (reached
         linearly over the next interval), the LFO corner rounding and the transition limits. */
@@ -460,8 +539,13 @@ private:
         for (auto& f : filters)
             f.tidy();
 
-        if (wet == Wet::silent && dipPending)
+        if (xf == XFade::landing)
+        {
             land();
+            xf = XFade::measuring;
+            xfSamples = 0;
+            std::fill (&tapPower[0][0], &tapPower[0][0] + 12, 0.0f);
+        }
 
         const float f = rate.current;
         const float toneScale = std::exp2 (kToneOctaves * (tone.current - 0.5f));
@@ -523,20 +607,29 @@ private:
             glide (mode, law, target, lfoRate, slope);
         }
 
-        sinceMove = std::min (sinceMove + kControlInterval, settleSamples);
+        // The lock's nudge stays inside what the voices may add to their steady slope.
+        const double fe = std::min (lfoRate[0], rateCap[0]);
+        const double swingSlope = (double) law.slope * (double) swing[0] * invSampleRate;
+        lockMax = std::min (kLockMaxRatio * fe, 0.9 * (double) kPitchAllowance / std::max (swingSlope, 1.0e-9)) * invSampleRate;
+
+        sinceMove = std::min (sinceMove + kControlInterval, 1 << 30);
+        sinceFade = xf == XFade::none ? std::min (sinceFade + kControlInterval, 1 << 30) : 0;
     }
 
     /** Moves each swing towards its target no faster than keeps every voice inside
         hold + kPitchAllowance: the LFO's own term c f D is held at hold by capping the LFO
         rate while a swing is too large for it, and the swing's term D' u gets the rest.
-        A transition that cannot finish by kSettleSeconds after the knob stopped is ended
-        by a dip. */
+        Both groups move the same fraction of their gaps, at the slower one's pace, so a
+        glide passes through the settings in between (Wide's pairs gliding apart combed a
+        plucked note 1.6 dB below every steady setting). A transition that would take too
+        long is handed to a tap crossfade. */
     void glide (int mode, GroupLaw law, const float target[2], const float lfoRate[2], const float slope[2]) noexcept
     {
         bool settled = ! clamped;
         clamped = false;
         float remaining = 0.0f;
-        float multiplier[2];
+        float multiplier[2], gaps[2] { 0.0f, 0.0f };
+        float fraction = 1.0f;
         multipliers (mode, multiplier);
 
         for (int k = 0; k < 2; ++k)
@@ -562,19 +655,23 @@ private:
             }
             else
             {
-                const float move = juce::jlimit (-maxStep, maxStep, gap);
-                swingStep[k] = move * (1.0f / (float) kControlInterval);
+                gaps[k] = gap;
+                fraction = std::min (fraction, maxStep / std::abs (gap));
 
                 if (std::abs (gap) > maxStep)
                 {
                     settled = false;
-                    remaining = std::max (remaining, (std::abs (gap) - maxStep) / maxStep * (float) kControlInterval);
+                    remaining = std::max (remaining, glideTime (law, hold[k], lfoRate[k], nowSeconds, want / sampleRate) * sampleRate);
                 }
             }
 
             if (rateCap[k] < lfoRate[k])
                 settled = false;
         }
+
+        for (int k = 0; k < 2; ++k)
+            if (gaps[k] != 0.0f)
+                swingStep[k] = fraction * gaps[k] * (1.0f / (float) kControlInterval);
 
         if (settled)
             for (int k = 0; k < 2; ++k)
@@ -586,10 +683,39 @@ private:
             return;
 
         if (wet == Wet::silent)
+        {
             snapControl = true;   // nothing is heard: land on the new law at once
-        else if (wet == Wet::steady && sinceMove >= quietNeeded
-                 && (sinceMove >= settleSamples || remaining > (float) (settleSamples - sinceMove)))
-            startDip();
+            return;
+        }
+
+        const bool still = sinceMove >= quietNeeded;
+
+        if (xf != XFade::fading && remaining > (still ? glideSamples : catchUpSamples) && (still || sinceFade >= fadeGapSamples))
+        {
+            if (xf == XFade::none)
+                ++counts.knobFades;
+
+            requestJump (false);
+        }
+    }
+
+    /** Seconds a glide from swing `from` to `to` (seconds) takes at most: the swing's term may
+        use what the LFO's own term c s (held at hold while capped) leaves of
+        hold + kPitchAllowance, so a growing swing slows down as it arrives. */
+    static float glideTime (GroupLaw law, float hold, float lfoRate, float from, float to) noexcept
+    {
+        constexpr int steps = 8;
+        const float ds = (to - from) / (float) steps;
+        float t = 0.0f;
+
+        for (int j = 0; j < steps; ++j)
+        {
+            const float s = from + ((float) j + 0.5f) * ds;
+            const float budget = std::max (kPitchAllowance, hold + kPitchAllowance - std::min (law.slope * lfoRate * s, hold));
+            t += law.range * std::abs (ds) / budget;
+        }
+
+        return t;
     }
 
     /** Largest magnitude of each group's swing multiplier over its voices. */
@@ -641,45 +767,173 @@ private:
         }
     }
 
-    void startFade (float step) noexcept
+    /** A change too large to glide (sync: a song-position jump). Unheard, the voices land
+        at once; otherwise the outgoing taps carry on along their last slope and the voices
+        land on the new law at the next control tick, silent until the crossfade. A request
+        while the new taps are still silent moves them again; one during the fade waits. */
+    void requestJump (bool sync) noexcept
     {
-        wet = Wet::fading;
-        wetStep = step;
+        syncLand |= sync;
+
+        if (wet == Wet::silent)
+        {
+            land();
+            return;
+        }
+
+        switch (xf)
+        {
+            case XFade::none:
+                for (int v = 0; v < 4; ++v)
+                {
+                    oldDelay[v] = delay[v];
+                    oldSlope[v] = step[v];
+                }
+
+                xf = XFade::landing;
+                xfSamples = 0;
+                break;
+            case XFade::landing:
+                break;
+            case XFade::measuring:
+                if (xfSamples < tapPreroll)
+                {
+                    std::copy (std::begin (oldStep), std::end (oldStep), std::begin (oldSlope));
+                    xf = XFade::landing;
+                }
+                else
+                {
+                    jumpPending = true;
+                }
+                break;
+            case XFade::fading:
+                jumpPending = true;
+                break;
+        }
     }
 
-    /** A dip asked for while the wet fades in starts when it is fully in: turning the fade
-        round part way would put a corner in the gain. */
-    void startDip() noexcept
-    {
-        dipPending = true;
-
-        if (wet == Wet::steady)
-            startFade (-dipStep);
-    }
-
-    /** At the bottom of a dip, unheard: every voice jumps to the law the settings and the
-        sync ask for, then the wet fades back in. */
+    /** Every voice jumps to the law the settings and the song position ask for. */
     void land() noexcept
     {
         rate.snap();
         depth.snap();
 
-        if (phasePending)
+        if (syncLand)
         {
-            // Where the song position is now: the LFO ran at its own (smoothed, perhaps
-            // capped) rate since the last sync, the song at the target rate.
-            phase[0] = syncAnchor + (double) rate.target * (double) sinceSync * invSampleRate;
+            // Where the song is now: the host's last phase, moved on at its rate.
+            phase[0] = hostPhase + hostRate * (double) sinceHost * invSampleRate;
             phase[0] -= std::floor (phase[0]);
-            phasePending = false;
+            lockError = 0.0;
+            syncLand = false;
         }
 
         snapControl = true;
-        dipPending = false;
-
-        if (! refilling)
-            startFade (dipStep);
     }
 
+    /** A song-position jump that arrived during the fade is made now, if the LFO is still
+        further off the song than the lock pulls in. */
+    void endCrossfade() noexcept
+    {
+        xf = XFade::none;
+
+        if (! jumpPending)
+            return;
+
+        jumpPending = false;
+
+        if (! (syncLand && hostValid))
+            return;
+
+        syncLand = false;
+        const double error = wrapHalf (hostPhase + hostRate * (double) sinceHost * invSampleRate - phase[0]);
+
+        if (std::abs (error) > std::max (kLockSlackCycles, kLockSlackSeconds * (double) rate.target))
+            requestJump (true);
+        else
+            lockError = error;
+    }
+
+    /** One sample of the tap crossfade, from the outgoing taps to the new ones either
+        directly or through the taps half way between them, whichever path's two ends are
+        the more alike (a tone's taps half a period apart cancel; the midpoint tap is a
+        quarter period from each). Each leg is out = s (cos * from + sin * to), s keeping
+        the wet's short-term power on the straight line between the old and the new taps'. */
+    Pair crossfade (Pair now, Pair old, Pair mid) noexcept
+    {
+        if (xf == XFade::landing)
+            return old;
+
+        ++xfSamples;
+        const float raw[6] { old.l * old.l + old.r * old.r, now.l * now.l + now.r * now.r, mid.l * mid.l + mid.r * mid.r,
+                             old.l * now.l + old.r * now.r, old.l * mid.l + old.r * mid.r, mid.l * now.l + mid.r * now.r };
+
+        for (int k = 0; k < 6; ++k)
+        {
+            tapPower[0][k] += tapPowerA * (raw[k] - tapPower[0][k]);
+            tapPower[1][k] += tapPowerA * (tapPower[0][k] - tapPower[1][k]);
+        }
+
+        const float* p = tapPower[1];
+
+        if (xf == XFade::measuring)
+        {
+            if (xfSamples >= tapMeasure)
+            {
+                const auto alike = [] (float cross, float a, float b) { return cross / std::sqrt (a * b + 1.0e-30f); };
+                viaMid = std::min (alike (p[4], p[0], p[2]), alike (p[5], p[2], p[1])) > alike (p[3], p[0], p[1]);
+                xf = XFade::fading;
+                xfPos = 0.0f;
+            }
+
+            return old;
+        }
+
+        xfPos = std::min (1.0f, xfPos + tapStep);
+        Pair from = old, to = now;
+        float pFrom = p[0], pTo = p[1], cross = p[3], u = xfPos;
+
+        if (viaMid)
+        {
+            if (xfPos < 0.5f)
+            {
+                to = mid;
+                pTo = p[2];
+                cross = p[4];
+                u = 2.0f * xfPos;
+            }
+            else
+            {
+                from = mid;
+                pFrom = p[2];
+                cross = p[5];
+                u = 2.0f * xfPos - 1.0f;
+            }
+        }
+
+        // Smoothstep first, so no gain starts or stops moving with a corner.
+        const float r = u * u * (3.0f - 2.0f * u);
+        float gTo, gFrom;
+        sinCosTurns (0.25f * r, gTo, gFrom);
+        const float total = xfPos * xfPos * (3.0f - 2.0f * xfPos);
+        const float want = p[0] + total * (p[1] - p[0]);
+        const float got = gFrom * gFrom * pFrom + gTo * gTo * pTo + 2.0f * gFrom * gTo * cross;
+        const float slack = kTapSlack * want + 1.0e-12f;
+        const float scale = std::sqrt ((want + slack) / (std::max (got, 0.0f) + slack));
+        const Pair out { scale * (gFrom * from.l + gTo * to.l), scale * (gFrom * from.r + gTo * to.r) };
+
+        if (xfPos >= 1.0f)
+            endCrossfade();
+
+        return out;
+    }
+
+    void startFade (float stepSize) noexcept
+    {
+        wet = Wet::fading;
+        wetStep = stepSize;
+    }
+
+    /** The wet's fade-in after reset(), once the lines hold enough history. */
     float wetGain() noexcept
     {
         if (wet == Wet::steady)
@@ -693,20 +947,8 @@ private:
         if (wetPos >= 1.0f)
         {
             wetPos = 1.0f;
-
-            if (dipPending)
-                wetStep = -dipStep;
-            else
-                wet = Wet::steady;
-
+            wet = Wet::steady;
             return 1.0f;
-        }
-
-        if (wetPos <= 0.0f)
-        {
-            wetPos = 0.0f;
-            wet = Wet::silent;
-            return 0.0f;
         }
 
         return wetPos * wetPos * (3.0f - 2.0f * wetPos);
@@ -720,15 +962,62 @@ private:
 
         if (std::abs (gap) <= limit)
         {
+            step[v] = gap;
             delay[v] = target;
         }
         else
         {
-            delay[v] += gap > 0.0f ? limit : -limit;
+            step[v] = gap > 0.0f ? limit : -limit;
+            delay[v] += step[v];
             clamped = true;
         }
 
         return delay[v];
+    }
+
+    /** Reads every voice on its law and, during a crossfade, its outgoing tap and the tap
+        half way between the two. The outgoing tap's slope moves from its own last one to the
+        new tap's over the first half of the measurement, so the two then run a fixed
+        distance apart: their comb and correlation hold still while they are measured and
+        faded, and every tap's slope stays a mix of slopes inside the bound. */
+    template <int N>
+    void readVoices (const float (&target)[N], const int (&line)[N], float (&now)[N], float (&old)[N], float (&mid)[N]) noexcept
+    {
+        for (int v = 0; v < N; ++v)
+            now[v] = lines[line[v]].readHermite (follow (v, target[v], voiceLimit[v]));
+
+        if (xf == XFade::none)
+            return;
+
+        // At the first measured sample the new taps jump onto their law: w is still 0 there.
+        const float w = xf == XFade::landing ? 0.0f
+                                             : (xf == XFade::fading ? 1.0f : std::min (1.0f, (float) xfSamples * slopeBlend));
+
+        for (int v = 0; v < N; ++v)
+        {
+            oldStep[v] = oldSlope[v] + w * (step[v] - oldSlope[v]);
+            oldDelay[v] = juce::jlimit (1.0f, oldMax, oldDelay[v] + oldStep[v]);
+            old[v] = lines[line[v]].readHermite (oldDelay[v]);
+            mid[v] = lines[line[v]].readHermite (0.5f * (oldDelay[v] + delay[v]));
+        }
+    }
+
+    /** The wet pair, through the crossfade while one runs. */
+    template <typename Wets>
+    Pair wetPair (const float* now, const float* old, const float* mid, Wets&& wets) noexcept
+    {
+        const Pair w = wets (now);
+        return xf == XFade::none ? w : crossfade (w, wets (old), wets (mid));
+    }
+
+    void writeTrace (int i, int voice) const noexcept
+    {
+        if (traceOut == nullptr)
+            return;
+
+        traceOut[0][i] = delay[voice];
+        traceOut[1][i] = xf == XFade::none ? delay[voice] : oldDelay[voice];
+        traceOut[2][i] = xf == XFade::none ? 0.0f : (xf != XFade::fading ? 1.0f : (viaMid ? 3.0f : 2.0f));
     }
 
     /** Starts every rounding one-pole on its input, so nothing glides in after a reset. */
@@ -788,7 +1077,7 @@ private:
             body (i, len);
             i += len;
             tick = (tick + len) & (kControlInterval - 1);
-            sinceSync = std::min (sinceSync + len, 1 << 30);
+            sinceHost = std::min (sinceHost + len, 1 << 30);
 
             if (refilling)
             {
@@ -800,7 +1089,7 @@ private:
                     refilling = false;
 
                     if (autoFadeIn)
-                        startFade (dipStep);
+                        startFade (fadeInStep);
                 }
             }
         }
@@ -883,6 +1172,7 @@ private:
         const float base0 = kWideBaseSeconds[0] * sampleRate;
         const float base1 = kWideBaseSeconds[1] * sampleRate;
         const int mode = (int) ChorusFx::Mode::wide;
+        static constexpr int lineOf[4] { 0, 1, 0, 1 };
 
         forEachInterval ((int) block.getNumSamples(), mode, [&] (int start, int len)
         {
@@ -910,24 +1200,28 @@ private:
                 shape[2] += ra1 * (triangle (p1 + kWidePair2Offset) - shape[2]);
                 shape[3] += ra1 * (triangle (p1 + kWidePair2Offset + kWideOffsetR) - shape[3]);
 
-                const float v0 = lines[0].readHermite (follow (0, base0 + swing[0] * shape[0], voiceLimit[0]));
-                const float v1 = lines[1].readHermite (follow (1, base0 + swing[0] * shape[1], voiceLimit[1]));
-                const float v2 = lines[0].readHermite (follow (2, base1 + swing[1] * shape[2], voiceLimit[2]));
-                const float v3 = lines[1].readHermite (follow (3, base1 + swing[1] * shape[3], voiceLimit[3]));
+                const float target[4] { base0 + swing[0] * shape[0], base0 + swing[0] * shape[1],
+                                        base1 + swing[1] * shape[2], base1 + swing[1] * shape[3] };
+                float now[4], old[4], mid[4];
+                readVoices (target, lineOf, now, old, mid);
                 swing[0] += swingStep[0];
                 swing[1] += swingStep[1];
                 advance (std::min (f, cap0), std::min (f * kWidePair2Ratio, cap1));
-                const float g = wetGain();
 
                 if constexpr (solo)
                 {
-                    const float v[4] { v0, v1, v2, v3 };
-                    writeSolo (outL, outR, i, v[soloVoice] * g, stereo);
+                    const Pair w = wetPair (now, old, mid,[&] (const float* v) { return Pair { v[soloVoice], v[soloVoice] }; });
+                    writeTrace (i, soloVoice);
+                    writeSolo (outL, outR, i, w.l * wetGain(), stereo);
                 }
                 else
                 {
-                    emit (out, outL, outR, i, xL, xR, (v0 + kWidePair2Gain * v2) * kWideNorm * g,
-                               (v1 + kWidePair2Gain * v3) * kWideNorm * g, stereo);
+                    const Pair w = wetPair (now, old, mid,[] (const float* v)
+                    {
+                        return Pair { (v[0] + kWidePair2Gain * v[2]) * kWideNorm, (v[1] + kWidePair2Gain * v[3]) * kWideNorm };
+                    });
+                    const float g = wetGain();
+                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
                 }
             }
         });
@@ -940,6 +1234,7 @@ private:
         float* outR = stereo ? block.getChannelPointer (1) : outL;
         const float base = kCeBaseSeconds * sampleRate;
         const int mode = (int) ChorusFx::Mode::ce;
+        static constexpr int lineOf[2] { 0, 1 };
 
         forEachInterval ((int) block.getNumSamples(), mode, [&] (int start, int len)
         {
@@ -962,17 +1257,25 @@ private:
                 shape[0] += ra * (bentTriangle (p) - shape[0]);
                 shape[1] += ra * (bentTriangle (p + kCeOffsetR) - shape[1]);
 
-                const float vL = lines[0].readHermite (follow (0, base + swing[0] * (shape[0] - 0.5f), voiceLimit[0]));
-                const float vR = lines[1].readHermite (follow (1, base + swing[0] * (shape[1] - 0.5f), voiceLimit[1]));
+                const float target[2] { base + swing[0] * (shape[0] - 0.5f), base + swing[0] * (shape[1] - 0.5f) };
+                float now[2], old[2], mid[2];
+                readVoices (target, lineOf, now, old, mid);
                 swing[0] += swingStep[0];
                 const float fe = std::min (f, cap);
                 advance (fe, fe);
-                const float g = wetGain();
 
                 if constexpr (solo)
-                    writeSolo (outL, outR, i, (soloVoice == 0 ? vL : vR) * g, stereo);
+                {
+                    const Pair w = wetPair (now, old, mid,[&] (const float* v) { return Pair { v[soloVoice], v[soloVoice] }; });
+                    writeTrace (i, soloVoice);
+                    writeSolo (outL, outR, i, w.l * wetGain(), stereo);
+                }
                 else
-                    emit (out, outL, outR, i, xL, xR, vL * g, vR * g, stereo);
+                {
+                    const Pair w = wetPair (now, old, mid,[] (const float* v) { return Pair { v[0], v[1] }; });
+                    const float g = wetGain();
+                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
+                }
             }
         });
     }
@@ -984,6 +1287,7 @@ private:
         float* outR = stereo ? block.getChannelPointer (1) : outL;
         const float base = kDimBaseSeconds * sampleRate;
         const int mode = (int) ChorusFx::Mode::dimension;
+        static constexpr int lineOf[2] { 0, 0 };
 
         forEachInterval ((int) block.getNumSamples(), mode, [&] (int start, int len)
         {
@@ -1003,21 +1307,33 @@ private:
                 shape[0] += ra * (triangle ((float) phase[0] + lead0) - shape[0]);
                 // Line B runs the inverted triangle (u_B = 1 - u_A).
                 const float sweep = swing[0] * (2.0f * shape[0] - 1.0f);
-                const float a = lines[0].readHermite (follow (0, base + sweep, voiceLimit[0]));
-                const float b = lines[0].readHermite (follow (1, base - sweep, voiceLimit[1]));
+                const float target[2] { base + sweep, base - sweep };
+                float now[2], old[2], mid[2];
+                readVoices (target, lineOf, now, old, mid);
                 swing[0] += swingStep[0];
                 const float fe = std::min (f, cap);
                 advance (fe, fe);
-                const float g = wetGain();
 
                 if constexpr (solo)
-                    writeSolo (outL, outR, i, (soloVoice == 0 ? a : b) * g, stereo);
+                {
+                    const Pair w = wetPair (now, old, mid,[&] (const float* v) { return Pair { v[soloVoice], v[soloVoice] }; });
+                    writeTrace (i, soloVoice);
+                    writeSolo (outL, outR, i, w.l * wetGain(), stereo);
+                }
                 else if (stereo)
-                    emit (out, outL, outR, i, xL, xR, a * g, b * g, stereo);
+                {
+                    const Pair w = wetPair (now, old, mid,[] (const float* v) { return Pair { v[0], v[1] }; });
+                    const float g = wetGain();
+                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
+                }
                 else
+                {
                     // Mono: line A alone. Summed, the antiphase lines cancel each other's
                     // detune and leave only a comb.
-                    emit (out, outL, outR, i, xL, xR, a * g, a * g, stereo);
+                    const Pair w = wetPair (now, old, mid,[] (const float* v) { return Pair { v[0], v[0] }; });
+                    const float g = wetGain();
+                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
+                }
             }
         });
     }
@@ -1029,6 +1345,7 @@ private:
         float* outR = stereo ? block.getChannelPointer (1) : outL;
         const float base = kTriBaseSeconds * sampleRate;
         const int mode = (int) ChorusFx::Mode::tri;
+        static constexpr int lineOf[3] { 0, 0, 0 };
 
         forEachInterval ((int) block.getNumSamples(), mode, [&] (int start, int len)
         {
@@ -1057,34 +1374,53 @@ private:
                 shape[4] += ra1 * ((0.5f - 0.5f * (kCos120 * c - kSin120 * s)) - shape[4]);
                 shape[5] += ra1 * ((0.5f - 0.5f * (kCos120 * c + kSin120 * s)) - shape[5]);
 
-                const float v0 = lines[0].readHermite (follow (0, base + swing[0] * shape[0] + swing[1] * shape[3], voiceLimit[0]));
-                const float v1 = lines[0].readHermite (follow (1, base + swing[0] * shape[1] + swing[1] * shape[4], voiceLimit[1]));
-                const float v2 = lines[0].readHermite (follow (2, base + swing[0] * shape[2] + swing[1] * shape[5], voiceLimit[2]));
+                const float target[3] { base + swing[0] * shape[0] + swing[1] * shape[3],
+                                        base + swing[0] * shape[1] + swing[1] * shape[4],
+                                        base + swing[0] * shape[2] + swing[1] * shape[5] };
+                float now[3], old[3], mid[3];
+                readVoices (target, lineOf, now, old, mid);
                 swing[0] += swingStep[0];
                 swing[1] += swingStep[1];
                 advance (std::min (f, cap0), kTriFastHz);
-                const float g = wetGain();
 
                 if constexpr (solo)
                 {
-                    const float v[3] { v0, v1, v2 };
-                    writeSolo (outL, outR, i, v[soloVoice] * g, stereo);
+                    const Pair w = wetPair (now, old, mid,[&] (const float* v) { return Pair { v[soloVoice], v[soloVoice] }; });
+                    writeTrace (i, soloVoice);
+                    writeSolo (outL, outR, i, w.l * wetGain(), stereo);
                 }
                 else
                 {
-                    emit (out, outL, outR, i, xL, xR, kTriPairGain * (v0 + v1) * g, kTriPairGain * (v1 + v2) * g, stereo);
+                    const Pair w = wetPair (now, old, mid,[] (const float* v)
+                    {
+                        return Pair { kTriPairGain * (v[0] + v[1]), kTriPairGain * (v[1] + v[2]) };
+                    });
+                    const float g = wetGain();
+                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
                 }
             }
         });
     }
 
+    /** rate0 drives the master LFO, which the lock nudges towards the song. */
     void advance (float rate0, float rate1) noexcept
     {
-        phase[0] += (double) rate0 * invSampleRate;
+        double step0 = (double) rate0 * invSampleRate;
+
+        if (lockError != 0.0)
+        {
+            const double nudge = juce::jlimit (-lockMax, lockMax, lockError * lockA);
+            lockError -= nudge;
+            step0 += nudge;
+        }
+
+        phase[0] += step0;
         phase[1] += (double) rate1 * invSampleRate;
 
         if (phase[0] >= 1.0)
             phase[0] -= 1.0;
+        else if (phase[0] < 0.0)
+            phase[0] += 1.0;
 
         if (phase[1] >= 1.0)
             phase[1] -= 1.0;
@@ -1106,16 +1442,31 @@ private:
     // the settings involved since the voices last sat on their law.
     float hold[2] {}, rawSlope[2] {};
     float rateCap[2] { kNoCap, kNoCap };      // Hz, while a swing is too large for the rate
-    float delay[4] {}, voiceLimit[4] {};       // samples; samples per sample
-    double syncAnchor = 0.0;   // the last sync phase given, sinceSync samples ago
-    int sinceSync = 0, sinceMove = 0, quietSamples = 1, quietNeeded = 1, settleSamples = 1;
-    bool clamped = false, rawDirty = true, phasePending = false, dipPending = false;
+    float delay[4] {}, step[4] {}, voiceLimit[4] {};   // samples; samples per sample
+    int sinceMove = 0, sinceFade = 0, quietSamples = 1, quietNeeded = 1, fadeGapSamples = 1;
+    float glideSamples = 1.0f, catchUpSamples = 1.0f;
+    bool clamped = false, rawDirty = true;
+
+    // Tap crossfade: the outgoing taps read oldDelay, which moves by oldSlope per sample.
+    XFade xf = XFade::none;
+    float oldDelay[4] {}, oldSlope[4] {}, oldStep[4] {}, oldMax = 1.0f, slopeBlend = 1.0f;
+    float tapPower[2][6] {};   // two smoothing stages of: old, new, mid wet powers; old.new, old.mid, mid.new
+    float xfPos = 0.0f, tapStep = 1.0f, tapPowerA = 1.0f;
+    int xfSamples = 0, tapMeasure = 1, tapPreroll = 1;
+    bool jumpPending = false, syncLand = false, viaMid = false;
+
+    // Song-position lock: the host's phase at its last block start, sinceHost samples ago,
+    // moving at hostRate; lockError is the part of the LFO's error not yet pulled in.
+    double hostPhase = 0.0, hostRate = 0.0, lockError = 0.0, lockMax = 0.0, lockA = 0.0;
+    int sinceHost = 0;
+    bool hostValid = false;
 
     Wet wet = Wet::silent;
-    float wetPos = 0.0f, wetStep = 0.0f, dipStep = 1.0f;
+    float wetPos = 0.0f, wetStep = 0.0f, fadeInStep = 1.0f;
     bool refilling = true;
     int filled = 0;
 
+    float* const* traceOut = nullptr;
     float sampleRate = 48000.0f, smoothA = 1.0f;
     double invSampleRate = 1.0 / 48000.0;
     int tick = 0;
@@ -1146,13 +1497,15 @@ struct ChorusFx::Impl
     int measureSamples = 0, measured = 0;
     enum class Stage { idle, filling, fading } stage = Stage::idle;
     bool snapEngine = true, snapParams = true;
+    float* const* trace = nullptr;
+    float* tracePiece[3] {};
 
     static bool isModern (int mode) noexcept { return mode != (int) Mode::classic; }
 
     /** A mode switch keeps the outgoing mode sounding while the incoming one fills its line
-        from the live input, then crossfades: two modern modes on the wet alone (the dry is
-        common to both), anything with Classic linearly on the whole output (their mix laws
-        differ). The level holds instead of falling back to the dry. */
+        from the live input, then crossfades by measured power: two modern modes on the wet
+        alone (the dry is common to both), anything with Classic on the whole output (their
+        mix laws differ). The level holds instead of falling back to the dry. */
     void begin (int mode)
     {
         incoming = mode;
@@ -1211,7 +1564,8 @@ struct ChorusFx::Impl
         stage = Stage::idle;
     }
 
-    void runEngine (int mode, int engineSlot, juce::dsp::AudioBlock<float> block, bool applySync)
+    /** firstPiece: this sub-block starts the host's block, which syncPhase belongs to. */
+    void runEngine (int mode, int engineSlot, juce::dsp::AudioBlock<float> block, bool firstPiece, float* const* traceTo)
     {
         if (! isModern (mode))
         {
@@ -1223,15 +1577,20 @@ struct ChorusFx::Impl
 
         auto& engine = modern[engineSlot];
 
-        if (applySync)
-            engine.syncTo (params.syncPhase);
+        if (firstPiece)
+        {
+            if (params.syncPhase >= 0.0)
+                engine.syncTo (params.syncPhase);
+            else
+                engine.unlock();
+        }
 
-        engine.process (block, mode, solo);
+        engine.process (block, mode, solo, traceTo);
     }
 
-    /** out = dry + s (cos * wetOut + sin * wetIn), s keeping the wet's short-term power on
-        the straight line between the two modes' own. */
-    void blendWets (juce::dsp::AudioBlock<float>& block, size_t channels, size_t n) noexcept
+    /** out += s (cos * a + sin * b), s keeping the short-term power of the sum on the
+        straight line between the powers of a (outgoing) and b (incoming). */
+    void blendTaps (juce::dsp::AudioBlock<float>& block, size_t channels, size_t n) noexcept
     {
         for (size_t i = 0; i < n; ++i)
         {
@@ -1267,9 +1626,9 @@ struct ChorusFx::Impl
             const float want = powerOut + r * (powerIn - powerOut);
             const float got = gOut * gOut * powerOut + gIn * gIn * powerIn + 2.0f * gOut * gIn * cross;
             // Half the target added to both sides: the correction stays smooth (at most +4.8 dB)
-            // where two coherent wets nearly cancel, and still takes two thirds of a dip or bump.
+            // where two coherent signals nearly cancel, and still takes two thirds of a dip or bump.
             const float slack = 0.5f * want + 1.0e-12f;
-            const float scale = std::sqrt ((want + slack) / (got + slack));
+            const float scale = std::sqrt ((want + slack) / (std::max (got, 0.0f) + slack));
 
             for (size_t ch = 0; ch < channels; ++ch)
                 block.getChannelPointer (ch)[i] += scale * (gOut * tapOut.getReadPointer ((int) ch)[i]
@@ -1277,11 +1636,20 @@ struct ChorusFx::Impl
         }
     }
 
-    void run (juce::dsp::AudioBlock<float> block, bool applySync)
+    void run (juce::dsp::AudioBlock<float> block, bool firstPiece, size_t offset)
     {
         const int requested = params.mode;
         const auto n = block.getNumSamples();
         const auto channels = block.getNumChannels();
+        float* const* traceTo = nullptr;
+
+        if (trace != nullptr)
+        {
+            for (int k = 0; k < 3; ++k)
+                tracePiece[k] = trace[k] + offset;
+
+            traceTo = tracePiece;
+        }
 
         if ((int) channels > numChannels)
         {
@@ -1299,7 +1667,7 @@ struct ChorusFx::Impl
                 modern[0].snapSmoothers();
             }
 
-            runEngine (active, slot, block, applySync);
+            runEngine (active, slot, block, firstPiece, traceTo);
             return;
         }
 
@@ -1313,7 +1681,7 @@ struct ChorusFx::Impl
 
         if (stage == Stage::idle)
         {
-            runEngine (active, slot, block, applySync);
+            runEngine (active, slot, block, firstPiece, traceTo);
             return;
         }
 
@@ -1330,13 +1698,13 @@ struct ChorusFx::Impl
             modern[incomingSlot].wetTap[1] = tapIn.getWritePointer (numChannels - 1);
         }
 
-        runEngine (active, slot, block, applySync);
+        runEngine (active, slot, block, firstPiece, traceTo);
 
         for (size_t ch = 0; ch < channels; ++ch)
             juce::FloatVectorOperations::copy (scratch.getWritePointer ((int) ch), input.getReadPointer ((int) ch), (int) n);
 
         juce::dsp::AudioBlock<float> other (scratch.getArrayOfWritePointers(), channels, n);
-        runEngine (incoming, incomingSlot, other, applySync);
+        runEngine (incoming, incomingSlot, other, firstPiece, nullptr);
 
         if (stage == Stage::filling)
         {
@@ -1346,28 +1714,18 @@ struct ChorusFx::Impl
             return;
         }
 
-        if (wets)
+        if (! wets)
         {
-            blendWets (block, channels, n);
-        }
-        else
-        {
-            float b = blend;
-
-            for (size_t i = 0; i < n; ++i)
+            // With Classic the whole outputs are the two signals blended.
+            for (size_t ch = 0; ch < channels; ++ch)
             {
-                b = std::min (1.0f, b + switchStep);
-                const float g = b * b * (3.0f - 2.0f * b);
-
-                for (size_t ch = 0; ch < channels; ++ch)
-                {
-                    float* out = block.getChannelPointer (ch);
-                    out[i] += g * (scratch.getReadPointer ((int) ch)[i] - out[i]);
-                }
+                juce::FloatVectorOperations::copy (tapOut.getWritePointer ((int) ch), block.getChannelPointer (ch), (int) n);
+                juce::FloatVectorOperations::copy (tapIn.getWritePointer ((int) ch), scratch.getReadPointer ((int) ch), (int) n);
+                juce::FloatVectorOperations::clear (block.getChannelPointer (ch), (int) n);
             }
-
-            blend = b;
         }
+
+        blendTaps (block, channels, n);
 
         if (blend >= 1.0f)
             finish();
@@ -1458,19 +1816,22 @@ void ChorusFx::process (juce::dsp::AudioBlock<float> block)
     if (total == 0)
         return;
 
-    // A non-finite sample would stay in Classic's feedback path for good and in a line for
-    // its length; it is treated as silence. Finite input is untouched.
+    // No instrument delivers a sample beyond +-1e6 (+120 dBFS); a non-finite one, or a pair
+    // like +-3e38, would stay in Classic's feedback path for good and in a line for its
+    // length. Such samples are treated as silence; everything else is untouched.
+    constexpr float maxInput = 1.0e6f;
+
     for (size_t ch = 0; ch < block.getNumChannels(); ++ch)
     {
         float* data = block.getChannelPointer (ch);
         bool bad = false;
 
         for (size_t i = 0; i < total; ++i)
-            bad |= ! std::isfinite (data[i]);
+            bad |= ! (std::abs (data[i]) <= maxInput);
 
         if (bad)
             for (size_t i = 0; i < total; ++i)
-                if (! std::isfinite (data[i]))
+                if (! (std::abs (data[i]) <= maxInput))
                     data[i] = 0.0f;
     }
 
@@ -1490,11 +1851,29 @@ void ChorusFx::process (juce::dsp::AudioBlock<float> block)
     const auto step = (size_t) s.maxBlock;
 
     for (size_t start = 0; start < total; start += step)
-        s.run (block.getSubBlock (start, juce::jmin (step, total - start)), start == 0 && s.params.syncPhase >= 0.0);
+        s.run (block.getSubBlock (start, juce::jmin (step, total - start)), start == 0, start);
 }
 
 void ChorusFx::setDebugSolo (int voice) noexcept
 {
     impl->solo = voice;
+}
+
+void ChorusFx::setDebugTrace (float* const* channels) noexcept
+{
+    impl->trace = channels;
+}
+
+ChorusFx::DebugCounts ChorusFx::getDebugCounts() const noexcept
+{
+    DebugCounts sum;
+
+    for (const auto& m : impl->modern)
+    {
+        sum.syncJumps += m.counts.syncJumps;
+        sum.knobFades += m.counts.knobFades;
+    }
+
+    return sum;
 }
 } // namespace tubamp

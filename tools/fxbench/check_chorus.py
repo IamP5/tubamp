@@ -481,18 +481,23 @@ def ch_mono():
 
 
 # ---------------------------------------------------------------------------- transitions
-# A voice's pitch is the slope of its delay, so any transition is judged on the
-# instantaneous frequency of a steady sine through one soloed voice: at every moment where
-# the voice is sounding (analytic amplitude >= half its steady value; inside a dip the
-# frequency of a silent path is undefined, and the dip is reported), |deviation| may not
-# exceed the largest steady-state peak of the settings involved by more than 5 cents, and
-# it must be back inside the new settings' own peak + 5 cents 250 ms after the change.
+# A voice's pitch is the slope of its delay, so any transition is judged per tap. Outside a
+# tap crossfade a soloed voice is one tap, judged on the instantaneous frequency of a steady
+# sine through it (where it sounds: analytic amplitude >= half its steady value). During a
+# crossfade the voice is the sum of two (or, via the midpoint, three) taps of one signal,
+# whose summed instantaneous frequency is a comb's phase swing, not a pitch; there each
+# audible tap's own delay slope is judged, read from the engine's --trace (current tap,
+# outgoing tap, stage). |deviation| may not exceed the largest steady-state peak of the
+# settings involved by more than 5 cents, and must be back inside the new settings' own
+# peak + 5 cents 250 ms after the change.
 
 TR_CARRIERS = (997.3, 3301.7)
 TR_TOL, TR_SETTLE = 5.0, 0.25
 TR_BLOCK = 64
 VOICES = {WIDE: (0, 2), CE: (0,), DIM: (0,), TRI: (0,)}
+ALL_VOICES = {WIDE: (0, 1, 2, 3), CE: (0, 1), DIM: (0, 1), TRI: (0, 1, 2)}
 TRI_FAST = 2 ** (3 / 1200) - 1
+XF_GUARD_S = 0.003   # the 2 ms IF average's reach, plus a margin
 
 
 def voice_slope(mode, voice, rate, depth):
@@ -527,14 +532,41 @@ def if_cents(y, sr, f0, smooth_ms=2.0):
     return cents_, amp_[1:], ~guard
 
 
+def tap_cents(trace):
+    """Per-tap pitch from the engine trace (samples per sample of delay slope -> cents):
+    -> (cents of the loudest-bending audible tap per sample, crossfade mask). The current
+    tap counts outside the silent pre-roll (stage 1, where it lands on its law), the
+    outgoing tap through the whole crossfade, the midpoint tap on the midpoint path (3)."""
+    now, old, stage = trace[0].astype(np.float64), trace[1].astype(np.float64), trace[2]
+    both = lambda m: m[1:] & m[:-1]  # noqa: E731
+    bend = lambda d: -1200.0 * np.log2(1.0 - np.minimum(np.abs(np.diff(d)), 0.5))  # noqa: E731
+    out = np.where(both(stage != 1), bend(now), 0.0)
+    out = np.maximum(out, np.where(both(stage > 0), bend(old), 0.0))
+    out = np.maximum(out, np.where(both(stage == 3), bend(0.5 * (now + old)), 0.0))
+    return out, stage[1:] > 0
+
+
 def transition(mode, voice, f0, keys, events, secs, sr=SR, ch=2, block=TR_BLOCK):
-    """One soloed voice through a timeline; -> (output, cents, valid, index of the first
-    analysed sample)."""
+    """One soloed voice through a timeline; -> (output, IF cents, IF valid, tap cents,
+    crossfade mask, index of the first analysed sample, crossfades)."""
     tokens = [f"{k}={v}" for k, v in dict(keys, mode=mode, mix=1, solo=voice).items()] + list(events)
-    y = fx.mono(run(tokens, f"gen:sine:{f0}:-12", sr, secs, ch, block))
+    r = fx.invoke(EFFECT, f"gen:sine:{f0}:-12", tokens, [f"--channels={ch}", f"--block={block}", f"--seconds={secs}",
+                                                          "--trace"], sr)
+    y = fx.mono(r.out)
     c, _, valid = if_cents(y, sr, f0)
+    tap, xf = tap_cents(r.trace)
+    g = max(1, int(XF_GUARD_S * sr))
+    xf_wide = np.convolve(xf.astype(float), np.ones(2 * g + 1), "same") > 0
     a, b = int(0.4 * sr), len(c) - int(0.2 * sr)
-    return y, c[a:b], valid[a:b], a
+    # Crossfades counted from the trace: --meters builds a row per block, slow at block 1.
+    starts = int(np.sum((r.trace[2][1:] > 0) & (r.trace[2][:-1] == 0)))
+    return y, c[a:b], valid[a:b] & ~xf_wide[a:b], tap[a:b], xf[a:b], a, (0, starts)
+
+
+def meter_events(r):
+    """(sync jumps, knob crossfades) at the end of a render, from --meters."""
+    last = r.meters[-1].split("\t") if r.meters else ["0", "0", "0"]
+    return int(last[1]), int(last[2])
 
 
 _STEADY = {}
@@ -557,9 +589,9 @@ def tr_case(mode, start, events, t0, t_end, secs, path, sr=SR, ch=2, block=TR_BL
     """Runs a transition at every carrier and solo voice; path = the (rate, depth) settings
     the change passes through. The steady-state peak of those settings is the larger of the
     closed form and a measurement of the first, last and steepest of them. -> (ok, worst
-    excess over that peak, settle s, dip ms, max). Times are moved to the block start where
-    the timeline takes effect."""
-    worst_excess, worst_settle, dip_ms, worst_abs = -1e9, 0.0, 0.0, 0.0
+    excess over that peak, settle s, crossfades, max). Times are moved to the block start
+    where the timeline takes effect."""
+    worst_excess, worst_settle, fades, worst_abs = -1e9, 0.0, 0, 0.0
     ok = True
     t_end = np.ceil(t_end * sr / block - 1e-9) * block / sr
     for voice in VOICES[mode]:
@@ -569,19 +601,19 @@ def tr_case(mode, start, events, t0, t_end, secs, path, sr=SR, ch=2, block=TR_BL
             measured = {p: steady_peak(mode, voice, f0, p[0], p[1], sr) for p in {path[0], path[-1], steep}}
             bound = max(max(model), max(measured.values())) + TR_TOL
             after = max(model[-1], measured[path[-1]]) + TR_TOL
-            _, c, valid, a = transition(mode, voice, f0, start, events, secs, sr, ch, block)
+            _, c, valid, tap, xf, a, events_seen = transition(mode, voice, f0, start, events, secs, sr, ch, block)
             t = (np.arange(len(c)) + a) / sr
-            seg = (t >= t0 - 0.002) & valid
-            dev = np.abs(c[seg])
-            peak = float(dev.max()) if len(dev) else 0.0
+            seg = t >= t0 - 0.002
+            heard = np.where(xf, tap, np.where(valid, np.abs(c), 0.0))
+            peak = float(heard[seg].max()) if np.any(seg) else 0.0
             worst_abs = max(worst_abs, peak)
             worst_excess = max(worst_excess, peak - (bound - TR_TOL))
-            over = np.nonzero((np.abs(c) > after) & valid & (t >= t_end))[0]
+            over = np.nonzero((heard > after) & (t >= t_end))[0]
             settle = float(t[over[-1]] - t_end) if len(over) else 0.0
             worst_settle = max(worst_settle, settle)
-            dip_ms = max(dip_ms, 1e3 * float(np.sum(~valid & (t >= t0 - 0.002))) / sr)
+            fades = max(fades, sum(events_seen))
             ok &= peak <= bound and settle <= TR_SETTLE
-    return ok, worst_excess, worst_settle, dip_ms, worst_abs
+    return ok, worst_excess, worst_settle, fades, worst_abs
 
 
 def tr_scenarios():
@@ -619,19 +651,19 @@ def ch15():
     for mode in (WIDE, CE, DIM, TRI):
         worst = (-1e9, "")
         settle = (0.0, "")
-        dip = 0.0
+        fades = 0
         for label, start, events, t0, t_end, path in tr_scenarios():
-            good, excess, st, dip_ms, _ = tr_case(mode, start, events, t0, t_end, t_end + 0.8, path)
+            good, excess, st, n_fades, _ = tr_case(mode, start, events, t0, t_end, t_end + 0.8, path)
             ok &= good
             if excess > worst[0]:
                 worst = (excess, label)
             if st > settle[0]:
                 settle = (st, label)
-            dip = max(dip, dip_ms)
+            fades = max(fades, n_fades)
             if not good:
                 rows.append(f"{TYPES[mode]} FAIL {label}: {excess:+.1f} c over, settle {1e3 * st:.0f} ms")
         rows.append(f"{TYPES[mode]} worst {worst[0]:+.1f} c over the settings' peak ({worst[1]}), "
-                    f"settle {1e3 * settle[0]:.0f} ms ({settle[1]}), dip <= {dip:.0f} ms")
+                    f"settle {1e3 * settle[0]:.0f} ms ({settle[1]}), <= {fades} crossfades per case")
     return ok, "; ".join(rows)
 
 
@@ -938,12 +970,15 @@ def ch20():
 
 TORTURE = ["rate@0.3=10", "depth@0.35=0.1", "mode@0.4=3", "rate@0.45=0.05", "mode@0.47=2", "mode@0.5=0",
            "sync_phase@0.6..1.0=0.3..2.3", "rate@0.6=5", "sync_phase@1.0..1.4=0.9..2.9", "mode@0.8=4", "on@1.1=0",
-           "on@1.2=1", "reset@1.2=1", "mode@1.25=1", "depth@1.3=1", "mode@1.32=4", "mode@1.35=1", "rate@1.4=20"]
+           "on@1.2=1", "reset@1.2=1", "mode@1.25=1", "depth@1.3=1", "mode@1.32=4", "mode@1.35=1", "rate@1.4=20",
+           "host_bpm@1.5=120", "host_beats@1.5=0.125", "host_jitter@1.5=16", "host_beats@1.7=0.5",
+           "host_bpm@1.75..1.95=120..150", "depth@1.8..1.85=1..0.2"]
 
 
 def ch22():
-    """--rt-check and --reset-repeat through switches, dips, sync jumps, bypass and reset,
-    22.05-192 kHz, blocks 1 / 37 / 512 / 4096, mono and stereo; output finite."""
+    """--rt-check and --reset-repeat through switches, tap crossfades, sync jumps, a jittered
+    play head, bypass and reset, 22.05-192 kHz, blocks 1 / 37 / 512 / 4096, mono and stereo;
+    output finite."""
     fails = []
     for sr in fx.RATES:
         for ch in (1, 2):
@@ -958,17 +993,620 @@ def ch22():
 
 def ch23():
     """CPU while a switch runs two modes: modes alternating every 60 ms, so one is always
-    filling or fading; budget = the two modes' budgets added."""
+    filling or fading; budget = the two modes' budgets added. Then every mode while a tap
+    crossfade runs most of the time (a song-position jump every 50 ms, each fade about
+    40 ms; budget = the mode's own), and two modes alternating with jumps on top."""
     rows, ok = [], True
     classic = 1.2 * fx.invoke(EFFECT, "gen:noise:pink:-18", ["mode=0"], ["--bench", "--legacy"],
                               48000).number(r"([0-9.]+) % of real time")
+    jumps = jump_tokens(0.05, 10.0)
     for a, b in ((WIDE, TRI), (CE, DIM), (WIDE, CE), (DIM, TRI), (WIDE, 0)):
         tokens = [f"mode={a}"] + [f"mode@{0.06 * i:.2f}={(b if i % 2 else a)}" for i in range(1, 167)]
         pct = fx.invoke(EFFECT, "gen:noise:pink:-18", tokens, ["--bench"], 48000).number(r"([0-9.]+) % of real time")
         budget = BUDGETS[a] + (BUDGETS[b] if BUDGETS[b] is not None else classic)
         ok &= pct <= budget
         rows.append(f"{TYPES[a]}+{TYPES[b]} {pct:.3f} % (budget {budget:.3g})")
+    for mode in (WIDE, CE, DIM, TRI):
+        pct = fx.invoke(EFFECT, "gen:noise:pink:-18", [f"mode={mode}", "depth=1"] + jumps, ["--bench"],
+                        48000).number(r"([0-9.]+) % of real time")
+        ok &= pct <= BUDGETS[mode]
+        rows.append(f"{TYPES[mode]} crossfading {pct:.3f} % (budget {BUDGETS[mode]:.3g})")
+    for a, b in ((WIDE, TRI), (CE, DIM)):
+        tokens = [f"mode={a}", "depth=1"] + jumps + [f"mode@{0.06 * i:.2f}={(b if i % 2 else a)}" for i in range(1, 167)]
+        pct = fx.invoke(EFFECT, "gen:noise:pink:-18", tokens, ["--bench"], 48000).number(r"([0-9.]+) % of real time")
+        budget = BUDGETS[a] + BUDGETS[b]
+        ok &= pct <= budget
+        rows.append(f"{TYPES[a]}+{TYPES[b]} crossfading {pct:.3f} % (budget {budget:.3g})")
     return ok, "; ".join(rows)
+
+
+def jump_tokens(every, secs, rate=1.0):
+    """A synced LFO at `rate` whose song position jumps 0.37 cycle every `every` seconds."""
+    out = []
+    for i in range(int(secs / every)):
+        t0, t1 = every * i, every * (i + 1)
+        p0 = rate * t0 + 0.37 * i
+        out.append(f"sync_phase@{t0:.4f}..{t1:.4f}={p0:.6f}..{p0 + rate * every:.6f}")
+    return out
+
+
+# ---------------------------------------------------------------------------- round 2
+# Rows added after the second verification (docs/FX-ENGINES.md §4.5.7, CH24 - CH29).
+
+def frames_db(y, sr, frame=0.002, smooth=0.010):
+    """Short-term level, all channels: 2 ms frames, power smoothed over 10 ms."""
+    y = np.atleast_2d(y)
+    n = int(frame * sr)
+    m = y.shape[1] // n
+    p = (y[:, :m * n].astype(np.float64) ** 2).reshape(y.shape[0], m, n).mean(axis=(0, 2))
+    k = max(1, int(round(smooth / frame)))
+    return 10 * np.log10(np.convolve(p, np.ones(k) / k, "same") + 1e-30)
+
+
+def guitar_take(secs, sr, seed=17, level_db=-12.0):
+    """Plucked single notes and small chords on the open-position guitar range, a new
+    pluck every 0.18 - 0.45 s, eight harmonics with their own decays and a short pick noise."""
+    rng = np.random.default_rng(seed)
+    n = int(secs * sr)
+    x = np.zeros(n)
+    notes = [82.41, 110.0, 146.83, 196.0, 246.94, 329.63, 392.0, 440.0, 493.88, 659.26]
+    t = 0.0
+    while t < secs:
+        i0 = int(t * sr)
+        length = min(n - i0, int(2.0 * sr))
+        tt = np.arange(length) / sr
+        for f in rng.choice(notes, size=int(rng.integers(1, 4)), replace=False):
+            for h in range(1, 9):
+                if f * h < 0.45 * sr:
+                    x[i0:i0 + length] += (np.sin(2 * np.pi * f * h * tt + rng.uniform(0, 2 * np.pi)) / h
+                                          * np.exp(-tt * (1.2 + 0.6 * h)) * (1 - np.exp(-tt / 0.002)))
+        x[i0:i0 + int(0.004 * sr)] += 0.05 * rng.standard_normal(int(0.004 * sr))[:max(0, min(int(0.004 * sr), n - i0))]
+        t += rng.uniform(0.18, 0.45)
+    return x / np.max(np.abs(x)) * fx.amp(level_db)
+
+
+def dry_gain(mix):
+    return min(1.0, 2.0 - 2.0 * mix)
+
+
+def pmap(fn, jobs):
+    """Renders in parallel (each job is a subprocess)."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(8) as ex:
+        return list(ex.map(fn, jobs))
+
+
+HOST_DEPTH = 0.6
+
+
+def host_phase(events, secs, sr, block):
+    """The play head's true song phase (cycles) per sample, as the adapter runs it: the
+    position advances by each block's tempo; host_beats is constant here."""
+    keys = {}
+    for e in events:
+        if "@" not in e:
+            k, v = e.split("=")
+            keys[k] = float(v)
+    beats = keys.get("host_beats", 1.0)
+    n = int(round(secs * sr))
+    phase = np.zeros(n)
+    ppq = 0.0
+    for s in range(0, n, block):
+        bpm = timeline_value(events, "host_bpm", s / sr, keys.get("host_bpm", 120.0))
+        m = min(block, n - s)
+        phase[s:s + m] = (ppq + np.arange(m) * bpm / (60.0 * sr)) / beats
+        ppq += m * bpm / (60.0 * sr)
+    return phase
+
+
+def timeline_value(events, key, t, default):
+    """A key's value at t from constant, step and ramp tokens (fxbench's timeline)."""
+    value = default
+    for e in events:
+        k, rest = e.split("@", 1) if "@" in e else (e.split("=")[0], None)
+        if k != key or rest is None:
+            continue
+        span, vals = rest.split("=")
+        if ".." in span:
+            t0, t1 = (float(v) for v in span.split(".."))
+            v0, v1 = (float(v) for v in vals.split(".."))
+            if t >= t0:
+                value = v0 + (v1 - v0) * min(1.0, (t - t0) / (t1 - t0))
+        elif t >= float(span):
+            value = float(vals)
+    return value
+
+
+def lfo_error(delay, phase, sr, t_from, shimmer_hz=None):
+    """Largest |phase error| (cycles) of the LFO behind a voice delay against the song
+    phase, from t_from on: the delay's fundamental demodulated by the song phase over each
+    span of whole song cycles at least 0.5 s long, weighted by d(phase) so the shape's
+    harmonics stay orthogonal while the tempo moves (a triangle or raised sine with u = 0
+    at phase 0 is -cos of the phase at its fundamental). Tri's free 6 Hz shimmer is fitted
+    and removed first."""
+    a = int(t_from * sr)
+    d, ph = delay[a:].astype(np.float64), phase[a:]
+    if shimmer_hz:
+        t = np.arange(len(d)) / sr
+        basis = np.vstack([np.ones_like(t), np.cos(2 * np.pi * shimmer_hz * t), np.sin(2 * np.pi * shimmer_hz * t)]).T
+        coef, *_ = np.linalg.lstsq(basis, d, rcond=None)
+        d = d - basis[:, 1:] @ coef[1:]
+    dphi = np.gradient(ph)
+    rate = dphi.mean() * sr
+    span = max(1, int(np.ceil(0.5 * rate)))
+    worst = 0.0
+    c0 = np.ceil(ph[0])
+    while c0 + span <= ph[-1]:
+        seg = (ph >= c0) & (ph < c0 + span)
+        w = dphi[seg]
+        x = d[seg] - np.sum(d[seg] * w) / np.sum(w)
+        z = np.sum(x * w * np.exp(-2j * np.pi * ph[seg]))
+        worst = max(worst, abs(float(np.angle(-z)) / (2 * np.pi)))
+        c0 += span
+    return worst
+
+
+def early(token, dt):
+    """A timeline token moved dt seconds earlier."""
+    if "@" not in token:
+        return token
+    key, rest = token.split("@", 1)
+    span, value = rest.split("=")
+    times = [f"{max(0.0, float(v) - dt):.4f}" for v in span.split("..")]
+    return f"{key}@{'..'.join(times)}={value}"
+
+
+def ch24_cases():
+    """(label, play-head tokens, block, seconds) of an imperfect host."""
+    out = []
+    names = {0.125: "1/32", 0.25: "1/16", 0.5: "1/8", 1.0: "1/4", 2.0: "1/2", 4.0: "1/1"}
+    for beats in (0.125, 1.0):
+        steps = [f"host_bpm@{1.0 + 0.2 * k:.3f}={101 + k}" for k in range(40)]
+        out.append((f"1-BPM steps {names[beats]}", ["host_bpm=100", f"host_beats={beats}"] + steps, 512, 9.6))
+        for block in (64, 512, 4096):
+            out.append((f"ramp 100-140 BPM {names[beats]} block {block}",
+                        ["host_bpm=100", f"host_beats={beats}", "host_bpm@1..5=100..140"], block, 7.0))
+    for jitter in (2, 4, 16):
+        for beats in names:
+            out.append((f"jitter +-{jitter} {names[beats]}", ["host_bpm=120", f"host_beats={beats}", f"host_jitter={jitter}"],
+                        64, max(6.0, 1.0 + 3.0 * beats * 0.5)))
+    return out
+
+
+def ch24():
+    """Sync under an imperfect host (item 1 of round 2): tempo in 1-BPM steps, tempo ramps
+    100 -> 140 BPM at blocks 64 / 512 / 4096, song position jittered by +-2 / 4 / 16 samples
+    per block at 1/32 - 1/1; every mode, depth 0.6, mix 1. Zero jumps; the wet within 0.5 dB
+    of the same tempo course run free (no song position: the steady render; its tempo 20 ms
+    early, which cancels the rate smoother's lag that a free LFO never makes up), as the
+    power of four pink-noise takes in 2 ms frames over 10 ms (one take alone mostly shows
+    where each window's spectrum meets the comb); voice 0's pitch inside the steady bound
+    + 5 cents; the LFO within 0.01 cycle of the song after one second."""
+    jobs = [(mode, case) for mode in (WIDE, CE, DIM, TRI) for case in ch24_cases()]
+    takes = [fx.stereo(fx.pink(10.0, -18.0, SR, seed=8 + k)) for k in range(4)]
+
+    def power(keys, block, n):
+        return sum(10 ** (frames_db(fx.invoke(EFFECT, x[:, :n], keys, [f"--block={block}"], SR).out[:, int(0.5 * SR):], SR) / 10)
+                   for x in takes)
+
+    def one(job):
+        mode, (label, tokens, block, secs) = job
+        keys = [f"mode={mode}", f"depth={HOST_DEPTH}", "mix=1"] + tokens
+        n = int(secs * SR)
+        r = fx.invoke(EFFECT, takes[0][:, :n], keys, [f"--block={block}", "--meters"], SR)
+        free = [early(t, 0.02) for t in keys] + ["host_play=0"]
+        level = float(np.max(np.abs(10 * np.log10(power(keys, block, n) / power(free, block, n)))))
+        p = fx.invoke(EFFECT, f"gen:sine:{PROBE_HZ}:-12", keys + ["solo=0"],
+                      [f"--block={block}", f"--seconds={secs}", "--trace"], SR)
+        c, _, valid = if_cents(fx.mono(p.out), SR, PROBE_HZ)
+        seg = slice(int(0.5 * SR), len(c) - int(0.2 * SR))
+        pitch = float(np.max(np.abs(c[seg][valid[seg]])))
+        beats = float(next(t.split("=")[1] for t in tokens if t.startswith("host_beats")))
+        bpms = [100.0, 140.0] if "100" in tokens[0] else [120.0]
+        rates = [b / (60.0 * beats) for b in bpms]
+        bound = max(max(slope_cents(voice_slope(mode, 0, f, HOST_DEPTH)) for f in rates),
+                    max(steady_peak(mode, 0, PROBE_HZ, f, HOST_DEPTH, SR) for f in rates)) + TR_TOL
+        phase = host_phase(tokens, secs, SR, block)
+        err = lfo_error(p.trace[0], phase, SR, 1.0, 6.0 if mode == TRI else None)
+        jumps, fades = meter_events(r)
+        good = jumps == 0 and level <= 0.5 and pitch <= bound and err < 0.01
+        return mode, label, good, jumps + fades, level, pitch - bound + TR_TOL, err
+
+    res = pmap(one, jobs)
+    ok = all(r[2] for r in res)
+    rows = []
+    for mode in (WIDE, CE, DIM, TRI):
+        mine = [r for r in res if r[0] == mode]
+        rows.append(f"{TYPES[mode]} events {sum(r[3] for r in mine)}, level <= {max(r[4] for r in mine):.2f} dB, "
+                    f"pitch {max(r[5] for r in mine):+.1f} c over steady, LFO error <= {max(r[6] for r in mine):.4f} cycle")
+    rows += [f"FAIL {TYPES[r[0]]} {r[1]}: {r[3]} events, {r[4]:.2f} dB, {r[5]:+.1f} c, {r[6]:.4f} cycle"
+             for r in res if not r[2]][:6]
+    return ok, f"{len(res)} cases: " + "; ".join(rows)
+
+
+def ch25_params(mode):
+    """(name, A, B, tokens(t, value_from, value_to, ramp), extra start keys) per parameter."""
+    r0, d0 = START[mode]["rate"], START[mode]["depth"]
+    step = lambda key: (lambda t, a, b, ramp: [f"{key}@{t:.3f}..{t + ramp:.3f}={a}..{b}"] if ramp  # noqa: E731
+                        else [f"{key}@{t:.3f}={b}"])
+    return [("rate", r0, min(20.0, 4.0 * r0), step("rate"), {}),
+            ("depth", d0, 1.0 if d0 < 0.7 else 0.2, step("depth"), {}),
+            ("width", 1.0, 0.0, step("width"), {}),
+            ("tone", 0.0, 1.0, step("tone"), {}),
+            ("note", 1.0, 0.25, lambda t, a, b, ramp: [f"host_beats@{t:.3f}={b}"], {"host_bpm": 120})]
+
+
+CH25_T0, CH25_GAP, CH25_EVENTS = 1.0, 0.6, 8
+
+
+def ch25_timeline(fn, a, b, ramp):
+    out = []
+    for k in range(CH25_EVENTS):
+        frm, to = (a, b) if k % 2 == 0 else (b, a)
+        out += fn(CH25_T0 + CH25_GAP * k, frm, to, ramp)
+    return out
+
+
+def ch25_keys(mode, name, value, extra):
+    keys = dict(rate=START[mode]["rate"], depth=START[mode]["depth"], width=1.0, tone=0.5, **extra)
+    keys["host_beats" if name == "note" else name] = value
+    return [f"mode={mode}"] + [f"{k}={v}" for k, v in keys.items()]
+
+
+def steady_keys(mode, name, a, b, base_keys):
+    """Key sets of the steady renders a change from a to b is judged against: the settings
+    along the way (a step that glides, a ramp, a 20 ms smoother all pass through them, and
+    on a tone an intermediate comb can sit lower than either end), and for a rate change
+    each of those at eight LFO phases (the LFO's phase after a rate change is anyone's, and so
+    is where the comb sits; RATE_PHASES). Where the swing follows 1/rate (Wide, Tri), a rate change glides
+    with the LFO already at the new rate and the swing between the two laws: those states
+    are the depths whose swing spans the glide (swing ~ depth^2 / rate)."""
+    if name == "note":
+        return [base_keys(v) for v in (a, b)]
+    if name != "rate":
+        return [base_keys(v) for v in np.linspace(a, b, 9)]
+    d0 = START[mode]["depth"]
+    spread = np.sqrt(max(a, b) / min(a, b)) if mode in (WIDE, TRI) else 1.0
+    depths = sorted({float(np.clip(d0 * s, 0.05, 1.0)) for s in (1 / spread, 1.0, spread)})
+    out = []
+    for v in np.geomspace(a, b, 3 if len(depths) > 1 else 5):
+        for d in depths:
+            for phi in RATE_PHASES:
+                out.append(base_keys(v) + [f"depth={d}", f"sync_phase@0..60={phi}..{phi + 60.0 * v}"])
+    return out
+
+
+RATE_PHASES = tuple(k / 8 for k in range(8))   # four missed Tri's comb minima on single notes by up to 1.5 dB
+
+
+def ch25():
+    """Large changes are tap crossfades (item 2 of round 2): steps and 0.1 s ramps of rate,
+    depth, width, tone, and note-value steps under a play head, every mode, mix 0.35 / 0.5 / 1.
+    The wet (out - dry gain x in) on pink noise and on a guitar-like take never more than
+    1.5 dB under the lowest of the steady wets along the change (2 ms frames over 10 ms; see
+    steady_keys); single held notes 82 / 196 / 331.7 / 880 Hz through every soloed voice:
+    worst dip of the analytic envelope against the lower of the levels before and after, at
+    most 6 dB; a 220 Hz -12 dBFS sine: 2 kHz high-passed peak <= -70 dBFS; every audible
+    tap's delay slope inside the steady peak of the settings involved + 5 cents."""
+    secs = CH25_T0 + CH25_GAP * CH25_EVENTS + 0.6
+    n = int(secs * SR)
+    inputs = {"pink": fx.stereo(fx.pink(secs, -18.0, SR, seed=9)[:n]), "guitar": fx.stereo(guitar_take(secs, SR)[:n])}
+    jobs = []
+    for mode in (WIDE, CE, DIM, TRI):
+        for name, a, b, fn, extra in ch25_params(mode):
+            for ramp in ((0.0,) if name == "note" else (0.0, 0.1)):
+                jobs.append((mode, name, a, b, fn, extra, ramp))
+
+    # The wet at mix m is min(1, 2m) times the wet at mix 1, so one set of floors serves all.
+    floor_jobs = [(mode, name, a, b, extra, iname) for mode, name, a, b, fn, extra, ramp in jobs if ramp == 0.0
+                  for iname in inputs]
+
+    def floor_job(job):
+        mode, name, a, b, extra, iname = job
+        keys = steady_keys(mode, name, a, b, lambda v: ch25_keys(mode, name, v, extra) + ["mix=1"])
+        levels = [frames_db(fx.invoke(EFFECT, inputs[iname], k, ["--block=64"], SR).out, SR) for k in keys]
+        return (mode, name, iname), np.min(levels, axis=0)
+
+    floors = dict(pmap(floor_job, floor_jobs))
+
+    def level_job(job):
+        mode, name, a, b, fn, extra, ramp = job
+        worst, click = 1e9, -300.0
+        tl = ch25_timeline(fn, a, b, ramp)
+        for mix in (0.35, 0.5, 1.0):
+            for iname, inp in inputs.items():
+                out = fx.invoke(EFFECT, inp, ch25_keys(mode, name, a, extra) + [f"mix={mix}"] + tl, ["--block=64"], SR).out
+                lv = frames_db(out - dry_gain(mix) * inp, SR)
+                floor = floors[(mode, name, iname)] + 20 * np.log10(min(1.0, 2.0 * mix))
+                for k in range(CH25_EVENTS):
+                    t = CH25_T0 + CH25_GAP * k
+                    i0, i1 = int((t - 0.02) / 0.002), int((t + ramp + 0.35) / 0.002)
+                    worst = min(worst, float(np.min(lv[i0:i1] - floor[i0:i1])))
+            y = fx.invoke(EFFECT, "gen:sine:220:-12", ch25_keys(mode, name, a, extra) + [f"mix={mix}"] + tl,
+                          ["--block=64", f"--seconds={secs}"], SR).out
+            for chan in y:
+                click = max(click, float(fx.db(np.max(np.abs(hp_residual(chan, SR)[int(0.5 * SR):int((secs - 0.2) * SR)])))))
+        return job, worst, click
+
+    def note_job(job):
+        (mode, name, a, b, fn, extra, ramp), voice, f0 = job
+        tl = ch25_timeline(fn, a, b, ramp)
+        r = fx.invoke(EFFECT, f"gen:sine:{f0}:-12", ch25_keys(mode, name, a, extra) + ["mix=1", f"solo={voice}"] + tl,
+                      ["--block=64", f"--seconds={secs}", "--trace"], SR)
+        dip = note_dip(fx.mono(r.out), [CH25_T0 + CH25_GAP * k for k in range(CH25_EVENTS)], ramp)
+        tap, _ = tap_cents(r.trace)
+        rates = [START[mode]["rate"]] if name != "note" else [120.0 / (60.0 * v) for v in (a, b)]
+        if name == "rate":
+            rates = [a, b]
+        depths = [a, b] if name == "depth" else [START[mode]["depth"]]
+        bound = max(slope_cents(voice_slope(mode, voice, f, d)) for f in rates for d in depths) + TR_TOL
+        over = float(np.max(tap[int(0.5 * SR):])) - bound + TR_TOL
+        return job, dip, over
+
+    levels = pmap(level_job, jobs)
+    notes = pmap(note_job, [(j, v, f0) for j in jobs for v in ALL_VOICES[j[0]] for f0 in (82.41, 196.0, 331.7, 880.0)])
+    worst_lv = min(levels, key=lambda r: r[1])
+    worst_click = max(levels, key=lambda r: r[2])
+    worst_note = min(notes, key=lambda r: r[1])
+    worst_tap = max(notes, key=lambda r: r[2])
+    ok = worst_lv[1] >= -1.5 and worst_click[2] <= -70.0 and worst_note[1] >= -6.0 and worst_tap[2] <= TR_TOL
+    describe = lambda j: f"{TYPES[j[0]]} {j[1]} {'ramp' if j[6] else 'step'}"  # noqa: E731
+    return ok, (f"{len(jobs)} timelines x 3 mixes x 2 inputs: wet at worst {worst_lv[1]:+.2f} dB against the lower steady "
+                f"({describe(worst_lv[0])}); click {worst_click[2]:.1f} dBFS ({describe(worst_click[0])}); single notes, "
+                f"soloed voices: worst dip {worst_note[1]:+.2f} dB ({describe(worst_note[0][0])}, voice {worst_note[0][1]}, "
+                f"{worst_note[0][2]:g} Hz); taps at most {worst_tap[2]:+.1f} c over the steady peak "
+                f"({describe(worst_tap[0][0])}, voice {worst_tap[0][1]})")
+
+
+def note_dip(y, times, ramp, sr=SR):
+    """Worst dip (dB) of a single note's analytic envelope (2 ms average) around each event
+    against the lower of its levels just before and well after (a soloed voice on a sine is
+    flat in steady state)."""
+    env = np.abs(fx.analytic(y))
+    k = int(0.002 * sr)
+    env = 20 * np.log10(np.convolve(env, np.ones(k) / k, "same") + 1e-30)
+    worst = 0.0
+    for t in times:
+        before = np.median(env[int((t - 0.25) * sr):int((t - 0.02) * sr)])
+        after = np.median(env[int((t + ramp + 0.4) * sr):int((t + ramp + 0.58) * sr)])
+        worst = min(worst, float(np.min(env[int((t - 0.02) * sr):int((t + ramp + 0.4) * sr)]) - min(before, after)))
+    return worst
+
+
+def hand_moves(mode, key, seed):
+    """Eight moves of a hand on one knob from the mode's starting point: each 150 ms long,
+    400 ms apart; rate by a factor of up to 4 either way, depth by up to 0.3."""
+    rng = np.random.default_rng(seed)
+    v = START[mode][key]
+    out = []
+    for k in range(8):
+        t = 1.0 + 0.4 * k
+        w = float(np.clip(v * 4 ** rng.uniform(-1, 1), 0.05, 10.0) if key == "rate" else np.clip(v + rng.uniform(-0.3, 0.3), 0.05, 1.0))
+        out.append(f"{key}@{t:.3f}..{t + 0.15:.3f}={v:.4f}..{w:.4f}")
+        v = w
+    return out
+
+
+def ch26():
+    """Ordinary knob moves at each mode's starting point (rate, depth, mix as the editor sets
+    them): single steps depth +0.2 and rate x2, and eight hand moves of each knob. Reported:
+    how many tap crossfades they start. No audible event: the output on pink noise and on the
+    guitar-like take stays within 1 dB of the envelope of the steady outputs along the change
+    (single steps, steady_keys; 2 ms frames over 10 ms); soloed single notes 82 / 196 / 331.7
+    / 880 Hz dip at most 1 dB; a 220 Hz -12 dBFS sine's 2 kHz high-passed peak <= -70 dBFS;
+    taps inside the steady peak + 5 cents."""
+    secs = 5.0
+    n = int(secs * SR)
+    inputs = [fx.stereo(fx.pink(secs, -18.0, SR, seed=10)[:n]), fx.stereo(guitar_take(secs, SR, seed=23)[:n])]
+    cases = []
+    for mode in (WIDE, CE, DIM, TRI):
+        r0, d0 = START[mode]["rate"], START[mode]["depth"]
+        cases.append((mode, "depth step", [f"depth@2={min(1.0, d0 + 0.2):.2f}"], ("depth", d0, min(1.0, d0 + 0.2))))
+        cases.append((mode, "rate step", [f"rate@2={2 * r0:g}"], ("rate", r0, 2 * r0)))
+        cases.append((mode, "rate hand", hand_moves(mode, "rate", 5 + mode), None))
+        cases.append((mode, "depth hand", hand_moves(mode, "depth", 9 + mode), None))
+
+    def one(case):
+        mode, label, tl, change = case
+        base = [f"{k}={v}" for k, v in dict(START[mode], mode=mode).items()]
+        out = fx.invoke(EFFECT, inputs[0], base + tl, ["--block=64", "--meters"], SR)
+        _, fades = meter_events(out)
+        level = 0.0
+        if change is not None:
+            key, a, b = change
+            for inp in inputs:
+                y = fx.invoke(EFFECT, inp, base + tl, ["--block=64"], SR).out
+                keys = steady_keys(mode, key, a, b, lambda v: base + [f"{key}={v}"])
+                refs = [frames_db(fx.invoke(EFFECT, inp, k, ["--block=64"], SR).out, SR) for k in keys]
+                lv = frames_db(y, SR)
+                i0, i1 = int(1.95 / 0.002), int(2.5 / 0.002)
+                lo, hi = np.min(refs, axis=0)[i0:i1], np.max(refs, axis=0)[i0:i1]
+                level = max(level, float(np.max(np.maximum(lo - lv[i0:i1], lv[i0:i1] - hi))))
+        y = fx.invoke(EFFECT, "gen:sine:220:-12", base + tl, ["--block=64", f"--seconds={secs}"], SR).out
+        click = max(float(fx.db(np.max(np.abs(hp_residual(c, SR)[int(0.5 * SR):int((secs - 0.2) * SR)])))) for c in y)
+        dip, over = 0.0, -1e9
+        times = [2.0] if change is not None else [1.0 + 0.4 * k for k in range(8)]
+        ramp = 0.0 if change is not None else 0.15
+        for voice in ALL_VOICES[mode]:
+            for f0 in (82.41, 196.0, 331.7, 880.0):
+                r = fx.invoke(EFFECT, f"gen:sine:{f0}:-12", base + ["mix=1", f"solo={voice}"] + tl,
+                              ["--block=64", f"--seconds={secs}", "--trace"], SR)
+                dip = min(dip, note_dip(fx.mono(r.out), times, ramp))
+                tap, _ = tap_cents(r.trace)
+                values = [float(t.split("=")[1].split("..")[-1]) for t in tl] + [START[mode][k] for k in ("rate", "depth")]
+                rates = [v for t, v in zip(tl, values) if t.startswith("rate")] + [START[mode]["rate"]]
+                depths = [v for t, v in zip(tl, values) if t.startswith("depth")] + [START[mode]["depth"]]
+                bound = max(slope_cents(voice_slope(mode, voice, f, d)) for f in rates for d in depths)
+                over = max(over, float(np.max(tap[int(0.5 * SR):])) - bound)
+        good = level <= 1.0 and dip >= -1.0 and click <= -70.0 and over <= TR_TOL
+        return case, good, fades, level, dip, click, over
+
+    res = pmap(one, cases)
+    ok = all(r[1] for r in res)
+    rows = []
+    for mode in (WIDE, CE, DIM, TRI):
+        mine = [r for r in res if r[0][0] == mode]
+        rows.append(f"{TYPES[mode]} crossfades " + "/".join(str(r[2]) for r in mine)
+                    + f", output <= {max(r[3] for r in mine):.2f} dB off, note dip {min(r[4] for r in mine):+.2f} dB, "
+                      f"click {max(r[5] for r in mine):.1f} dBFS, taps {max(r[6] for r in mine):+.1f} c")
+    rows += [f"FAIL {TYPES[r[0][0]]} {r[0][1]}" for r in res if not r[1]]
+    return ok, "crossfades per depth step/rate step/8 rate moves/8 depth moves: " + "; ".join(rows)
+
+
+LAG_CASES = [(WIDE, "depth", 0.3, 0.8, 1.0), (WIDE, "depth", 0.8, 0.3, 1.0), (WIDE, "depth", 0.4, 0.5, 1.0),
+             (WIDE, "depth", 0.2, 1.0, 5.0), (WIDE, "depth", 1.0, 0.2, 0.3), (CE, "rate", 0.5, 2.5, 1.0),
+             (CE, "rate", 2.5, 0.5, 1.0), (CE, "depth", 0.2, 1.0, 1.0), (CE, "depth", 1.0, 0.2, 1.0),
+             (DIM, "depth", 0.2, 1.0, 0.5), (DIM, "depth", 1.0, 0.2, 0.5), (DIM, "rate", 0.25, 2.0, 1.0),
+             (DIM, "rate", 2.0, 0.25, 1.0)]
+
+
+def heard_env(trace, sr, rate, hop=0.005):
+    """The heard detune of a soloed voice, per tap from the trace: the current tap's delay
+    slope, the outgoing tap's during the silent pre-roll; the largest cents over a trailing
+    window just longer than a rounded LFO corner (three time constants of the rounding
+    one-pole, at least 30 ms), so a triangle's plateau is always in it; every 5 ms."""
+    now, old, stage = trace[0].astype(np.float64), trace[1].astype(np.float64), trace[2][1:]
+    step = lambda d: np.minimum(np.abs(np.diff(d)), 0.5)  # noqa: E731
+    s = np.where(stage == 1, step(old), step(now))
+    s = np.where(s < 0.5, s, 0.0)   # the new taps' landing jump
+    c = -1200.0 * np.log2(1.0 - s)
+    win = max(0.03, 3.0 / (2 * np.pi * max(8.0, 20.0 * rate)))
+    w, h = int(win * sr), int(hop * sr)
+    t = np.arange(w, len(c), h)
+    return t / sr, np.array([c[i - w:i].max() for i in t])
+
+
+def ch27():
+    """Lag and rapid switching (item 3 of round 2). The heard detune of voice 0 (per tap,
+    from the trace, heard_env) back inside its own steady band at the new settings (the
+    final 2.2 s, widened by 12 % or 0.5 cent), with no crossfade still running, at most
+    150 ms after the knob stops, for steps and 0.5 / 2 s ramps; during a ramp it is never
+    further back in the knob's course than 150 ms (within 12 % or 0.5 cent of the law there,
+    widened by the 5 cents a glide may add or take: the swing's own change adds to the LFO's
+    slope on one side of a turn and subtracts on the other). Both include the window's own
+    reading delay. Mode switches every 30 ms in random order through all five modes, mix
+    0.35 / 0.5 / 1: level (power of eight pink-noise takes, and of eight white-noise takes;
+    2 ms frames over 10 ms) within 2 dB of the envelope of the five modes' steady levels
+    (on white noise CE's and Tri's wets are 3 - 4 dB below Wide's: measured against one
+    mode's level, that reads as a sag); 220 Hz -12 dBFS: 2 kHz high-passed peak <= -60 dBFS."""
+    T, tail = 1.0, 2.2
+    jobs = [(c, ramp) for c in LAG_CASES for ramp in (0.0, 0.5, 2.0)]
+
+    def lag_job(job):
+        (mode, key, a, b, other), ramp = job
+        base = dict(mode=mode, rate=other, depth=other, mix=1, solo=0)
+        base[key] = a
+        tl = [f"{key}@{T}={b}"] if ramp == 0 else [f"{key}@{T}..{T + ramp}={a}..{b}"]
+        secs = T + ramp + 1.0 + tail
+        r = fx.invoke(EFFECT, f"gen:sine:{PROBE_HZ}:-12", [f"{k}={v}" for k, v in base.items()] + tl,
+                      ["--block=64", f"--seconds={secs}", "--trace"], SR)
+        t, e = heard_env(r.trace, SR, min(a, b) if key == "rate" else other)
+        steady = e[t >= secs - tail]
+        s1 = float(np.median(steady))
+        slack = max(0.12 * s1, 0.5)
+        lo, hi = float(steady.min()) - slack, float(steady.max()) + slack
+        stop = T + ramp
+        bad = np.nonzero(((e < lo) | (e > hi)) & (t >= stop) & (t < secs - tail))[0]
+        settle = float(t[bad[-1]] - stop) if len(bad) else 0.0
+        fading = np.nonzero(r.trace[2] > 0)[0]
+        if len(fading):
+            settle = max(settle, fading[-1] / SR - stop)
+        lag = 0.0
+        if ramp > 0:
+            law = lambda v: slope_cents(voice_slope(mode, 0, v if key == "rate" else other, v if key == "depth" else other))  # noqa: E731
+            knob = lambda tt: a + (b - a) * min(1.0, max(0.0, (tt - T) / ramp))  # noqa: E731
+            # CE's bent triangle runs between (1 - b)/(1 + b) of its peak slope and the peak.
+            floor = (1 - CE_BEND) / (1 + CE_BEND) if mode == CE else 1.0
+            for tt, heard in zip(t, e):
+                if not T <= tt <= stop:
+                    continue
+                for back in np.arange(0.0, 1.0, 0.005):
+                    v = law(knob(tt - back))
+                    if 0.88 * floor * v - 0.5 - TR_TOL <= heard <= 1.12 * v + 0.5 + TR_TOL:
+                        break
+                lag = max(lag, float(back))
+        return job, settle, lag
+
+    lags = pmap(lag_job, jobs)
+    worst_settle = max(lags, key=lambda r: r[1])
+    worst_lag = max(lags, key=lambda r: r[2])
+    rng = np.random.default_rng(3)
+    order, m = [], 1
+    for _ in range(100):
+        m2 = int(rng.integers(0, 5))
+        m2 = (m + 1) % 5 if m2 == m else m2
+        order.append(m2)
+        m = m2
+    secs = 1.0 + 0.03 * 100 + 0.8
+    takes = ([fx.stereo(fx.pink(secs, -18.0, SR, seed=40 + k)) for k in range(8)],
+             [fx.stereo(fx.white(secs, -18.0, SR, seed=500 + k)) for k in range(8)])
+    tl = [f"mode@{1.0 + 0.03 * k:.3f}={v}" for k, v in enumerate(order)]
+
+    def level(keys, noise):
+        p = sum(10 ** (frames_db(fx.invoke(EFFECT, x, keys, ["--block=64"], SR).out, SR) / 10) for x in noise)
+        return 10 * np.log10(p)
+
+    sag, click = 0.0, -300.0
+    for mix in (0.35, 0.5, 1.0):
+        for noise in takes:
+            lv = level(["mode=1", f"mix={mix}"] + tl, noise)
+            refs = [level([f"mode={v}", f"mix={mix}"], noise) for v in range(5)]
+            i0, i1 = int(1.0 / 0.002), int((1.0 + 0.03 * 100 + 0.3) / 0.002)
+            lo, hi = np.min(refs, axis=0)[i0:i1], np.max(refs, axis=0)[i0:i1]
+            sag = max(sag, float(np.max(np.maximum(lo - lv[i0:i1], lv[i0:i1] - hi))))
+        out = fx.invoke(EFFECT, "gen:sine:220:-12", ["mode=1", f"mix={mix}"] + tl, ["--block=64", f"--seconds={secs}"], SR).out
+        for chan in out:
+            click = max(click, float(fx.db(np.max(np.abs(hp_residual(chan, SR)[int(0.5 * SR):int((secs - 0.2) * SR)])))))
+    ok = worst_settle[1] <= 0.15 and worst_lag[2] <= 0.15 and sag <= 2.0 and click <= -60.0
+    describe = lambda j: f"{TYPES[j[0][0]]} {j[0][1]} {j[0][2]:g}->{j[0][3]:g} ramp {j[1]:g} s"  # noqa: E731
+    return ok, (f"settle {1e3 * worst_settle[1]:.0f} ms after the knob stops ({describe(worst_settle[0])}); ramp lag "
+                f"{1e3 * worst_lag[2]:.0f} ms ({describe(worst_lag[0])}); switching every 30 ms: level at most {sag:.2f} dB "
+                f"outside the modes' steady envelope, click {click:.1f} dBFS")
+
+
+def ch28():
+    """Huge finite input (item 4 of round 2): a +3e38, -3e38 pair, a 1e7 sample and a run of
+    1e20 behave exactly like zero samples, bit for bit, every mode, mono and stereo, blocks
+    37 and 512; and Classic stays bit-identical to the legacy chorus with samples at
+    +-9e5 in its input."""
+    rows, ok = [], True
+    n = int(1.5 * SR)
+    base = np.vstack([fx.pink(1.5, -18.0, SR, seed=21)[:n], fx.pink(1.5, -18.0, SR, seed=22)[:n]])
+    spots = [(SR // 2, 3e38), (SR // 2 + 1, -3e38), (SR // 2 + 500, 1e7)] + [(SR // 2 + 1000 + i, 1e20) for i in range(50)]
+    for mode in TYPES:
+        bad = 0
+        for ch in (1, 2):
+            for bs in (37, 512):
+                keys = [f"mode={mode}"] + ([f"{k}={v}" for k, v in START[mode].items()] if mode else [])
+                x, zeroed = base[:ch].copy(), base[:ch].copy()
+                for i, v in spots:
+                    x[0, i] = v
+                    zeroed[0, i] = 0.0
+                y = run(keys, x, SR, None, ch, bs)
+                ref = run(keys, zeroed, SR, None, ch, bs)
+                bad += int(not np.all(np.isfinite(y)) or not np.array_equal(y, ref))
+        ok &= bad == 0
+        rows.append(f"{TYPES[mode]} {bad} bad")
+    x = base.copy()
+    x[0, SR // 3] = 9e5
+    x[1, SR // 3 + 7] = -9e5
+    good, detail = fx.classic_null(EFFECT, ["rate@0.5=5", "depth@0.8=1", "mix=0.8"], inp=x)
+    ok &= good
+    return ok, "; ".join(rows) + f"; Classic null with +-9e5 samples: {detail or '0 differing samples'}"
+
+
+def ch29():
+    """Classic re-enable (item 5 of round 2): a Classic engine that processed a loud signal,
+    was not called for a second (bypass) and then reset() plays nothing stale: silent input
+    gives <= -120 dBFS, mono and stereo, blocks 64 and 512, mix 0.35 and 1."""
+    worst = -300.0
+    for ch in (1, 2):
+        for bs in (64, 512):
+            for mix in (0.35, 1.0):
+                keys = ["mode=0", f"mix={mix}", "depth=1", "on@1.0=0", "on@2.2=1", "reset@2.2=1"]
+                out = run(keys, loud_then_silence(SR, 3.5, ch), SR, None, ch, bs)
+                worst = max(worst, float(fx.db(max(np.max(np.abs(out[:, int(2.2 * SR):])), 1e-30))))
+    return worst <= -120.0, f"Classic after bypass and reset(), silent input: {worst:.1f} dBFS"
 
 
 def specific_checks(report, args):
@@ -994,7 +1632,13 @@ def specific_checks(report, args):
             ("CH16", "sync: start, locate, loop, note", ch16, WIDE), ("CH17", "bypass, reset: replay, restart", ch17, WIDE),
             ("CH18", "mode switch: level, click", ch18, WIDE), ("CH19", "mono: detune and comb", ch19, WIDE),
             ("CH20", "non-finite input", ch20, WIDE), ("CH21", "onset after reset", ch21, WIDE),
-            ("CH22", "rt-check, reset-repeat under switches", ch22, WIDE), ("CH23", "cpu during a switch", ch23, WIDE)]
+            ("CH22", "rt-check, reset-repeat under switches", ch22, WIDE),
+            ("CH23", "cpu during a switch and crossfades", ch23, WIDE),
+            ("CH24", "sync: tempo steps, ramps, position jitter", ch24, WIDE),
+            ("CH25", "large changes: tap crossfade level, click", ch25, WIDE),
+            ("CH26", "ordinary knob moves: no audible event", ch26, WIDE),
+            ("CH27", "lag; mode switching every 30 ms", ch27, WIDE),
+            ("CH28", "huge finite input", ch28, 0), ("CH29", "Classic reset after bypass", ch29, 0)]
     for name, scope, fn, mode in rows:
         if want(mode):
             ok, detail = fn()

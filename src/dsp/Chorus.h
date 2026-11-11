@@ -23,6 +23,9 @@ struct ChorusParams
     float width = 1.0f;        // [0, 1]
     float tone = 0.5f;         // [0, 1]
     double syncPhase = -1.0;   // >= 0: LFO phase in cycles at this block's first sample (song position lock)
+                               // Given every block while the song plays: each is compared with where the
+                               // last one, moved on at rateHz, predicts; a small difference is pulled in
+                               // slowly, a large one is a jump.
 };
 
 class ChorusFx
@@ -40,17 +43,32 @@ public:
     void prepare (const juce::dsp::ProcessSpec& spec);
     /** Clears every line and starts every smoother at its target; modes 1-4 then pass the
         dry at once and fade the wet in as the lines refill. Call it when a bypassed block
-        comes back, or the lines replay what they held when it was switched off. */
+        comes back, or the lines replay what they held when it was switched off. Classic is
+        cleared completely too (line, oscillator, mixer): its output afterwards is exactly the
+        frozen chorus started fresh. */
     void reset();
     /** Audio thread, once per block before process(). */
     void setParameters (const ChorusParams& params);
-    /** A non-finite input sample is processed as 0 (and written back as 0). */
+    /** A non-finite input sample, or one beyond +-1e6, is processed as 0 (and written back as 0). */
     void process (juce::dsp::AudioBlock<float> block);
 
     int getLatencySamples() const noexcept { return 0; }
     /** Test hook (fxbench solo=<voice>): routes one voice to both outputs at mix 1;
         -1 = off. */
     void setDebugSolo (int voice) noexcept;
+    /** Test hook (fxbench --trace): while a voice is soloed, process() writes per sample the
+        soloed voice's current tap delay, its outgoing tap delay (equal to the first outside
+        a tap crossfade) in samples, and the crossfade stage (0 none, 1 outgoing tap alone,
+        2 fading directly, 3 fading through the midpoint tap). Three channels of at least the
+        block's length, or nullptr. */
+    void setDebugTrace (float* const* channels) noexcept;
+
+    struct DebugCounts
+    {
+        int syncJumps = 0;    // host song-position discontinuities taken as jumps
+        int knobFades = 0;    // tap crossfades started for changes too large to glide
+    };
+    DebugCounts getDebugCounts() const noexcept;
 
 private:
     struct Impl;
