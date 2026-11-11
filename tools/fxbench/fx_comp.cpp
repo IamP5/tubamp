@@ -2,12 +2,16 @@
 //   type threshold ratio attack release makeup knee mix sc_hpf auto_makeup on
 // on=0 calls skip() instead of process(), the way the processor runs a bypassed or
 // absent comp (exercises the makeup smoother through skip sequences).
+// --trace: one channel, the per-sample gain reduction in dB (>= 0, makeup excluded);
+// 0 while skipped.
 #include "FxBench.h"
 #include "legacy/LegacyFx.h"
 
 #include "../../src/dsp/Compressor.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <vector>
 
 namespace
 {
@@ -51,6 +55,7 @@ public:
     void prepare (double sampleRate, int maxBlock, int numChannels) override
     {
         comp.prepare ({ sampleRate, (juce::uint32) maxBlock, (juce::uint32) numChannels });
+        gainTrace.assign ((size_t) maxBlock, 0.0f);
     }
 
     void reset() override { comp.reset(); }
@@ -74,10 +79,28 @@ public:
 
     void process (juce::AudioBuffer<float>& io, int numSamples) override
     {
+        const bool traced = numSamples <= (int) gainTrace.size();
+
+        if (traced)
+            std::fill (gainTrace.begin(), gainTrace.begin() + numSamples, 0.0f);
+
         if (on)
+        {
+            comp.setGainTrace (traced ? gainTrace.data() : nullptr);
             comp.process (juce::dsp::AudioBlock<float> (io));
+        }
         else
+        {
             comp.skip (numSamples);
+        }
+    }
+
+    int traceChannels() const override { return 1; }
+
+    void trace (float* const* dst, int numSamples) override
+    {
+        if (numSamples <= (int) gainTrace.size())
+            std::copy (gainTrace.begin(), gainTrace.begin() + numSamples, dst[0]);
     }
 
     std::string meterRow() const override
@@ -91,10 +114,11 @@ public:
 
 private:
     tubamp::CompFx comp;
+    std::vector<float> gainTrace;
     bool on = true;
 };
 
 FXBENCH_REGISTER ("comp", CompBench,
                   "type(0 Classic,1 Clean,2 Squash,3 FET,4 Opto) threshold ratio attack release makeup knee mix "
-                  "sc_hpf auto_makeup(0/1) on(0 = skip); --meters = GR dB");
+                  "sc_hpf auto_makeup(0/1) on(0 = skip); --meters = GR dB; --trace = per-sample GR dB");
 } // namespace

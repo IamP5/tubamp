@@ -54,6 +54,10 @@ public:
     /** Largest gain reduction applied during the last process(), dB >= 0, makeup excluded. */
     float getGainReductionDb() const noexcept;
 
+    /** Test hook (fxbench --trace): while non-null, process() writes one gain-reduction
+        value per sample (dB >= 0, makeup excluded) to it. The processor never sets it. */
+    void setGainTrace (float* destination) noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;
