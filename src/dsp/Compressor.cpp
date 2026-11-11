@@ -319,6 +319,7 @@ struct CompFx::Impl
         const int maxBlock = juce::jmax (1, (int) spec.maximumBlockSize);
         incoming.setSize (juce::jmax (1, numChannels), maxBlock, false, true, false);
         incomingTrace.assign ((size_t) maxBlock, 0.0f);
+        outgoingTrace.assign ((size_t) maxBlock, 0.0f);
         fadeStep = 1.0f / juce::jmax (1.0f, kCrossfadeSeconds * sampleRate);
 
         const auto coefficient = [this] (float tau) noexcept { return 1.0f - std::exp (-1.0f / (tau * sampleRate)); };
@@ -336,6 +337,7 @@ struct CompFx::Impl
         resetDynamics();
         controlPhase = 0;
         snapEngine = true;
+        scFilterOn = false;
         fading = false;
         gainReductionDb = 0.0f;
         classicGainReductionDb = 0.0f;
@@ -349,7 +351,7 @@ struct CompFx::Impl
             f.reset();
 
         g = g1 = g2 = memory = 0.0f;
-        frozen = 0;
+        refill = 0;
         snapSmoothers = true;
     }
 
@@ -523,16 +525,18 @@ struct CompFx::Impl
         const auto channels = block.getNumChannels();
         juce::dsp::AudioBlock<float> in (incoming.getArrayOfWritePointers(), channels, (size_t) numSamples);
         in.copyFrom (block);
-        float* const inTrace = gainTrace != nullptr ? incomingTrace.data() : nullptr;
+        float* const outTrace = gainTrace != nullptr ? gainTrace : outgoingTrace.data();
+        float* const inTrace = incomingTrace.data();
+        const float reductionBefore = gainReductionDb;
 
         // Classic advances the shared makeup smoother itself; the other side steps a copy
         // over the same samples, so the smoother moves once per sample.
         auto makeupCopy = makeup;
         const bool classicIncoming = fadeTo == (int) Type::classic;
-        processType (fadeFrom, block, gainTrace, classicIncoming ? makeupCopy : makeup);
+        processType (fadeFrom, block, outTrace, classicIncoming ? makeupCopy : makeup);
         processType (fadeTo, in, inTrace, classicIncoming ? makeup : makeupCopy);
 
-        float w = fadeWeight;
+        float w = fadeWeight, reduction = 0.0f;
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -547,11 +551,15 @@ struct CompFx::Impl
                 out[i] += w * (in.getChannelPointer (ch)[i] - out[i]);
             }
 
-            if (gainTrace != nullptr)
-                gainTrace[i] += w * (inTrace[i] - gainTrace[i]);
+            // The output is the linear blend of the two gains, so the reduction is blended the
+            // same way; the larger of the two would overstate it by up to the difference.
+            const float blended = (1.0f - w) * std::exp2 (-outTrace[i] * kDbToLog2) + w * std::exp2 (-inTrace[i] * kDbToLog2);
+            outTrace[i] = -std::log2 (juce::jmax (blended, 1.0e-30f)) / kDbToLog2;
+            reduction = juce::jmax (reduction, outTrace[i]);
         }
 
         fadeWeight = w;
+        gainReductionDb = juce::jmax (reductionBefore, reduction);
 
         if (w >= 1.0f)
         {
@@ -577,15 +585,16 @@ struct CompFx::Impl
             memory = 0.0f;
     }
 
-    /** Starts a new type at the reduction Classic was applying, held while the detector
-        window fills; then the type's own ballistics take it to its own value. */
+    /** Starts a new type at the reduction Classic was applying. The detector and the gain
+        computer run from the first sample; until the window has filled, only attacks act
+        (see runDynamics). */
     void seedFromClassic (Type type) noexcept
     {
         resetDynamics();
         updateDynamics (type);
         snapDynamics();
         g = g1 = g2 = -classicGainReductionDb;
-        frozen = windowSamples;
+        refill = windowSamples;
     }
 
     void processType (int type, juce::dsp::AudioBlock<float>& block, float* gainTrace,
@@ -643,7 +652,9 @@ struct CompFx::Impl
     }
 
     /** The Classic meter: a copy of juce::dsp::Compressor's own envelope filter, fed the
-        same input, read through the same gain law. The audio path never sees it. */
+        same input, read through the same gain law. The audio path never sees it. Its input
+        is limited like the other types' (a 3e38 sample overflowed env / threshold and gave
+        an infinite reduction); that changes nothing below +120 dBFS. */
     void measureClassic (const juce::dsp::AudioBlock<float>& block, float* gainTrace) noexcept
     {
         const auto numSamples = (int) block.getNumSamples();
@@ -669,7 +680,7 @@ struct CompFx::Impl
             env = 0.0f;
 
             for (int ch = 0; ch < channels; ++ch)
-                env = juce::jmax (env, shadow.processSample (ch, block.getSample (ch, i)));
+                env = juce::jmax (env, shadow.processSample (ch, juce::jlimit (-kInputLimit, kInputLimit, block.getSample (ch, i))));
 
             envMax = juce::jmax (envMax, env);
 
@@ -701,17 +712,20 @@ struct CompFx::Impl
         autoMakeup = params.autoMakeup;
 
         const bool filterOn = params.scHpfHz > kScHpfOffHz;
+        const bool switchedOn = filterOn && ! scFilterOn;
+        scFilterOn = filterOn;
 
-        if (filterOn && ! scFilterOn)
+        if (switchedOn)
         {
+            // TptOnePole::reset() clears the state but keeps the old coefficient, which would
+            // otherwise run until the next control tick (up to 15 samples, block dependent).
             for (auto& f : scFilter)
                 f.reset();
 
             scCutoff.snap();
             appliedCutoff = -1.0f;
+            updateDetectorFilter();
         }
-
-        scFilterOn = filterOn;
 
         const float tauRelease = params.releaseMs * 0.001f;
         windowSamples = juce::jmax (1, (int) std::lround (juce::jlimit (kMinWindowSeconds, kMaxWindowSeconds,
@@ -820,29 +834,35 @@ struct CompFx::Impl
             const float level = 20.0f * std::log10 (juce::jmax (window.push (detector), kLevelFloor));
             float gain;
 
-            if (frozen > 0)
+            // While the window refills after a seed from Classic, its maximum can only be lower
+            // than the full window's: an attack it calls for is real, a release is not yet known.
+            float release1 = releaseK1, release2 = releaseK2;
+
+            if (refill > 0)
             {
-                --frozen;
-                gain = currentGain ((int) type);
+                --refill;
+                release1 = release2 = 0.0f;
             }
-            else if constexpr (type == Type::squash)
+
+            if constexpr (type == Type::squash)
             {
                 // Log-domain feedback: the gain computer sees the output level L + g. Both
                 // steps are divided by the loop gain, so the closed loop moves at the knobs'
                 // time constants at any ratio and never overshoots; left open, the loop sped
                 // the release up R times and distorted low notes more at fast settings. What
                 // stays feedback: after a drop the output falls under the threshold, where the
-                // loop is open and the gain heads for 0 dB, so a partial drop recovers sooner.
+                // loop is open and the gain heads for 0 dB, so a partial drop recovers sooner
+                // (down to a third of the knob at R 8, a quarter at R 20; Compressor.h has the table).
                 float loopGain;
                 const float gc = feedbackGain (level + g - thr, s, wk, loopGain);
-                g += (gc < g ? attackK : releaseK1) / loopGain * (gc - g);
+                g += (gc < g ? attackK : release1) / loopGain * (gc - g);
                 gain = g;
             }
             else if constexpr (type == Type::fet || type == Type::opto)
             {
                 const float gc = gainComputer (level - thr, s, wk);
-                g1 += (gc < g1 ? attackK : releaseK1) * (gc - g1);
-                g2 += (gc < g2 ? attackK : releaseK2) * (gc - g2);
+                g1 += (gc < g1 ? attackK : release1) * (gc - g1);
+                g2 += (gc < g2 ? attackK : release2) * (gc - g2);
                 gain = g1 + slowWeight (type, memory) * (g2 - g1);
 
                 const float depth = juce::jmin (1.0f, -gain * kMemoryPerDb);
@@ -851,7 +871,7 @@ struct CompFx::Impl
             else
             {
                 const float gc = gainComputer (level - thr, s, wk);
-                g += (gc < g ? attackK : releaseK1) * (gc - g);
+                g += (gc < g ? attackK : release1) * (gc - g);
                 gain = g;
             }
 
@@ -915,7 +935,7 @@ struct CompFx::Impl
 
     // Crossfade to or from Classic: the incoming side renders into `incoming`.
     juce::AudioBuffer<float> incoming;
-    std::vector<float> incomingTrace;
+    std::vector<float> incomingTrace, outgoingTrace;
     bool fading = false;
     int fadeFrom = 0, fadeTo = 0, warmup = 0;
     float fadeWeight = 0.0f, fadeStep = 1.0f;
@@ -928,7 +948,7 @@ struct CompFx::Impl
     juce::dsp::BallisticsFilter<float> shadow;
 
     WindowMax window;
-    int windowSamples = 1, frozen = 0;
+    int windowSamples = 1, refill = 0;
     fx::TptOnePole scFilter[2];
     LinearRamp threshold, slope;
     OnePoleSmoother knee, mix, autoMakeupDb, scCutoff;

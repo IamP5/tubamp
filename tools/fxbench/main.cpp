@@ -19,27 +19,39 @@
 #include <cstring>
 #include <new>
 #include <optional>
+#include <pthread.h>
 #include <string>
 #include <vector>
 
 //==============================================================================
 // --rt-check: every global operator new/delete, plus (on macOS) libmalloc's logger hook,
 // which also sees malloc/free calls that never go through operator new (juce::HeapBlock,
-// so AudioBuffer::setSize). Counting is armed only around setParams() and process().
+// so AudioBuffer::setSize). Counting is armed only around setParams() and process(), and
+// only on the thread that runs them: the hooks see every thread, and a WAV input leaves
+// reader threads freeing their buffers while the render runs.
 namespace
 {
 std::atomic<bool> rtArmed { false };
+std::atomic<pthread_t> rtThread { nullptr };
 std::atomic<long> rtNew { 0 }, rtDelete { 0 }, rtMalloc { 0 }, rtFree { 0 };
+
+// A per-thread flag by thread identity: a thread_local would itself be allocated by
+// libmalloc on a thread's first access, from inside the malloc hook.
+inline bool rtCounting() noexcept
+{
+    return rtArmed.load (std::memory_order_relaxed)
+        && pthread_equal (pthread_self(), rtThread.load (std::memory_order_relaxed)) != 0;
+}
 
 inline void noteNew() noexcept
 {
-    if (rtArmed.load (std::memory_order_relaxed))
+    if (rtCounting())
         rtNew.fetch_add (1, std::memory_order_relaxed);
 }
 
 inline void noteDelete() noexcept
 {
-    if (rtArmed.load (std::memory_order_relaxed))
+    if (rtCounting())
         rtDelete.fetch_add (1, std::memory_order_relaxed);
 }
 
@@ -139,7 +151,7 @@ namespace
 {
 void rtMallocLogger (uint32_t type, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uint32_t)
 {
-    if (! rtArmed.load (std::memory_order_relaxed))
+    if (! rtCounting())
         return;
 
     if ((type & 2u) != 0)
@@ -493,7 +505,10 @@ RenderStats render (fxbench::Effect& fx, juce::AudioBuffer<float>& io, double sa
         const auto t0 = std::chrono::steady_clock::now();
 
         if (o.rtCheck)
+        {
+            rtThread.store (pthread_self(), std::memory_order_relaxed);
             rtArmed.store (true, std::memory_order_relaxed);
+        }
 
         fx.setParams (args);
         fx.process (view, n);

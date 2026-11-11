@@ -8,8 +8,11 @@ the effect's own table (§4.2.9). Prints a PASS/FAIL table; exit status 1 on any
 Beyond §4.2.9: C21 is the broadband click metric under automation of every control (the
 old line-at-k*fs/block test counted the modulation's own sidebands; C21b isolates the block
 delivery), C22 level/settles/click for type switches, C24 NaN and infinity, C25 the output
-bound, C26/C27 what Squash's release and knee knobs promise, C28 FET/Opto programme-dependent
-release, and the K rows: every control each type reads, moved while the block runs.
+bound, C26/C27 what Squash's release and knee knobs promise, C26b Squash's recovery table,
+C28 FET/Opto programme-dependent release, C29 a switch in silence then an attack, C30 the
+meter during fades and at mix 50 %, C31 reset determinism with the detector filter moving,
+C32 3e38 input, C33 --rt-check with a WAV input, and the K rows: every control each type
+reads, moved while the block runs.
 
 After the table it prints three information tables (not pass/fail): the low-frequency
 residual split into harmonic distortion and inharmonic sidebands for every type at its
@@ -712,6 +715,40 @@ def c26(report):
                f"output dips under (-4 -> -16 dBFS, knee 6): {dips}")
 
 
+# Squash's recovery t63 (ms) at knob 150, T -24, knee 6, from -4 dBFS to each level: the
+# table Compressor.h states. Rows R 2 / 4 / 8 / 20, columns -8 / -10 / -14 / -18 / -22 dBFS.
+SQUASH_DROPS = (-8.0, -10.0, -14.0, -18.0, -22.0)
+SQUASH_RECOVERY = {2.0: (149, 149, 142, 111, 127), 4.0: (149, 121, 75, 93, 127), 8.0: (83, 53, 65, 92, 127),
+                   20.0: (38, 44, 64, 92, 127)}
+
+
+def c26b(report):
+    # What Squash's release does while the input stays above the threshold (verifier r2 C5:
+    # 41 to 93 ms at knob 150 for drops at R 4 and above, which a commit had called the knob).
+    # The feedback loop shortens the recovery once the output dips under the threshold; that
+    # is kept as Squash's character and stated in Compressor.h. Every cell of the stated
+    # table within 10 %, none longer than the knob, and Clean at the knob (+-2 %) in every
+    # cell, so the difference between the two is measured, not assumed.
+    worst, where, clean_worst, longest = 0.0, "", 0.0, 0.0
+    for ratio, row in SQUASH_RECOVERY.items():
+        for low, want in zip(SQUASH_DROPS, row):
+            for t in (2, 1):
+                x = fx.step(SR, 1000.0, -4.0, low, 0.6, 2.4)
+                _, tr = render(keys_for(t, threshold=-24.0, ratio=ratio, knee=6.0, attack=2.5, release=150.0), x)
+                t63 = fx.settle_times(tr, SR, 0.6, (0.63,), final=float(np.mean(tr[-int(0.2 * SR):])))[0.63]
+                ms = 9e9 if t63 is None else 1e3 * t63
+                if t == 1:
+                    clean_worst = max(clean_worst, abs(ms / 150.0 - 1.0))
+                    continue
+                longest = max(longest, ms)
+                if abs(ms / want - 1.0) > worst:
+                    worst, where = abs(ms / want - 1.0), f"R {ratio:g} -4 -> {low:g} dBFS: {ms:.1f} ms, table {want}"
+    report.add("C26b Squash recovery", "R 2/4/8/20 x 5 drops above T, knob 150", worst <= 0.1 and longest <= 153.0
+               and clean_worst <= 0.02,
+               f"worst cell {100 * worst:.1f} % off the Compressor.h table ({where}) (<= 10 %); longest {longest:.1f} ms "
+               f"(<= knob); Clean within {100 * clean_worst:.1f} % of the knob in every cell (<= 2 %)")
+
+
 def textbook_gr(o, ratio, knee):
     """Gain reduction (dB >= 0) of the soft-knee curve at o dB over the threshold."""
     return -gain_computer(o, 1.0 / ratio - 1.0, knee)
@@ -775,6 +812,189 @@ def c28(report):
                    + ", ".join(f"{k:g} s / 0.5 s {r63[k] / r63[0.5]:.2f} (ref {ref:.2f} +-20 %)" for k, ref in refs.items())
                    + f"; -20 dBFS burst {shallow:.1f} ms (< 0.5 s value); 0.5 s burst 12 s after a 5 s one {after:.1f} ms "
                    f"(within 5 %)")
+
+
+def pluck_chord(sr, secs, freqs=(110.0, 164.81), level_db=-6.0, strum_ms=8.0):
+    """A strummed chord of plucked strings (12 harmonics, 1/k, the higher ones dying faster,
+    0.4 ms attack), peak-normalised: the kind of signal of verifier c2b_switch_silence.py."""
+    t = np.arange(int(round(secs * sr))) / sr
+    y = np.zeros_like(t)
+    for j, f0 in enumerate(freqs):
+        d = int(round(j * strum_ms * 1e-3 * sr))
+        tt = t[:len(t) - d]
+        s = sum(np.exp(-tt * (0.8 + 0.35 * k)) * np.sin(2 * np.pi * k * f0 * tt + 0.7 * k) / k for k in range(1, 13))
+        y[d:] += s * (1.0 - np.exp(-tt / 4e-4))
+    return fx.amp(level_db) * y / np.max(np.abs(y))
+
+
+def c29(report):
+    # A switch in silence, then an attack 0 to 30 ms later (verifier r2 N8: Classic -> a new
+    # type held the handed-over gain for the detector window, so a chord 5 ms after the
+    # switch passed up to 8.7 dB over both one-type renders). Every ordered pair, three
+    # settings, with and without an earlier hand-stopped note. Output level in 2 ms frames
+    # over the 0.6 s after the attack: never more than 1.0 dB over the louder of the render
+    # that stayed on the old type and the render that was always on the new type. After an
+    # earlier note the new type may also be as loud as it is without that note's history:
+    # its slow stage and memory start empty, because Classic, which heard the note, has
+    # neither to hand over (Opto 0.5 s after a note is up to 3.7 dB louder at the onset).
+    sr, secs, t_sw = SR, 2.0, 1.0
+    sets = {"T-30 R4": dict(threshold=-30.0, ratio=4.0),
+            "T-50 R20 0.1/10": dict(threshold=-50.0, ratio=20.0, attack=0.1, release=10.0),
+            "T-40 R8 makeup 12 auto": dict(threshold=-40.0, ratio=8.0, makeup=12.0, auto_makeup=1)}
+    note = pluck_chord(sr, 0.8)
+    pre = pluck_chord(sr, 0.6, (98.0, 146.83))
+    stop = int(0.45 * sr)
+    pre[stop:] *= np.exp(-np.arange(len(pre) - stop) / (0.005 * sr))
+    m = int(0.002 * sr)
+    k = int(0.6 * sr) // m
+    worst, where, cases = -99.0, "", 0
+    for name, kw in sets.items():
+        for gap in (0.0, 5.0, 10.0, 20.0, 30.0):
+            i = int(round((t_sw + gap * 1e-3) * sr))
+
+            def frames(y):
+                return fx.db(np.sqrt(np.mean(fx.mono(y)[i:i + k * m].reshape(k, m) ** 2, 1)) + 1e-9)
+
+            fresh = None
+            for earlier in (False, True):
+                x = np.zeros(int(secs * sr))
+                x[i:i + len(note)] += note[:len(x) - i]
+                if earlier:
+                    x[int(0.05 * sr):int(0.05 * sr) + len(pre)] += pre
+                alone = {t: frames(fx.run(EFFECT, x, keys_for(t, **kw), [], sr)[0]) for t in TYPES}
+                fresh = alone if fresh is None else fresh
+                for a in TYPES:
+                    for b in TYPES:
+                        if a == b:
+                            continue
+                        toks = [f"{key}={v}" for key, v in keys_for(a, **kw).items()] + [f"type@{t_sw}={b}"]
+                        band = np.maximum(np.maximum(alone[a], alone[b]), fresh[b])
+                        over = float(np.max(frames(fx.run(EFFECT, x, toks, [], sr)[0]) - band))
+                        cases += 1
+                        if over > worst:
+                            worst, where = over, (f"{TYPES[a]}->{TYPES[b]} {name} gap {gap:g} ms"
+                                                  + (" after a note" if earlier else ""))
+    report.add("C29 switch then attack", f"20 pairs x 3 settings x gaps 0-30 ms ({cases} cases)", worst <= 1.0,
+               f"largest 2 ms frame over the louder one-type render {worst:+.2f} dB ({where}) (<= +1.0)")
+
+
+def per_block_max(g, block):
+    nb = len(g) // block
+    return np.max(g[:nb * block].reshape(nb, block), axis=1)
+
+
+def meter_values(r):
+    return np.array([float(row.split("\t")[1]) for row in r.meters])
+
+
+def c30(report):
+    # The meter says what the compressor applies (verifier r2 N9: during a Classic crossfade
+    # it read the larger of the two engines, up to 9.4 dB over the reduction applied).
+    # (a) DC input, so out / in is the gain sample by sample: -10 dBFS, a step to 0 dBFS at
+    # the switch, T -30, attack 30 / release 300 (Classic's attack is a sixth as long as the
+    # others'), every switch with Classic, blocks 64 / 37 / 512: every block's meter equals the
+    # largest reduction applied in it within 0.05 dB. (b) Mix 50 %: the meter shows the wet
+    # path (Compressor.h), the reduction the compressor itself applies, not the net change
+    # heard: meter = -20 log10 (2 out / in - 1) within 0.05 dB, every new type, same signal.
+    sr, secs, t_sw = SR, 1.6, 1.0
+    t = np.arange(int(secs * sr)) / sr
+    x = np.where(t < t_sw, fx.amp(-10.0), fx.amp(0.0))
+    kw = dict(threshold=-30.0, ratio=4.0, attack=30.0, release=300.0)
+    worst, where = 0.0, ""
+    for a in TYPES:
+        for b in TYPES:
+            if a == b or (a != 0 and b != 0):
+                continue
+            for block in (64, 37, 512):
+                toks = [f"{key}={v}" for key, v in keys_for(a, **kw).items()] + [f"type@{t_sw}={b}"]
+                r = fx.invoke(EFFECT, x, toks, [f"--block={block}", "--meters"], sr)
+                meter = meter_values(r)
+                applied = per_block_max(-fx.db(fx.mono(r.out) / x), block)
+                n = min(len(meter), len(applied))
+                d = float(np.max(np.abs(meter[:n] - applied[:n])))
+                if d > worst:
+                    worst, where = d, f"{TYPES[a]}->{TYPES[b]} block {block}"
+    report.add("C30 meter in fades", "8 switches with Classic x 3 blocks, DC step", worst <= 0.05,
+               f"worst |meter - reduction applied| per block {worst:.3f} dB ({where}) (<= 0.05)")
+    worst, where = 0.0, ""
+    for t_ in NEW_TYPES:
+        r = fx.invoke(EFFECT, x, keys_for(t_, mix=50.0, **kw), ["--block=64", "--meters"], sr)
+        meter = meter_values(r)
+        applied = per_block_max(-fx.db(2.0 * fx.mono(r.out) / x - 1.0), 64)
+        n = min(len(meter), len(applied))
+        d = float(np.max(np.abs(meter[:n] - applied[:n])))
+        if d > worst:
+            worst, where = d, TYPES[t_]
+    report.add("C30 meter at mix 50 %", "new types, DC step: the wet path", worst <= 0.05,
+               f"worst |meter - wet-path reduction| per block {worst:.3f} dB ({where}) (<= 0.05)")
+
+
+def c31(report):
+    # Reset determinism with the detector filter switched on and off between control ticks
+    # (verifier r2 N11: the filter ran up to 15 samples on its previous coefficient, so a
+    # render after reset() differed at block 37). gen:music, every type, mono and stereo.
+    autos = (["sc_hpf@0.3=120", "sc_hpf@0.61=20", "sc_hpf@0.9001=250", "sc_hpf@1.3=20", "sc_hpf@1.5001=80"],
+             ["sc_hpf=120", "sc_hpf@0.85=300", "sc_hpf@1.25=20", "sc_hpf@1.7=99"])
+    fails, runs = [], 0
+    for t in TYPES:
+        for block in (1, 16, 37, 48, 512):
+            for ch in (2, 1):
+                for auto in autos:
+                    r = fx.invoke(EFFECT, "gen:music", [f"type={t}"] + auto,
+                                  [f"--block={block}", f"--channels={ch}", "--seconds=2", "--reset-repeat"], SR)
+                    runs += 1
+                    if r.code != 0:
+                        fails.append(f"{TYPES[t]} block {block} {ch} ch")
+    report.add("C31 reset, sc_hpf moves", f"5 types x blocks 1/16/37/48/512 x mono/stereo ({runs} runs)", not fails,
+               f"--reset-repeat failures {len(fails)}" + (": " + ", ".join(fails[:6]) if fails else ""))
+
+
+def c32(report):
+    # No non-finite value in a meter, a trace or a state (verifier r2 N13: a 3e38 sample made
+    # the Classic meter and trace infinite). 8 samples of +3e38 on every channel, then 8 of
+    # -3e38 on the left; each type, sc_hpf off and 100, blocks 512 / 37 / 1, stereo and mono:
+    # output, trace and meter finite everywhere, and the states release: 4 s later the
+    # output is within 1 dB of the render of the same note without the spikes. (A spike
+    # at +120 dBFS or more is compressed by over 100 dB and released at the knob's pace;
+    # Classic's frozen envelope takes about 2 s to come down from it.)
+    sr = SR
+    x = fx.sine(1000.0, -10.0, 6.0, sr)
+    i, j = int(0.5 * sr), int(0.7 * sr)
+    fails, worst = [], 0.0
+    for t in TYPES:
+        for hpf in (20.0, 100.0):
+            for block in (512, 37, 1):
+                for ch in (2, 1):
+                    clean = np.vstack([x] * ch)
+                    bad = clean.copy()
+                    bad[:, i:i + 8] = 3e38
+                    bad[0, j:j + 8] = -3e38
+                    keys = keys_for(t, threshold=-30.0, ratio=6.0, sc_hpf=hpf, auto_makeup=1)
+                    r = fx.invoke(EFFECT, bad, keys, [f"--block={block}", "--trace=gain", "--meters"], sr)
+                    meter = meter_values(r)
+                    ok = bool(np.all(np.isfinite(r.out)) and np.all(np.isfinite(r.trace)) and np.all(np.isfinite(meter)))
+                    ref = np.atleast_2d(fx.run(EFFECT, clean, keys, [f"--block={block}"], sr)[0])
+                    late = slice(int(4.7 * sr), None)
+                    d = abs(rms_db(np.atleast_2d(r.out)[0, late]) - rms_db(ref[0, late])) if ok else np.inf
+                    worst = max(worst, d)
+                    if not ok or d > 1.0:
+                        fails.append(f"{TYPES[t]} sc_hpf {hpf:g} block {block} {ch} ch: "
+                                     + ("non-finite" if not ok else f"level {d:.2f} dB off"))
+    report.add("C32 3e38 input", "5 types x sc_hpf off/100 x blocks 512/37/1 x mono/stereo", not fails,
+               f"output, trace, meter finite; worst |level - clean render| 4 s later {worst:.3f} dB (<= 1)"
+               + ("; FAIL " + "; ".join(fails[:4]) if fails else ""))
+
+
+def c33(report):
+    # --rt-check with a WAV input (verifier r2: the libmalloc hook counted frees made by other
+    # threads, "malloc 0, free N" in 11 of 12 identical runs): 20 identical runs, every type
+    # switched through, the detector filter, mix, auto makeup and makeup moving.
+    x = fx.music(SR)[:, :int(3.0 * SR)]
+    toks = ["type=1", "type@0.3=0", "type@0.6=3", "type@0.9=2", "type@1.2=4", "type@1.5=0", "type@1.8=1",
+            "sc_hpf@0.4=150", "mix@0.7=40", "auto_makeup@1.0=1", "makeup@1.3=12"]
+    codes = [fx.invoke(EFFECT, x, toks, ["--block=37", "--rt-check"], SR).code for _ in range(20)]
+    report.add("C33 rt-check, WAV input", "comp, 20 identical runs", all(c == 0 for c in codes),
+               f"{sum(c == 0 for c in codes)} of 20 pass")
 
 
 # ---------------------------------------------------------------------------- per-control effect rows
@@ -871,8 +1091,8 @@ def k_rows(report):
 
 ROWS = {"C2": c2, "C3": c3, "C3b": c3_link_meter, "C4": c4, "C5": c5, "C6": c6, "C7": c7, "C8": c8, "C9": c9, "C10": c10, "C10+": c10_grid, "C11": c11,
         "C12": c12, "C13": c13, "C14": c14, "C15": c15, "C16": c16, "C17": c17, "C18": c18, "C19": c19, "C20": c20,
-        "C21": c21, "C21b": c21_isolated, "C22": c22, "C23": c23, "C24": c24, "C25": c25, "C26": c26, "C27": c27,
-        "C28": c28, "K": k_rows}
+        "C21": c21, "C21b": c21_isolated, "C22": c22, "C23": c23, "C24": c24, "C25": c25, "C26": c26, "C26b": c26b, "C27": c27,
+        "C28": c28, "C29": c29, "C30": c30, "C31": c31, "C32": c32, "C33": c33, "K": k_rows}
 
 
 def specific_checks(report, rows=None):

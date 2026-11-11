@@ -15,6 +15,24 @@
 // FET and Opto release more slowly after long, deep compression (programme dependence).
 // A type change between Clean, Squash, FET and Opto hands the gain state over (no fade);
 // a change to or from Classic crossfades the two outputs.
+//
+// Squash's release is the knob (t63) when the signal falls below the threshold, and while
+// the output stays above it. A drop that leaves the input above the threshold but takes
+// the output below it recovers sooner, because the open loop heads for 0 dB: that is the
+// feedback character, and what sets Squash apart from Clean, whose recovery is the knob
+// for every drop. Measured t63 at knob 150 ms (Clean: 149 ms in every cell), T -24,
+// knee 6, from -4 dBFS:
+//
+//              to -8   -10    -14    -18    -22 dBFS
+//     R 2      149    149    142    111    127
+//     R 4      149    121     75     93    127
+//     R 8       83     53     65     92    127
+//     R 20      38     44     64     92    127
+//
+// The gain-reduction meter shows what the compressor applies to its wet path, as a
+// hardware meter does: with mix under 100 % the net change heard is smaller. During a
+// crossfade to or from Classic it shows the two engines' reductions blended with the fade
+// gains, which is what the output gets.
 namespace tubamp
 {
 /** Everything a compressor instance needs for one block, in the units Parameters.h documents. */
@@ -29,7 +47,12 @@ struct CompParams
     float kneeDb = 6.0f;          // [0, 24] total knee width (kCompKneeDefault)
     float mixPct = 100.0f;        // [0, 100] parallel mix, 100 = fully compressed
     float scHpfHz = 20.0f;        // [20, 300] detector high-pass; <= 20.5 = off
-    bool autoMakeup = false;      // adds -gc(-10 dBFS) to the makeup
+    /** Adds -gc(-10 dBFS) to the makeup: a fixed gain, calibrated so that a steady signal
+        peaking at -10 dBFS comes out at the level it went in. It does not follow the
+        playing: a steady -20 dBFS signal comes out 4 to 10 dB louder, a -3 dBFS one 3.5 to
+        7 dB quieter, and a plucked chord peaking at -10 dBFS 2 to 12 dB louder in rms (its
+        decay is reduced less than its peak). */
+    bool autoMakeup = false;
 };
 
 class CompFx
