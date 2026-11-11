@@ -40,7 +40,10 @@ public:
     void setParameters (const DriveParams& params);
     void process (juce::dsp::AudioBlock<float> block);
 
-    /** latencyFor (current type, prepared rate). */
+    /** latencyFor (requested type, prepared rate). A type switch crossfades both types over
+        30 ms (10 ms unheard settling, 20 ms fade) lined up at the larger latency: a rise is
+        slid in over the first 10 ms, a drop slid out over the 10 ms after the fade. From then
+        on the output is delayed by exactly this. */
     int getLatencySamples() const noexcept;
     /** Pure function of (type, rate), so the message thread can ask without touching the
         audio-thread object (docs/FX-ENGINES.md §4.3.7, §6.3). */

@@ -1,7 +1,6 @@
 #include "Drive.h"
 
-#include "FxPrimitives.h"
-
+#include <algorithm>
 #include <cmath>
 #include <complex>
 
@@ -138,6 +137,7 @@ constexpr double kGlideTolerance = 1.0e-6;
 constexpr int kChunk = 32;                    // base samples per pass while the knobs are still
 constexpr int kMaxFactor = 8;
 constexpr int kHalleySteps = 3;               // see DiodeClipper::evaluateMagnitude
+constexpr double kClipStep = 5.0e-4;          // [choice] see PedalDrive::updateDrive
 
 // 1N4148/1N914, the standard SPICE model D1N4148 (IS=2.52n N=1.752) at 25.85 mV thermal
 // voltage; all three pedals use this diode family (docs/FX-ENGINES.md §4.3.4).
@@ -235,6 +235,16 @@ constexpr double kMuffToneEnd = 0.005;        // [choice] pot end resistance, as
 // through CB4 1 uF: a 1.9 Hz high-pass that takes away the DC the stages' asymmetry makes.
 constexpr double kMuffToneLoad = 470.0e3 * 100.0e3 / 570.0e3;
 constexpr double kMuffOutputHz = 1.0 / (kTwoPi * 1.0e-6 * kMuffToneLoad);
+// The Screamer and the Distortion leave through an output capacitor too, which takes away the
+// DC their clippers make from an asymmetric waveform (-38 dBFS from a guitar-like stack without
+// it). TS-808: C7 1 uF and R14 1 k into the 100 k Level pot, whose far end sits on the bias rail
+// [circuit: cushychicken.github.io/ltspice-tube-screamer, its tube_screamer.asc]: 1.58 Hz.
+constexpr double kTsOutputHz = 1.0 / (kTwoPi * 1.0e-6 * (1.0e3 + 100.0e3));
+// RAT: 1 uF from the JFET buffer into the 100 k Volume pot [circuit: the Runt2020 BOM above,
+// C9 1uF and VOL 100kA, placed as in the RAT's output buffer]: 1.59 Hz. The buffer's own gate
+// coupling, 22 nF into 1 M (C12, R8: 7.2 Hz), is left out [choice]: it would take 0.14 dB off
+// 40 Hz, and the output stage is otherwise folded into drive_level.
+constexpr double kRatOutputHz = 1.0 / (kTwoPi * 1.0e-6 * 100.0e3);
 
 /** Audio-taper pot: 10 % of the resistance at mid travel (the common A-taper law). */
 double audioTaper (double p) noexcept
@@ -385,11 +395,8 @@ struct Svf
     of 1 / (1 + s / w); the high-pass is the input minus it. Retunes as smoothly as Svf. */
 struct OnePole
 {
-    void setCutoff (double w, double c) noexcept
-    {
-        const double g = w / c;
-        gain = g / (1.0 + g);
-    }
+    /** g = w / c: the integrator gain tan (w / 2 fs) for a bilinear prewarped at w. */
+    void setWarped (double g) noexcept { gain = g / (1.0 + g); }
 
     double lowpass (int ch, double x) noexcept
     {
@@ -481,13 +488,16 @@ public:
     }
 
     /** Re-evaluates the stored previous inputs on the current curve, so a change of R does
-        not put a step into the next difference quotient. */
+        not put a step into the next difference quotient. R moves by at most about 1 % between
+        two calls, so the old root is within a millivolt of the new one and a single Halley step
+        from it lands within 1e-8 V (its error cubes); the full solve, three steps from the
+        bound, ran here every base sample while the Screamer's drive moved. */
     void refresh() noexcept
     {
         for (auto& s : state)
         {
-            evaluate (s.p1.u, s.p1);
-            evaluate (s.p2.u, s.p2);
+            reevaluate (s.p1);
+            reevaluate (s.p2);
             s.mean1 = mean (s.p1, s.p2);
         }
     }
@@ -569,6 +579,12 @@ private:
             v = juce::jmin (u, kDiodeA * roughLog (y + std::sqrt (y * y + 1.0)));
         }
 
+        polishMagnitude (u, v, steps, p);
+    }
+
+    /** Halley steps from v toward the root for u >= 0, then F1 and F2 there. */
+    void polishMagnitude (double u, double v, int steps, Point& p, bool fromOldRoot = false) const noexcept
+    {
         double em = 0.0, step = 0.0;
 
         for (int i = 0; i < steps; ++i)
@@ -584,8 +600,14 @@ private:
             v -= step;
         }
 
-        // exp (v / a) at the final v, from the last one to first order in the last step.
-        em -= (1.0 + em) * step * (1.0 / kDiodeA);
+        // exp (v / a) at the final v, from the last one to first order in the last step: exact
+        // after a full solve, whose last step is negligible. A single step from an old root is
+        // up to 1 % of a, where first order would leave 5e-5 in sinh and cosh.
+        if (! fromOldRoot)
+            em -= (1.0 + em) * step * (1.0 / kDiodeA);
+        else
+            em = std::expm1 (v * (1.0 / kDiodeA));
+
         const double e = 1.0 + em;
         const double sh = 0.5 * em * (e + 1.0) / e;          // sinh (v / a)
         const double chm1 = 0.5 * em * em / e;               // cosh (v / a) - 1
@@ -616,6 +638,22 @@ private:
         }
 
         evaluateMagnitude (mag, p);
+        p.u = u;
+        p.v = std::copysign (p.v, u);
+        p.f2 = std::copysign (p.f2, u);
+    }
+
+    void reevaluate (Point& p) const noexcept
+    {
+        const double u = p.u, mag = std::abs (u);
+
+        if (rail > 0.0 && mag > rail)
+        {
+            evaluate (u, p);
+            return;
+        }
+
+        polishMagnitude (mag, std::abs (p.v), 1, p, true);
         p.u = u;
         p.v = std::copysign (p.v, u);
         p.f2 = std::copysign (p.f2, u);
@@ -692,8 +730,6 @@ public:
 
         const double cIn = warpedC (kInputHighPassHz, sampleRate);
         inputHighPass.setAnalog (0.0, 1.0 / (kTwoPi * kInputHighPassHz), 1.0, 1.0 / (kTwoPi * kInputHighPassHz), cIn);
-        const double cOut = warpedC (kMuffOutputHz, sampleRate);
-        muffOutput.setAnalog (0.0, 1.0 / (kTwoPi * kMuffOutputHz), 1.0, 1.0 / (kTwoPi * kMuffOutputHz), cOut);
 
         const std::complex<double> s (0.0, kTwoPi * kRatKnobHz);
         ratKnobOhms = std::abs (1.0 / (s * kRatC1 / (1.0 + s * kRatR1 * kRatC1) + s * kRatC2 / (1.0 + s * kRatR2 * kRatC2)));
@@ -736,6 +772,10 @@ public:
         const double cCouple = warpedC (kMuffCouplingHz, osRate);
         muffCouple1.setAnalog (0.0, 1.0 / (kTwoPi * kMuffCouplingHz), 1.0, 1.0 / (kTwoPi * kMuffCouplingHz), cCouple);
         muffCouple2 = muffCouple1;
+
+        const double outHz = type == DriveFx::Type::fuzz ? kMuffOutputHz
+                           : (type == DriveFx::Type::distortion ? kRatOutputHz : kTsOutputHz);
+        outputCoupling.setAnalog (0.0, 1.0 / (kTwoPi * outHz), 1.0, 1.0 / (kTwoPi * outHz), warpedC (outHz, sampleRate));
         stale = true;
     }
 
@@ -772,7 +812,7 @@ public:
         muffStage2.reset();
         muffCouple1.reset();
         muffCouple2.reset();
-        muffOutput.reset();
+        outputCoupling.reset();
         ratFilter.reset();
         toneStage.reset();
         clip1.reset();
@@ -814,8 +854,6 @@ public:
 
         oversampling->processSamplesDown (block);
 
-        const bool fuzz = type == DriveFx::Type::fuzz;
-
         for (int i = 0; i < n; ++i)
         {
             const double gain = level.next() / kVoltsPerFullScale;
@@ -823,8 +861,7 @@ public:
             for (int ch = 0; ch < channels; ++ch)
             {
                 auto& sample = block.getChannelPointer ((size_t) ch)[i];
-                const double y = fuzz ? muffOutput.process (ch, (double) sample) : (double) sample;
-                sample = (float) (y * gain);
+                sample = (float) (outputCoupling.process (ch, (double) sample) * gain);
             }
         }
 
@@ -839,7 +876,7 @@ public:
         muffStage2.tidyStates();
         muffCouple1.tidyStates();
         muffCouple2.tidyStates();
-        muffOutput.tidyStates();
+        outputCoupling.tidyStates();
         ratFilter.tidyStates();
         toneStage.tidyStates();
     }
@@ -975,8 +1012,17 @@ private:
             const double r2 = kTsR2Fixed + kTsDrivePot * audioTaper (d);
             const double tz = kTsR1 * kTsCz, tc = r2 * kTsCc;
             tsPre.setAnalog (0.0, r2 * kTsCz, 0.0, 1.0, tz + tc, tz * tc, tsPreC);
-            clip1.setSeriesResistance (r2);
-            clip1.refresh();
+
+            // The diodes' curve follows R2 in steps of at most kClipStep of it, and lands on
+            // it with the glide: re-solving the clipper's stored points every base sample was
+            // most of what a moving drive cost (2.33 % against a 2.0 % budget). A step moves
+            // v by a kClipStep at most, 23 uV, -90 dB under the clipped note.
+            if (stale || std::abs (r2 - clipR) > kClipStep * clipR || drive.isSettled())
+            {
+                clip1.setSeriesResistance (r2);
+                clip1.refresh();
+                clipR = r2;
+            }
         }
         else if constexpr (T == DriveFx::Type::distortion)
         {
@@ -1061,7 +1107,7 @@ private:
     double tsPreC = 1.0, bilinearOs = 1.0, ratKnobOhms = 1.0;
     double sustainGain = 0.0, sigma1Half = 0.0, sigma2Half = 0.0;
     double cleanPrev[2] {};
-    double driveNow = 0.0, toneNow = 0.0;
+    double driveNow = 0.0, toneNow = 0.0, clipR = 0.0;
     int factor = 4;
     bool stale = true;
 
@@ -1072,7 +1118,8 @@ private:
     FirstOrder inputHighPass;
     Svf tsPre;
     FirstOrder ratLeg1, ratLeg2, ratFeedback, ratBandwidth, ratFilter;
-    FirstOrder muffBoost, muffStage1, muffStage2, muffCouple1, muffCouple2, muffOutput;
+    FirstOrder muffBoost, muffStage1, muffStage2, muffCouple1, muffCouple2;
+    FirstOrder outputCoupling;   // the type's output capacitor: Fuzz CB4, Screamer C7, Distortion C9
     Svf toneStage;
     DiodeClipper clip1, clip2;
     DiodeClipper::Table ratTable;
@@ -1088,7 +1135,7 @@ public:
     {
         sampleRate = spec.sampleRate;
         gain.prepare (kParamSmoothSeconds, sampleRate, 1.0);
-        toneHz.prepare (kParamSmoothSeconds, sampleRate, 4000.0);
+        warp.prepare (kParamSmoothSeconds, sampleRate, warpOf (4000.0));
         level.prepare (kParamSmoothSeconds, sampleRate, 1.0);
         reset();
     }
@@ -1102,14 +1149,14 @@ public:
     void setTargets (float gainLinear, float hz, float levelGain) noexcept
     {
         gain.setTarget (gainLinear);
-        toneHz.setTarget (hz);
+        warp.setTarget (warpOf (hz));
         level.setTarget (levelGain);
     }
 
     void snap() noexcept
     {
         gain.snapToTarget();
-        toneHz.snapToTarget();
+        warp.snapToTarget();
         level.snapToTarget();
         stale = true;
     }
@@ -1130,7 +1177,7 @@ public:
         {
             // While a knob glides the filter follows it every sample (a 32-sample staircase
             // zippers at -77 dBc under a 98 Hz note); once it has landed nothing is redesigned.
-            if (stale || ! gain.isSettled() || ! toneHz.isSettled())
+            if (stale || ! gain.isSettled() || ! warp.isSettled())
                 follow (boost);
 
             const double out = level.next();
@@ -1152,32 +1199,32 @@ public:
 private:
     void follow (bool boost) noexcept
     {
-        const double g = gain.next(), hz = toneHz.next();
-        const bool newTone = stale || ! juce::exactlyEqual (hz, hzNow);
-
-        if (newTone)
-        {
-            const double fc = juce::jlimit (1.0, 0.49 * sampleRate, hz);
-            wc = kTwoPi * fc;
-            c = warpedC (fc, sampleRate);
-        }
+        const double g = gain.next(), x = warp.next();
+        const bool newTone = stale || ! juce::exactlyEqual (x, warpNow);
 
         // Treble: wz = wc / sqrt G, wp = wc sqrt G: 0 dB below, G above, geometric centre at
         // the knob, bilinear prewarped there (docs/FX-ENGINES.md §4.3.5).
         if (boost ? newTone : (newTone || ! juce::exactlyEqual (g, gainNow)))
-            filter.setCutoff (boost ? wc : wc * std::sqrt (g), c);
+            filter.setWarped (boost ? x : x * std::sqrt (g));
 
         gainNow = g;
-        hzNow = hz;
+        warpNow = x;
         stale = false;
     }
 
+    /** The knob's corner as the bilinear integrator gain tan (pi fc / fs), what the filter takes:
+        the tone glides in this form, so a tone move costs no tan() per sample. */
+    double warpOf (double hz) const noexcept
+    {
+        return std::tan (kPi * juce::jlimit (1.0, 0.49 * sampleRate, hz) / sampleRate);
+    }
+
     DriveFx::Type type = DriveFx::Type::boost;
-    double sampleRate = 48000.0, wc = 1.0, c = 1.0;
-    double gainNow = 1.0, hzNow = 0.0;
+    double sampleRate = 48000.0;
+    double gainNow = 1.0, warpNow = 0.0;
     bool stale = true;
     OnePole filter;
-    Glide gain, toneHz, level;
+    Glide gain, warp, level;
 };
 
 bool isPedal (int type) noexcept
@@ -1219,32 +1266,157 @@ bool clearNonFinite (juce::dsp::AudioBlock<float> block) noexcept
 
     return found;
 }
+
+//==============================================================================
+// Type switches. Both types run and their outputs are crossfaded, so the input itself is never
+// heard: fading through it, as fx::EngineSwitcher does, let the guitar through 19 dB above the
+// louder type when the level knob sat at -20 dB, and dipped 10 dB at the starting points.
+// The incoming type starts from a reset and runs unheard for the settle time (BypassFader's,
+// docs/FX-ENGINES.md §2.6), then the fade [choice: §2.4's 20 ms]. The two are lined up at the
+// larger of their latencies; a rise in latency is slid in on the outgoing type while the
+// incoming one settles, a drop is slid out of the incoming type after the fade.
+constexpr double kSwitchSettleSeconds = 0.010;
+constexpr double kSwitchFadeSeconds = 0.020;
+constexpr double kSwitchSlideSeconds = 0.010;
+// Equal-power gains, corrected by the measured powers and correlation so the short-term power
+// moves on the straight line in dB between the two types' own (the chorus measures the same
+// way, §4.5.4): equal power alone bumps 3 dB where the two outputs are alike and holds where
+// they are not, and drive types are anywhere between. In dB because the types can sit 30 dB
+// apart (Fuzz to Boost at gain 24): a target linear in power rose faster than the incoming
+// gain, and the correction then doubled the outgoing Fuzz's edges. The powers are two cascaded
+// one-poles, so a low note's ripple does not modulate the gains; the slack keeps the
+// correction finite where two outputs nearly cancel; the floor (-120 dB) keeps the logarithms.
+constexpr double kSwitchPowerSeconds = 0.004;
+constexpr double kSwitchSlack = 0.1;
+constexpr double kSwitchPowerFloor = 1.0e-12;
+
+double smoothstep (double x) noexcept
+{
+    x = juce::jlimit (0.0, 1.0, x);
+    return x * x * (3.0 - 2.0 * x);
+}
+
+/** A short delay on one type's output while a switch runs: a whole number of samples lines two
+    types of different latency up, and a moving delay (4-point Lagrange, exact at whole samples)
+    takes the difference in or out where only one of them is heard. */
+class Aligner
+{
+public:
+    static constexpr int kSize = 16;   // > the largest latency difference (5) plus the taps
+
+    void clear() noexcept
+    {
+        for (auto& channel : ring)
+            std::fill (std::begin (channel), std::end (channel), 0.0f);
+
+        write = 0;
+    }
+
+    /** In place; delayAt (i) is the delay in samples at sample i of the block. */
+    template <typename DelayAt>
+    void process (juce::dsp::AudioBlock<float> block, DelayAt&& delayAt) noexcept
+    {
+        const int n = (int) block.getNumSamples();
+        const int channels = juce::jmin (2, (int) block.getNumChannels());
+
+        for (int i = 0; i < n; ++i)
+        {
+            write = (write + 1) & (kSize - 1);
+            const double d = delayAt (i);
+
+            for (int ch = 0; ch < channels; ++ch)
+            {
+                auto& sample = block.getChannelPointer ((size_t) ch)[i];
+                ring[ch][write] = sample;
+                sample = read (ch, d);
+            }
+        }
+    }
+
+private:
+    float at (int ch, int delay) const noexcept { return ring[ch][(write - delay) & (kSize - 1)]; }
+
+    float read (int ch, double d) const noexcept
+    {
+        const int whole = (int) d;
+
+        if (juce::exactlyEqual ((double) whole, d))
+            return at (ch, whole);
+
+        // Taps whole - 1 ... whole + 2, shifted up at the start where whole - 1 is in the future.
+        const int b = juce::jmax (0, whole - 1);
+        const double x = d - b;
+        const double w0 = -(x - 1.0) * (x - 2.0) * (x - 3.0) * (1.0 / 6.0);
+        const double w1 = x * (x - 2.0) * (x - 3.0) * 0.5;
+        const double w2 = -x * (x - 1.0) * (x - 3.0) * 0.5;
+        const double w3 = x * (x - 1.0) * (x - 2.0) * (1.0 / 6.0);
+        return (float) (w0 * at (ch, b) + w1 * at (ch, b + 1) + w2 * at (ch, b + 2) + w3 * at (ch, b + 3));
+    }
+
+    float ring[2][kSize] {};
+    int write = 0;
+};
 } // namespace
 
 //==============================================================================
 struct DriveFx::Impl
 {
-    void resetEngine (int type)
+    /** One type in use, and which of the two instances of its engine runs it. */
+    struct Voice
     {
-        if (type == (int) Type::classic)
+        int type = (int) Type::screamer;
+        int slot = 0;
+    };
+
+    enum class Phase { steady, crossfade, slide };
+
+    // The engine instances, numbered: Classic 0, pedal 1 + slot, clean 3 + slot.
+    static int engineOf (const Voice& v) noexcept
+    {
+        if (v.type == (int) Type::classic)
+            return 0;
+
+        return (isPedal (v.type) ? 1 : 3) + v.slot;
+    }
+
+    static int familyOf (int type) noexcept
+    {
+        return type == (int) Type::classic ? 0 : (isPedal (type) ? 1 : 2);
+    }
+
+    /** An engine that is heard (or about to be) keeps the knobs it had while the requested type
+        is not its own: the outgoing type stays where it was, and the knobs that arrive with a
+        new type (its starting points) reach the incoming one only. */
+    bool holds (int engine) const noexcept
+    {
+        if (snapEngine)
+            return false;
+
+        return (engineOf (active) == engine && active.type != params.type)
+            || (phase == Phase::crossfade && engineOf (incoming) == engine && incoming.type != params.type);
+    }
+
+    void resetVoice (const Voice& v)
+    {
+        if (v.type == (int) Type::classic)
         {
             classic.reset();
         }
-        else if (isPedal (type))
+        else if (isPedal (v.type))
         {
-            pedal.setType ((Type) type);
-            pedal.reset();
+            pedal[v.slot].setType ((Type) v.type);
+            pedal[v.slot].reset();
         }
         else
         {
-            clean.setType ((Type) type);
-            clean.reset();
+            clean[v.slot].setType ((Type) v.type);
+            clean[v.slot].reset();
         }
     }
 
-    void run (int type, juce::dsp::AudioBlock<float> block)
+    void run (const Voice& v, juce::dsp::AudioBlock<float> block)
     {
-        if (type == (int) Type::classic)
+        if (v.type == (int) Type::classic)
         {
             // The frozen code has no guard of its own: a finite input near FLT_MAX overflows
             // its float half-bands and the infinity would live in them for good. Where its
@@ -1254,16 +1426,179 @@ struct DriveFx::Impl
             if (clearNonFinite (block))
                 classic.reset();
         }
-        else if (isPedal (type))
-            pedal.process (block);
+        else if (isPedal (v.type))
+            pedal[v.slot].process (block);
         else
-            clean.process (block);
+            clean[v.slot].process (block);
+    }
+
+    void beginSwitch (int channels)
+    {
+        incoming.type = params.type;
+        incoming.slot = familyOf (incoming.type) == familyOf (active.type) ? 1 - active.slot : 0;
+        resetVoice (incoming);
+
+        if (channels > other.getNumChannels())
+        {
+            // More channels than prepare() promised: no room to run two types, so the switch
+            // completes at once.
+            active = incoming;
+            return;
+        }
+
+        const int latencyOut = latencyFor (active.type, sampleRate);
+        const int latencyIn = latencyFor (incoming.type, sampleRate);
+        const int common = juce::jmax (latencyOut, latencyIn);
+        extraOut = common - latencyOut;
+        extraIn = common - latencyIn;
+        alignOut.clear();
+        alignIn.clear();
+        std::fill (&power[0][0], &power[0][0] + 6, 0.0);
+        phase = Phase::crossfade;
+        position = 0;
+    }
+
+    void processSwitch (juce::dsp::AudioBlock<float> block)
+    {
+        const int n = (int) block.getNumSamples();
+
+        if (phase == Phase::crossfade && (int) block.getNumChannels() > other.getNumChannels())
+        {
+            active = incoming;
+            phase = Phase::steady;
+        }
+
+        for (int offset = 0; offset < n;)
+        {
+            if (phase == Phase::steady)
+            {
+                run (active, block.getSubBlock ((size_t) offset));
+                break;
+            }
+
+            const int left = phase == Phase::crossfade ? settleSamples + fadeSamples - position : slideSamples - position;
+            const int length = juce::jmin (n - offset, left);
+            auto sub = block.getSubBlock ((size_t) offset, (size_t) length);
+
+            if (phase == Phase::crossfade)
+            {
+                crossfade (sub);
+            }
+            else
+            {
+                run (active, sub);
+                const int start = position;
+                alignIn.process (sub, [this, start] (int i)
+                {
+                    return extraIn * (1.0 - smoothstep ((start + i + 1) / (double) slideSamples));
+                });
+            }
+
+            position += length;
+            offset += length;
+
+            if (position >= (phase == Phase::crossfade ? settleSamples + fadeSamples : slideSamples))
+            {
+                position = 0;
+
+                if (phase == Phase::crossfade)
+                {
+                    active = incoming;
+                    phase = extraIn > 0 ? Phase::slide : Phase::steady;
+                }
+                else
+                {
+                    phase = Phase::steady;
+                }
+            }
+        }
+    }
+
+    void crossfade (juce::dsp::AudioBlock<float> block)
+    {
+        const int n = (int) block.getNumSamples();
+        const auto channels = block.getNumChannels();
+        juce::dsp::AudioBlock<float> in (other.getArrayOfWritePointers(), channels, (size_t) n);
+        in.copyFrom (block);
+
+        run (active, block);
+        run (incoming, in);
+
+        const int start = position;
+
+        if (extraOut > 0)
+        {
+            // Slid in while only the outgoing type is heard; it starts a few samples in so the
+            // interpolator never reaches back before the switch.
+            alignOut.process (block, [this, start] (int i)
+            {
+                return extraOut * smoothstep ((start + i - 4) / (double) (settleSamples - 4));
+            });
+        }
+
+        if (extraIn > 0)
+            alignIn.process (in, [this] (int) { return (double) extraIn; });
+
+        for (int i = 0; i < n; ++i)
+        {
+            double a = 0.0, b = 0.0, ab = 0.0;
+
+            for (size_t ch = 0; ch < channels; ++ch)
+            {
+                const double x = block.getChannelPointer (ch)[i], y = in.getChannelPointer (ch)[i];
+                a += x * x;
+                b += y * y;
+                ab += x * y;
+            }
+
+            const double raw[3] { a, b, ab };
+
+            for (int k = 0; k < 3; ++k)
+            {
+                power[0][k] += powerCoefficient * (raw[k] - power[0][k]);
+                power[1][k] += powerCoefficient * (power[0][k] - power[1][k]);
+            }
+
+            const double r = smoothstep ((start + i + 1 - settleSamples) / (double) fadeSamples);
+
+            if (r <= 0.0)
+                continue;
+
+            if (r >= 1.0)
+            {
+                for (size_t ch = 0; ch < channels; ++ch)
+                    block.getChannelPointer (ch)[i] = in.getChannelPointer (ch)[i];
+
+                continue;
+            }
+
+            const double gOut = std::cos (0.5 * kPi * r), gIn = std::sin (0.5 * kPi * r);
+            const double powerOut = power[1][0], powerIn = power[1][1], cross = power[1][2];
+            const double want = std::exp ((1.0 - r) * std::log (powerOut + kSwitchPowerFloor)
+                                          + r * std::log (powerIn + kSwitchPowerFloor));
+            const double got = gOut * gOut * powerOut + gIn * gIn * powerIn + 2.0 * gOut * gIn * cross;
+            const double slack = kSwitchSlack * want + 1.0e-30;
+            const double scale = std::sqrt ((want + slack) / (juce::jmax (0.0, got) + slack));
+
+            for (size_t ch = 0; ch < channels; ++ch)
+            {
+                auto& out = block.getChannelPointer (ch)[i];
+                out = (float) (scale * (gOut * out + gIn * in.getChannelPointer (ch)[i]));
+            }
+        }
     }
 
     ClassicDrive classic;
-    PedalDrive pedal;
-    CleanDrive clean;
-    fx::EngineSwitcher switcher;
+    PedalDrive pedal[2];
+    CleanDrive clean[2];
+    Voice active, incoming;
+    Phase phase = Phase::steady;
+    int position = 0, settleSamples = 1, fadeSamples = 1, slideSamples = 1;
+    int extraOut = 0, extraIn = 0;
+    double powerCoefficient = 1.0;
+    double power[2][3] {};   // two smoothing stages of: outgoing power, incoming power, their product
+    Aligner alignOut, alignIn;
+    juce::AudioBuffer<float> other;   // the incoming type's copy of the input
     DriveParams params;
     double sampleRate = 48000.0;
     int maxBlock = 512;
@@ -1279,9 +1614,20 @@ void DriveFx::prepare (const juce::dsp::ProcessSpec& spec)
     s.sampleRate = spec.sampleRate;
     s.maxBlock = juce::jmax (1, (int) spec.maximumBlockSize);
     s.classic.prepare (spec);
-    s.pedal.prepare (spec);
-    s.clean.prepare (spec);
-    s.switcher.prepare (spec.sampleRate, s.maxBlock, (int) spec.numChannels, s.params.type);
+
+    for (auto& p : s.pedal)
+        p.prepare (spec);
+
+    for (auto& c : s.clean)
+        c.prepare (spec);
+
+    s.other.setSize (juce::jmax (1, (int) spec.numChannels), s.maxBlock, false, true, false);
+    const auto samples = [&s] (double seconds) { return juce::jmax (8, (int) std::lround (seconds * s.sampleRate)); };
+    s.settleSamples = samples (kSwitchSettleSeconds);
+    s.fadeSamples = samples (kSwitchFadeSeconds);
+    s.slideSamples = samples (kSwitchSlideSeconds);
+    s.powerCoefficient = 1.0 - std::exp (-1.0 / (kSwitchPowerSeconds * s.sampleRate));
+    s.phase = Impl::Phase::steady;
     s.snapEngine = true;
     s.snapParams = true;
 }
@@ -1290,8 +1636,14 @@ void DriveFx::reset()
 {
     auto& s = *impl;
     s.classic.reset();
-    s.pedal.reset();
-    s.clean.reset();
+
+    for (auto& p : s.pedal)
+        p.reset();
+
+    for (auto& c : s.clean)
+        c.reset();
+
+    s.phase = Impl::Phase::steady;
     s.snapEngine = true;
     s.snapParams = true;
 }
@@ -1305,17 +1657,31 @@ void DriveFx::setParameters (const DriveParams& params)
     p.toneHz = juce::jlimit (500.0f, 12000.0f, finiteOr (params.toneHz, 4000.0f));
     p.levelDb = juce::jlimit (-24.0f, 12.0f, finiteOr (params.levelDb, 0.0f));
 
-    s.classic.setParameters (p.gainDb, p.toneHz, p.levelDb);
+    if (! s.holds (0))
+        s.classic.setParameters (p.gainDb, p.toneHz, p.levelDb);
 
     const float levelGain = juce::Decibels::decibelsToGain (p.levelDb);
-    s.pedal.setTargets (p.gainDb / 36.0f, std::log (p.toneHz / 500.0f) / std::log (24.0f), levelGain);
-    s.clean.setTargets (juce::Decibels::decibelsToGain (p.gainDb), p.toneHz, levelGain);
+    const float d = p.gainDb / 36.0f, t = std::log (p.toneHz / 500.0f) / std::log (24.0f);
+    const float gainLinear = juce::Decibels::decibelsToGain (p.gainDb);
+
+    for (int slot = 0; slot < 2; ++slot)
+    {
+        if (! s.holds (1 + slot))
+            s.pedal[slot].setTargets (d, t, levelGain);
+
+        if (! s.holds (3 + slot))
+            s.clean[slot].setTargets (gainLinear, p.toneHz, levelGain);
+    }
 
     if (s.snapParams)
     {
         s.snapParams = false;
-        s.pedal.snap();
-        s.clean.snap();
+
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            s.pedal[slot].snap();
+            s.clean[slot].snap();
+        }
     }
 }
 
@@ -1324,12 +1690,11 @@ void DriveFx::process (juce::dsp::AudioBlock<float> block)
     auto& s = *impl;
     const auto total = block.getNumSamples();
 
-    // Before the switcher keeps its dry copy, so a NaN cannot reach the output that way
-    // either. Finite samples are not touched: Classic stays bit-identical.
+    // Finite samples are not touched: Classic stays bit-identical.
     clearNonFinite (block);
 
     // A block larger than prepare() promised is run in pieces: the oversamplers and the
-    // switcher's dry copy are sized for maximumBlockSize.
+    // incoming type's copy of the input are sized for maximumBlockSize.
     for (size_t start = 0; start < total; start += (size_t) s.maxBlock)
     {
         auto piece = block.getSubBlock (start, juce::jmin ((size_t) s.maxBlock, total - start));
@@ -1339,24 +1704,23 @@ void DriveFx::process (juce::dsp::AudioBlock<float> block)
             // Nothing has been heard since prepare() or reset(): start on the requested type.
             // Classic is not reset here, so it keeps the frozen code's start-up ramp.
             s.snapEngine = false;
-            s.switcher.snapTo (s.params.type);
+            s.active = { s.params.type, 0 };
+            s.phase = Impl::Phase::steady;
 
             if (isPedal (s.params.type))
-                s.pedal.setType ((Type) s.params.type);
+                s.pedal[0].setType ((Type) s.params.type);
             else if (s.params.type != (int) Type::classic)
-                s.clean.setType ((Type) s.params.type);
+                s.clean[0].setType ((Type) s.params.type);
         }
 
-        const int type = s.switcher.begin (piece, s.params.type, [&s] (int t, bool)
-        {
-            s.resetEngine (t);
-            return true;
-        });
+        // A type asked for while a switch runs waits for it to finish (40 ms at most).
+        if (s.phase == Impl::Phase::steady && s.params.type != s.active.type)
+            s.beginSwitch ((int) piece.getNumChannels());
 
-        if (! s.switcher.isHolding())
-            s.run (type, piece);
-
-        s.switcher.end (piece);
+        if (s.phase == Impl::Phase::steady)
+            s.run (s.active, piece);
+        else
+            s.processSwitch (piece);
     }
 }
 

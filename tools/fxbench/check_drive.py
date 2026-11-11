@@ -45,6 +45,10 @@ MUFF = dict(RgBoost=39e3, RgStage=10e3, Rfb=470e3, Cfb=470e-12, Sus=100e3, Floor
 MUFF["Rpi"] = MUFF["Beta"] * MUFF["Vt"] / MUFF["Ic"]
 MUFF_OUT_HZ = 1.0 / (2 * np.pi * 1e-6 * MUFF["ToneLoad"])
 COUPLE_HZ = 1.0 / (2 * np.pi * 1e-6 * 10e3)
+# Output coupling (Drive.cpp): TS-808 1 uF into 1 k + the 100 k Level pot; RAT 1 uF into the 100 k
+# Volume pot.
+TS_OUT_HZ = 1.0 / (2 * np.pi * 1e-6 * 101e3)
+RAT_OUT_HZ = 1.0 / (2 * np.pi * 1e-6 * 100e3)
 INPUT_HP_HZ = 15.9
 
 
@@ -172,12 +176,12 @@ def analog(typ, f, gain_db, tone, sr=48000):
     d, t = knob_d(gain_db), knob_t(tone)
     hp = hp1(s, INPUT_HP_HZ)
     if typ == 1:
-        return hp * (1 + ts_pre(s, d) * ts_g0(d)) * ts_tone(s, t)
+        return hp * (1 + ts_pre(s, d) * ts_g0(d)) * ts_tone(s, t) * hp1(s, TS_OUT_HZ)
     if typ == 2:
         fos = sr * factor(sr, 2)
         bw = min(rat_gbw_hz(d), 0.45 * fos)
         fc = min(rat_filter_hz(t), 0.45 * fos)
-        return hp * rat_gain(s, d) * lp1(s, bw) * clip_g0(RAT["Rclip"]) * lp1(s, fc)
+        return hp * rat_gain(s, d) * lp1(s, bw) * clip_g0(RAT["Rclip"]) * lp1(s, fc) * hp1(s, RAT_OUT_HZ)
     if typ == 3:
         g0, rs1 = clip_g0(MUFF["Rfb"]), muff_rs1(d)
         return (hp * muff_stage(s, MUFF["RgBoost"]) * muff_divider(d) * hp1(s, COUPLE_HZ) * muff_stage(s, rs1) * g0
@@ -195,19 +199,22 @@ def warp_c(hz, rate):
     return w / np.tan(w / (2 * rate))
 
 
-def discrete(typ, f, gain_db, tone, sr):
+def discrete(typ, f, gain_db, tone, sr, coupling=True):
     """The same circuit as implemented: every section's own bilinear constant at its own
     rate, without the half-band filters and without the ADAA half-sample (that is the
-    latency). Used only to take the circuit phase out of a delay measurement."""
+    latency). Used to take the circuit phase out of a delay measurement; `coupling` False
+    leaves out the Screamer's and the Distortion's output coupling (row X5)."""
     f = np.asarray(f, float)
     n = factor(sr, typ)
     fos = sr * n
     d, t = knob_d(gain_db), knob_t(tone)
     hp = hp1(bilinear_s(f, sr, warp_c(INPUT_HP_HZ, sr)), INPUT_HP_HZ)
     sos = bilinear_s(f, fos, 2 * fos)
+    out_hz = TS_OUT_HZ if typ == 1 else RAT_OUT_HZ
+    out = hp1(bilinear_s(f, sr, warp_c(out_hz, sr)), out_hz) if coupling else 1.0
     if typ == 1:
         pre = ts_pre(bilinear_s(f, fos, warp_c(720.0, fos)), d)
-        return hp * (1 + pre * ts_g0(d)) * ts_tone(sos, t)
+        return hp * (1 + pre * ts_g0(d)) * ts_tone(sos, t) * out
     if typ == 2:
         rd = rat_rd(d)
         tau = max(rd * RAT["Cf"], 1 / (2 * np.pi * 0.45 * fos))
@@ -215,7 +222,7 @@ def discrete(typ, f, gain_db, tone, sr):
         g = 1 + rd / (1 + sos * tau) * y
         bw = min(rat_gbw_hz(d), 0.45 * fos)
         fc = min(rat_filter_hz(t), 0.45 * fos)
-        return hp * g * lp1(sos, bw) * clip_g0(RAT["Rclip"]) * lp1(bilinear_s(f, fos, warp_c(fc, fos)), fc)
+        return hp * g * lp1(sos, bw) * clip_g0(RAT["Rclip"]) * lp1(bilinear_s(f, fos, warp_c(fc, fos)), fc) * out
     if typ == 3:
         cp = hp1(bilinear_s(f, fos, warp_c(COUPLE_HZ, fos)), COUPLE_HZ)
         out = hp1(bilinear_s(f, sr, warp_c(MUFF_OUT_HZ, sr)), MUFF_OUT_HZ)
@@ -659,6 +666,7 @@ def specific_checks(report, args, extra):
                    f"largest step in a switch {worst:.2f}x the larger neighbour's")
 
     new_rows(report, sel, extra)
+    switch_rows(report, sel, extra)
 
 
 # --------------------------------------------------------------------------- second-round rows
@@ -853,6 +861,214 @@ def new_rows(report, sel, extra):
 CURVE_LEVELS = (-40, -36, -30, -24, -18, -12, -6, 0)
 
 
+# --------------------------------------------------------------------------- third-round rows
+# Added after the second verification (.audit/fx-verify/r2-tone.md): a type switch faded through
+# the dry input (N1: +19.0 dB for 40 ms at level -20, -9.9 dB at the starting points), the
+# Screamer and the Distortion put out DC on asymmetric waveforms (N5) and the Screamer went over
+# its CPU budget while its gain knob moved (N8).
+
+SW_AT = 1.0
+SW_BAR = 1.5
+CLICK_BAR = -60.0
+DC_BAR = -90.0
+
+
+def header_array(name):
+    text = (Path(__file__).resolve().parents[2] / "src" / "dsp" / "Drive.h").read_text()
+    line = [ln for ln in text.splitlines() if f"{name}[DriveFx::numTypes]" in ln][0]
+    return [float(v.strip().rstrip("f")) for v in line.split("{")[1].split("}")[0].split(",")]
+
+
+def stack(f0, peak_db, secs, sr, nh=12):
+    """The verifier's guitar-like stack: 12 harmonics at 1 / h^1.2 with phases 0.7 h^2, an
+    asymmetric waveform, normalised to a peak level."""
+    t = np.arange(int(round(secs * sr))) / sr
+    x = sum(h ** -1.2 * np.sin(2 * np.pi * f0 * h * t + 0.7 * h * h) for h in range(1, nh + 1) if f0 * h < 0.45 * sr)
+    return x * fx.amp(peak_db) / np.max(np.abs(x))
+
+
+def short_rms(y, sr, ms=5.0):
+    w = max(1, int(ms * 1e-3 * sr))
+    return np.sqrt(np.convolve(y * y, np.ones(w) / w, "same"))
+
+
+def high_band(y, sr, f_lo=3000.0):
+    spec = np.fft.rfft(y)
+    spec[np.fft.rfftfreq(len(y), 1 / sr) < f_lo] = 0
+    return np.fft.irfft(spec, len(y))
+
+
+def butter4_zero_phase(y, sr, fc):
+    """Fourth-order Butterworth low-pass (two RBJ biquads), run forward and back: a brick-wall
+    FFT filter would smear a note's edges across the whole render."""
+    out = np.asarray(y, float)
+    for _ in range(2):
+        for q in (0.5411961, 1.3065630):
+            w = 2 * np.pi * fc / sr
+            alpha = np.sin(w) / (2 * q)
+            a0 = 1 + alpha
+            b0 = b2 = (1 - np.cos(w)) / 2 / a0
+            b1 = (1 - np.cos(w)) / a0
+            a1, a2 = -2 * np.cos(w) / a0, (1 - alpha) / a0
+            res = np.empty_like(out)
+            z1 = z2 = 0.0
+            for i, v in enumerate(out):
+                r = b0 * v + z1
+                z1 = b1 * v - a1 * r + z2
+                z2 = b2 * v - a2 * r
+                res[i] = r
+            out = res
+        out = out[::-1]
+    return out
+
+
+def switch_case(a, b, cond, sig, sr=48000, block=64):
+    """One ordered switch a -> b at SW_AT s. Returns (dip, bump) of the 5 ms rms during the
+    switch against the two steady states (dB; the dip re the quieter state's lowest, the bump
+    re the louder state's highest), the excess of the content above 3 kHz during the switch
+    over the steady content (linear, full scale), and the output."""
+    gains, tones, levels = header_array("kDriveGainDefault"), header_array("kDriveToneDefault"), header_array("kDriveLevelDefault")
+    la, lb = (levels[a], levels[b]) if cond is None else (cond, cond)
+    keys = [f"type={a}", f"type@{SW_AT}={b}", f"gain={gains[a]}", f"gain@{SW_AT}={gains[b]}",
+            f"tone={tones[a]}", f"tone@{SW_AT}={tones[b]}", f"level={la}", f"level@{SW_AT}={lb}"]
+    x = stack(110.0, -12.0, 3.0, sr) if sig == "stack" else fx.sine(82.41, -12.0, 3.0, sr)
+    y = fx.mono(run(x, keys, sr, [f"--block={block}"]).out)
+    t = np.arange(len(y)) / sr
+    e = short_rms(y, sr)
+    before, after = (t > 0.5) & (t < 0.95), (t > 1.6) & (t < 2.8)
+    during = (t > SW_AT) & (t < SW_AT + 0.12)
+    dip = fx.db(e[during].min() / min(e[before].min(), e[after].min()))
+    bump = fx.db(e[during].max() / max(e[before].max(), e[after].max()))
+    hf = np.abs(high_band(y, sr))
+    click = hf[(t > SW_AT - 0.01) & (t < SW_AT + 0.15)].max() - max(hf[before].max(), hf[after].max())
+    return dip, bump, click, y
+
+
+def switch_rows(report, sel, extra):
+    pairs = [(a, b) for a in TYPES for b in TYPES if a != b]
+
+    # S1: level through a switch, every ordered pair, three level settings, two signals ----------
+    for cond, cname in ((-20.0, "level -20"), (None, "starting points"), (6.0, "level +6")):
+        for sig in ("stack", "low note"):
+            worst_dip, worst_bump, wd, wb = 0.0, -99.0, "", ""
+            for a, b in pairs:
+                dip, bump, _, _ = switch_case(a, b, cond, sig)
+                if dip < worst_dip:
+                    worst_dip, wd = dip, f"{TYPES[a]}->{TYPES[b]}"
+                if bump > worst_bump:
+                    worst_bump, wb = bump, f"{TYPES[a]}->{TYPES[b]}"
+            report.add("S1 switch level", f"30 pairs, {cname}, {sig}", worst_dip >= -SW_BAR and worst_bump <= SW_BAR,
+                       f"5 ms rms dip {worst_dip:+.1f} dB ({wd}), bump {worst_bump:+.1f} dB ({wb}); needs within "
+                       f"{SW_BAR:g} dB of the two steady levels")
+
+    # S2: no click from a switch between the clean types under a low note ------------------------
+    worst, where = -400.0, ""
+    for cond in (-20.0, None, 6.0):
+        for a, b in ((4, 5), (5, 4)):
+            _, _, click, _ = switch_case(a, b, cond, "low note")
+            if fx.db(max(click, 1e-20)) > worst:
+                worst, where = fx.db(max(click, 1e-20)), f"{TYPES[a]}->{TYPES[b]} {'start' if cond is None else cond}"
+    report.add("S2 switch click", "Boost<->Treble, 82 Hz -12 dBFS, above 3 kHz", worst <= CLICK_BAR,
+               f"excess over the steady content {worst:.1f} dBFS ({where})")
+
+    # S3: after a switch the output is the new type's own, at its reported latency ---------------
+    sr = 48000
+    x = stack(110.0, -12.0, 3.0, sr)
+    t = np.arange(len(x)) / sr
+    worst, where = 0.0, ""
+    for a, b in pairs:
+        y = fx.mono(run(x, [f"type={a}", f"type@{SW_AT}={b}"], sr, ["--block=64"]).out)
+        ref = fx.mono(run(x, {"type": b}, sr, ["--block=64"]).out)
+        late = t > 2.0
+        err = np.max(np.abs(y[late] - ref[late])) / np.max(np.abs(ref[late]))
+        if err > worst:
+            worst, where = err, f"{TYPES[a]}->{TYPES[b]}"
+    report.add("S3 after a switch", "30 pairs, from 1 s after it", worst <= 1e-3,
+               f"max |out - new type alone| {worst:.2g} re peak ({where})")
+
+    # S4: switches allocate nothing and reset deterministically, every rate and block -----------
+    # Starts off Classic: the frozen Classic start-up ramp is not reset-deterministic (§2.11).
+    seq = [3, 0, 1, 5, 2, 4, 0, 2, 3, 4, 5, 1]
+    toks = [f"type@{0.05 * i:.2f}={v}" for i, v in enumerate(seq)] + ["type@0.8=2", "type@0.81=4", "type@0.82=0"]
+    ok, bad = True, []
+    for sr in (22050, 44100, 96000, 192000):
+        for bs in (1, 37, 4096):
+            for ch in (1, 2):
+                spec = "gen:noise:pink:-18"
+                for opt in ("--rt-check", "--reset-repeat"):
+                    r = fx.invoke(EFFECT, spec, toks, [opt, f"--block={bs}", f"--channels={ch}", "--seconds=1.2"], sr)
+                    if r.code != 0 or not np.all(np.isfinite(r.out)):
+                        ok = False
+                        bad.append(f"{sr} {bs} {ch}ch {opt}")
+    report.add("S4 switch rt", "switch every 50 ms and 10 ms, 22.05-192 kHz, blocks 1/37/4096, mono/stereo", ok,
+               "; ".join(bad) or "no allocation, identical after reset, finite")
+
+    # X4: no DC on asymmetric waveforms ------------------------------------------------------------
+    sr = 48000
+    gains, tones, levels = header_array("kDriveGainDefault"), header_array("kDriveToneDefault"), header_array("kDriveLevelDefault")
+    x = stack(110.0, -12.0, 4.0, sr)
+    for typ in (1, 2, 3):
+        if not sel(typ):
+            continue
+        cells, ok = [], True
+        for g, lv in ((gains[typ], levels[typ]), (36.0, levels[typ]), (36.0, 0.0)):
+            y = fx.mono(run(x, {"type": typ, "gain": g, "tone": tones[typ], "level": lv}, sr).out)
+            dc = fx.db(abs(np.mean(y[3 * sr:4 * sr])))
+            ok &= dc <= DC_BAR
+            cells.append(f"gain {g:g} level {lv:g}: {dc:.1f}")
+        report.add("X4 DC stack", f"{TYPES[typ]} 110 Hz stack -12 dBFS, dBFS", ok, "; ".join(cells))
+
+    # X5: the output coupling leaves everything above 40 Hz alone --------------------------------
+    freqs = np.array([40.0, 60.0, 100.0, 1000.0])
+    for typ in (1, 2):
+        if not sel(typ):
+            continue
+        keys = {"type": typ, "gain": 0, "tone": 12000}
+        h = sweep_response(keys, sr, -70.0, freqs, secs=6.0)
+        model = np.abs(discrete(typ, freqs, 0, 12000, sr, coupling=False))
+        err = fx.db(h / h[-1]) - fx.db(model / model[-1])
+        report.add("X5 output coupling", f"{TYPES[typ]} gain 0, 40/60/100 Hz re 1 kHz", np.max(np.abs(err[:-1])) <= 0.1,
+                   "change against the circuit without it " + " ".join(f"{f:g}:{e:+.3f}" for f, e in zip(freqs[:-1], err[:-1])) + " dB")
+
+    # X6: no thump at a note's start or at a switch ------------------------------------------------
+    n = int(1.6 * sr)
+    pl = np.zeros(int(2.4 * sr))
+    pl[int(0.2 * sr):int(0.2 * sr) + n] = stack(110.0, -6.0, 1.6, sr)
+    t = np.arange(len(pl)) / sr
+    worst, where, late = -400.0, "", -400.0
+    for typ in (1, 2):
+        for keys in ({"type": typ, "gain": 36, "level": 0}, [f"type={(typ % 2) + 4}", f"type@0.4={typ}", "gain=36", "level=0"]):
+            y = fx.mono(run(pl, keys, sr).out)
+            sub = np.abs(butter4_zero_phase(y, sr, 20.0)) / np.max(np.abs(y))
+            onset = fx.db(np.max(sub[(t > 0.15) & (t < 0.8)]))
+            late = max(late, fx.db(np.max(sub[(t > 1.2) & (t < 1.6)])))
+            if onset > worst:
+                worst, where = onset, f"{TYPES[typ]} {'switch' if isinstance(keys, list) else 'note'}"
+    # The coupling passes a DC step and lets it decay (100 ms), so at the onset the content below
+    # 20 Hz is at most the DC the clipped note makes (-21.6 dB re peak, Distortion, without the
+    # coupling); 0.6 s later it must be gone.
+    report.add("X6 coupling thump", "Screamer, Distortion gain 36: note start, switch in",
+               worst <= -20.0 and late <= -60.0,
+               f"content below 20 Hz {worst:.1f} dB re the output peak at the start ({where}), {late:.1f} dB 0.6 s on")
+
+    # C2: CPU while all three knobs move all the time ---------------------------------------------
+    for typ in range(6):
+        if not sel(typ):
+            continue
+        keys = [f"type={typ}", "gain@0..10=0..36", "tone@0..10=500..12000", "level@0..10=-24..12"]
+        v = min(fx.invoke(EFFECT, "gen:noise:pink:-18", keys, ["--bench", "--seconds=10"], sr).number(r"([0-9.]+) % of real time")
+                for _ in range(3))
+        report.add("C2 cpu automated", f"{TYPES[typ]} gain, tone, level ramped 10 s", v <= BUDGETS[typ],
+                   f"{v:.3f} % (budget {BUDGETS[typ]:g} %)")
+
+    # CPU while switching (informational): a switch every 50 ms ------------------------------------
+    for a, b in ((3, 2), (0, 3), (1, 4)):
+        toks = [f"type@{0.05 * i:.2f}={a if i % 2 == 0 else b}" for i in range(200)]
+        v = min(fx.invoke(EFFECT, "gen:noise:pink:-18", toks, ["--bench", "--seconds=10"], sr).number(r"([0-9.]+) % of real time")
+                for _ in range(3))
+        extra["switch_cpu"].append((TYPES[a], TYPES[b], v))
+
+
 def character(extra, args):
     """Harmonic profile at three levels, level against gain (informational)."""
     rows = []
@@ -905,7 +1121,8 @@ def main():
     if not args.only_specific:
         fx.common_checks(EFFECT, TYPES, ranges=RANGES, budgets=BUDGETS, variants=VARIANTS, report=report,
                          quick=args.quick, type_key=TYPE_KEY, null_keys=NULL_KEYS, only=args.types)
-    extra = {"latency": [], "alias": [], "gain": [], "harm": [], "pre": [], "levels": {}, "level_needed": {}, "curves": []}
+    extra = {"latency": [], "alias": [], "gain": [], "harm": [], "pre": [], "levels": {}, "level_needed": {}, "curves": [],
+             "switch_cpu": []}
     # D16 runs at the starting points recorded in Drive.h (kDriveLevelDefault).
     header = (Path(__file__).resolve().parents[2] / "src" / "dsp" / "Drive.h").read_text()
     line = [ln for ln in header.splitlines() if "kDriveLevelDefault[DriveFx::numTypes]" in ln][0]
@@ -936,6 +1153,9 @@ def main():
           + " ".join(f"{v:6d}" for v in CURVE_LEVELS))
     for typ, g, row in extra["curves"]:
         print(f"  {typ:<11}gain {g:4.0f}  " + " ".join(f"{v:6.1f}" for v in row))
+    print("\nCPU while switching every 50 ms (% of real time, stereo 48 kHz block 64, min of 3)")
+    for a, b, v in extra["switch_cpu"]:
+        print(f"  {a} <-> {b}: {v:.3f} %")
     for typ, lvl in extra["level_needed"].items():
         print(f"\nlevel for -12 dBFS peak at the {TYPES[typ]} starting point: {lvl:.2f} dB")
     return status
