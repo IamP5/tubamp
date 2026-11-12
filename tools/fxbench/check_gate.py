@@ -223,14 +223,24 @@ def specific_checks(report, args, grid):
                f"least margin {shortest[0]:+.1f} ms: {shortest[1]:.1f} ms ({TYPES[shortest[2]]} {shortest[3]:g} Hz {shortest[4]} "
                f"dBFS thr {shortest[5]}; limit window + hold + release/3 - 1 ms fade - half a period - 0.1 ms)")
 
-    # G8: open. Onset after silence, worst over 8 start phases.
-    worst_open = 0.0
+    # G8: open. Onset after silence, worst over 8 start phases, timed from the sample at which the twin reading reaches
+    # the threshold (so the window and the sidechain filter are in the reading, not in the bar). The burst crosses the
+    # band and runs 20 dB over within a few samples, so the rule gives a 0.2 ms linear rise from mute: -1 dB at
+    # 0.2 ms x 10^(-1/20). Limit: that + 2 samples (one for P1's rounding of the reading, one for the sample grid).
+    worst_open, worst_onset = 0.0, 0.0
+    g8_bar = OPEN_MIN_MS * fx.amp(-1.0) + 2e3 / sr
     for ph in range(PHASES):
         x, _ = fx.burst(1000.0, -20, 0.1, sr, pre=0.1, post=0.1, phase=2 * np.pi * ph / PHASES)
         g = gain_db(fx.run(EFFECT, x, dict(TIGHT, threshold=-40), ["--trace"], sr)[1])
         onset = int(round(0.1 * sr))
-        worst_open = max(worst_open, np.nonzero(g[onset:] >= -1.0)[0][0] / sr * 1e3)
-    report.add("G8 open", "Tight 1 kHz -20 dBFS thr -40", worst_open <= 1.0, f"{worst_open:.3f} ms to -1 dB (limit 1.0)")
+        kc = onset + int(np.argmax(twin_level(x, sr, HPF)[onset:] >= fx.amp(-40.0)))
+        up = np.nonzero(g[kc:] >= -1.0)[0]
+        worst_open = max(worst_open, up[0] / sr * 1e3 if len(up) else float("inf"))
+        worst_onset = max(worst_onset, (kc - onset) / sr * 1e3)
+    report.add("G8 open", "Tight 1 kHz -20 dBFS thr -40", worst_open <= g8_bar,
+               (f"{worst_open:.3f} ms" if worst_open < float("inf") else "never") + f" to -1 dB from the reading reaching the "
+               f"threshold, which is at most {worst_onset:.3f} ms after the onset (limit {g8_bar:.3f}: the rule's 0.2 ms linear "
+               "rise to -1 dB + 2 samples)")
 
     def chug_rows(row, srate, slack=""):
         med, worst_gap, first10, _ = chug_stats(dict(TIGHT, threshold=-40), srate)
@@ -707,24 +717,27 @@ def robustness_checks(report, args, grid):
          " / ".join(f"{g * 1e3:.0f} ms {m:.1f} (worst {w:.1f})" for g, (m, w) in hummed.items()) + " dB")
 
     # X14: Smooth holds still on a stationary floor below the threshold.
+    # Bars from the rule: closed, Smooth's gain follows its law at most SMOOTH_SLEW_DB_S, so at each rate a 10 ms window
+    # (win samples, win - 1 steps) moves at most 100 x (win - 1) / sr dB (just under 1.0) and one sample 100 / sr dB.
+    # Measurement margin 1 % of each, for float rounding (the engine sums the slew in double, compares in float).
+    # Each figure is printed as a share of its rate's bar.
     worst_move, worst_step, where = 0.0, 0.0, ""
     for srate in (44100, 48000, 96000):
+        win = int(round(0.010 * srate))
+        lim_move, lim_step = SMOOTH_SLEW_DB_S * (win - 1) / srate * 1.01, SMOOTH_SLEW_DB_S / srate * 1.01
         for name, x in floors(srate).items():
             g = fx.mono(fx.run(EFFECT, np.vstack([x, x]), dict(SMOOTH, threshold=-40), ["--block=64", "--trace"], srate)[1])
             gd = fx.db(np.maximum(g[srate:], 1e-9))
-            win = int(round(0.010 * srate))
             view = np.lib.stride_tricks.sliding_window_view(gd, win)
-            move = float(np.max(view.max(axis=1) - view.min(axis=1)))
-            step = float(np.max(np.abs(np.diff(gd))))
+            move = float(np.max(view.max(axis=1) - view.min(axis=1))) / lim_move
+            step = float(np.max(np.abs(np.diff(gd)))) / lim_step
             if move > worst_move or step > worst_step:
                 where = f"{name}, {srate} Hz"
             worst_move, worst_step = max(worst_move, move), max(worst_step, step)
-    # Bars from the rule: closed, Smooth follows its law at most SMOOTH_SLEW_DB_S, 1 dB per 10 ms and 100 / sr per sample
-    # (the 44.1 kHz figure, the largest; +1 % for float rounding).
-    lim_step = SMOOTH_SLEW_DB_S / 44100 * 1.01
-    report.add("X14 Smooth floor", "noise / hum / buzz under thr -40", worst_move <= 1.01 and worst_step <= lim_step,
-               f"max gain move in 10 ms {worst_move:.2f} dB (limit 1.01: the slew), max one-sample step {worst_step:.4f} dB "
-               f"(limit {lim_step:.4f}: the slew per sample at 44.1 kHz) ({where})")
+    report.add("X14 Smooth floor", "noise / hum / buzz under thr -40", worst_move <= 1.0 and worst_step <= 1.0,
+               f"max gain move in 10 ms {worst_move:.2f} x its bar, max one-sample step {worst_step:.2f} x its bar ({where}); bars "
+               f"at each rate: the {SMOOTH_SLEW_DB_S:g} dB/s slew over the 10 ms window's steps and over one sample, +1 % "
+               "for float rounding")
 
     # X15: the front of a picked note: energy kept in the first millisecond, 12-34 dB over thr.
     worst, peaks = 0.0, []
@@ -1101,7 +1114,6 @@ def two_tone(f0, df, trough_db, sr, thr, tau=2.5, secs=8.0):
 
 PRECURSOR_THR = -40.0
 PRECURSOR_NOTES = (41.2, 82.41, 164.81, 329.63)   # E1 to E4
-PRECURSOR_CLEAN_DB = 15.0                          # the comparison: the same pick over a floor this far under
 
 
 def _pick_at(f0, n, sr, seed):
@@ -1116,14 +1128,19 @@ def _pick_at(f0, n, sr, seed):
     return y * fx.amp(-12.0) / np.max(np.abs(y[:int(0.02 * sr)]))
 
 
-def _precursor_pick(sr, f0, kind, under, lead, seed):
+def _precursor_pick(sr, f0, kind, under, lead, seed, over=None):
     """A pick at 0.5 s, threshold -40, after something in the band. kind 'hiss' or 'hum' (hum plus hiss): a steady
     floor whose median reading is `under` dB under the threshold; 'scrape': 10 ms of 300-2000 Hz noise whose peak
-    is `under` dB under it, ending `lead` ms before the pick, over hiss 35 dB under. -> (x, the pick alone, onset)."""
+    is `under` dB under it, ending `lead` ms before the pick; 'chord': an E2+B2+E3 strum at 0.05 s whose reading peaks
+    `under` dB under it and rings on through the band; 'picknoise': the pick's own noise, 4 ms of 2-7 kHz noise starting
+    2 ms before the tone, `under` dB under the note's peak. The last three over hiss 35 dB under the threshold. The pick
+    peaks at -12 dBFS, or with `over` its reading peaks that many dB over the threshold. -> (x, the pick alone, onset)."""
     n, on = int(0.9 * sr), int(0.5 * sr)
     r = np.random.default_rng(seed + 100)
     pick = np.zeros(n)
     pick[on:] = _pick_at(f0, n - on, sr, seed)
+    if over is not None:
+        pick = _scale_reading(pick, sr, HPF, PRECURSOR_THR + over, start=0.4)
 
     def floor(kind, under_db):
         h = r.standard_normal(n)
@@ -1131,15 +1148,82 @@ def _precursor_pick(sr, f0, kind, under, lead, seed):
             t = np.arange(n) / sr
             h = 0.3 * h + 3.0 * np.sin(2 * np.pi * 60 * t) + 1.5 * np.sin(2 * np.pi * 180 * t + 1)
         return h * fx.amp(PRECURSOR_THR - under_db) / float(np.median(twin_level(h, sr, HPF)[int(0.1 * sr):on]))
+    if kind in ("hiss", "hum"):
+        return floor(kind, under) + pick, pick, on
+    x = floor("hiss", 35.0)
     if kind == "scrape":
         m = int(0.010 * sr)
         s = _biquad(_biquad(r.standard_normal(3 * m), *_rbj("hp", 300.0, sr)), *_rbj("lp", 2000.0, sr))[m:2 * m] * np.hanning(m)
-        x = floor("hiss", 35.0)
         e = on - int(round(lead * 1e-3 * sr))
         x[e - m:e] += s * fx.amp(PRECURSOR_THR - under) / np.max(np.abs(s))
+    elif kind == "chord":
+        ch = place(0.9, sr, [(0.05, strum((82.41, 123.47, 164.81), 0.85, sr, level_db=0.0, t60=8.0, seed=seed, strum_ms=6,
+                                          click_db=None))])[:n]
+        x += _scale_reading(ch, sr, HPF, PRECURSOR_THR - under, start=0.04)
+    elif kind == "picknoise":
+        m = int(0.004 * sr)
+        s = _biquad(_biquad(r.standard_normal(3 * m), *_rbj("hp", 2000.0, sr)), *_rbj("lp", 7000.0, sr))[m:2 * m] * np.hanning(m)
+        b = on - int(0.002 * sr)
+        x[b:b + m] += s * np.max(np.abs(pick)) * fx.amp(-under) / np.max(np.abs(s))
     else:
-        x = floor(kind, under)
+        raise ValueError(kind)
     return x + pick, pick, on
+
+
+def rule_opens(lev, thr, hold_n):
+    """The rule's state machine (Gate.h) on a reading. -> (samples where it opens, samples where it closes)."""
+    op, cl = 10 ** (thr / 20), 10 ** ((thr - PLAIN_HYSTERESIS_DB) / 20)
+    opens, closes, is_open, below = [], [], False, 0
+    for i, v in enumerate(lev.tolist()):
+        if v >= op:
+            below = 0
+            if not is_open:
+                is_open = True
+                opens.append(i)
+        elif is_open:
+            below = below + 1 if v < cl else 0
+            if below > hold_n:
+                is_open = False
+                closes.append(i)
+    return opens, closes
+
+
+def textbook_gain(g, opens, sr):
+    """The textbook gate's gain: the engine's, with every opening's ramp replaced by a fixed 0.2 ms linear rise from the
+    gain before it, starting one sample after the rule's opening (P1's one sample of rounding)."""
+    g = np.asarray(g, dtype=float)
+    tb = g.copy()
+    m = OPEN_MIN_MS * 1e-3 * sr
+    for o in opens:
+        done = np.nonzero(g[o:] >= 1.0)[0]
+        end = min(len(g), max(o + (int(done[0]) if len(done) else len(g)), o + int(np.ceil(m)) + 1))
+        k = np.arange(o, end)
+        before = g[o - 1] if o > 0 else g[0]
+        tb[o:end] = before + (1.0 - before) * np.clip((k - o) / m, 0.0, 1.0)
+    return tb
+
+
+def pulse_wave(f0, t):
+    """Once per period a band-limited pulse (harmonics under 2.4 kHz) twice the height of a steady 3rd harmonic: the
+    12 ms reading ripples 4-5 dB once per period at 31-73 Hz and stays over the close level."""
+    K = int(2400 // f0)
+    return np.sin(2 * np.pi * 3 * f0 * t + 3) + 2.0 * sum(np.cos(2 * np.pi * f0 * k * t) for k in range(1, K + 1)) / K
+
+
+def semitone_pair(pair, t):
+    """Two notes, harmonics under 3 kHz falling 18 dB per octave, so the beat's troughs reach the close level (with 1/k
+    the higher pairs, beating k times faster, fill them in and the gate stays open)."""
+    return sum(np.sin(2 * np.pi * f * k * t + 0.7 * k + j) / k ** 3 for j, f in enumerate(pair) for k in range(1, int(3000 // f) + 1))
+
+
+HP8_Q = (0.5098, 0.6013, 0.9000, 2.5629)   # 8th-order Butterworth: Q = 1 / (2 cos((2k - 1) pi / 16))
+
+
+def hp_6k(z, sr):
+    """8th-order Butterworth high-pass at 6 kHz, causal, as four sections."""
+    for q in HP8_Q:
+        z = _biquad(z, *_rbj("hp", 6000.0, sr, q))
+    return z
 
 
 def closing_rule_checks(report, args):
@@ -1558,14 +1642,20 @@ def closing_rule_checks(report, args):
             keys = dict(TIGHT if mode == 1 else SMOOTH, threshold=thr)
             g = fx.db(np.maximum(fx.mono(fx.run(EFFECT, s + fl, keys, ["--trace"], sr)[1]), 1e-12))
             g0 = fx.db(np.maximum(fx.mono(fx.run(EFFECT, fl, keys, ["--trace"], sr)[1]), 1e-12))
-            i_cl = int(np.nonzero(twin_level(s + fl, sr, HPF) >= fx.amp(thr - 6.0))[0][-1])
+            i_cl = int(np.nonzero(twin_level(s + fl, sr, HPF) >= fx.amp(thr - 6.0 - TWIN_EPS_DB))[0][-1])
             return floor_tail(g, g0, i_cl, mode, keys)
         cells = [(k, T, d, m) for k in ("glide", "volume knob") for T in (0.3, 1.0, 3.0) for d in (20, 36) for m in (1, 2)]
         res = parallel(fade, cells)
-        ok, (w, c), sw, end = tail_verdict(res, cells, bound)
+        # R3's bar, derived: timed from the last sample at which the twin reading is within TWIN_EPS_DB (its agreement
+        # with the engine's) of the close level, so the engine's reading is under it from the next sample on. The rule
+        # then closes after the hold and reaches -20 dB a third of the release later. +2 samples: the close comes on
+        # the sample after the hold's last, and the sample grid.
+        r3_bound = TIGHT["hold"] + TIGHT["release"] / 3.0 + 2e3 / sr
+        ok, (w, c), sw, end = tail_verdict(res, cells, r3_bound)
         report.add("R3 glides, volume down", f"{len(cells)} cases: octave glide or knob to zero over 0.3-3 s", ok,
-                   f"Tight: floor over -20 dB at most {w:.0f} ms after the reading is last at the close level ({c[0]} {c[1]:g} s, "
-                   f"floor {c[2]} dB under; limit hold + release/3 + 3 = {bound:.0f}). Smooth: {sw[0]:.0f} ms over its floor-alone "
+                   f"Tight: floor over -20 dB at most {w:.2f} ms after the reading is last at the close level ({c[0]} {c[1]:g} s, "
+                   f"floor {c[2]} dB under; limit hold + release/3 + 2 samples = {r3_bound:.2f}, from the reading's last "
+                   f"sample within {TWIN_EPS_DB:g} dB of the close level). Smooth: {sw[0]:.0f} ms over its floor-alone "
                    f"setting + 1 dB, last 250 ms {end:+.1f} dB re it (limit +1)")
 
         def staccato(c):
@@ -1609,8 +1699,9 @@ def closing_rule_checks(report, args):
 
     if on("D"):
         # D1: picks keep their front (g5_attack.py pick cases, 20 and 34 dB over the threshold). The bar is the rule's
-        # arithmetic on the same pick: the dry signal under a 0.2 ms linear rise (a pick climbs the last dB at once)
-        # that starts one sample after the twin reading reaches the threshold (P1's one sample of rounding).
+        # arithmetic on the same pick: the dry signal under a 0.2 ms linear rise (a pick crosses the band within a few
+        # samples, then runs 6 dB over) that starts one sample after the twin reading reaches the threshold (P1's one
+        # sample of rounding).
         def pick(c):
             f0, over, s = c
             x = place(0.8, s, [(0.2, string(f0, 0.5, s, level_db=-40 + over, t60=3.0, seed=6, click_db=-12.0))]) \
@@ -1630,61 +1721,158 @@ def closing_rule_checks(report, args):
                    f"{min(r[0] for r in res):.2f} dB (limit: the rule's 0.2 ms linear rise from one sample after the reading "
                    "reaches the threshold, -0.01 dB)")
 
-        # D3: a pick after something in the band (round 6, finding 1) opens as fast as the same pick over a floor 15 dB
-        # under the threshold: E1-E4 at -12 dBFS, threshold -40, Tight and Smooth, over hiss or hum whose median
-        # reading is 3-7 dB under the threshold, or 2-40 ms after a 10 ms scrape 1.5-5 dB under it. Energy of the
-        # first 2 and 5 ms against the pick alone; the bar, stated before measuring, is HEARD_DB worse than the
-        # comparison, about the smallest level change heard on music.
+        # D3: a pick after something in the band (round 6, finding 1; round 7, finding 3). The bar is the rule's
+        # arithmetic: once the reading is 6 dB over the threshold the run-away finish brings the gain to 0 dB within
+        # 0.2 ms + one sample, so the energy of the pick's first 2 ms is at least the dry signal's from 0.2 ms + 2 samples
+        # after the twin reading gets there (one sample for P1's rounding of the reading) to the end of the 2 ms; -0.01 dB
+        # for float rounding. Enforced where the reading runs 6 dB over within 0.5 ms of reaching the threshold; the cells
+        # whose pick climbs slower are counted. Printed beside it: the loss against the textbook gate, a fixed 0.2 ms
+        # linear rise from the same opening (textbook_gain), and how many cells lose over HEARD_DB to it: up to 0.5 ms
+        # at low gain before the run-away can cost more than 1 dB on a low note, so that comparison is not the bar. E1-E4 at
+        # -12 dBFS and 10 / 6 dB over the threshold (-40), Tight and Smooth, after hiss or hum reading 0.5-7 dB under the
+        # threshold, a scrape 0.5-5 dB under ending 2-40 ms before, a ringing chord's tail in the band, or the pick's own
+        # noise. info: picks only 1-5 dB over, after the same precursors (the rule's stated cost: they never run 6 dB
+        # over, so the ramp keeps the length the band gave it).
         def precursor(c):
-            mode, f0, kind, under, lead, seed = c
+            mode, f0, kind, under, lead, over = c
             keys = dict(TIGHT if mode == 1 else SMOOTH, threshold=PRECURSOR_THR)
-            out = []
-            for k, u, ld in ((kind, under, lead), ("hum" if kind == "hum" else "hiss", PRECURSOR_CLEAN_DB, None)):
-                x, p, on = _precursor_pick(sr, f0, k, u, ld, seed)
-                y = fx.mono(fx.run(EFFECT, x, keys, [], sr)[0])
-                out.append([10 * np.log10(np.sum(y[on:on + w] ** 2) / np.sum(p[on:on + w] ** 2))
-                            for w in (int(0.002 * sr), int(0.005 * sr))])
-            return max(out[1][0] - out[0][0], out[1][1] - out[0][1]), out[0]
-        cells = [(m, f0, k, u, None, sd) for m in (1, 2) for k in ("hiss", "hum") for u in (3.0, 5.0, 6.0, 7.0)
-                 for f0 in PRECURSOR_NOTES for sd in range(3)]
-        cells += [(m, f0, "scrape", u, ld, sd) for m in (1, 2) for u in (1.5, 3.0, 5.0) for ld in (2.0, 5.0, 20.0, 40.0)
-                  for f0 in PRECURSOR_NOTES for sd in range(3)]
-        res = parallel(precursor, cells)
-        (w, own), c = max(zip(res, cells), key=lambda rc: rc[0][0])
-        over = sum(1 for r in res if r[0] > HEARD_DB)
-        report.add("D3 pick after a precursor", f"{len(cells)} cases: E1-E4 after an in-band floor or scrape, Tight + Smooth",
-                   over == 0,
-                   f"worst {w:+.2f} dB under the same pick over a floor {PRECURSOR_CLEAN_DB:g} dB under the threshold "
-                   f"({TYPES[c[0]]} {c[1]:g} Hz {c[2]} {c[3]:g} dB under{'' if c[4] is None else f' lead {c[4]:g} ms'}: first 2 / 5 ms "
-                   f"{own[0]:.2f} / {own[1]:.2f} dB); {over} of {len(cells)} ({100 * over / len(cells):.0f} %) over the bar "
-                   f"(limit {HEARD_DB:g} dB, stated before measuring: about the smallest level change heard on music)")
+            x, _, on = _precursor_pick(sr, f0, kind, under, lead, 1, over)
+            out, tr = fx.run(EFFECT, x, keys, ["--trace"], sr)
+            y, g = fx.mono(out).astype(float), fx.mono(tr).astype(float)
+            lev = twin_level(x, sr, HPF)
+            opens, _ = rule_opens(lev, PRECURSOR_THR, round(keys["hold"] * 1e-3 * sr))
+            k0 = on - int(0.003 * sr)
+            hit = np.nonzero(lev[k0:] >= fx.amp(PRECURSOR_THR))[0]
+            if not len(hit) or not opens:
+                return None
+            kt = k0 + int(hit[0])
+            run = np.nonzero(lev[kt:] >= fx.amp(PRECURSOR_THR + RUN_AWAY_DB))[0]
+            fast = bool(len(run)) and run[0] <= 0.0005 * sr
+            end = on + int(0.002 * sr)
+            w = slice(on, end)
+            tb = x * textbook_gain(g, opens, sr)
+            ey = max(np.sum(y[w] ** 2), 1e-30)
+            full = kt + int(run[0]) + int(np.ceil(OPEN_MIN_MS * 1e-3 * sr)) + 2 if len(run) else end
+            bound = np.sum(x[max(on, full):end] ** 2)
+            return (10 * np.log10(max(np.sum(tb[w] ** 2), 1e-30) / ey), fast,
+                    10 * np.log10(bound / ey) if bound > 0 else -99.0)
+        precursors = [(k, u, None) for k in ("hiss", "hum") for u in (0.5, 1.0, 3.0, 5.0, 6.0, 7.0)]
+        precursors += [("scrape", u, ld) for u in (0.5, 1.5, 3.0, 5.0) for ld in (2.0, 5.0, 20.0, 40.0)]
+        precursors += [("chord", 1.0, None), ("picknoise", 20.0, None)]
 
-        # D4: a swell opens slowly. Linear-in-dB swells, odd harmonics so the waveform repeats every half period: the
-        # windowed reading lags the envelope by at most half a period, so it spends at least 1/rate - T/2 in the last dB
-        # and the rule gives a ramp of 3 x that (at most 5 ms). Enforced, 3 ms where that time is at least 1.5 ms (1 ms
-        # for the 3 ms, 0.5 ms for the floor and the filter's delay); the other cells, where one half period climbs more
-        # than the last dB can hold, are printed. Tight only: Smooth's gain has followed a slow swell up to 0 dB before the
-        # reading reaches the threshold, so it has no ramp to time (its opening is the same arithmetic, which P1 pins).
+        def pdesc(c):
+            return (f"{TYPES[c[0]]} {c[1]:g} Hz {'-12 dBFS' if c[5] is None else f'+{c[5]:g} dB'} after {c[2]} "
+                    f"{c[3]:g} dB under{'' if c[4] is None else f' lead {c[4]:g} ms'}")
+        cells = [(m, f0, k, u, ld, ov) for m in (1, 2) for f0 in PRECURSOR_NOTES for k, u, ld in precursors for ov in (None, 10.0, 6.0)]
+        res = parallel(precursor, cells)
+        judged = [(r, c) for r, c in zip(res, cells) if r is not None and r[1]]
+        slow = [(r, c) for r, c in zip(res, cells) if r is not None and not r[1]]
+        shut = [c for r, c in zip(res, cells) if r is None]
+        lo, cl = max(((r[2], c) for r, c in judged), default=(float("inf"), None))
+        tb_w = max(((r[0], c) for r, c in judged), default=(0.0, None))
+        report.add("D3 pick after a precursor", f"{len(judged)} of {len(cells)} cases: E1-E4 at -12 dBFS / +10 / +6 dB after "
+                   f"{len(precursors)} in-band precursors, Tight + Smooth", bool(judged) and lo <= 0.01 and not shut,
+                   f"largest first-2-ms energy shortfall under the rule's floor {lo:+.2f} dB (negative: over it; "
+                   f"{pdesc(cl) if cl else 'none judged'}); limit "
+                   f"+0.01 dB: the dry signal from 0.2 ms + 2 samples after the reading runs {RUN_AWAY_DB:g} dB over, where it "
+                   "does so within 0.5 ms of the threshold. Against the textbook 0.2 ms rise: worst "
+                   f"{tb_w[0]:.2f} dB ({pdesc(tb_w[1]) if tb_w[1] else '-'}), {sum(1 for r, _ in judged if r[0] > HEARD_DB)} over "
+                   f"{HEARD_DB:g} dB. Not judged, the pick climbs slower: {len(slow)}; never reach the threshold: {len(shut)}")
+        cells = [(m, f0, k, u, ld, ov) for m in (1, 2) for f0 in PRECURSOR_NOTES for k, u, ld in precursors
+                 for ov in (1.0, 2.0, 3.0, 4.0, 5.0)]
+        res = parallel(precursor, cells)
+        parts = []
+        for ov in (1.0, 2.0, 3.0, 4.0, 5.0):
+            rs = [r for r, c in zip(res, cells) if c[5] == ov]
+            lost = sum(1 for r in rs if r is None or r[0] > 3.0)
+            parts.append(f"+{ov:g} dB: {lost} of {len(rs)} ({100 * lost / len(rs):.0f} %)")
+        info(report, "info D3 soft picks", f"{len(cells)} cases: picks 1-5 dB over thr after the same precursors",
+             "share losing over 3 dB of first-2-ms energy against the textbook gate (or never opening): " + ", ".join(parts))
+
+        # D4: a swell opens slowly. The rule times the ramp from the last sample under the close level: a steady climb of
+        # r dB/s crosses the 6 dB band in 6/r s, so the ramp is half that, 5 ms for every r up to 600 dB/s, unless the
+        # reading dips under the close level on the way. A rippled reading (the pulse waveform) crosses the close level on
+        # a crest and dips back under it, so the condition is read back from the opening: the twin reading stays over
+        # the close level for at least 10 ms before it (twice the longest ramp, so the rule gives 5 ms at any rate).
+        # Enforced there: a ramp of at least 3 ms, the rule's 5 ms less 2 ms of tolerance for the twin reading's
+        # rounding and the sample grid, stated before measuring; the other cells are printed. Also printed: how many cells
+        # stay over the close level all the way from its first crossing.
+        # Two generators: odd harmonics at 82-440 Hz (the reading repeats every half period), and a once-per-period
+        # pulse over a steady 3rd harmonic at 31-73 Hz (period longer than the 12 ms window: the reading ripples 4-5 dB
+        # once per period). Tight only: Smooth's gain has followed a slow swell up to 0 dB before the reading reaches
+        # the threshold, so it has no ramp to time (its opening is the same arithmetic, which P1 pins).
         def swell_ramp(c):
-            f0, rate, mode = c
-            n = int((50.0 / rate + 0.4) * sr)
+            f0, rate, wave = c
+            n = int((60.0 / rate + 0.4) * sr)
             t = np.arange(n) / sr
-            y = sum(np.sin(2 * np.pi * f0 * k * t + k) / k for k in (1, 3, 5, 7) if f0 * k < 2400)
-            x = y * fx.amp(np.minimum(-70.0 + rate * t, -20.0)) + hiss(n / sr, sr, -86.0, seed=3)
-            g = fx.mono(fx.run(EFFECT, x, dict(TIGHT if mode == 1 else SMOOTH, threshold=-40), ["--trace"], sr)[1])
-            cross = int(np.argmax(twin_level(x, sr, HPF) >= fx.amp(-40.0)))
-            return (int(np.argmax(g[cross:] >= 1.0)) + 1) / sr * 1e3
-        cells = [(f0, rate, m) for f0 in (82.41, 110.0, 220.0, 440.0) for rate in (10, 30, 100, 300, 1000, 3000) for m in (1,)]
+            if wave == "odd":
+                y = sum(np.sin(2 * np.pi * f0 * k * t + k) / k for k in (1, 3, 5, 7) if f0 * k < 2400)
+            else:
+                y = pulse_wave(f0, t)
+            x = y / np.max(np.abs(y)) * fx.amp(np.minimum(-70.0 + rate * t, -20.0)) + hiss(n / sr, sr, -86.0, seed=3)
+            g = fx.mono(fx.run(EFFECT, x, dict(TIGHT, threshold=-40), ["--trace"], sr)[1])
+            lev = twin_level(x, sr, HPF)
+            cross = int(np.argmax(lev >= fx.amp(-40.0)))
+            close = fx.amp(-40.0 - PLAIN_HYSTERESIS_DB)
+            first = int(np.argmax(lev >= close))
+            steady = bool(np.all(lev[max(0, cross - int(0.010 * sr)):cross + 1] >= close))
+            up = np.nonzero(g[cross:] >= 1.0)[0]
+            return ((int(up[0]) + 1) / sr * 1e3 if len(up) else float("inf")), steady, bool(np.all(lev[first:cross + 1] >= close))
+        cells = [(f0, rate, "odd") for f0 in (82.41, 110.0, 220.0, 440.0) for rate in (10, 30, 100, 300, 1000, 3000)]
+        cells += [(f0, rate, "pulse") for f0 in (30.87, 41.2, 55.0, 73.42) for rate in (20, 50, 100)]
         res = parallel(swell_ramp, cells)
-        held = [(r, c) for r, c in zip(res, cells) if 1e3 / c[1] - 500.0 / c[0] >= 1.5]
-        rest = [(r, c) for r, c in zip(res, cells) if 1e3 / c[1] - 500.0 / c[0] < 1.5]
-        lo, cl = min(held)
-        report.add("D4 swell ramp", f"{len(held)} cases: 10-300 dB/s on 82-440 Hz, Tight", lo >= 3.0,
-                   f"shortest ramp {lo:.2f} ms ({cl[0]:g} Hz {cl[1]} dB/s {TYPES[cl[2]]}; limit 3 ms where the reading spends "
-                   "1.5 ms or more in the last dB: 10-100 dB/s at every note, 300 dB/s at 440 Hz)")
-        info(report, "info D4 fast swells", f"{len(rest)} cases: a half period climbs past the last dB",
-             ", ".join(f"{c[0]:g} Hz {c[1]} dB/s {r:.2f}" for r, c in sorted(rest, key=lambda rc: rc[1]))
-             + " ms ramp")
+        held = [(r[0], c) for r, c in zip(res, cells) if r[1]]
+        rest = [(r, c) for r, c in zip(res, cells) if not r[1]]
+        lo, cl = min(held) if held else (0.0, None)
+        report.add("D4 swell ramp", f"{len(held)} of {len(cells)} cases: 10-300 dB/s, odd harmonics 82-440 Hz and pulses "
+                   "31-73 Hz, Tight", bool(held) and lo >= 3.0,
+                   f"shortest ramp {lo:.2f} ms" + (f" ({cl[0]:g} Hz {cl[1]} dB/s {cl[2]})" if cl else "") + "; limit 3 ms where "
+                   "the reading stays over the close level for the 10 ms before the opening (the rule's 5 ms, less 2 ms of "
+                   f"tolerance); pulse cells judged: {sum(1 for _, c in held if c[2] == 'pulse')} of 12; cells over the close "
+                   f"level all the way from its first crossing: {sum(1 for r in res if r[2])}")
+        info(report, "info D4 other swells", f"{len(rest)} cases: the reading under the close level within 10 ms of the opening",
+             ", ".join(f"{c[0]:g} Hz {c[1]} dB/s {c[2]} {r[0]:.2f}" for r, c in rest) + " ms ramp")
+
+        # D5: a chord's re-opening is not a click. Two notes a semitone apart, harmonics under 3 kHz, beat so the gate
+        # chatters (crest 0.5 / 2 / 5 dB over thr -40, so the reading never runs 6 dB over). At every re-opening (the
+        # rule's, on the twin reading, after the first close) the output's peak above 6 kHz (8th-order Butterworth
+        # high-pass) in the 1 ms from the opening is at least 60 dB under the signal's peak in the 10 ms after it. The bar
+        # is a tolerance, stated before measuring: about 30 dB under what the textbook gate's fixed 0.2 ms rise produces
+        # on the same material (printed next to it), and 60 dB is about where a click under a sustained chord stops
+        # being heard (guess). Each type at its default hold and at hold 0: at the default a trough at 196 Hz is too short
+        # to close the gate 5 dB over. Smooth's expander mostly holds 0 dB through these troughs, so its re-openings rarely
+        # ramp.
+        def reopen(c):
+            pair, crest, mode, hold = c
+            secs = 3.0
+            t = np.arange(int(secs * sr)) / sr
+            y = semitone_pair(pair, t) * np.minimum(1.0, t / 0.05)
+            x = _scale_reading(y, sr, HPF, PRECURSOR_THR + crest, start=0.1)   # no hiss: its own HF would read near -60
+            keys = dict(TIGHT if mode == 1 else SMOOTH, threshold=PRECURSOR_THR)
+            keys["hold"] = keys["hold"] if hold is None else hold
+            out, tr = fx.run(EFFECT, x, keys, ["--trace"], sr)
+            yo, g = fx.mono(out).astype(float), fx.mono(tr).astype(float)
+            opens, closes = rule_opens(twin_level(x, sr, HPF), PRECURSOR_THR, round(keys["hold"] * 1e-3 * sr))
+            tb = x * textbook_gain(g, opens, sr)
+            again = [o for o in opens if closes and o > closes[0] and o + int(0.012 * sr) < len(x)]
+            m, pre = int(0.001 * sr), int(0.010 * sr)
+            res = []
+            for o in again:
+                pk = float(np.max(np.abs(x[o:o + pre])))
+                res.append(tuple(float(fx.db(np.max(np.abs(hp_6k(z[o - pre:o + m], sr)[pre:])) / pk)) for z in (yo, tb)))
+            return res
+        pairs = ((82.41, 87.31), (110.0, 116.54), (196.0, 207.65))
+        cells = [(p, cr, m, h) for p in pairs for cr in (0.5, 2.0, 5.0) for m in (1, 2) for h in (None, 0.0)]
+        res = parallel(reopen, cells)
+        flat = [(e, tbk, c) for r, c in zip(res, cells) for e, tbk in r]
+        worst = max(flat, key=lambda v: v[0]) if flat else None
+        report.add("D5 chord re-opening", f"{len(flat)} re-openings in {len(cells)} cases: semitone pairs 82-208 Hz, crest "
+                   "0.5-5 dB over thr, Tight + Smooth, default hold and 0", bool(flat) and worst[0] <= -60.0,
+                   (f"worst click above 6 kHz {worst[0]:.1f} dB re the signal ({worst[2][0][0]:g}+{worst[2][0][1]:g} Hz "
+                    f"+{worst[2][1]:g} dB {TYPES[worst[2][2]]} hold {'default' if worst[2][3] is None else '0'}); the textbook 0.2 ms rise on the same openings: worst "
+                    f"{max(v[1] for v in flat):.1f}, median {float(np.median([v[1] for v in flat])):.1f} dB" if flat else
+                    "no re-openings")
+                   + "; limit -60 dB, a tolerance about 30 dB under the textbook's figure, stated before measuring")
 
         # D2: swells and slow onsets open without a click (g5_attack.py click cases).
         def hf_peak(z, io, s):
@@ -1750,9 +1938,11 @@ def closing_rule_checks(report, args):
                    f"step {max(r[1] for r in res):.4f} dB (version 2: 3.6 / 12.4 dB on a +5 dB step, 11.3 dB per sample on crackle)")
         x = np.concatenate([hiss(1.0, sr, -64, seed=31), fx.amp(-20) * np.sin(2 * np.pi * 1000 * np.arange(int(0.2 * sr)) / sr)])
         g = fx.db(np.maximum(fx.mono(fx.run(EFFECT, x, dict(SMOOTH, threshold=-40), ["--trace"], sr)[1]), 1e-9))
-        t_open = np.nonzero(g[sr:] >= -1.0)[0][0] / sr * 1e3
+        up = np.nonzero(g[sr:] >= -1.0)[0]
+        t_open = up[0] / sr * 1e3 if len(up) else float("inf")
         report.add("E1 Smooth floor slew", "a note after the floor", t_open <= 1.0,
-                   f"gain >= -1 dB {t_open:.2f} ms after a 1 kHz onset 20 dB over the threshold (limit 1 ms)")
+                   (f"gain >= -1 dB {t_open:.2f} ms" if len(up) else "gain never reaches -1 dB")
+                   + " after a 1 kHz onset 20 dB over the threshold (limit 1 ms)")
 
     if on("F"):
         # F: what the sidechain filter does to bass, reported for the UI (not enforced).
@@ -1820,7 +2010,7 @@ def closing_rule_checks(report, args):
 
 # ---------------------------------------------------------------------------- the plain rule
 # Rows P1 to P4. P1 renders a fixed sample of material through the engine and through plain_reference, a
-# numpy port of the rule Gate.h states (gate6_ref.py, per sample), and requires the two to agree; P2 to P4
+# numpy port of the rule Gate.h states (gate6c_ref.py, per sample), and requires the two to agree; P2 to P4
 # are the round-5 verifier's findings 4, 1 and 2 (.audit/fx-verify/r5-gate.md).
 
 PLAIN_HYSTERESIS_DB = 6.0
@@ -1848,7 +2038,7 @@ def plain_reference(x, sr, keys):
     hold_n = float(round(hold * 1e-3 * sr))
     step = 60.0 / (rel * 1e-3 * sr)
     mute = rng_db <= -89.95
-    near_lv = open_lv * 10 ** (-OPEN_NEAR_DB / 20)
+    run_lv = open_lv * 10 ** (RUN_AWAY_DB / 20)
     open_min, open_max = OPEN_MIN_MS * 1e-3 * sr, OPEN_MAX_MS * 1e-3 * sr
     offset = (EXPANDER_SLOPE - 1.0) * 20.0 * np.log10(close_lv)
     tau_max = 0.2 * sr
@@ -1856,7 +2046,8 @@ def plain_reference(x, sr, keys):
     slew = 100.0 / sr
     k_db = np.log(10.0) / 20.0
     long_ago = 1 << 30
-    is_open, below, since_near = False, 0, long_ago
+    fast = 1.0 / open_min
+    is_open, below, since_low = False, 0, long_ago
     t_gr = s_gr = rng_db
     t_from = s_from = 0.0
     t_ph = s_ph = 1.0
@@ -1871,7 +2062,7 @@ def plain_reference(x, sr, keys):
 
     for i in range(n):
         lv = L[i]
-        since_near = 0 if lv < near_lv else min(since_near + 1, long_ago)
+        since_low = 0 if lv < close_lv else min(since_low + 1, long_ago)
         settling = settle > 0
         if settling:
             settle -= 1
@@ -1879,7 +2070,7 @@ def plain_reference(x, sr, keys):
             below = 0
             if not is_open:
                 is_open = True
-                steps = min(open_max, max(open_min, OPEN_RATIO * since_near + 1.0))
+                steps = min(open_max, max(open_min, OPEN_RATIO * since_low + 1.0))
                 o_step = 1.0 / steps
                 o_curve = min(1.0, max(0.0, steps / open_min - 1.0))
                 t_from, t_ph, t_cl = gain(t_gr), (1.0 if t_gr >= 0.0 else 0.0), False
@@ -1891,13 +2082,14 @@ def plain_reference(x, sr, keys):
                 t_cl = s_cl = True
                 floor_since = 0
         if is_open:
+            adv = fast if lv >= run_lv else o_step
             if t_ph < 1.0:
-                t_ph = min(1.0, t_ph + o_step)
+                t_ph = min(1.0, t_ph + adv)
                 q = t_ph
                 g = t_from + (1.0 - t_from) * (q + o_curve * (q * q * (3.0 - 2.0 * q) - q))
                 t_gr = 0.0 if (q >= 1.0 or g >= 1.0) else log(max(g, 1e-9)) / k_db
             if s_ph < 1.0:
-                s_ph = min(1.0, s_ph + o_step)
+                s_ph = min(1.0, s_ph + adv)
                 q = s_ph
                 g = s_from + (1.0 - s_from) * (q + o_curve * (q * q * (3.0 - 2.0 * q) - q))
                 s_gr = 0.0 if (q >= 1.0 or g >= 1.0) else log(max(g, 1e-9)) / k_db
@@ -2117,6 +2309,18 @@ def plain_material(kind, sr):
         return x, PRECURSOR_THR
     if kind == "pick after a scrape":
         return _precursor_pick(sr, 164.81, "scrape", 3.0, 5.0, 4)[0], PRECURSOR_THR
+    if kind == "soft pick after a scrape":   # 3 dB over, never runs away: the ramp the band gave it
+        return _precursor_pick(sr, 110.0, "scrape", 0.5, 5.0, 5, over=3.0)[0], PRECURSOR_THR
+    if kind == "pick after its own noise":
+        return _precursor_pick(sr, 82.41, "picknoise", 20.0, None, 6)[0], PRECURSOR_THR
+    if kind == "low pulse swell":   # D4's pulse waveform, 41.2 Hz at 50 dB/s
+        t = np.arange(int(1.6 * sr)) / sr
+        y = pulse_wave(41.2, t)
+        return y / np.max(np.abs(y)) * fx.amp(np.minimum(-75.0 + 50.0 * t, -20.0)) + hiss(1.6, sr, -90.0, seed=8), -40.0
+    if kind == "semitone chord chatter":   # D5's material, crest 2 dB over
+        t = np.arange(int(2.0 * sr)) / sr
+        y = semitone_pair((110.0, 116.54), t) * np.minimum(1.0, t / 0.05)
+        return _scale_reading(y, sr, HPF, -38.0, start=0.1) + hiss(2.0, sr, -100.0, seed=9), -40.0
     if kind == "picks over a floor at thr":   # the floor's peak reading 1 dB under the threshold
         fl = _scale_reading(hiss(1.8, sr, -60, seed=12), sr, HPF, -41.0, start=0.1)
         x = np.zeros(len(fl))
@@ -2140,7 +2344,8 @@ PLAIN_KINDS = ("ringing chord C2+G2+C3", "ringing chord E2+G2", "held chord B0+F
                "palm-mute riff hum", "hand stop", "hand stop in the band", "decay into hiss", "decay into the band",
                "swell after a decay", "soft note, hard pick", "r5 t2", "r5 t8b", "picks over silence", "beat near thr",
                "noise at thr", "level steps", "pick over hiss", "pick over hum", "pick after a scrape",
-               "picks over a floor at thr")
+               "picks over a floor at thr", "soft pick after a scrape", "pick after its own noise", "low pulse swell",
+               "semitone chord chatter")
 
 
 def plain_cases():
@@ -2199,14 +2404,18 @@ def plain_rows(report, args):
         x = _scale_reading(_note(110.0, secs, sr, np.random.default_rng(3), "tone"), sr, HPF, -20.0) * fx.amp(-20.0 * np.maximum(t - 0.2, 0))
         x = x + hiss(secs, sr, -100.0, seed=5)
         g = fx.db(np.maximum(fx.mono(fx.run(EFFECT, x, dict(TIGHT, threshold=-40.0, release=rel), ["--trace"], sr)[1]), 1e-12))
-        i1 = int(np.nonzero(g > -1.0)[0][-1])
+        up = np.nonzero(g > -1.0)[0]
+        if not len(up):
+            return float("nan")
+        i1 = int(up[-1])
         down = np.nonzero(g[i1:] <= -60.0)[0]
         return int(down[0]) / sr * 1e3 if len(down) else float("inf")
     rels = (5.0, 30.0, 100.0, 500.0)
     falls = parallel(decay_fall, rels)
     report.add("P2 release on a decay", "Tight, a note decaying 20 dB/s through thr -40",
                all(abs(f - 59.0 / 60.0 * r) <= max(0.1 * 59.0 / 60.0 * r, 1.0) for f, r in zip(falls, rels)),
-               "fall from -1 to -60 dB: " + " / ".join(f"release {r:g}: {f:.1f} ms" for r, f in zip(rels, falls))
+               "fall from -1 to -60 dB: " + " / ".join(f"release {r:g}: " + ("never over -1 dB" if math.isnan(f) else f"{f:.1f} ms")
+                                                       for r, f in zip(rels, falls))
                + " (limit 59/60 x the knob, within 10 % or 1 ms)")
 
     # P3: a note picked while the last one is still in the hold or the band plays at full gain (finding 1).
@@ -2451,8 +2660,8 @@ def target_checks(report):
 
 OPEN_MIN_MS = 0.2       # kOpenMinSeconds: the fastest opening, a linear rise
 OPEN_MAX_MS = 5.0       # kOpenMaxSeconds: an opening started over the open level may finish under it
-OPEN_NEAR_DB = 1.0      # kOpenNearDb: the opening is timed over the last dB of the climb ...
-OPEN_RATIO = 0.5 * PLAIN_HYSTERESIS_DB / OPEN_NEAR_DB   # ... 3 x as long, so a steady climb opens as if timed over the band
+OPEN_RATIO = 0.5        # kOpenRatio: the opening lasts half the samples since the reading was under the close level
+RUN_AWAY_DB = PLAIN_HYSTERESIS_DB   # a reading this far over the threshold during the ramp advances it at the 0.2 ms rate
 EXPANDER_SLOPE = 3.0    # kExpanderSlope: Smooth's gain falls 2 dB per dB of floor under the close level
 TWIN_EPS_DB = 0.02      # the twin of the level against the engine's float arithmetic
 TWIN_LAW_EPS_DB = 0.1   # the same for Smooth's close and law: more than 0.02 dB seen (150 Hz filter, 192 kHz, hold 0)
@@ -2671,15 +2880,16 @@ def check_invariants(item):
         res["I3s"] = worst
 
     # I5 (closing and opening without a click), on the case's own type: the gain never falls faster than the release
-    # knob, nor rises faster than the 0.2 ms linear opening. Smooth's first window after the reset is out: there its
-    # law takes the level unslewed (Gate.cpp, settle).
+    # knob, nor rises faster than the rule's steepest opening: 1.5 x the 0.2 ms linear rate, the steepest slope of a
+    # smoothstep the run-away finish advances at the 0.2 ms rate (+1 % for float rounding). Smooth's first window after
+    # the reset is out: there its law takes the level unslewed (Gate.cpp, settle).
     own = slice(int(round(WINDOW_MS * ms)) + 1 if keys["mode"] == 2 else 0, None)
     gd = fx.db(np.maximum(g, 1e-12))[own]
     fall = gd[:-1] - gd[1:]
     knob = 60.0 / (rel * ms)
     live = (g[own][:-1] > 0) & (g[own][1:] > 0)
     res["I5c"] = float(np.max(np.where(live, fall - knob * 1.02 - 1e-5, -1.0)))
-    res["I5o"] = float(np.max(np.diff(g[own]) - 1.0 / (OPEN_MIN_MS * ms) * 1.01))
+    res["I5o"] = float(np.max(np.diff(g[own]) - 1.5 / (OPEN_MIN_MS * ms) * 1.01))
     # I6 (a lower bound): once the reading has been over the open level (within the twin's rounding) for longer than
     # the longest opening (5 ms), the gain is 0 dB.
     over_n = runs_since(np.concatenate([[True], ~(lev >= op * eps)]))[1:]   # counted from the reset at the start
@@ -2754,7 +2964,7 @@ def invariant_checks(report, args):
     vc, rc, n = worst("I5c")
     vo, ro, _ = worst("I5o")
     report.add("I5 no click", f"{n} cases, each type's own gain", vc <= 0.0 and vo <= 0.0,
-               f"fall beyond the release knob {max(vc, 0):.2e} dB per sample; rise beyond the 0.2 ms opening "
+               f"fall beyond the release knob {max(vc, 0):.2e} dB per sample; rise beyond 1.5 x the 0.2 ms linear opening "
                f"{max(vo, 0):.2e} per sample" + ("" if vc <= 0 else " at " + where(rc)) + ("" if vo <= 0 else " at " + where(ro)))
     v, r, n = worst("I6")
     report.add("I6 open means 0 dB", f"{n} cases, {sum(q['I6n'] for q in cases)} samples judged", v <= 1e-6,

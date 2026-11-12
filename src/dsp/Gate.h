@@ -17,9 +17,9 @@
 // threshold and closes once it has been under the close level (threshold - 6 dB) for more than the
 // hold; a return to the close level restarts that count. Nothing else opens or closes it, and
 // nothing lowers the gain while it is open. Closed, Tight falls 60 dB per release time to the
-// range; Smooth falls at the same rate to its expander's target, then follows it. Opening follows
-// the onset: the rise lasts three times as long as the level took to climb the last 1 dB under the
-// threshold, from a 0.2 ms linear rise for a pick to a 5 ms smoothstep for a swell.
+// range; Smooth falls at the same rate to its expander's target, then follows it. The opening
+// rise lasts half the time since the level was last under the close level, from 0.2 ms (linear) to
+// 5 ms (smoothstep); while it runs, a level 6 dB over the threshold advances it at the 0.2 ms rate.
 //
 // The gate measures where it sits and may apply its gain further down the chain (on the
 // amp's mono output), so it splits the usual process() into measure() and apply().
