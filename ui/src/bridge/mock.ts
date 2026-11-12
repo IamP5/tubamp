@@ -866,7 +866,7 @@ function emitDynMeters(now: number, inputLinear: number): void {
     const hysteresis = mode === 0 ? 0 : 6;
     const range = mode === 0 ? -120 : scaledOf("gate_range", -90);
     const releaseSec = scaledOf("gate_release", 30) / 1000;
-    const holdMs = scaledOf("gate_hold", 6);
+    const holdMs = scaledOf("gate_hold", 10);
 
     let stateCode: -1 | 0 | 1 | 2;
     if (level >= threshold) {

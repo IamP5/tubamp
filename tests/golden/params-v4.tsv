@@ -167,7 +167,7 @@
 165	reverb3_mod	Reverb 3 Mod	float	0	1	0.00100000005	1	0.350000024	3	
 166	gate_mode	Gate Mode	choice	0	2	1	1	1	4	Classic|Tight|Smooth
 167	gate_release	Gate Release	float	5	500	0.100000001	0.289064825	30	4	
-168	gate_hold	Gate Hold	float	0	250	0.100000001	1	6	4	
+168	gate_hold	Gate Hold	float	0	250	0.100000001	1	10	4	
 169	gate_range	Gate Range	float	-90	0	0.100000001	1	-90	4	
 170	gate_sc_hpf	Gate SC HPF	float	20	300	1	0.437674046	75	4	
 171	comp_type	Comp Type	choice	0	4	1	1	1	4	Classic|Clean|Squash|FET|Opto

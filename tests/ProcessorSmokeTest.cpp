@@ -298,12 +298,37 @@ void setFloatParam (tubamp::TubampAudioProcessor& proc, const char* paramId, flo
         p->setValueNotifyingHost (p->convertTo0to1 (rawValue));
 }
 
+/** Runs the message loop for at least `ms` and until a 20 ms timer of its own has fired often
+    enough for the processor's timer to have had the same turns: on a loaded machine a fixed wait
+    passes with too few timer callbacks, and the latency read after it is stale. */
+void pumpMessages (int ms)
+{
+    struct Ticks : juce::Timer
+    {
+        void timerCallback() override { ++count; }
+        int count = 0;
+    } ticks;
+
+    ticks.startTimer (20);
+    const auto start = juce::Time::getMillisecondCounter();
+    const int wanted = ms / 20 + 2;
+
+    for (;;)
+    {
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        const auto elapsed = (int) (juce::Time::getMillisecondCounter() - start);
+
+        if ((elapsed >= ms && ticks.count >= wanted) || elapsed >= 5000)
+            break;
+    }
+}
+
 /** The latency a host reads once the message thread has had its turn: it is reported from
     there (a 20 ms timer hands over what the audio thread applies, or works the figure out itself
     once the audio has stopped), never from processBlock. */
 int reportedLatency (tubamp::TubampAudioProcessor& proc)
 {
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (80);
+    pumpMessages (80);
     return proc.getLatencySamples();
 }
 
@@ -467,7 +492,7 @@ bool runChainOrderTests (tubamp::TubampAudioProcessor& proc, double sampleRate, 
     proc.setChainOrder (chain::defaultOrder(), {});
     changeNotifications = 0;
     proc.setStateInformation (blob.getData(), (int) blob.getSize());
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+    pumpMessages (50);
 
     ok &= expect (chain::toString (proc.getChainOrder()) == customText,
                   "order survives getStateInformation -> setStateInformation");
@@ -486,7 +511,7 @@ bool runChainOrderTests (tubamp::TubampAudioProcessor& proc, double sampleRate, 
 
         proc.setChainOrder (custom, customRows);
         proc.setStateInformation (legacyBlob.getData(), (int) legacyBlob.getSize());
-        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        pumpMessages (50);
 
         ok &= expect (chain::toString (proc.getChainOrder()) == classicText,
                       "legacy state without chainOrder restores classicOrder(), not just the amp");
@@ -567,7 +592,7 @@ bool runInstanceModelTests (tubamp::TubampAudioProcessor& proc, double sampleRat
 
     proc.setChainOrder (chain::defaultOrder(), {});
     proc.setStateInformation (blob.getData(), (int) blob.getSize());
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+    pumpMessages (50);
 
     ok &= expect (chain::toString (proc.getChainOrder()) == instancedText
                       && proc.getChainRows() == instancedRows,
@@ -635,7 +660,7 @@ bool runInstanceModelTests (tubamp::TubampAudioProcessor& proc, double sampleRat
 
         proc.setChainOrder (chain::defaultOrder(), {});
         proc.setStateInformation (craftedBlob.getData(), (int) craftedBlob.getSize());
-        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        pumpMessages (50);
 
         ok &= expect (chain::toString (proc.getChainOrder()) == chain::toString (allNewInstances),
                       "setStateInformation prefers chainOrderV2 over a stale chainOrder");
@@ -1119,7 +1144,7 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
 
     proc.setChainOrder (chain::defaultOrder(), {});
     proc.setStateInformation (blob.getData(), (int) blob.getSize());
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+    pumpMessages (50);
 
     ok &= expect (chain::toString (proc.getChainOrder()) == withFxText2,
                   "fx tokens survive getStateInformation -> setStateInformation");
@@ -1147,7 +1172,7 @@ bool runFxSlotTests (tubamp::TubampAudioProcessor& proc, double sampleRate, int 
 
         proc.setChainOrder (chain::defaultOrder(), {});
         proc.setStateInformation (legacyBlob.getData(), (int) legacyBlob.getSize());
-        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        pumpMessages (50);
 
         bool slotsClean = true;
 
@@ -1390,7 +1415,7 @@ bool runDualAmpLaneTests (tubamp::TubampAudioProcessor& proc, const juce::File& 
     // --- load engine B: both lanes now carry a live NAM engine.
     const auto errorB = proc.loadModelB (modelFile);
     ok &= expect (errorB.isEmpty(), "loadModelB accepts a .nam file");
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+    pumpMessages (100);
     ok &= expect (proc.namEngineB.hasModel(), "engine B reports a model after loadModelB");
 
     bool finiteBoth = true;
@@ -1469,7 +1494,7 @@ bool runSplitLatencyTests (tubamp::TubampAudioProcessor& proc, const juce::File&
 
     const auto error = proc.loadModel (modelFile);
     ok &= expect (error.isEmpty(), "loadModel accepts the model at the resampled rate");
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+    pumpMessages (100);
 
     proc.setChainOrder (chain::Order { BlockId::amp }, {});
     const int serialLatency = reportedLatency (proc);
@@ -1565,7 +1590,7 @@ bool runSplitStateTests (tubamp::TubampAudioProcessor& proc, double sampleRate, 
 
     proc.setChainOrder (chain::defaultOrder(), {});
     proc.setStateInformation (blob.getData(), (int) blob.getSize());
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+    pumpMessages (50);
 
     ok &= expect (chain::toString (proc.getChainOrder()) == structuredText,
                   "structure survives getStateInformation -> setStateInformation");
@@ -1634,7 +1659,7 @@ bool runModelPathBStateTests (tubamp::TubampAudioProcessor& proc, const juce::Fi
     proc.prepareToPlay (sampleRate, blockSize);
 
     const auto errorB = proc.loadModelB (modelFile);
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+    pumpMessages (100);
     ok &= expect (errorB.isEmpty() && proc.getLoadedModelPathB() == modelFile.getFullPathName(),
                   "loadModelB records loadedModelPathB");
 
@@ -1646,7 +1671,7 @@ bool runModelPathBStateTests (tubamp::TubampAudioProcessor& proc, const juce::Fi
     ok &= expect (proc.getLoadedModelPathB().isEmpty(), "clearModelB empties loadedModelPathB");
 
     proc.setStateInformation (blob.getData(), (int) blob.getSize());
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+    pumpMessages (100);
 
     ok &= expect (proc.getLoadedModelPathB() == modelFile.getFullPathName(),
                   "modelPathB survives getStateInformation -> setStateInformation");
@@ -1661,7 +1686,7 @@ bool runModelPathBStateTests (tubamp::TubampAudioProcessor& proc, const juce::Fi
         juce::AudioProcessor::copyXmlToBinary (*xml, legacyBlob);
 
         proc.setStateInformation (legacyBlob.getData(), (int) legacyBlob.getSize());
-        juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+        pumpMessages (100);
 
         ok &= expect (proc.getLoadedModelPathB().isEmpty(),
                       "state with no modelPathB attribute restores engine B as empty");
@@ -1673,7 +1698,7 @@ bool runModelPathBStateTests (tubamp::TubampAudioProcessor& proc, const juce::Fi
 
     // --- preset (captureStateVar/applyStateVar) round-trip
     proc.loadModelB (modelFile);
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+    pumpMessages (100);
     const auto slotState = proc.captureStateVar();
 
     proc.clearModelB();
@@ -4200,7 +4225,7 @@ bool runEqDriveRtTests (tubamp::TubampAudioProcessor& proc, double sampleRate, i
         // The latency is reported by the message thread's timer: give it a tick now and then.
         if (block % 20 == 10)
         {
-            juce::MessageManager::getInstance()->runDispatchLoopUntil (25);
+            pumpMessages (25);
 
             if (proc.getLatencySamples() != lastLatency)
             {
@@ -6202,7 +6227,7 @@ bool runLatencyThreadTests (double sampleRate, int blockSize)
         });
 
         while (! done)
-            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+            pumpMessages (10);
 
         audio.join();
         const int settled = reportedLatency (fresh);
@@ -6246,7 +6271,7 @@ bool runLatencyThreadTests (double sampleRate, int blockSize)
             {
                 buffer.clear();
                 fresh.processBlock (buffer, midi);
-                juce::MessageManager::getInstance()->runDispatchLoopUntil (2);
+                pumpMessages (2);
             }
 
             setFloatParam (fresh, params::driveType, (float) tubamp::DriveFx::Type::boost);
@@ -6255,7 +6280,7 @@ bool runLatencyThreadTests (double sampleRate, int blockSize)
 
             while (juce::Time::getMillisecondCounterHiRes() - changedAt < 300.0)
             {
-                juce::MessageManager::getInstance()->runDispatchLoopUntil (2);
+                pumpMessages (2);
 
                 if (fresh.getLatencySamples() == 0)
                 {
@@ -6305,7 +6330,7 @@ bool runLatencyThreadTests (double sampleRate, int blockSize)
                 const auto until = juce::Time::getMillisecondCounterHiRes() + blockMs;
 
                 while (juce::Time::getMillisecondCounterHiRes() < until)
-                    juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+                    pumpMessages (1);
             }
         };
 
@@ -6463,7 +6488,7 @@ bool runRestoreOrderTests (double sampleRate, int blockSize)
         const auto restore = [&blob] (tubamp::TubampAudioProcessor& p)
         {
             p.setStateInformation (blob.getData(), (int) blob.getSize());
-            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+            pumpMessages (20);
         };
 
         tubamp::TubampAudioProcessor first;
@@ -6641,7 +6666,7 @@ bool runLaneRetargetTests (const juce::File& modelFile, double sampleRate)
                 if (fresh.loadModel (modelFile).isNotEmpty())
                     continue;
 
-                juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+                pumpMessages (100);
                 fresh.setChainOrder ({ BlockId::split, BlockId::amp, BlockId::lane2, BlockId::mix }, {});
                 setBoolParam (fresh, params::ampEqOn, false);
             }
@@ -7240,7 +7265,7 @@ int main (int argc, char** argv)
         return 1;
     }
 
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+    pumpMessages (100);
 
     const double wetRms = processSineRms (proc, sampleRate, blockSize);
     const bool namActive = proc.namEngine.hasModel();

@@ -32,7 +32,7 @@ export const REVERB_STARTING_POINTS: StartingPoints = {
  *  `kGateScHpfDefault`). */
 export const GATE_STARTING_POINTS: StartingPoints = {
   release: [30, 30, 80],
-  hold: [6, 6, 10],
+  hold: [6, 10, 10],
   sc_hpf: [75, 75, 75],
 };
 

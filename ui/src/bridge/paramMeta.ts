@@ -357,13 +357,13 @@ const MOD_SYNCS = [
   "1/4", "1/2T", "1/4.", "1/2", "1/2.", "1/1", "2/1", "4/1",
 ];
 
-/** Gate is a singleton: no instance cloning. Hold defaults to 6 ms (Tight), as
- *  Gate.h's `kGateHoldDefault[Tight]`, not the contract table's 10. SC HPF defaults
+/** Gate is a singleton: no instance cloning. Hold defaults to 10 ms (Tight), as
+ *  Gate.h's `kGateHoldDefault[Tight]`. SC HPF defaults
  *  to 75 Hz (`kGateScHpfDefault[Tight]`, 4th-order Butterworth, 24 dB per octave). */
 const GATE_PRO: readonly LayoutEntry[] = [
   c("gate_mode", "Gate Mode", GATE_MODES, 1),
   s("gate_release", "Gate Release", 5, 500, 0.1, 30, "ms", true),
-  s("gate_hold", "Gate Hold", 0, 250, 0.1, 6, "ms"),
+  s("gate_hold", "Gate Hold", 0, 250, 0.1, 10, "ms"),
   s("gate_range", "Gate Range", -90, 0, 0.1, -90, "dB"),
   s("gate_sc_hpf", "Gate SC HPF", 20, 300, 1, 75, "Hz", true),
 ];
