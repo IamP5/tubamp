@@ -358,8 +358,8 @@ private:
     };
 
     /** Audio thread: silences one block instance that is re-entering the chain, so it
-        cannot replay what it was holding when it left. `snap`: a restored state, so the block
-        takes its on or off at once instead of fading in. Allocation-free. */
+        cannot replay what it was holding when it left. `snap`: a state restored while nothing
+        is heard, so the block takes its on or off at once instead of fading in. Allocation-free. */
     void resetBlockInstance (chain::BlockId id, bool snap) noexcept;
 
     /** Any thread: what selects a block's engine type (type, voicing, colour), so a restore can
@@ -765,6 +765,9 @@ private:
 
     /** A state is being applied / was applied since the last callback (RestoreScope). */
     std::atomic<bool> stateRestoring { false }, stateRestored { false };
+    /** The last callback's output was not silence, so a restore lands on sound being heard.
+        Audio thread only (and prepareToPlay). */
+    bool outputSounding = false;
     /** blockSignature as of the last callback, per block. Audio thread only. */
     std::array<int, chain::numBlockTypes> lastSignature {};
 

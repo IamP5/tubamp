@@ -6508,25 +6508,373 @@ bool runRestoreOrderTests (double sampleRate, int blockSize)
                        firstDiff);
         ok &= expect (firstDiff < 0, what);
 
-        // Live: the chord plays through the restore.
-        tubamp::TubampAudioProcessor fresh;
-        restore (fresh);
-        fresh.prepareToPlay (sampleRate, blockSize);
-        const auto settled = renderSignal (fresh, chord, blockSize);
+        // Live: the chord plays through the restore, which changes the blocks as the same change by
+        // hand does (runLiveRestoreTests): every parameter and the chain set between two callbacks.
+        tubamp::TubampAudioProcessor target;
+        restore (target);
 
-        tubamp::TubampAudioProcessor live;
-        live.prepareToPlay (sampleRate, blockSize);
-        renderSignal (live, powerChord (sampleRate, 0.3), blockSize);
-        restore (live);
-        const auto afterRestore = renderSignal (live, chord, blockSize);
-        double worst = 0.0;
+        const auto playThrough = [&] (const std::function<void (tubamp::TubampAudioProcessor&)>& change)
+        {
+            tubamp::TubampAudioProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+            auto heard = renderSignal (p, powerChord (sampleRate, 0.3), blockSize);
+            change (p);
+            const auto after = renderSignal (p, chord, blockSize);
+            heard.insert (heard.end(), after.begin(), after.end());
+            return heard;
+        };
 
-        for (int i = 0; i < at (0.05); ++i)
-            worst = std::max (worst, (double) std::abs (afterRestore[(size_t) i] - settled[(size_t) i]));
+        const auto byRestore = playThrough (restore);
+        const auto byHand = playThrough ([&target] (tubamp::TubampAudioProcessor& p)
+        {
+            for (auto* param : target.getParameters())
+                if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*> (param))
+                    setFloatParam (p, withId->paramID.toRawUTF8(), target.apvts.getRawParameterValue (withId->paramID)->load());
 
-        std::snprintf (what, sizeof (what), "%s restored while a chord plays: within %.1f dBFS of the same state restored before "
-                       "prepareToPlay over the next 50 ms (bound -40: no block passes its input dry)", st.label, toDb (worst));
-        ok &= expect (toDb (worst) <= -40.0, what);
+            p.setChainOrder (target.getChainOrder(), {});
+            pumpMessages (20);
+        });
+
+        // A knob set by hand goes through its 0-1 value and can stay an ulp away from the restored
+        // one (mod_rate 1 against 1.00000012), and an LFO drifts on that.
+        double handDiff = byRestore.size() == byHand.size() ? 0.0 : 1.0;
+
+        for (size_t i = 0; i < std::min (byRestore.size(), byHand.size()); ++i)
+            handDiff = std::max (handDiff, (double) std::abs (byRestore[i] - byHand[i]));
+
+        std::snprintf (what, sizeof (what), "%s restored while a chord plays: within %.1f dBFS of every parameter and the chain set "
+                       "by hand (bound -60)", st.label, toDb (handDiff));
+        ok &= expect (toDb (handDiff) <= -60.0, what);
+    }
+
+    return ok;
+}
+
+/** A state restored or a preset loaded while audio plays changes the blocks as the same change by
+    hand does: a retyped block crossfades, a toggle fades, a fade in flight carries on. */
+bool runLiveRestoreTests (double sampleRate)
+{
+    std::printf ("live restore:\n");
+    bool ok = true;
+    char what[400];
+
+    const int blockSize = 256;
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const int changeAt = ((at (0.4) + blockSize - 1) / blockSize) * blockSize;
+    const auto chord = powerChord (sampleRate, 0.9);
+
+    using Settings = std::vector<std::pair<const char*, float>>;
+    const Settings base { { params::compOn, 1 }, { params::compType, 1 }, { params::compThreshold, -24 }, { params::compRatio, 4 },
+                          { params::compMakeup, 4 }, { params::eqOn, 1 }, { params::eqType, 1 }, { params::eqBass, 6 },
+                          { params::eqMid, 4 }, { params::modOn, 1 }, { params::modType, 0 }, { params::modChorusMode, 2 },
+                          { params::modMix, 0.4f } };
+
+    const auto make = [&] (const Settings& extra)
+    {
+        auto p = std::make_unique<tubamp::TubampAudioProcessor>();
+
+        for (const auto* s : { &base, &extra })
+            for (const auto& [id, value] : *s)
+                setFloatParam (*p, id, value);
+
+        p->setChainOrder ({ BlockId::comp, BlockId::eq, BlockId::mod }, {});
+        return p;
+    };
+
+    const auto steady = [&] (const Settings& extra)
+    {
+        auto p = make (extra);
+        p->prepareToPlay (sampleRate, blockSize);
+        return renderSignal (*p, chord, blockSize);
+    };
+
+    // From a live instance in `base`: `change` runs before the callback at changeAt, `later` before
+    // the next one.
+    const auto live = [&] (const std::function<void (tubamp::TubampAudioProcessor&)>& change,
+                           const std::function<void (tubamp::TubampAudioProcessor&)>& later = {})
+    {
+        auto p = make ({});
+        p->prepareToPlay (sampleRate, blockSize);
+        return renderSignal (*p, chord, blockSize, [&] (int start)
+        {
+            if (start == changeAt)               change (*p);
+            if (start == changeAt + blockSize && later) later (*p);
+        });
+    };
+
+    const auto tickDb = [&] (const std::vector<float>& y, const std::vector<float>& before, const std::vector<float>& after)
+    {
+        return popExcessDb (highBand (y, sampleRate, 2000.0), highBand (before, sampleRate, 2000.0), highBand (after, sampleRate, 2000.0),
+                            (size_t) (changeAt - at (0.001)), (size_t) (changeAt + at (0.3)), (size_t) at (0.2));
+    };
+
+    // The largest 10 ms level over the louder of the two steady renders in the same window.
+    const auto overDb = [&] (const std::vector<float>& y, const std::vector<float>& before, const std::vector<float>& after)
+    {
+        double over = -100.0;
+
+        for (int f = changeAt; f + at (0.01) < changeAt + at (0.3); f += at (0.005))
+            over = std::max (over, toDb (rmsOf (y, (size_t) f, (size_t) (f + at (0.01))))
+                                       - toDb (std::max (rmsOf (before, (size_t) f, (size_t) (f + at (0.01))),
+                                                         rmsOf (after, (size_t) f, (size_t) (f + at (0.01))))));
+        return over;
+    };
+
+    struct Change { const char* label; Settings settings; };
+    const Change changes[] { { "comp Clean -> FET", { { params::compType, 3 } } },
+                             { "EQ Parametric -> Graphic", { { params::eqType, 3 } } },
+                             { "mod Chorus -> Phaser", { { params::modType, 1 } } },
+                             { "chorus CE -> Dimension", { { params::modChorusMode, 3 } } },
+                             { "all three types", { { params::compType, 3 }, { params::eqType, 3 }, { params::modType, 1 } } } };
+    const auto before = steady ({});
+
+    for (const auto& c : changes)
+    {
+        auto writer = make (c.settings);
+        juce::MemoryBlock blob;
+        writer->getStateInformation (blob);
+        const auto preset = writer->captureStateVar();
+        const auto after = steady (c.settings);
+
+        const auto byHand = live ([&] (tubamp::TubampAudioProcessor& p) { for (const auto& [id, v] : c.settings) setFloatParam (p, id, v); });
+        const auto byRestore = live ([&] (tubamp::TubampAudioProcessor& p) { p.setStateInformation (blob.getData(), (int) blob.getSize()); });
+        const auto byPreset = live ([&] (tubamp::TubampAudioProcessor& p) { p.applyStateVar (preset); });
+
+        std::snprintf (what, sizeof (what), "%s restored while a chord plays: the same render as the change by hand", c.label);
+        ok &= expectIdentical (byRestore, byHand, what);
+        // A preset stores each knob in its own range, and the conversion back can land an ulp away
+        // from the value set by hand.
+        double presetDiff = 0.0;
+
+        for (size_t i = 0; i < byPreset.size(); ++i)
+            presetDiff = std::max (presetDiff, (double) std::abs (byPreset[i] - byHand[i]));
+
+        std::snprintf (what, sizeof (what), "%s loaded as a preset while a chord plays: within %.1f dBFS of the change by hand "
+                       "(bound -120)", c.label, toDb (presetDiff));
+        ok &= expect (byPreset.size() == byHand.size() && toDb (presetDiff) <= -120.0, what);
+
+        const double tick = tickDb (byRestore, before, after), over = overDb (byRestore, before, after);
+        std::snprintf (what, sizeof (what), "%s restored while a chord plays: tick %.1f dBFS over the steady high band (bound -60), "
+                       "level %.2f dB over the louder steady render (bound 1)", c.label, tick, over);
+        ok &= expect (tick <= -60.0 && over <= 1.0, what);
+    }
+
+    {
+        const Settings retyped { { params::compType, 3 }, { params::eqType, 3 }, { params::modType, 1 } };
+        Settings retypedOff = retyped;
+        retypedOff.push_back ({ params::compOn, 0 });
+
+        auto writer = make (retyped);
+        juce::MemoryBlock blob;
+        writer->getStateInformation (blob);
+        auto writerOff = make (retypedOff);
+        juce::MemoryBlock blobOff;
+        writerOff->getStateInformation (blobOff);
+        const auto afterOff = steady (retypedOff);
+
+        const auto toggled = live ([&] (tubamp::TubampAudioProcessor& p)
+        {
+            p.setStateInformation (blob.getData(), (int) blob.getSize());
+            setFloatParam (p, params::compOn, 0.0f);
+        });
+        double tick = tickDb (toggled, before, afterOff);
+        std::snprintf (what, sizeof (what), "comp switched off by hand right after a live restore, before the next callback: tick %.1f "
+                       "dBFS over the steady high band (bound -60)", tick);
+        ok &= expect (tick <= -60.0, what);
+
+        const auto inFade = live ([&] (tubamp::TubampAudioProcessor& p) { setFloatParam (p, params::compOn, 0.0f); },
+                                  [&] (tubamp::TubampAudioProcessor& p) { p.setStateInformation (blobOff.getData(), (int) blobOff.getSize()); });
+        tick = tickDb (inFade, before, afterOff);
+        std::snprintf (what, sizeof (what), "a state restored while comp fades out by hand: tick %.1f dBFS over the steady high band "
+                       "(bound -60)", tick);
+        ok &= expect (tick <= -60.0, what);
+    }
+
+    return ok;
+}
+
+/** mod_type asked for again while a switch fades: the newest request waits for the fade to end and
+    then fades from the type it reached, so nothing cuts and the block ends on the last request. */
+bool runModRequestTests (double sampleRate)
+{
+    std::printf ("repeated mod_type requests:\n");
+    bool ok = true;
+    char what[400];
+
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+
+    struct Signal { const char* label; std::vector<float> x; };
+    const Signal signals[] { { "power chord", powerChord (sampleRate, 2.2) },
+                             { "110 Hz note", sineSignal (sampleRate, 110.0, juce::Decibels::decibelsToGain (-12.0f), at (2.2)) } };
+
+    // --- through the processor: no request, however soon after the last, ticks.
+    {
+        const int blockSize = 128;
+        const auto onBlock = [blockSize] (int frame) { return ((frame + blockSize - 1) / blockSize) * blockSize; };
+        const int first = onBlock (at (0.4));
+
+        const auto render = [&] (const std::vector<float>& x, int fromType, const std::vector<std::pair<int, int>>& requests)
+        {
+            tubamp::TubampAudioProcessor fresh;
+            setFloatParam (fresh, params::modType, (float) fromType);
+            setFloatParam (fresh, params::modMix, 0.5f);
+            fresh.setChainOrder ({ BlockId::mod }, {});
+            fresh.prepareToPlay (sampleRate, blockSize);
+            size_t next = 0;
+
+            return renderSignal (fresh, x, blockSize, [&] (int start)
+            {
+                for (; next < requests.size() && requests[next].first <= start; ++next)
+                    setFloatParam (fresh, params::modType, (float) requests[next].second);
+            });
+        };
+
+        for (const auto& s : signals)
+        {
+            double steadyPeak = 0.0;
+
+            for (int t = 0; t < 3; ++t)
+                steadyPeak = std::max (steadyPeak, peakIn (highBand (render (s.x, t, {}), sampleRate, 2000.0), (size_t) at (0.2), s.x.size()));
+
+            const auto tickOf = [&] (const std::vector<float>& y)
+            {
+                const double excess = peakIn (highBand (y, sampleRate, 2000.0), (size_t) (first - at (0.001)), y.size()) - steadyPeak;
+                return excess > 0.0 ? toDb (excess) : -240.0;
+            };
+
+            int runs = 0, over = 0;
+            double worst = -240.0;
+
+            for (int a = 0; a < 3; ++a)
+                for (int b = 0; b < 3; ++b)
+                    for (int c = 0; c < 3; ++c)
+                    {
+                        if (b == a || c == b)
+                            continue;
+
+                        for (const double gapMs : { 2.0, 10.0, 30.0, 60.0, 120.0 })
+                        {
+                            const double tick = tickOf (render (s.x, a, { { first, b }, { onBlock (first + at (gapMs * 0.001)), c } }));
+                            ++runs;
+                            worst = std::max (worst, tick);
+
+                            if (tick > -60.0)
+                            {
+                                ++over;
+                                std::snprintf (what, sizeof (what), "%s: mod_type %d -> %d, then %d after %.0f ms ticks %.1f dBFS over the "
+                                               "steady high band (bound -60)", s.label, a, b, c, gapMs, tick);
+                                ok &= expect (false, what);
+                            }
+                        }
+                    }
+
+            for (const int everyBlocks : { 1, 3 })
+                for (const auto& sequence : { std::vector<int> { 0, 1, 2 }, std::vector<int> { 0, 1 } })
+                {
+                    std::vector<std::pair<int, int>> requests;
+
+                    for (int k = 0, f = first; f < first + at (0.6); ++k, f += everyBlocks * blockSize)
+                        requests.push_back ({ f, sequence[(size_t) (k + 1) % sequence.size()] });
+
+                    const double tick = tickOf (render (s.x, sequence[0], requests));
+                    ++runs;
+                    worst = std::max (worst, tick);
+                    over += tick > -60.0 ? 1 : 0;
+                }
+
+            std::snprintf (what, sizeof (what), "%s: a second mod_type request 2 to 120 ms into the first one's fade (all 12 type "
+                           "triples) and requests every 1 or 3 blocks for 0.6 s (%d renders): worst tick %.1f dBFS over the steady "
+                           "high band (bound -60), %d over", s.label, runs, worst, over);
+            ok &= expect (over == 0, what);
+        }
+    }
+
+    // --- the dispatcher: after the last request it ends on that type, its fade from the type the
+    // previous one reached: from then on its output is the requested engine's alone, started where that
+    // fade started. Each fade is at most a hold (50 ms), the longest correlation wait (400 ms) and a bass
+    // fade (120 ms), and the last request waits for at most one fade before its own.
+    {
+        const int blockSize = juce::jmax (1, at (512.0 / 48000.0));
+        const juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) blockSize, 2 };
+        const int fadeReach = at (0.6), bound = at (1.15);
+
+        const auto run = [&] (const std::vector<float>& x, int from, int to, int fromType, const std::vector<std::pair<int, int>>& requests)
+        {
+            tubamp::Modulation m;
+            m.prepare (spec);
+            tubamp::ModParams p;
+            p.mix = 0.5f;
+            p.type = fromType;
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            std::vector<float> out;
+            size_t next = 0;
+
+            for (int start = from; start < to; start += blockSize)
+            {
+                const int n = std::min (blockSize, to - start);
+
+                for (; next < requests.size() && requests[next].first <= start; ++next)
+                    p.type = requests[next].second;
+
+                for (int ch = 0; ch < 2; ++ch)
+                    std::copy (x.begin() + start, x.begin() + start + n, buffer.getWritePointer (ch));
+
+                m.setParameters (p);
+                m.process (juce::dsp::AudioBlock<float> (buffer).getSubBlock (0, (size_t) n));
+                out.insert (out.end(), buffer.getReadPointer (0), buffer.getReadPointer (0) + n);
+            }
+
+            return out;
+        };
+
+        struct Scenario { const char* label; int fromType; std::vector<std::pair<int, int>> requests; };
+        std::vector<Scenario> scenarios;
+        const int first = at (0.4) / blockSize * blockSize;
+        scenarios.push_back ({ "chorus -> phaser, asked back one block later", 0, { { first, 1 }, { first + blockSize, 0 } } });
+        scenarios.push_back ({ "phaser -> tremolo, then chorus three blocks later", 1, { { first, 2 }, { first + 3 * blockSize, 0 } } });
+
+        for (const int everyBlocks : { 1, 4 })
+        {
+            Scenario storm { everyBlocks == 1 ? "a request every block for 0.6 s, cycling the three types"
+                                              : "a request every fourth block for 0.6 s, chorus and phaser", 0, {} };
+
+            for (int k = 0, f = first; f < first + at (0.6); ++k, f += everyBlocks * blockSize)
+                storm.requests.push_back ({ f, everyBlocks == 1 ? (k + 1) % 3 : (k + 1) % 2 });
+
+            scenarios.push_back (storm);
+        }
+
+        for (const auto& s : signals)
+            for (const auto& sc : scenarios)
+            {
+                const int last = sc.requests.back().first, want = sc.requests.back().second;
+                const int to = juce::jmin ((int) s.x.size(), last + bound + fadeReach + blockSize);
+                const auto y = run (s.x, 0, to, sc.fromType, sc.requests);
+                int settled = -1;
+
+                // The fade towards `want` started at a block boundary at most one fade before the last
+                // request (it was already heading there) or at most one fade after it.
+                for (int start = juce::jmax (0, (last - fadeReach) / blockSize * blockSize); start <= last + fadeReach && settled < 0; start += blockSize)
+                {
+                    const auto alone = run (s.x, start, juce::jmin (to, start + fadeReach + blockSize), want, {});
+                    const int tail = (int) alone.size() - blockSize;
+
+                    if (tail <= 0 || ! std::equal (alone.begin() + tail, alone.end(), y.begin() + start + tail))
+                        continue;
+
+                    int end = tail;
+
+                    while (end > 0 && alone[(size_t) end - 1] == y[(size_t) (start + end - 1)])
+                        --end;
+
+                    settled = juce::jmax (0, start + end - last);
+                }
+
+                std::snprintf (what, sizeof (what), "%s, %s: the block ends on the last requested type, its output that engine's "
+                               "alone %.0f ms after the last request (bound %.0f ms)", s.label, sc.label,
+                               settled < 0 ? -1.0 : 1000.0 * settled / sampleRate, 1000.0 * bound / sampleRate);
+                ok &= expect (settled >= 0 && settled <= bound, what);
+            }
     }
 
     return ok;
@@ -7452,8 +7800,16 @@ int main (int argc, char** argv)
                             : "FAIL: an absurd sample reaches the host or latches a state\n");
 
     const bool restoreOrderPass = runRestoreOrderTests (sampleRate, blockSize);
-    std::printf (restoreOrderPass ? "PASS: a restored state takes effect at once, whatever the order of restore and prepare\n"
-                                  : "FAIL: a restored state fades in, or depends on the order of restore and prepare\n");
+    std::printf (restoreOrderPass ? "PASS: a state restored while nothing is heard takes effect at once, whatever the order of restore and prepare; under sound it is the change by hand\n"
+                                  : "FAIL: a state restored while nothing is heard fades in or depends on the order of restore and prepare, or one under sound is not the change by hand\n");
+
+    const bool liveRestorePass = runLiveRestoreTests (sampleRate);
+    std::printf (liveRestorePass ? "PASS: a state restored or a preset loaded while audio plays changes blocks as a hand change does\n"
+                                 : "FAIL: a state restored or a preset loaded while audio plays cuts\n");
+
+    const bool modRequestPass = runModRequestTests (sampleRate);
+    std::printf (modRequestPass ? "PASS: mod_type asked for during a fade waits for it, never cuts, and ends on the last request\n"
+                                : "FAIL: mod_type asked for during a fade cuts or ends on the wrong type\n");
 
     const bool headroomPass = runHeadroomTests (sampleRate, blockSize);
     std::printf (headroomPass ? "PASS: levels above full scale leave the plugin unclipped and finite\n"
@@ -7470,7 +7826,7 @@ int main (int argc, char** argv)
                    && nonFinitePass && togglePass && modSwitchPass && laneChangePass && accountingPass
                    && freshInstallPass && startingPointPass
                    && latencyThreadPass && bypassedTypePass && laneRetargetPass && driveLanePass && modLevelPass
-                   && absurdPass && headroomPass && restoreOrderPass
+                   && absurdPass && headroomPass && restoreOrderPass && liveRestorePass && modRequestPass
                ? 0
                : 1;
 }

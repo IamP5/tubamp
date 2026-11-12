@@ -470,10 +470,10 @@ void Modulation::process (juce::dsp::AudioBlock<float> block)
         active = requested;
         outgoing = -1;
     }
-    else if (requested != active)
+    else if (requested != active && outgoing < 0)
     {
-        // Every switch starts its engine in the block the old one did, so a second switch
-        // inside a crossfade cuts the first one short.
+        // A request made while a fade runs waits for it to end and then fades from the type
+        // it reached: starting it now would drop the outgoing engine mid-fade, a hard cut.
         outgoing = active;
         active = requested;
         resetEngine (active);

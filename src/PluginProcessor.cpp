@@ -1016,6 +1016,7 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
             fader->prepare (spec);
 
     // Every engine was just prepared, so none holds anything from before.
+    outputSounding = false;
     engineRan.fill (false);
     engineRunsNow.fill (false);
     engineStale.fill (false);
@@ -1285,13 +1286,17 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     prevPresent = present;
 
-    // A whole state applied (host restore, preset, A/B) is not a block switched during playback:
-    // every block takes its restored state at once, as the old build did. A block entering the
-    // chain is reset here, however many there are (no drain, no dry pass); one whose type the
-    // restore changed is reset onto it rather than crossfading; and every fader snaps to the
-    // block's restored on or off, with no settle and no fade. So a state restored onto a prepared
-    // or running instance renders as one restored before prepareToPlay.
-    if (stateRestoring.load (std::memory_order_acquire) || stateRestored.exchange (false, std::memory_order_acq_rel))
+    // A whole state applied (host restore, preset, A/B) while nothing is heard (a session loading,
+    // an offline render, a host running silence) takes effect at once, as the old build did: a
+    // block entering the chain is reset here, however many there are (no drain, no dry pass); one
+    // whose type the restore changed is reset onto it rather than crossfading; and every fader snaps
+    // to the block's restored on or off, with no settle and no fade. So such a render does not
+    // depend on whether the host prepared or restored first. Under sound a reset or a snap would cut
+    // it in one sample, so a restore then changes blocks as the same change by hand does.
+    const bool restored = stateRestoring.load (std::memory_order_acquire)
+                          || stateRestored.exchange (false, std::memory_order_acq_rel);
+
+    if (restored && ! outputSounding)
     {
         for (int index = 0; index < chain::numBlockTypes; ++index)
         {
@@ -1486,6 +1491,7 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const float mag = buffer.getMagnitude (0, numSamples);
         float prev = outputPeak.load (std::memory_order_relaxed);
         while (mag > prev && ! outputPeak.compare_exchange_weak (prev, mag, std::memory_order_relaxed)) {}
+        outputSounding = mag > 0.0f;
     }
 }
 

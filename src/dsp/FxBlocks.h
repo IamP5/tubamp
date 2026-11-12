@@ -330,7 +330,8 @@ struct ModParams
     from this block on — while the outgoing engine stays heard alone for
     crossfadeHoldSamples() (the incoming one settling unheard), then a PowerCrossfade over
     crossfadeSamples() hands over, so once the fade is over the output is the old block's, bit
-    for bit. */
+    for bit. A change asked for during a fade waits for it to end, then fades from the type it
+    reached to the newest request. */
 class Modulation
 {
 public:

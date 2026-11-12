@@ -797,7 +797,7 @@ std::vector<LegacyCase> buildLegacyCases()
          { { 2.0, "mod_type", 2.0f }, { 4.0, "mod_type", 1.0f } });
     cases.back().dumpable = false;
     // Back to a type that ran before, a knob step inside a fade, a change while off (it lands
-    // when the block comes back on), and a change during a fade (it cuts that fade short).
+    // when the block comes back on), and a change during a fade (it waits for that fade to end).
     add ("mod3_typesteps", LegacyKind::mod, 2, { { "mod3_type", 1.0f }, { "mod3_depth", 0.6f } },
          { { 1.0, "mod3_type", 0.0f }, { 1.01, "mod3_depth", 0.9f }, { 2.0, "mod3_type", 1.0f },
            { 2.5, "mod3_on", 0.0f }, { 2.8, "mod3_type", 2.0f }, { 3.2, "mod3_on", 1.0f },
@@ -867,17 +867,24 @@ struct LegacyOutcome
     long firstFrame = -1;
     float processorValue = 0.0f, legacyValue = 0.0f;
     /** mod_type crossfades (D-5): how many, the samples they span, how many of those differ
-        from the old jump, and how many samples outside them do (must be none). */
+        from the old jump, and how many samples outside them do (must be none before a request
+        that waited for a running fade). */
     int fades = 0;
     long fadeSamples = 0, fadeDiffering = 0, outsideFadeDiffering = 0;
+    /** Requests that waited for a running fade: how many, the longest wait (ms), and the samples
+        outside the fades from the first of them on that differ from the old jump. */
+    int waits = 0;
+    double longestWaitMs = 0.0;
+    long afterWaitDiffering = 0;
 };
 
 /** The legacy side of a mod case: tubamp::legacy::Modulation once per mod_type, switched and
     crossfaded the way tubamp::Modulation switches its engines. The old block reset all three
     types and jumped; here the incoming type alone is reset (the others are not running, and
     are reset when they come back), the outgoing one keeps its last parameters and is heard
-    alone for the hold, then the two go through the same PowerCrossfade. `spans` collects each
-    fade as [first sample, end) on the case's timeline. */
+    alone for the hold, then the two go through the same PowerCrossfade; a type asked for during
+    a fade waits for it to end. `spans` collects each fade as [first sample, end) on the case's
+    timeline, `waits` each waiting request as [request, the fade it starts). */
 struct LegacyModCrossfade
 {
     void prepare (const juce::dsp::ProcessSpec& spec)
@@ -899,6 +906,7 @@ struct LegacyModCrossfade
 
         active = -1;
         outgoing = -1;
+        waitingSince = -1;
     }
 
     /** `start` is the block's first sample on the case's timeline. */
@@ -912,12 +920,17 @@ struct LegacyModCrossfade
         {
             active = type;
         }
+        else if (type != active && outgoing >= 0)
+        {
+            if (waitingSince < 0)
+                waitingSince = start;
+        }
         else if (type != active)
         {
-            // A switch inside a fade cuts it short.
-            if (outgoing >= 0)
-                spans.back().second = start;
+            if (waitingSince >= 0)
+                waits.push_back ({ waitingSince, start });
 
+            waitingSince = -1;
             outgoing = active;
             active = type;
             perType[active].reset();
@@ -932,6 +945,10 @@ struct LegacyModCrossfade
                              tubamp::Modulation::crossfadeWaitSamples (sampleRate),
                              tubamp::Modulation::crossfadeLongestWaitSamples (sampleRate));
             spans.push_back ({ start, -1 });
+        }
+        else
+        {
+            waitingSince = -1;
         }
 
         last[active] = { rate, depth, mix };
@@ -973,9 +990,9 @@ struct LegacyModCrossfade
     std::array<float, 3> last[3] {};
     juce::AudioBuffer<float> outgoingAudio;
     tubamp::PowerCrossfade crossfade;
-    std::vector<std::pair<int, int>> spans;
+    std::vector<std::pair<int, int>> spans, waits;
     double sampleRate = 44100.0;
-    int active = -1, outgoing = -1, fadeLength = 1;
+    int active = -1, outgoing = -1, fadeLength = 1, waitingSince = -1;
 };
 
 LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce::File& dumpDir, juce::String& commands)
@@ -1380,6 +1397,14 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
                 inFade[(size_t) i] = true;
 
         outcome.fades = (int) fadeSpans.size();
+        outcome.waits = (int) modCrossfade.waits.size();
+
+        for (const auto& [request, fade] : modCrossfade.waits)
+            outcome.longestWaitMs = juce::jmax (outcome.longestWaitMs, 1000.0 * (fade - request) / cfg.sampleRate);
+
+        // The old block reset the second type at its request; it now resets when the running fade
+        // ends, so from the first such request on its LFO runs later than the old jump's.
+        const int firstWait = modCrossfade.waits.empty() ? numFrames : modCrossfade.waits.front().first;
 
         for (int i = 0; i < numFrames; ++i)
         {
@@ -1390,7 +1415,8 @@ LegacyOutcome runLegacyCase (const LegacyCase& c, const Config& cfg, const juce:
                 const float a = legacyPreDc.getSample (ch, i), b = jumpPreDc.getSample (ch, i);
 
                 if (std::memcmp (&a, &b, sizeof (float)) != 0)
-                    ++(inFade[(size_t) i] ? outcome.fadeDiffering : outcome.outsideFadeDiffering);
+                    ++(inFade[(size_t) i] ? outcome.fadeDiffering
+                                          : i >= firstWait ? outcome.afterWaitDiffering : outcome.outsideFadeDiffering);
             }
         }
     }
@@ -1485,6 +1511,13 @@ int legacyCheck (const juce::File& dumpDir)
                                                                              "the old jump, %ld outside them)",
                                                                              r.fades, r.fadeSamples, r.fadeDiffering,
                                                                              r.outsideFadeDiffering)
+                                                    + (r.waits > 0 ? juce::String::formatted (
+                                                           "  (D-5: %d request(s) during a fade waited for it, up to %.1f ms, so the "
+                                                           "type asked for was reset that much later than the old jump reset it and its "
+                                                           "LFO runs behind from then on: %ld samples outside the fades differ from the "
+                                                           "old jump after the first such request)",
+                                                           r.waits, r.longestWaitMs, r.afterWaitDiffering)
+                                                                   : juce::String())
                                                   : juce::String();
             if (r.differing == 0 && r.outsideFadeDiffering == 0)
                 std::printf ("ok   %-18s %6d %4d  0 of %ld samples differ%s\n", c.name.c_str(), (int) cfg.sampleRate,
