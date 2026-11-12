@@ -608,7 +608,7 @@ Study: `docs/research/fx/gate/report.md` (R1–R5), corrected by its Verificatio
 | index | name | what |
 |---|---|---|
 | 0 | Classic | today's AudioDSPTools gate, bit-for-bit |
-| 1 | Tight | hard gate: windowed-peak detector, 6 dB hysteresis, closing rule by how fast the level fell (a stop closes after the hold; a decay or a beat trough is ridden for up to 1 s, §4.1.5), opening that follows the onset (0.2 ms linear for a pick up to a 5 ms smoothstep for a swell), dB-linear release to `range` |
+| 1 | Tight | hard gate: windowed-peak detector, 6 dB hysteresis, closing rule version 5.1 (a stop closes after the hold; a decay or a beat trough is ridden, and the gain is at the range `hold` + 250 ms after the level last was over the open level, §4.1.5), opening that follows the onset (0.2 ms linear for a pick up to a 5 ms smoothstep for a swell), dB-linear release to `range` |
 | 2 | Smooth | Tight's detector and state machine; when closed, a 3:1 downward expander instead of a jump to `range` |
 
 Default for new blocks: **Tight**. Legacy pin: `gate_mode` → 0 (§2.7.5). The gate is a singleton.
@@ -622,7 +622,7 @@ hint 1). New (hint 4):
 |---|---|---|---|---|---|---|---|
 | `gate_mode` | Gate Mode | Classic, Tight, Smooth | — | — | 1 (Tight) | — | all |
 | `gate_release` | Gate Release | 5 – 500 | 0.1 | log | 30 (`kGateReleaseDefault[Tight]`) | ms (time for 60 dB) | Tight, Smooth |
-| `gate_hold` | Gate Hold | 0 – 250 | 0.1 | linear | 6 (`kGateHoldDefault[Tight]`) | ms (the wait after a note stops, §4.1.5) | Tight, Smooth |
+| `gate_hold` | Gate Hold | 0 – 250 | 0.1 | linear | 10 (`kGateHoldDefault[Tight]`) | ms (the wait after a note stops, §4.1.5) | Tight, Smooth |
 | `gate_range` | Gate Range | −90 – 0 | 0.1 | linear | −90 | dB (≤ −89.95 = mute) | Tight, Smooth |
 | `gate_sc_hpf` | Gate SC HPF | 20 – 300 | 1 | log | 75 (`kGateScHpfDefault[Tight]`) | Hz, 4th-order Butterworth, 24 dB per octave (≤ 20.5 = off) | Tight, Smooth |
 
@@ -631,16 +631,21 @@ the lower of the filtered and the unfiltered 12 ms peak (§4.1.5); in Classic it
 `[study: gate/report.md R1 "Threshold semantics"]`
 
 Per-mode starting points (`Gate.h`): `kGateReleaseDefault[3] { 30, 30, 80 }` ms
-`[study: R1 table, 30 ms Tight / 80 ms Smooth]`; `kGateHoldDefault[3] { 6, 6, 10 }` ms;
-`kGateScHpfDefault[3] { 75, 75, 75 }` Hz (Classic's entries are unused). Hold was 10 ms
-for every mode in the first draft; the engine measured 6 ms as the shortest hold that
-rides a 41 Hz decay without chattering, and the coordinator accepted it for Tight. Under the
-closing rule of §4.1.5 (version 3) hold is the wait after a **stop**, a fall of the level from
+`[study: R1 table, 30 ms Tight / 80 ms Smooth]`; `kGateHoldDefault[3] { 6, 10, 10 }` ms;
+`kGateScHpfDefault[3] { 75, 75, 75 }` Hz (Classic's entries are unused). **Hold is 10 ms for
+Tight and Smooth** (6 for Classic's unused entry, and the `gate_hold` parameter's default is 10).
+Hold was 10 ms for every mode in the first draft; versions 1 to 4 used 6 for Tight, the shortest
+hold that rode a 41 Hz decay without chattering. Version 5 takes 10 again: with 6 the short beat
+dips of low chords near the threshold read as stops (version 5: 11 of 256 chord cases chatter at
+hold 6, 1 at hold 10; version 5.1, verifier's g1 script on the merged build: 2 of 256 at hold 6,
+0 at hold 10), while every 50 ms palm-mute gap still closes (row X13: median −43.4 dB). Under the
+closing rule of §4.1.5 (version 5.1) hold is the wait after a **stop**, a fall of the level from
 the open level to the close level within 50 ms, at any floor depth: check A2 shows the wait
-moves one for one with the knob over 0 to 250 ms (largest error 0.0 ms), and with 6 ms every
-50 ms palm-mute gap closes over floors 12 to 40 dB under the notes (A3: 240 of 240 gaps; 40 /
-50 ms gaps over a −40 dBFS threshold reach −31 / −51 dB, X13). Slow falls and beat troughs are
-ridden whatever the hold.
+moves one for one with the knob over 0 to 250 ms (largest error 1.3 ms), and with 10 ms 240 of
+240 palm-mute gaps close over floors 12 to 40 dB under the notes (A3); 50 ms gaps over a −40
+dBFS threshold reach −43.4 dB and 40 ms gaps −23.4 dB, not fully closed (X13, §8 D-61). Slow
+falls and beat troughs are ridden whatever the hold, and the deadline of §4.1.5 is `hold` +
+250 ms.
 
 Fixed (not parameters): **opening** follows the onset, `kOpenRatio` 0.5: the rise lasts half
 the time the level took to climb the hysteresis band, from 0.2 ms (`kOpenMinSeconds`) up to
@@ -660,20 +665,21 @@ hold the gate open 0.4 s later):
 
 | sidechain HPF | pure tone | steady: dB over threshold to open | abrupt onset: dB over threshold |
 |---|---|---|---|
-| 75 Hz (default) | 30.87 Hz | +30.1 | +24.9 |
-| 75 Hz | 41.2 Hz | +20.8 | +15.4 |
-| 75 Hz | 82.41 Hz | +1.7 | +0.2 |
-| 40 Hz | 30.87 Hz | +9.5 | +3.6 |
-| 40 Hz | 41.2 Hz | +2.6 | +0.2 |
+| 75 Hz (default) | 30.87 Hz | +30.1 | +30.9 |
+| 75 Hz | 41.2 Hz | +20.8 | +20.9 |
+| 75 Hz | 82.41 Hz | +1.7 | +1.7 |
+| 40 Hz | 30.87 Hz | +9.5 | +9.5 |
+| 40 Hz | 41.2 Hz | +2.6 | +2.6 |
 | 40 Hz | 82.41 Hz | +0.1 | +0.1 |
 | off (knob at 20) | 30.87 / 41.2 / 82.41 Hz | +0.1 | +0.1 |
 
-(Tight, threshold −40 dBFS; check `F bass, level to open`, printed and not enforced. "Steady"
-rises over 0.3 s; "abrupt" starts at a crest and must hold the gate open 0.4 s later.) A decaying
-dull note shuts the gate when the true peak is, over the threshold, −32.0 dB at 41.2 Hz and
-−8.4 dB at 55 Hz with 75 Hz, −13.7 and −15.7 dB with 40 Hz, −15.9 dB with the filter off (a
-30.87 Hz note never opens it with 75 or 40 Hz): the closing rule rides it for up to 1 s. Hum
-reads, against the fundamental's amplitude with the 12 ms window: 75 Hz filter −3.9 dB at 50 Hz
+(Tight, threshold −40 dBFS; check `F bass, level to open`, printed and not enforced, measured
+on the merged build. "Steady" rises over 0.3 s; "abrupt" starts at a crest and must hold the gate
+open 0.4 s later; version 3 read the abrupt tone at +24.9 / +15.4 / +0.2 dB for 30.87 / 41.2 /
+82.41 Hz with 75 Hz.) A decaying dull note shuts the gate when its true peak is still, over the
+threshold, +15.6 / +10.8 / +6.1 dB (30.87 / 41.2 / 55 Hz) with 75 Hz, +4.8 / +0.4 / −2.0 dB with
+40 Hz and −1.9 / −2.0 / −2.2 dB with the filter off: the closing rule rides it, then the deadline
+closes it. Hum reads, against the fundamental's amplitude with the 12 ms window: 75 Hz filter −3.9 dB at 50 Hz
 and −1.9 dB at 60 Hz; 40 Hz filter +2.5 / +3.2 dB; filter off +3.2 / +3.2 dB.
 
 For bass use the knob's minimum (exactly off) or about 40 Hz.
@@ -684,7 +690,7 @@ struct GateParams
     int mode = 1;               // GateFx::Mode
     float thresholdDb = -80.0f; // [-100, 0]
     float releaseMs = 30.0f;    // [5, 500] time for 60 dB of gain change
-    float holdMs = 6.0f;        // [0, 250] (kGateHoldDefault[Tight])
+    float holdMs = 10.0f;       // [0, 250] (kGateHoldDefault[Tight])
     float rangeDb = -90.0f;     // [-90, 0]; <= -89.95 means mute (gain exactly 0)
     float scHpfHz = 75.0f;      // [20, 300], 4th-order Butterworth; <= 20.5 means off (kGateScHpfDefault[Tight])
 };
@@ -736,7 +742,15 @@ else 1; level = 20·log10(max |mono| in block), floor −120.
 
 #### 4.1.5 Tight and Smooth — algorithm
 
-This is **version 3** of the closing rule (`Gate.h` states it, `Gate.cpp` implements it).
+This is **version 5.1** of the closing rule (`Gate.h` states it, `Gate.cpp` implements it).
+Method: versions 1 to 4 were rejected by independent verification (chatter on decaying chords,
+palm mutes left open, a 30 s latch on a noise floor, chord chatter). Version 5 (`bd1f69a`) was
+specified from an offline model validated against the engine and implemented to match a Python
+reference within 0.1 dB (measured worst 0.0138 dB on 153 signals, implementer's run). Version 5.1
+(`8a1081a`) amends it after four rows failed on version 5 (X4 noise at the threshold, A5 palm mutes
+near the hiss, B1 and B2 chord clicks, I3 for Smooth); the changes are listed under "What 5.1
+changed" below.
+
 Per sample, on the mono mean `s` of the block's channels (`fs` = sample rate). A
 non-finite `s` is read as 0 (a sample that is finite but huge is clamped to ±1e6, so it
 still opens the gate):
@@ -763,56 +777,101 @@ lower. This replaces version 2's separate stop detector (check X10, B1).
 
 **The closing rule.** What closes the gate is how fast the level fell through the 6 dB
 hysteresis band (from `open` to `close`), not how far it fell, because the noise floor decides
-how far a stopped note can fall.
+how far a stopped note can fall. Two clocks run: the stop rule below, and a deadline that caps
+everything. In the order a reader needs them:
 
-```
-lev >= open:                 below = 0;  state = OPEN
-                             (on entering OPEN, start the opening ramp, see Opening)
-OPEN, close <= lev < open:   below = 0                       // inside the band: nothing counts
-OPEN, lev < close:           the level has just fallen through the band; fall = samples since
-                             lev was last >= open
-    fall <= 50 ms (kFastFallSeconds):  a STOP, at any floor depth
-        wait = hold + extend           // extend: see below
-    fall  > 50 ms:                     a decay or a beat trough
-        wait = max (hold + extend, min (1 s, 2 * fall))      // kRideRatio 2, kRideMaxSeconds 1
-        the wait counts from where the level stops falling: below restarts at 0 whenever lev
-        makes a new low 1 dB under the previous mark; and everything restarts if lev climbs
-        6 dB back from its lowest point; the gate closes at the latest 1 s after the
-        crossing, whatever the level does
-    below += 1 per sample under close;  state = CLOSED once below > wait
-```
-
-- **Extra wait after fast dips** (`extend`). While the gate is open the engine remembers fast
-  dips of the level: a fall of 6 dB (`kDipDb`) under its own recent maximum within 50 ms that
-  comes back to within 3 dB (`kBackDb`) of it, at most 200 ms long. These are a chord's
-  partials beating 15 to 40 times a second, which the 12 ms window cannot fill. A stop that
-  follows waits `1.25 × (length of the longest remembered dip) + 1 ms` more, at most 20 ms
-  (`kExtendMaxSeconds`). The memory forgets 40 ms per second.
-- **Beat troughs that fall as fast as a stop** cannot be told from one. The gate closes on the
-  stop's timing and reaches −20 dB at the release rate, then falls only 20 dB per 1.5 remembered
-  trough lengths (`kGentleFromDb`, `kGentleDbPerDip`; only if the gate reopened as slowly as a
-  beat crest climbs, `kDipRiseSeconds` 15 ms, so a palm-muted note that reopens it at once does
-  not count). The trough costs a partial dip and the crest reopens the gate.
-- **Opening** follows the onset: the rise lasts half the time the level took to climb from
-  `close` to `open`, between 0.2 ms and 5 ms (§4.1.2).
+1. **Open level and band.** `lev >= open` opens the gate (but see reopening, point 9). Between
+   `close` and `open` the gate stays open and nothing counts, except the in-band stop (point 5).
+   Under `close` the stop clock runs.
+2. **The hold (a stop).** Let `fall` be the time since `lev` was last over `open`. If `lev` falls
+   under `close` with `fall` of 50 ms or less (`kFastFallSeconds`), it is a **stop**, at any floor
+   depth. The gate closes once `lev` has stayed under `close` for `hold + extend` (`extend`:
+   point 3). A hand stop crosses the band in 1 to 44 ms whatever the floor.
+3. **Riding remembered troughs (`extend`).** While the gate is open the engine remembers dips of
+   the level: a fall of 6 dB (`kDipDb`) under the level's own 50 ms maximum that comes back to
+   within 3 dB (`kBackDb`) of it. These are a chord's partials beating 15 to 40 times a second,
+   which the 12 ms window cannot fill. **Only dips the gate rode open are remembered** (a dip in
+   which the gate closed is not: a palm-mute gap over a floor inside the band would teach every
+   later gap as a trough to ride). Dips under 12.5 ms (`kDipMinSeconds`, one period of 41.2 Hz
+   minus the window: a low note's own crest gaps) are not remembered, and one longer than 200 ms
+   is dropped. `extend` is `1.25 × (longest remembered dip) + 1 ms`, at most 150 ms
+   (`kExtendMaxSeconds`); the memory forgets 40 ms per second. The dip tracker restarts at each
+   opening and waits until the level is back over half its 50 ms maximum, so a note's own attack
+   is no dip.
+4. **The slow fall that becomes a stop.** If `fall` is over 50 ms the fall is a decay or a beat
+   trough: the wait is `max (hold + extend, min (1 s, 2 × fall))` (`kRideRatio` 2,
+   `kRideMaxSeconds` 1 s), counted from where the level stops falling. It restarts whenever `lev`
+   makes a new low 1 dB under the previous mark, and everything restarts if `lev` climbs 6 dB back
+   from its lowest point. When `lev` drops 6 dB under its own 50 ms maximum the ridden fall
+   turns into a stop from there: the wait becomes `hold + extend`. The gate closes at the latest
+   1 s after the crossing.
+5. **The in-band stop.** A stop onto a floor just under the threshold never crosses `close`. So
+   inside the band, a level 6 dB under the peak of the **current excursion** over the open level
+   (measured within 50 ms, not against a louder earlier note's maximum) and 6 dB deeper than any
+   trough already ridden (`kBandMarginDb`; the trough depth forgets 10 dB per second) is a stop. It
+   closes after `hold` plus one observed beat period (0 on a steady note, at most 150 ms), **unless
+   the level climbs back to 5 dB under that peak first** (`kBandCancelDb`; shallow fast beats spend
+   about the hold between 6 and 3 dB under their crest).
+6. **The beat period.** Successive dips 6 dB under the level's maximum (re-armed within 3 dB of
+   it) are timed; two intervals in a row within 25 % of each other and 25 to 150 ms long set the
+   beat period (faster is a low note's own crests). It forgets 40 ms per second, and **every close
+   forgets it** (a palm-mute gap is not a beat; a 55 Hz muted note's own decay otherwise showed a
+   steady 62 ms "beat" that held later gaps open).
+7. **The deadline.** Whatever the stop rule says, the gain is at the range `hold + 250 ms`
+   (`kDeadlineSeconds`; 1.5 × the release if that is slower, i.e. a release over 167 ms) after the
+   level last was over the open level. The cap on the gain stays at 0 dB until the last 80 ms,
+   then falls `−90 dB × u²` (u from 0 to 1 over those 80 ms: gentle, then steep), so chord
+   troughs up to about `hold + 190 ms` keep the gain over −6 dB and the floor is heard at most
+   `hold + 250 ms`. **Smooth only falls inside that window**: while the cap is under 0 dB its
+   gain is held at or under its own previous value and under the cap, because a fresh closed
+   estimate landing low on one instant of the level would otherwise slew back up and read as a
+   reopening.
+8. **The stop tail.** Under −60 dB a release falls at most 30 dB per 40 ms
+   (`kStopTailFromDb`, `kStopTailDbPerSecond` 750). A beat trough read as a stop therefore costs
+   a partial dip and the crest reopens the gate: at the default 30 ms release the gain reaches
+   −60 dB in 30 ms and the range 40 ms later.
+9. **Reopening after a deadline close.** After the deadline has closed the gate, a level over
+   `open` counts as over it only if it is also **6 dB over the lowest floor estimate since that
+   close** (`kReopenRiseDb`). Why a rise: noise whose 12 ms peak reads 1 to 3 dB under the
+   threshold rides into the band, the deadline closes the gate, and the next peak over `open`
+   reopened it at once (version 5: 12 changes in 5.5 s, 80 in 30 s; the median reading 2 dB under
+   the threshold); a floor's peaks cannot reach its own estimate + 6 dB, a pick or a new note can.
+   Why the lowest estimate and not the running one: the floor estimate follows the level with a
+   200 ms lag, so a rise slower than about 30 dB per second never gets 6 dB ahead of it. Judged
+   against the running estimate, swells of 2, 3 and 5 s after a natural decay never opened the gate
+   (model, coordinator's measure); against the lowest estimate since the close, which only moves
+   down while the gate is closed, all ten opened 4 ms after the level crossed `open` (the engine, row
+   X21: over −1 dB at most 4.0 ms after the reading crosses `open`, 20 cases). A level that
+   does not pass the test counts as under `open` everywhere: the deadline clock, the ride estimate
+   and the state machine.
+10. **No deadline before the first opening after a reset.** Tight is at the range already; Smooth,
+    never having opened, has nothing to ride and follows its expander as version 3 did (without
+    this its gain would sit at the range from the deadline on).
+11. **Opening** follows the onset: the rise lasts half the time the level took to climb from
+    `close` to `open`, between 0.2 ms and 5 ms (§4.1.2).
+12. **Smooth's closed estimate** (point 7's ride estimate, the dB level averaged with a time
+    constant of half the time since the level fell under `open`, up to 0.2 s): at a close it
+    **continues** that estimate instead of restarting on one instant of the level, and Smooth
+    follows its expander law at once until the deadline (after it, at most 1 dB per 10 ms).
 
 ```
 target_dB = 0                                                 if OPEN
           = R                                                 if CLOSED and Tight
           = clamp(2 * (F - 20*log10(close)), R, 0)            if CLOSED and Smooth   (S-1 = 2)
           // F = floor estimate, dB of lev while closed (below)
-gr_dB: closing    gr_dB -= min(gr_dB - target_dB, 60/(release*fs))              // dB-linear release
+gr_dB: closing    gr_dB -= min(gr_dB - target_dB, 60/(release*fs))              // dB-linear release; at most 750/fs under -60 dB
        opening    gain rises over the onset-dependent length, linear at 0.2 ms to smoothstep from 0.4 ms
+       deadline   gr_dB = min(gr_dB, deadline_dB(sinceOpen))                    // point 7
 gain  = (R <= -89.95 and gr_dB <= -89.95) ? 0 : 10^(gr_dB/20)
 ```
 `R` = `rangeDb`. **Smooth** under the threshold: the floor estimate F is the dB level averaged
-with a time constant of half the time since the gate closed (or since the level jumped by more
-than 6 dB, or since the gate was last open), up to 0.2 s (`kFloorTauMaxSeconds`); the expander
-gain follows its target **at most 1 dB per 10 ms** (`kFloorSlewDbPerSecond` 100), so a floor
-that jumps or wobbles moves no faster. Right after a reset the estimate and the gain take the
-level as it comes until the window has filled once (no floor yet to protect). Version 2 let the
-gain move 12.4 dB in 10 ms on a +5 dB floor step; now the largest 10 ms move is 1 dB (check E1)
-and 0.33 dB on hiss and hum (check X14).
+with a time constant of half the time since the level fell under the open level (continued
+across the close, point 12), up to 0.2 s (`kFloorTauMaxSeconds`); once the deadline window is
+over, the expander gain follows its target **at most 1 dB per 10 ms** (`kFloorSlewDbPerSecond`
+100), so a floor that jumps or wobbles moves no faster. Right after a reset the estimate and the
+gain take the level as it comes until the window has filled once (no floor yet to protect).
+Version 2 let the gain move 12.4 dB in 10 ms on a +5 dB floor step; now the largest 10 ms move
+is 1 dB (check E1) and 0.33 dB on hiss and hum (check X14).
 
 **Range and the other parameters.** `range` is smoothed per sample, a one-pole in dB with a
 10 ms time constant (`kRangeSeconds`; it snaps once within 0.001 dB), so a range automation
@@ -828,28 +887,47 @@ stopped note can fall, so with the floor within about 22 dB of the notes Tight s
 418 to 430 ms after a stop, closed 0 of 8 palm-mute gaps, the hold knob stopped meaning the
 wait, and the remembered peak brought chatter back behind a louder note. A hand stop takes 1 to
 44 ms to cross the band whatever the floor, a decay at 60 dB per second takes 100 ms, so the
-band time tells them apart.
+band time tells them apart. Version 3 rode a slow fall for up to 1 s and could latch open on a
+floor that kept the level in the band (a 30 s latch, verifier 3); the deadline replaced that.
 
-**Stated costs (version 3).**
-- A natural decay (not a stop) closes up to 1 s after it passes the close level (version 2:
-  0.4 s).
-- A stop on a chord whose partials beat fast waits up to 20 ms more.
+**What 5.1 changed** (against version 5):
+- Reopening after a deadline close needs the 6 dB rise (point 9).
+- Only dips the gate rode open teach trough depth and length (point 3); the closed-trough memory
+  and the gentle tail of version 3 are gone.
+- The dip tracker restarts, blocked, at each opening (point 3).
+- The in-band stop measures from the current excursion's peak and cancels 5 dB under it, was 3
+  dB under the 50 ms maximum (point 5).
+- Version 4's stop tail replaces the gentle tail (point 8).
+- Every close forgets the beat period (point 6).
+- Smooth's closed estimate continues the ride estimate (point 12).
+
+**Stated costs and limits (version 5.1; §8 D-59 to D-64).**
+- A slowly decaying note is faded out `hold + 250 ms` after it falls under the open level, even
+  if it is still inside the 6 dB band (D-60).
+- Palm-mute gaps of 40 to 52 ms at hold 10 end at −18 to −23 dB, not fully closed (D-61).
+- Four cases where a loud note is stopped 0.1 s after a quiet chord that sits about 6 dB over the
+  threshold keep one or two more dips than the chord alone (D-62).
+- After a deadline close a note less than 6 dB over a floor that sits inside the band does not
+  reopen the gate (D-63).
+- A decay with the threshold 3 dB over the hiss: 346 ms in one of 76 cases (D-64).
+- A stop on a chord whose partials beat fast waits up to 150 ms more (`extend`).
 - Fast, deep beat troughs (a trough that falls as fast as a stop) dip partway and the crest
-  reopens the gate; they never cut to mute. See the table below.
-- The sidechain filter's cost on bass: see the table in §4.1.2 (rows F). Neither the 75 Hz
-  default nor the 4th-order filter is changed.
+  reopens the gate; none reaches the range within 60 ms of its start (rows B, C).
+- The sidechain filter's cost on bass: see the table in §4.1.2 (rows F) and §8 D-35.
 
-The trade-off, from check C (two tones 110 and 196 Hz beating, troughs 6, 12 and 20 dB, thresholds −40 and −55 dBFS), as the deepest dip of the gain and its length where a trough falls as fast as a stop:
+The trade-off, from check C (two tones 110 and 196 Hz beating, troughs 6, 12 and 20 dB,
+thresholds −40 and −55 dBFS, decaying through the threshold), as the deepest dip of the gain and
+its length (coordinator's full run on the merged build; −240 dB is the range, mute):
 
-| trough | 0.5 Hz | 1 Hz | 2 Hz | 4 Hz | 8 Hz |
-|---|---|---|---|---|---|
-| 6 dB | no dip | no dip | no dip | no dip | no dip |
-| 12 dB | no dip | no dip | no dip | −34 dB, 82 ms | −33 dB, 45 ms |
-| 20 dB | no dip | −38 dB, 69 ms | −33 dB, 101 ms | −37 dB, 119 ms | −30 dB, 46 ms |
+| trough | 0.5 Hz | 1 Hz | 2 Hz | 4 Hz | 8 Hz | 15 Hz |
+|---|---|---|---|---|---|---|
+| 6 dB | no dip | no dip | no dip | no dip | no dip | no dip |
+| 12 dB | −240 dB, 2555 ms | −240 dB, 1133 ms | −240 dB, 627 ms | no dip | no dip | no dip |
+| 20 dB | −240 dB, 185 ms | −240 dB, 100 ms | −240 dB, 592 ms | no dip | no dip | no dip |
 
-Never to mute (the bar: above −60 dB). Slower troughs are ridden. In verifier 1's and
-verifier 2's cases (X10 to X12, B1) 12 + 5 cases dip partway at stop-fast troughs, deepest
-about −36 dB (X11: −36.2; B1: −32.8 in the run of this document), and none behind a louder note.
+The dips are at 0.5 to 2 Hz, where a trough is long enough for the gate to reach the range; none
+reaches it within 60 ms of its start and none clicks on reopening (the bar). Beats of 4 Hz and
+faster are ridden. In row X10 to X12 and B1 no case dips at the range inside 60 ms (§4.1.10).
 
 **Detector change against the study (load-bearing):** the prototype held the peak for
 12 ms and then let it fall with a 3 ms exponential; that fall costs 0.35 ms per dB of
@@ -866,9 +944,11 @@ half period of 42 Hz so the held value cannot droop between half-cycles of a low
 [0, 90] (90 when muted); level meter = max over the block of 20·log10(pk), floor −120.
 
 **Start state after `reset()`:** CLOSED, `gr_dB = R`, the wait and fall counters 0, the dip
-memories empty, all three windows empty, filter state 0, the floor estimate restarted, curve ring
-filled with the corresponding floor gain (0 if mute). A gate that re-enters the chain starts closed
-and opens on the first note within 1 ms (G8: 0.188 ms to −1 dB).
+memories and the beat period empty, no excursion peak, no deadline close recorded (so no
+reopening test), no deadline until the first opening, all three windows empty, filter state 0,
+the floor and ride estimates restarted, curve ring filled with the corresponding floor gain (0 if
+mute). A gate that re-enters the chain starts closed and opens on the first note within 1 ms (G8:
+0.188 ms to −1 dB).
 
 #### 4.1.6 Lookahead
 
@@ -917,77 +997,113 @@ ending with a 1 ms raised-cosine fade, over digital silence unless stated. "Clos
 measured on the **per-sample gain trace** (`--trace=gain`), from the end of the fade to the
 first sample with gain ≤ −20 dB — not on windowed RMS, whose 24 ms window at 82 Hz adds up
 to 12 ms (V:37). Each cell is the max over 8 start phases × 4 burst lengths
-(0.3 s + {0, 0.37, 1.13, 2.9} ms). Defaults unless stated (Tight, release 30, hold 6
-(Smooth: release 80, hold 10), range −90, HPF 75, 4th order). The G bounds were set from
-a numpy model of the first §4.1.5 at 48 kHz `[sim]`; the model's values are in brackets
-(they predate the closing rule of §4.1.5 and the 4th-order filter; the bars are what the script
-enforces). The rows X1 to X20 below the table are the verifier-driven proofs.
+(0.3 s + {0, 0.37, 1.13, 2.9} ms). Defaults unless stated (Tight, release 30, hold 10
+(Smooth: release 80, hold 10), range −90, HPF 75, 4th order). The figures in brackets are
+**measured** on the merged build (version 5.1) by the coordinator's full run of
+`check_gate.py` unless a figure says otherwise; the bars are what the script enforces. The G
+bounds were first set from a numpy model of the first §4.1.5 at 48 kHz `[sim]`. Rows I1 to I5
+state the closing rule as invariants on seeded random input; rows A to E and R are the
+verifiers' signals; rows TA to TD score the targets of the version 5 specification on seeded
+draws; rows X are the other proofs. Rows whose name starts with `info` and rows marked INFO
+print their figures and never count as FAIL.
 
 | # | Check | Pass |
 |---|---|---|
 | G1 | Classic null (§2.11) incl. deferred apply on a mono buffer | 0 differing samples |
-| G2 | Close time, 1 kHz, note −20 dBFS, thr −30/−40/−50/−60 | ≤ 35 ms each [31.8 / 31.9 / 33.3 / 34.6] |
-| G3 | Close time, 1 kHz, note −6 dBFS, thr −30/−40/−50 | ≤ 36 ms [32.2 / 33.9 / 35.0] |
-| G4 | Close time, 1 kHz, note −6 dBFS, thr −60/−70; note −20 dBFS, thr −70 | ≤ 44 ms [40.6 / 42.1 / 39.7] (sidechain filter ringing; with HPF off ≤ 35 ms) |
-| G5 | Close time, 82.41 Hz, note −20 dBFS, thr −40/−60 | ≤ 50 ms [39.5 / 45.4] (study limit 50 ms) |
-| G6 | Close time, 82.41 Hz, any of thr −30…−70 × note −6/−20 | ≤ 53 ms [max 50.2] |
-| G7 | Close time never shorter than | ≥ 18 ms in every cell (no chopping of decays) |
-| G8 | Open: 1 kHz −20 dBFS onset after silence, thr −40 | gain ≥ −1 dB within 1.0 ms [0.75] |
-| G9 | Chug (`chug.wav`: 82.41 Hz + harmonics, 75 ms notes every 150 ms, white noise −66 dBFS RMS), thr −40, Tight | median gap gain (last 10 ms before each onset) ≤ −30 dB [−88]; first 10 ms of each note ≥ −1 dB [−0.63] |
-| G10 | Same, Smooth (release 80) | median gap gain between −14 and −25 dB [−18.8]; first 10 ms ≥ −0.5 dB |
-| G11 | Hover: 1 kHz at −40 dBFS ± 3 dB at 3 Hz, thr −40, 6 s | 0 crossings of −6 dB after 0.5 s [0] |
-| G12 | Step-down from −20 dBFS to L, thr −40 | open (0 dB) 0.8 s later for L = −45, −45.5; closed (≤ −89 dB) for L = −46.5, −47 [same] |
-| G13 | Smooth static: steady 1 kHz at −50/−55/−60 dBFS, thr −40 | −8.0 / −18.0 / −28.0 dB ± 0.5 [exact] |
-| G14 | Range: Tight, range −20, closed | gain −20.0 ± 0.1 dB; range −90 → exactly 0 |
-| G15 | SC HPF: 50 Hz hum −44 dBFS + chug, thr −40 (as written, thr −50 cannot be met by any gate: the chug's own noise peaks at −55 dBFS, over the −56 dBFS close level; that run is reported, not enforced) | HPF 75: median gap ≤ −30 dB; HPF off: gate stays open, median gap ≥ −1 dB (documents the benefit, V:42) |
-| G16 | Deferred alignment (processor test, §6.1): 1 kHz burst through gate → amp on a model forced to resample (session 44.1 kHz) | gain edge and audio edge coincide within 1 sample. **As integrated:** the curve is delayed by exactly the reported latency (checked to the sample); against the audio it lands within 4 samples (measured 1.9 at 44.1 kHz, 3.0 at 96 kHz), the reported latency's own error (§4.1.7) |
-| G17 | Rates | G2, G5, G9 also at 44.1 and 96 kHz, same bounds + 1 ms (36 ms and 51 ms) |
-| G18 | Meter: thr −40, silence after a note | state 0 within 100 ms of the note end; 2 on the first sample above threshold; GR reads 90 when closed with range −90 |
-| X1 | Smooth close: release 80, all 20 cells | after a note Smooth closes at most 1 ms later than Tight plus (hold difference + 20 ms × (80 − 30) / 60), i.e. the expander law never holds the gain up |
-| X2 | Palm-mute gaps, Tight chug thr −40, 75 ms notes, gaps 50 / 75 / 100 ms | median gap gain ≤ −30 dB each |
-| X3 | Decay not chopped: −6 dBFS exponential decays, 82.41 Hz and 1 kHz, tau 0.4 / 1.5 s, Tight and Smooth, thr −40 | gain ≥ −0.1 dB while the 4th-order-filtered envelope is at least 0.5 dB over the close level |
-| X4 | No chatter: white noise −62…−46 dBFS RMS, thr −40 | at most 2 open/close changes in 5.5 s |
-| X5 | Pick attack: first 5 ms of each chug note and of an abrupt 1 kHz onset (8 phases) | level lost ≤ 1 dB |
-| X6 | Mode switches: all 6 transitions, 3 steady inputs, blocks 64 / 512 | added gain step per sample ≤ 1.5 × a full-scale 20 ms linear fade |
-| X7 | Rates 22.05 and 192 kHz | G2 and G5 cells, bounds 36 ms and 51 ms |
-| X9 | Low-note decay: 41.2 / 46.25 / 82.41 Hz with harmonics, tau 0.7 / 1.5 / 3 s, thr −40 / −55 | at most 2 open/close changes (one open, one close) |
-| X10 | Chord decay: 14 verifier chords × thr −30…−65 step 5; the 4 hardest chords also at 22.05 / 44.1 / 96 / 192 kHz (`--quick`: 44.1 and 96 kHz) | no reopening dip after a slow fall (a fall through the hysteresis band in more than 52 ms); dips that follow a stop-fast fall are counted and reported (check C, §4.1.5), never a failure |
-| X11 | Beating: AM notes (82.41 and 110 Hz, depth 0.2 / 0.33 / 0.5 / 0.7 = 3.5 to 15 dB, rate 1 / 3 / 7 / 15 / 30 Hz, thr −40); two strings a few hertz apart, thr −30…−60 | the same: none after a slow fall; the dips at stop-fast troughs reported (6 + 6 cases, deepest −31.8 / −36.2 dB, longest 149 / 114 ms in the run of this document) |
-| X12 | Single decays: 41.2…330 Hz × tau 0.15…2.5 s × thr −20…−70 | the same: none after a slow fall |
-| X13 | Palm-mute gaps by gain energy over the last 10 ms of each gap, Tight thr −40 | 50 ms gaps: median ≤ −36 dB, worst ≤ −30 dB; 40 ms gaps: median ≤ −20 dB. Also reported, not enforced: the 30 / 40 / 50 / 75 / 100 ms table and the gaps over 50 Hz hum |
-| X14 | Smooth floor: noise, hum and buzz under thr −40, 44.1 / 48 / 96 kHz | largest gain move in 10 ms ≤ 0.5 dB, largest one-sample step ≤ 0.1 dB |
-| X15 | Pick attack: picked notes 12 / 20 / 34 dB over thr −40, 82.41 / 196 / 1000 Hz | energy lost in the first millisecond ≤ 3 dB |
-| X16 | Opening click: Tight, splatter at 82.41 / 200 / 1000 Hz | no more than the old 0.5 ms / 60 dB dB-ramp's |
-| X17 | Non-finite input: NaN / ±Inf bursts in every mode and across switches, blocks 1 / 37 / 512, mono and stereo | gain equals the zero-substituted render bit for bit; meters finite |
+| G2 | Close time, 1 kHz, note −20 dBFS, thr −30/−40/−50/−60 | ≤ 35 ms each [31.6 / 31.8 / 31.9 / 31.9] |
+| G3 | Close time, 1 kHz, note −6 dBFS, thr −30/−40/−50 | ≤ 36 ms [31.8 / 31.9 / 31.9] |
+| G4 | Close time, 1 kHz, note −6 dBFS, thr −60/−70; note −20 dBFS, thr −70 | ≤ 44 ms [31.9 / 32.0 / 31.9] (sidechain filter ringing; with HPF off ≤ 35 ms, measured the same three figures) |
+| G5 | Close time, 82.41 Hz, note −20 dBFS, thr −40/−60 | ≤ 50 ms [31.8 / 31.9] (study limit 50 ms) |
+| G6 | Close time, 82.41 Hz, any of thr −30…−70 × note −6/−20 | ≤ 53 ms [max 32.0] |
+| G7 | Close time never shorter than | ≥ 18 ms in every cell (no chopping of decays) [min 30.2, Tight + Smooth, 40 cells] |
+| G8 | Open: 1 kHz −20 dBFS onset after silence, thr −40 | gain ≥ −1 dB within 1.0 ms [0.188] |
+| G9 | Chug (`chug.wav`: 82.41 Hz + harmonics, 75 ms notes every 150 ms, white noise −66 dBFS RMS), thr −40, Tight | median gap gain (last 10 ms before each onset) ≤ −30 dB [−73.8, worst −73.7]; first 10 ms of each note ≥ −1 dB [−0.01] |
+| G10 | Same, Smooth (release 80) | median gap gain between −14 and −25 dB [−19.7, worst −17.8]; first 10 ms ≥ −0.5 dB [−0.00] |
+| G11 | Hover: 1 kHz at −40 dBFS ± 3 dB at 3 Hz, thr −40, 6 s | 0 crossings of −6 dB after 0.5 s [0, Tight and Smooth] |
+| G12 | Step-down from −20 dBFS to L, thr −40 (L = −45 … −47 lands in the band, so it is a stop) | closed for L = −45, −45.5, −46.5, −47: −20 dB within 35 ms, then mute [32.0 ms each] |
+| G13 | Smooth static: steady 1 kHz at −50/−55/−60 dBFS, thr −40 | −8.0 / −18.0 / −28.0 dB ± 0.5 [−8.03 / −18.03 / −28.03] |
+| G14 | Range: Tight, range −20, closed | gain −20.0 ± 0.1 dB; range −90 → exactly 0 [−20.000 dB; 0] |
+| G15 | SC HPF: 50 Hz hum −36 dBFS + chug, thr −40 | HPF 75: median gap ≤ −30 dB [−60.6]; HPF off: gate stays open, median gap ≥ −1 dB [0.0] (documents the benefit, V:42). INFO: hum −44 dBFS, inside the band, holds nothing open now (HPF 75 and off both −73.7 dB); thr −50 is not enforced, no gate can meet it (the chug's own noise peaks at −55 dBFS, over the −56 dBFS close level; HPF 75 −44.3 dB, off 0.0 dB) |
+| G16 | Deferred alignment (processor test, §6.1): 1 kHz burst through gate → amp on a model forced to resample (session 44.1 kHz) | gain edge and audio edge coincide within 1 sample. **As integrated:** the curve is delayed by exactly the reported latency (checked to the sample); against the audio it lands within 4 samples (measured 1.9 at 44.1 kHz, 3.0 at 96 kHz), the reported latency's own error (§4.1.7). The script's proxy (`lag = delay`) is bit-exact at D = 1 / 37 / 512 / 3000, blocks 64 / 512 |
+| G17 | Rates | G2, G5, G9 also at 44.1 and 96 kHz, same bounds + 1 ms (36 ms and 51 ms) [31.6 to 31.9 ms; chug −73.8 / −73.7 dB] |
+| G18 | Meter: thr −40, silence after a note | state 0 within 100 ms of the note end [21.8 ms]; 2 on the first sample above threshold [sample 1]; GR reads 90 when closed with range −90 [90] |
+| G1 (range) | Range smoothing: closed, range ramped −90 → −10 dB, blocks 64 and 512 | largest gain step ≤ 0.001 per sample [0.00004; version 2: 0.0121 at block 512] |
+| I1 | Bounded close: 360 seeded cases (Tight's release, both modes; floors that wobble or pulse, decays, stops, beats, chords, steps; every rate, block size, channel count, threshold, hold, release and range) and 179 Smooth cases | under the open level for hold + 250 ms the gain is over the range by at most 0.01 dB [0.000]; Smooth over its expander law by at most +0.1 dB [+0.00] |
+| I3 | Reopen over the open level only: the same cases | no rise of the gain under the open level after an opening [0.00e+00]; Smooth never over max(release, expander law) [0.00e+00] |
+| I4 | Stop closes: 240 random hand stops from any level (inside the band too), onto a floor 8 to 90 dB under or a threshold 3 to 4 dB over the floor, 44.1 to 192 kHz, blocks 1 / 37 / 512, mono and stereo | −20 dB within 12 + hold + release/3 + 3 ms of the end of the fall [worst 37.4 against 41.6; from inside the band worst margin +8.3 ms; threshold 3 to 4 dB over the floor +4.2 ms] |
+| I5 | No click: the same 360 cases | the gain never falls faster than the release knob or the deadline's quadratic at that depth, nor rises faster than the 0.2 ms linear opening [0.00e+00 dB per sample; 0.00e+00 per sample] |
+| X1 | Smooth close: release 80, all 20 cells | after a note Smooth closes at most 1 ms later than Tight plus (hold difference, 0) + 20 dB × (80 − 30) / 60 ms (16.7 ms), i.e. the expander law never holds the gain up [−0.02 ms; worst 48.6 ms at 1 kHz −6 dBFS thr −70] |
+| X2 | Palm-mute gaps, Tight chug thr −40, 75 ms notes, gaps 50 / 75 / 100 ms | median gap gain ≤ −30 dB each [−46.7 (worst −46.4) / −73.8 (−73.7) / −120.0 (−120.0)] |
+| X3 | Decay not chopped: −6 dBFS exponential decays, 82.41 Hz and 1 kHz, tau 0.4 / 1.5 s, Tight and Smooth, thr −40 | gain ≥ −0.1 dB while the 4th-order-filtered envelope is at least 0.5 dB over the close level [0.000 dB] |
+| X4 | No chatter: white noise −62…−46 dBFS RMS, thr −40 | at most 2 open/close changes in 5.5 s [2, at −52 dBFS RMS; version 5: 12] |
+| X4 long | 30 s of white noise whose median reading sits −3 … +3 dB around the threshold, Tight, 42 cases | at most 2 changes per case [2; per offset −3 / −2 / −1 / 0 / +1 / +2 / +3 dB: 2 / 2 / 1 / 0 / 0 / 0 / 0; version 5: 80 in one case] |
+| X21 | Swell after a decay: 110 Hz note decaying 20 or 60 dB/s until the deadline closes the gate, then a swell linear in dB from the hiss (−75 dBFS) to −20 dBFS over 0.5, 1, 2, 3, 5 s, Tight and Smooth, thr −40 (20 cases) | gain over −1 dB within 10 ms of the level reading crossing the open level, Tight closed before every swell [4.0 ms at worst, Tight, 20 dB/s, 0.5 s swell] |
+| X5 | Pick attack: first 5 ms of each chug note and of an abrupt 1 kHz onset (8 phases) | level lost ≤ 1 dB [chug −0.07; abrupt −0.18] |
+| X6 | Mode switches: all 6 transitions, 3 steady inputs, blocks 64 / 512 | added gain step per sample ≤ 1.5 × a full-scale 20 ms linear fade [4.13e-04 against 1.56e-03] |
+| X7 | Rates 22.05 and 192 kHz | G2 and G5 cells, bounds 36 ms and 51 ms [31.6 to 31.9 ms] |
+| X9 | Low-note decay: 41.2 / 46.25 / 82.41 Hz with harmonics, tau 0.7 / 1.5 / 3 s, thr −40 / −55 | at most 2 open/close changes (one open, one close) [2; deepest dip that reopens 0.00 dB] |
+| X10 | Chord decay: 14 verifier chords × thr −30…−65 step 5; the 4 hardest chords also at 22.05 / 44.1 / 96 / 192 kHz (`--quick`: 44.1 and 96 kHz) | every dip of the gain that comes back: none at the range within 60 ms of its start, no reopening click (D2's measure); dips are counted and printed [0 of 112 dip under −1 dB; 0 of 32 at each of the four rates] |
+| X11 | Beating: AM notes (82.41 and 110 Hz, depth 0.2 / 0.33 / 0.5 / 0.7 = 3.5 to 15 dB, rate 1 / 3 / 7 / 15 / 30 Hz, thr −40); two strings a few hertz apart, thr −30…−60 | the same bar [AM: 5 of 40 dip under −1 dB, 5 under −6 dB, longest 1160 ms, at most 3 in one case; strings: 6 of 32, 5 under −6 dB, longest 907 ms, at most 13 in one case; both deepest −240 dB, i.e. the range; none inside 60 ms, no click] |
+| X12 | Single decays: 41.2…330 Hz × tau 0.15…2.5 s × thr −20…−70 | the same bar [0 of 144 dip under −1 dB] |
+| X13 | Palm-mute gaps by gain energy over the last 10 ms of each gap, Tight thr −40 | 50 ms gaps: median ≤ −36 dB, worst ≤ −30 dB [−43.4, worst −43.1]; 40 ms gaps: median ≤ −20 dB [−23.4, worst −23.1]. INFO, the 30 / 40 / 50 / 75 / 100 ms table: −4.2 / −23.4 / −43.4 / −73.2 / −97.3 dB (worst −4.1 / −23.1 / −43.1 / −73.1 / −97.0); gaps over 50 Hz hum −44 dBFS: 40 ms −23.3 (worst −23.0), 50 ms −43.4 (worst −43.0) |
+| X14 | Smooth floor: noise, hum and buzz under thr −40, 44.1 / 48 / 96 kHz | largest gain move in 10 ms ≤ 0.5 dB, largest one-sample step ≤ 0.1 dB [0.33 dB; 0.001 dB] |
+| X15 | Pick attack: picked notes 12 / 20 / 34 dB over thr −40, 82.41 / 196 / 1000 Hz | energy lost in the first millisecond ≤ 3 dB [82.41 Hz −1.75, peak of the first 5 ms −3.48; 196 Hz −1.68; 1000 Hz −0.82] |
+| X16 | Opening click: Tight, splatter at 82.41 / 200 / 1000 Hz | no more than the old 0.5 ms / 60 dB dB-ramp's [−30.8 (old −29.8) / −32.4 (−31.0) / −42.3 (−36.4) dB] |
+| X17 | Non-finite input: NaN / ±Inf bursts in every mode and across switches, blocks 1 / 37 / 512, mono and stereo | gain equals the zero-substituted render bit for bit; meters finite [90 pairs] |
 | X18 | Oversized blocks: block 512 on a 256-sample prepare | audio unchanged; meters those of the same input in normal blocks (Classic: open, 0 dB) |
 | X19 | Long curve delay: deferred, D = 8193 / 30000 / 65535 | bit-exact against the undelayed render, D samples later |
-| X20 | Low-note threshold (reported, not enforced): sine needed to open at thr −40, HPF 75, a tone that rises over 0.3 s (steady) and one that starts at a crest and must hold the gate open 0.4 s later (abrupt) | 41.2 / 73.42 / 82.41 / 110 Hz: +20.8 / +3.4 / +1.7 / +0.2 dB steady, +15.3 / +0.2 / +0.2 / +0.0 dB abrupt (the earlier row read 15.4 dB for 41.2 Hz, which is the abrupt figure; the steady one is 20.8 dB, the 4th-order 75 Hz filter's price; a low E needs 1.7 dB, was 3.9 with the 2nd-order 90 Hz filter). The table of rows F in §4.1.2 gives the same figures at HPF 75, 40 Hz and off |
-| A1 | Stop close: hand stops of notes (41.2 / 82.41 / 196 / 1000 Hz), floor 8, 12, 20, 40, 60, 90 dB under the note, falls of 5 / 15 / 30 ms, Tight; and at 44.1 / 96 / 192 kHz, blocks 1 / 37 / 512, mono and stereo | closed (−20 dB) at most 12 + hold + release/3 + 3 = 31 ms after the level leaves the close level (measured worst 28.0; after the end of the fall 32.2) |
-| A2 | Hold one for one: hold 0 / 6 / 20 / 50 / 100 / 250 ms, floors 8 to 90 dB under | \|wait(hold) − wait(0) − hold\| ≤ the larger of 10 % of hold and 3 ms (measured 0.0 ms) |
-| A3 | Palm mutes over a floor 12, 18, 22, 26, 30, 40 dB under the notes, gaps 50, 75, 100, 150, 250 ms, threshold floor + 8 dB | every gap closed (240 of 240; version 2: 140); the first 10 ms of the notes 12 dB or more over the threshold keep −1 dB or better (measured −0.07) |
-| A4 | No hang: soft notes 8 to 40 dB over a hiss floor, stopped by hand | closed within 60 ms of the stop (measured 29.5 to 47.5; version 2: 418 to 430) |
-| B1 | Verifier 2's chords: 16 chords × thr −30…−65 × decay times, rates 44.1 / 96 / 192 kHz, Smooth, holds 0 / 6 / 250 ms (382 cases) | no dropout after a slow fall; stop-fast-trough dropouts counted and printed (5 cases, deepest −32.8 dB) |
-| B2 | A quiet decaying chord behind a louder note: 104 cases (loud −3 / −12 dBFS 0.25 s before; Tight, Smooth, holds 6 / 20 / 50) and 72 cases of the second sweep (+12…28 dB, 0.1 to 0.6 s) | no chatter and no case with more dropouts than the same chord alone (version 2: 22 of 104) |
-| C | Two tones 110 / 196 Hz beating 0.5 to 8 Hz, troughs 6 / 12 / 20 dB, thr −40 / −55, decaying through the threshold | none after a slow fall; the stop-fast troughs' deepest dip above −60 dB, never mute (measured −37.8). The trade-off table of §4.1.5 is printed |
-| D1 | Pick front: picks 20 and 34 dB over the threshold at 41.2 / 61.74 / 82.41 / 196 / 1000 Hz, and 82.41 Hz at 44.1 / 96 / 192 kHz | the first millisecond keeps −1.5 dB or better (measured −1.33) |
-| D2 | Opening click: swells of 150 and 600 ms, 41.2 / 82.41 / 110 / 220 Hz, thr −30 / −40 / −50, sine and plucked string | above 3 kHz at the opening, re the note: sines ≤ −50 dB (measured −72.6); strings ≤ −50 dB or the dry string's own level +1 dB |
-| E1 | Smooth floor slew: hiss steps +5 / +8 / −8 dB, wobbles ±4 / ±7 dB at 4 Hz, crackle under thr −40, 44.1 / 48 / 96 kHz, block 64 | largest gain move in 10 ms ≤ 1.01 dB (the slew; measured 1.00; version 2: 3.6 / 12.4 dB); a note after the floor reaches −1 dB within 1 ms of the onset (measured 0.19) |
-| F | Sidechain filter on bass and hum (printed, not enforced): level to open at HPF 75 / 40 / off for 30.87, 41.2, 82.41 Hz, steady and abrupt; the true peak when a decaying dull note shuts the gate; the hum reading | the tables of §4.1.2 |
-| G1 (range) | Range smoothing: closed, range ramped −90 → −10 dB, blocks 64 and 512 | largest gain step ≤ 0.001 per sample (measured 0.00004; version 2: 0.0121 at block 512) |
+| X20 | Low-note threshold (INFO): sine needed to open at thr −40, HPF 75, a tone that rises over 0.3 s (steady) and one that starts at a crest and must hold the gate open 0.4 s later (abrupt) | 41.2 / 73.42 / 82.41 / 110 Hz: +20.8 / +3.4 / +1.7 / +0.2 dB steady, +20.9 / +3.4 / +1.7 / +0.2 dB abrupt (version 3 read the abrupt tone +15.3 / +0.2 / +0.2 / +0.0 dB; the steady 20.8 dB at 41.2 Hz is the 4th-order 75 Hz filter's price; a low E needs 1.7 dB, was 3.9 with the 2nd-order 90 Hz filter). The table of rows F in §4.1.2 gives the same figures at HPF 75, 40 Hz and off |
+| A1 | Stop close: hand stops of notes (41.2 / 82.41 / 196 / 1000 Hz), floor 8, 12, 20, 40, 60, 90 dB under the note, falls of 5 / 15 / 30 ms, Tight; and at 44.1 / 96 / 192 kHz, blocks 1 / 37 / 512, mono and stereo | closed (−20 dB) at most 12 + hold + release/3 + 3 = 35 ms after the level leaves the close level [worst 32.0 (82.41 Hz, floor −8, fall 30 ms); after the end of the fall 31.4; the rates and blocks 31.0] |
+| A2 | Hold one for one: hold 0 / 6 / 20 / 50 / 100 / 250 ms, floors 8 to 90 dB under | \|wait(hold) − wait(0) − hold\| ≤ the larger of 10 % of hold and 3 ms [largest 1.3 ms] |
+| A3 | Palm mutes over a floor 12, 18, 22, 26, 30, 40 dB under the notes, gaps 50, 75, 100, 150, 250 ms, threshold floor + 8 dB | every gap closed [240 of 240; version 2: 140]; the first 10 ms of the notes 12 dB or more over the threshold keep −1 dB or better [−0.07 over 154 notes] |
+| A4 | No hang: soft notes 8 to 40 dB over a hiss floor, stopped by hand | closed within 60 ms of the stop [31.4 to 45.9; version 2: 418 to 430] |
+| A5 | Palm mutes near the hiss: chug over white noise, hiss peak −52.9 dBFS, threshold 3 to 5 dB over it | median gap gain over the last 10 ms ≤ −25 dB (75 ms gaps) and ≤ −69 dB (100 ms gaps) [75 ms: −73.6 / −73.6 / −73.7 at thr −50 / −49.89 / −48.89; 100 ms: −120.0 each; version 5: 100 ms −24.8, worst 0.0] |
+| B1 | Verifier 2's chords: 16 chords × thr −30…−65 × decay times, rates 44.1 / 96 / 192 kHz, Smooth, holds 0 / 10 / 250 ms (382 cases) | the X10 bar: none at the range within 60 ms, no reopening click [0 of each; 4 of 382 dip under −1 dB, 3 under −6 dB, deepest −50.3 dB, longest 30 ms; the three under −6 dB are hold-0 cases]. Also 256 cases at the default hold 10: no dip at all [0 of 256] |
+| info B1 hold 6 | the same 382 cases with hold 6 in place of 10 | INFO [9 of 382 dip under −1 dB, 5 under −6 dB, deepest −50.3 dB; 0 at the range inside 60 ms, 0 clicks] |
+| B2 | A quiet decaying chord behind a louder note, hold 10: 104 cases (g3: loud −3 / −12 dBFS 0.25 s before; Tight, Smooth, holds 10 / 20 / 50) and 72 cases of the second sweep (g3b: +12…28 dB, 0.1 to 0.6 s) | the X10 bar, and no case with more dips under −6 dB than the same chord alone, except in g3b at most 4 cells, all at gap 0.1 s (§8 D-62). g3 [0 worse; 4 of 104 dip under −1 dB, deepest −71.7 dB, longest 51 ms; 0 clicks]. g3b [4 worse (E2+G#2 thr −36 +28 dB; C2+Eb2 thr −36 +12 / +20 / +28 dB, gap 0.1 s); deepest −14.5 dB, longest 12 ms, at most 2 in one case; 0 at the range inside 60 ms; 0 clicks]. Version 2: 22 of 104 worse |
+| info B2 hold 6 | the same g3 and g3b cases with hold 6 | INFO [g3: 0 worse, 15 of 104 dip under −1 dB, 4 cases with a reopening click, worst +8.2 dB; g3b: 4 worse, 30 of 72 dip under −1 dB, 9 clicks, worst +7.1 dB]: hold 6 is where chords click (§4.1.2) |
+| C | Two tones 110 / 196 Hz beating 0.5 to 15 Hz, troughs 6 / 12 / 20 dB, thr −40 / −55, decaying through the threshold | the X10 bar [22 of 72 dip under −1 dB, deepest −240 dB (the range), longest 2555 ms, at most 5 in one case; 0 at the range inside 60 ms; 0 clicks]. The trade-off table of §4.1.5 is printed |
+| C decay tail | INFO: how long the floor is heard (over thr − 20 dB) after a note decaying at 5 … 200 dB/s, Tight and Smooth, floor 8 and 3.5 dB under the threshold | INFO [Tight, floor 3.5 dB under: 331 ms at 5 dB/s, 324 at 10, 224 at 20, 225 at 40, 209 at 60, 214 at 80 and 120, 8 at 200; floor 8 dB under: 0 ms at 5, 10, 20 and 200 dB/s, 61 / 95 / 128 / 151 ms at 40 / 60 / 80 / 120. Smooth 1239 to 4092 ms: its gain follows its expander law, not the range] |
+| D1 | Pick front: picks 20 and 34 dB over the threshold at 41.2 / 61.74 / 82.41 / 196 / 1000 Hz, and 82.41 Hz at 44.1 / 96 / 192 kHz | the first millisecond keeps −1.5 dB or better [−1.33] |
+| D2 | Opening click: swells of 150 and 600 ms, 41.2 / 82.41 / 110 / 220 Hz, thr −30 / −40 / −50, sine and plucked string | above 3 kHz at the opening, re the note: sines ≤ −50 dB [−72.6]; strings ≤ −50 dB or the dry string's own level +1 dB [−38.4, where the dry string reads up to −38.4] |
+| E1 | Smooth floor slew: hiss steps +5 / +8 / −8 dB, wobbles ±4 / ±7 dB at 4 Hz, crackle under thr −40, 44.1 / 48 / 96 kHz, block 64 | largest gain move in 10 ms ≤ 1.01 dB (the slew) [1.00; largest one-sample step 0.0023 dB; version 2: 3.6 / 12.4 dB]; a note after the floor reaches −1 dB within 1 ms of the onset [0.19] |
+| F | Sidechain filter on bass and hum (INFO): level to open at HPF 75 / 40 / off for 30.87, 41.2, 82.41 Hz, steady and abrupt; the true peak when a decaying dull note shuts the gate; the hum reading | the tables of §4.1.2 |
+| R1 | Pulsing floors: 42 cases, 7 floors (spikes, hum AM, hiss AM, crackle, buzz AM, hiss) × tone or chord × 20 / 60 dB/s, both modes | Tight: the floor is over the range at most hold + 250 + 15 = 275 ms after the note's own level is under the close level [189 ms at worst: hum AM, tone, 60 dB/s; version 3: never in 30 s]. Smooth: within 1 dB of its floor-alone setting, last 250 ms ≤ +1 dB re it [2120 ms at worst; last 250 ms −1.0 dB] |
+| R2 | Hum under a chord: 37 cases, 50 / 60 Hz hum 10 to 30 dB under, threshold 6 to 10 dB over it | the same bar [Tight 183 ms at worst (60 Hz, 10 dB under, thr +6, t60 2.5); version 3: 1.3 to 4.2 s. Smooth 833 ms; last 250 ms −0.6 dB] |
+| R3 | Glides and volume down: 24 cases, an octave glide or the knob to zero over 0.3 to 3 s | the same bar [Tight 193 ms at worst (glide 1 s, floor 36 dB under); version 3: 0.28 to 1.2 s. Smooth 1035 ms; last 250 ms −1.1 dB] |
+| R4 | Staccato 180 bpm: 38 ms gaps, floor 15 dB under, thr +8 | INFO [median gap gain: Tight hold 0 −41.1 dB (16 of 16 gaps under −20), hold 6 −29.1 (16 of 16), hold 10 −21.1 (11 of 16), hold 20 −3.1 (0 of 16); Smooth hold 10 −7.2 (0 of 16)] |
+| R5 | Tremolo picking: 18 cases, strokes 12 / 16 Hz falling 3 to 10 dB, thr −20…−5 re peak | the X10 bar, and the hand stop after it closes sooner than version 3's 880 to 993 ms [2 of 18 dip under −1 dB, 1 under −6 dB, deepest −26.7 dB, longest 18 ms; 0 at the range inside 60 ms; 0 clicks; the stop closes in 102 ms at most] |
+| R6 | Latch bounds: 21 cases, 7 floors × tone 20 / 60 dB/s and chord 20 dB/s, Tight, 10 s | the gain is over −6 dB at most hold + 191 + 1 = 202 ms after the level was last over the open level [200.6 (spikes −20, tone 20 dB/s); counted from the note's own close crossing 0.13 s]; the floor is heard over −20 dB at most 300 ms after the note is under the floor [116 ms] |
+| TA1 | The g1 chord grid (16 chords × 8 thresholds × 2 decays, the B1 signals), hold 10: Tight 256 cases, Smooth 277 (21 extra at t60 4) | cases with chatter (a gain excursion under −6 dB that comes back within 250 ms): Tight ≤ 8 [0; model 0], Smooth ≤ 4 [1: A1+C2 thr −35 t60 2.5, one 2.9 ms dip to −8.0 dB; model 1]; no legitimate close (≥ 250 ms) [0] |
+| TA2 | 120 seeded chords and beats, thr −70…−25, floors 8 to 40 dB under | no chatter [0] and no dip under −12 dB inside a trough under the open level shorter than 100 ms [0; deepest gain there 0.0 dB] |
+| TB1 | 86 seeded Tight decays into wobbling floors 3 to 14 dB under the threshold | the longest stretch under the open level with the gain over −60 dB, minus the hold, ≤ 236 ms [235.3; model 235] |
+| TC1 | 120 seeded palm-muted chugs: 41 to 110 Hz, gaps 50 to 250 ms, floors 12 to 40 dB under, thr +6…+12 | every gap under −20 dB over its last 10 ms [120 of 120; worst gap end −36.4 dB; model −36.4] |
+| TD1 | 120 seeded chords held 0.6 to 2.5 s, stopped by hand (fall 5 to 30 ms) onto hiss 20 to 60 dB under | closed (−20 dB) within 12 + hold + 150 + release/3 + 3 ms of the end of the fall (one remembered trough or beat period, at most 150 ms, on top of I4's bound) [0 over; worst 161.9 against 185 (E2+F2); worst close 162 ms; model 162] |
 
-Rows X10 to X12 were restated for the closing rule: any reopening dip of the gain is classified
-by how long the level took to fall through the band before it. A dip after a fall of more than
-52 ms is chatter and fails; a dip after a fall as fast as a stop is the trade-off of §4.1.5 and
-is counted and printed. The table lists every row id `check_gate.py` has (including the
-common checks of §2.11 run per mode), with the bar the script enforces. `check_gate.py --rows=A,B,...`
-runs only the named closing-rule rows (A to G; `X` adds X10 to X20 and the other verifier rows)
-and `--verbose` lists every dip that rows B and C classify; the full run is the acceptance.
-Measured, the close times of G2 to G6, G17 and X7 are 27.7 to 28.0 ms in every cell
-(12 + hold + release / 3 = 28), well inside their bars; the bracketed values of the G rows are
-the first numpy model's. Full run: **102 checks, 0 FAIL** (79 at the commit that added X10 to
-X20, `81fd404`). G16 in the script is a proxy (`lag = delay`: the output must be the undelayed
-render, D samples later, bit for bit, at D = 1 / 37 / 512 / 3000, blocks 64 / 512); the
-processor test is the integrator's.
+Rows X10 to X12, B, C and R5 are the restated form of the verifiers' rows: any reopening dip of the
+gain is bounded rather than forbidden (a wait that never lets the gate dip would hold the floor
+open; version 3 allowed none after a slow fall and latched). The bar is the one `dip_summary` in
+the script applies: none at the range within 60 ms of the dip's start, no reopening click (the
+output's peak above 3 kHz from 2 ms before the rise to 10 ms after it, over the larger of the dry
+signal's own there + 1 dB and the note's peak − 50 dB). The table lists every row id
+`check_gate.py` has (including the common checks of §2.11 run per mode), with the bar the script
+enforces. `check_gate.py --rows=I,A,B,...` runs only the named rows (`I` the invariants, `A` to
+`G` and `R` the closing rule's other rows, `T` its targets on seeded draws; `X` adds X10 to X20 and
+the other verifier rows) and `--verbose` lists every dip that rows B and C classify; the full run
+is the acceptance.
+Measured, the close times of G2 to G6, G17 and X7 are 31.6 to 32.0 ms in every cell
+(12 + hold + release / 3 = 32), well inside their bars. Full run on the merged build: **130
+checks, 0 FAIL** (coordinator's run; 102 at the version 3 commit, 79 at `81fd404`). G16 in the
+script is a proxy (`lag = delay`: the output must be the undelayed render, D samples later, bit
+for bit, at D = 1 / 37 / 512 / 3000, blocks 64 / 512); the processor test is the integrator's.
+Not in the table: the verifiers' own scripts on this build read 0 of 256 chord cases with a
+dropout at hold 10 and 2 of 256 at hold 6 (chords, g1); 72 slow swells from the hiss (1.5, 4 and
+8 s; dB-linear, amplitude-linear, stalled and exponential growth; 44.1, 48 and 96 kHz; Tight and
+Smooth) all open with 0 dips under −6 dB after the opening; the hold knob moves the close one for
+one over 0 to 250 ms (12 / 18 / 32 / 62 / 112 / 262 ms for holds 0 / 6 / 20 / 50 / 100 / 250, at
+floors 18 to 90 dB under the note); 30 s of listening after a decaying note over a pulsing floor
+leaves Tight at unity for 0.0 to 0.1 s and Smooth for 0.1 to 0.4 s, and Tight at the range for the
+rest.
 
 fxbench keys: `mode threshold release hold range sc_hpf delay deferred on lag prepare_block`
 (`delay` = curve delay, applied with `apply` after `measure` as the processor does; `lag`
@@ -2547,7 +2663,19 @@ Small Stone" line by line, matching `phaser_ref.py` (`phase90_break_hz`, `run_ph
     and ±8 samples, 1 BPM tempo steps and a 100 to 140 BPM ramp cause no glide (P16). A host whose
     song position runs 1, 5 or 10 % fast or 10 % slow against its reported tempo causes 0 glides and
     leaves 0.0024 cycle after 2 s (the jitter dead band), with ticks at or under −85.4 dBFS (P20,
-    engineer's run).
+    engineer's run). **The bounds, as the round-four verifier measured them** (`.audit/fx-verify/r4-mod.md`
+    finding 4): inside ±10 % the lock holds (host 0.5 to 10 % off its reported tempo, 1/4, 1/16 and
+    4/1, blocks 16 to 4096, 44.1 to 192 kHz: 0 glides, within 0.005 cycle after at most 1.07 s,
+    0.002 cycle standing). **Outside them it does not.** A host 12 % off leaves 0.007 cycle (1/4) and
+    0.026 cycle (1/16) standing; at 15 % a 1/4 note slips through every phase with no glide while
+    the LFO rate swings 24 to 33 %, and a 1/16 note glides on nearly every block (1287 glides in
+    16 s at block 512); at 25 % at 1/16, 1499 glides. A synced rate above the 20 Hz clamp (300 BPM
+    at 1/32) glides 116 times in 10 s at block 4096 and slips with a 48 % rate swing at block 64
+    (160 BPM at 1/32, 21.3 Hz, locks). Position jitter of ±64 samples at 1/16, block 256, gives
+    138 glides in 12 s (±16 samples: 0). A loop-wrap tick, Small Stone Color on, 587.3 Hz, 4 Hz,
+    block 64, reads −60.4 dBFS above 2 kHz (uninterrupted −80.7), 0.4 dB inside P15's −60 bar,
+    while P15 reports −81.8 as its worst; every other case −67 dBFS or lower. P16 and P20 stay inside
+    these bounds (jitter of ±2 and ±8 samples, drift up to 10 %).
   - The first block after `prepare()` or `reset()` sets its phase with no glide.
 - **Phase 90** (`P90_*`): C = 47 nF, R_fix = 22 kΩ `[circuit]`; leg R(u) = (RS^m + R_ch^m)^{1/m},
   R_ch = R1·e^{−γu}, RS = 916.8 Ω, R1 = 1777.7 Ω, γ = 0.8952, m = 3.876 `[fit]`;
@@ -3461,7 +3589,7 @@ mapped onto instances by the existing `KNOB_SPECS` mechanism, `:113-123`).
 ### 7.3 Starting points (`typeDefaults.ts`, mirrors the engine headers)
 
 ```ts
-/** Classic, Tight, Smooth. */           export const GATE_STARTING_POINTS  = { release: [30, 30, 80], hold: [6, 6, 10], sc_hpf: [75, 75, 75] };
+/** Classic, Tight, Smooth. */           export const GATE_STARTING_POINTS  = { release: [30, 30, 80], hold: [6, 10, 10], sc_hpf: [75, 75, 75] };
 /** Classic, Clean, Squash, FET, Opto. */ export const COMP_STARTING_POINTS  = { knee: [6, 6, 6, 4, 12], attack: [5, 5, 2.5, 0.8, 10], release: [120, 120, 150, 55, 60] };
 /** Classic … Treble. */                  export const DRIVE_STARTING_POINTS = { gain: [12, 12, 18, 18, 12, 12], tone: [4000, 4000, 2449, 2449, 12000, 3000], level: [0, 0, -8.2, 5.0, 0, 0] };
 /** Classic, Wide, CE, Dimension, Tri. */ export const CHORUS_STARTING_POINTS = { rate: [1, 1, 0.8, 0.25, 0.6], depth: [0.4, 0.4, 0.7, 0.8, 0.5], mix: [0.35, 0.35, 0.5, 0.5, 0.5] };
@@ -3518,7 +3646,7 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-21 | `mod_color` default on means a new Phase 90 starts as the block-logo (resonant) voicing. | Chosen because it is the validated fit; switch the default to off if the owner prefers the script sound. |
 | D-22 | The NAM resampler's reported latency is 1.9 (44.1 kHz) / 3.0 (96 kHz) / 5.0 (192 kHz: 70 reported against 75.0 measured) samples short of its true delay (§4.1.7), so a deferred Tight/Smooth curve leads the audio by that much, and the host's delay compensation is off by the same amount. | Left as is: D uses the reported latency as specified, and the host figure is frozen by the golden renders. A measured group delay from `NamEngine` (probe at model load), used for D only, would close it for the gate. |
 | D-23 | `eq_tilt`, `eq_level` and the seven `eq_g*` read their default 0 back from the parameter as 8.9e-8 / 1.8e-7 dB on arm64 (exactly 0.1f × 120 − 12 with the product unrounded, as a fused multiply-add in JUCE's `snapToLegalValue` gives; visible in `tests/golden/params-v4.tsv`), so a fresh Parametric or Graphic block in the plugin runs its level/tilt/band stages instead of the exact 0 dB paths E4/E17 test on the engine. Measured through the processor: within −144 dBFS of the input at 44.1 kHz (−150 at 48, −162 at 96). | Left as is: the processor passes values raw and the layout is frozen. Closing it means the engine treating \|dB\| below 1e-5 as 0 (engine owner), never a processor-side rounding. Classic and the amp EQ are unaffected (their knobs read back exactly). Update: fixed in the engine (fe2fee6): a control within 1e-3 dB of neutral counts as neutral (host noise measured at 1.8e-7 dB; rows E22a, E22b), not 1e-5 as written above. |
-| D-24 | **Verification round, 2026-11-11 (seven `dsp:` commits after the integration).** The engines were fixed against the verification reports; this table keeps the earlier decisions above and adds what changed. | Gate (81fd404): the close rule depends on the fall from the recent peak; hold is the wait after a note stops (§4.1.5). Open: a pure 41.2 Hz tone now needs 15.4 dB over threshold to open (was 13.6), the price of the 4th-order 75 Hz sidechain filter. Update (2df395d, second round): that rule is replaced by version 3 (§4.1.5, closes on how fast the level fell); the 15.4 dB was the figure for a tone that starts at a crest, a tone that rises needs 20.8 dB (row X20, rows F), and the costs are in D-35. |
+| D-24 | **Verification round, 2026-11-11 (seven `dsp:` commits after the integration).** The engines were fixed against the verification reports; this table keeps the earlier decisions above and adds what changed. | Gate (81fd404): the close rule depends on the fall from the recent peak; hold is the wait after a note stops (§4.1.5). Open: a pure 41.2 Hz tone now needs 15.4 dB over threshold to open (was 13.6), the price of the 4th-order 75 Hz sidechain filter. Update (2df395d, second round): that rule is replaced by version 3 (§4.1.5, closes on how fast the level fell); the 15.4 dB was the figure for a tone that starts at a crest, a tone that rises needs 20.8 dB (row X20, rows F), and the costs are in D-35. Update (version 5.1): the rule is replaced again, D-59. |
 | D-25 | Compressor type switches (a27b550). | `fx::EngineSwitcher` dropped (§2.4, §4.2.6): switches among Clean, Squash, FET and Opto keep the gain state with no fade; to or from Classic both outputs crossfade over 40 ms (+0.01 dB bump). Total makeup is capped at 48 dB. |
 | D-26 | Drive limits left open (0af54cf). | Aliasing for input tones above 5 kHz (Fuzz worst −43.1 dBc, per the commit; 8x oversampling would double the CPU) and the Screamer's 0.84 dB droop at 10 kHz are known and not fixed. The Fuzz mid-knob row Y2 is a sustain row (output moves at most 3 dB for 18 dB of input) because D14 requires the Muff saturated at half sustain. |
 | D-27 | EQ block switched on under signal (fe2fee6). | Level, shelves and cuts still step. Open: needs a crossfade in the processor, not in the engine. Update (678c9c8): closed. `BypassFader` crossfades the block's input and the engine output over 10 ms in the processor for every non-Classic type (§2.6). |
@@ -3529,7 +3657,7 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-32 | **Known open item: level moves at voicing switches inside one type.** The engines handle these switches (§6.5), and the level can leave both steady levels for a moment: a phaser model switch up to 9 dB, a switch into tremolo Smooth about 5 dB, a Classic chorus to CE or Dimension about 6 dB. | Left as is: no fix in the processor or the dispatcher. Closing it means a loudness-matched crossfade in each engine (engine owner). Update (second round): **resolved inside the engines for the phaser, the tremolo and the chorus**, by crossfades with gains from measured power (§2.4). Worst cases measured: phaser P17, +0.95 dB above the higher and −2.88 dB below the lower of the two voicings' own levels over 20 ordered pairs (+0.79 and −2.20 dB after the third round) (the old switch: +11.5 and −20.3 dB); tremolo Y3, 0.03 dB outside both voices' trajectories over 160 switches (was 10.06 dB); chorus CH18 +0.69 dB from the span of the levels before and after, CH27 1.70 dB from the envelope of the modes' own levels when switching every 30 ms through all five modes (the old Classic switch was about 6 dB out). **Still open and not part of this round:** the `mod_type` switch between effects (chorus, phaser, tremolo) belongs to the dispatcher (§6.5) and is being fixed there. Update (processor rounds, 579b6dd and 2a280b9): **resolved in the dispatcher** (hold, wait, then a 40 ms power-matched crossfade corrected in two bands, §6.5; three bands per channel and 120 ms below 150 Hz after the third round, D-53). Over 440 `mod_type` switches the smoke test reads at most 1.18 dB above the higher steady level, 2.28 dB below the lower, and a click of -86.0 dBFS at 48 kHz (was up to -17.1 dB). The price is a wait of up to 400 ms before a type switch is heard. |
 | D-33 | At 192 kHz the processor smoke test reads −79.6 dBFS for a Classic EQ bass 5 to 10 step against its −80 dBFS bound; the processor equals the engine alone. 192 kHz was not in the proof set before (the proofs are 44.1, 48 and 96 kHz). | Open. Whether it predates this branch is being checked. Update (44e54af, second round): **resolved in the engine.** The Classic knob moves now glide in a double-precision filter (§4.4.3); row E26 covers 44.1, 48, 96 and 192 kHz at blocks 1 / 37 / 64 / 512 with a bar of −80 dBFS and reads −86.4 at worst (bass −86.7 at 192 kHz included). The processor smoke test at 192 kHz was not re-run for this document. Update (2a280b9): the smoke test passes at 192 kHz (0 FAIL at 44.1, 48, 96 and 192 kHz). |
 | D-34 | Not fixed in 678c9c8 (from its commit message). | `setLatencySamples` is called from two threads (audio and message); `setStateInformation` can run off the message thread; the CabSim flag race; the NAM latency 2 to 3 samples short (D-22); a NaN produced inside the chain (D-31). Update (579b6dd): `setLatencySamples` is now called from the message thread only (§2.9), and a value of 1e6 or more or a non-finite one made inside the chain is zeroed before the DC blocker (§2.2). Still not fixed: the `setStateInformation` race (D-48), the CabSim flag (D-47), the NAM figure (D-22, D-45). |
-| D-35 | **Gate, version 3 closing rule: stated costs** (2df395d). | Accepted, no parameter, default or API change. A natural decay (not a stop) closes up to 1 s after it passes the close level (version 2: 0.4 s). A stop on a chord whose partials beat fast waits up to 20 ms more. Fast, deep beat troughs dip partway, never to mute, and the crest reopens the gate (12 + 5 verifier cases, deepest about −36 dB; the trade-off table of §4.1.5 from row C: troughs of 12 dB at 4 and 8 Hz dip to −34 and −33 dB for 82 and 45 ms, troughs of 20 dB at 1 to 8 Hz to −30 to −38 dB for 46 to 119 ms). The 75 Hz 4th-order sidechain default reads a pure 41.2 Hz tone 20.8 dB under its level; for bass use the knob's minimum or about 40 Hz (rows F, §4.1.2). |
+| D-35 | **Gate, version 3 closing rule: stated costs** (2df395d). **Superseded by version 5.1 (D-59 to D-64) for the closing-rule costs; the last sentence, the sidechain default, still holds.** | Accepted, no parameter, default or API change. A natural decay (not a stop) closes up to 1 s after it passes the close level (version 2: 0.4 s). A stop on a chord whose partials beat fast waits up to 20 ms more. Fast, deep beat troughs dip partway, never to mute, and the crest reopens the gate (12 + 5 verifier cases, deepest about −36 dB; the trade-off table of §4.1.5 from row C: troughs of 12 dB at 4 and 8 Hz dip to −34 and −33 dB for 82 and 45 ms, troughs of 20 dB at 1 to 8 Hz to −30 to −38 dB for 46 to 119 ms). The 75 Hz 4th-order sidechain default reads a pure 41.2 Hz tone 20.8 dB under its level; for bass use the knob's minimum or about 40 Hz (rows F, §4.1.2). |
 | D-36 | **Two wider EQ overshoot bars** (0cc04e2). E25a (gain, Q, shelves, cuts, tilt, level, Graphic) is 1.0 dB; E25b (Parametric mid-frequency moves) is 3.0 dB and E25c (Stack) is 2.0 dB. | Accepted. The reason the script gives: E25b is a narrow cut swept off a held note, which rings as the resonator empties (measured +2.46 dB), and E25c is the passive circuit emptying its capacitors (+1.68 dB, the same at 192 kHz); both are the filters' own response to a 10 ms knob move, not the state mismatch E25a guards (worst +0.58 dB, was +11.62). Tightening them would need a different filter, not a fix. |
 | D-37 | **Squash keeps its feedback recovery above the threshold** (b4afe4b). | Kept: the release is the knob when the signal falls below the threshold and while the output stays above it, and a drop that leaves the input above the threshold but takes the output below it recovers sooner (down to a third of the knob at R 8, a quarter at R 20; the table of §4.2.5). That is what separates Squash from Clean. The second verification had read 41 to 93 ms at knob 150 as a defect (r2-dynamics C5); C26b holds the stated table within 10 % and Clean at the knob within 2 %. |
 | D-38 | **Auto makeup is a fixed gain calibrated for a steady −10 dBFS peak** (b4afe4b). | Law unchanged. It does not follow the playing: a steady −20 dBFS signal comes out 4 to 10 dB louder, a −3 dBFS one 3.5 to 7 dB quieter, a plucked chord peaking at −10 dBFS 2 to 12 dB louder in rms. The reference level is the study's guess (`kAutoMakeupReferenceDb`); a level-following makeup is not built. Total makeup stays capped at 48 dB. |
@@ -3548,11 +3676,17 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 | D-51 | The plugin has not been run in a real host and `auval` has not been run against it. | The second verifier recommends a pass in Logic to see how it handles latency reports that change during playback (§2.9). |
 | D-52 | **State restore snaps and is order independent** (2bbda8c). A state restored onto a prepared or running instance went through the user-toggle reset and fade, behind the two-per-callback drain, so each block passed dry for 10 ms and then faded in. | Done. A restore is marked, and the next callback resets every entering or retyped block at once and snaps the faders (§2.6, §6.6). User toggles and chain edits still fade. A render is the same whether the host restores before or after `prepareToPlay`: `tubamp_golden --both-orders host\|preset` finds 0 of 339 rows differing, and the smoke test reads 711 ok and 0 FAIL at 44.1, 48, 96 and 192 kHz (parent's run). The same commit moves latency reports to the 20 ms timer alone (§2.9). **Declared difference from the old build:** restore-before-prepare matches the old build exactly. In prepare-first and live restores some renders still differ from the old build (18, 64 and 22 of 84 in the compatibility harness; engineer's run), all on rows where the old build's own two orders differ because of its drain. Which order Logic uses is untested. |
 | D-53 | **A `mod_type` switch on a held pure note with the two effects in antiphase cannot be crossfaded without a dip** (2bbda8c). | Known limit, bounded as a distribution. The smoke test's level check covers 55 to 440 Hz at four mixes (2640 switches). 34 to 38 of the 2640 are outside the per-switch bounds (1.5 dB above the higher steady level, 3 dB below the lower, click −60 dBFS, −50 dBFS under 60 Hz), with a worst dip of 10.24 dB, a worst bump of 3.20 dB, and −45.5 dBFS under 60 Hz at 96 kHz (parent's run). The check requires 98 % inside and has outer guards no switch may pass (3.5 dB, 12 dB, −60 dBFS, −45 dBFS). The guards are regression guards set from the measured worst, not design targets. |
-| D-54 | **Chorus Tri at mix 0.5 dips on some song-position jumps** (0fde1ee). | Known limit. On a pure tone 6 of 56 jumps drop up to 12.1 dB under the steady minimum (parent's run). Three voices and the dry share a channel, and no path combination avoids it: a phasor model says the best combination still dips 4 to 6 dB at 1 kHz, and waiting for a good moment and a dry-aware choice reached 4 of 56 at best and were not kept (engineer's run). Wide, CE and Dimension: worst −2.82 dB, 0 of 56 under −3 dB (parent's run). CH30 keeps its bound for those three. CH30t holds Tri to at most 8 of 56 jumps under −3 dB and none under −14 dB, regression guards set from the measured worst (6 of 56, −12.11 dB), not design targets. |
-| D-55 | **Chorus mode switches on single notes: 5 of 60 outside the bound** (0fde1ee). | Known limit. Worst −20.3 dB (parent's run), Classic to CE at mix 1: Classic's phase turns about 25 Hz at 1 kHz, faster than the 20 ms fade. The rest are CE to Dimension at 440 Hz (antiphase through the whole 400 ms wait, −4.4 dB; engineer's run) and Tri to Classic on the guitar-like take (−3.04 dB; parent's run). CH33 is a distribution bound, at most 6 of 60 outside and none under −22 dB, over +2.0 dB or above −60 dBFS; measured worst −20.29 dB, +1.76 dB, −69.7 dBFS (engineer's run). The guards are regression guards, not design targets. |
+| D-54 | **Chorus Tri at mix 0.5 dips on some song-position jumps** (0fde1ee). | Known limit, **understated by the author's figure; corrected to the round-four verifier's (measured).** Author's run: on a pure tone 6 of 56 jumps drop up to 12.1 dB under the steady minimum. Three voices and the dry share a channel, and no path combination avoids it: a phasor model says the best combination still dips 4 to 6 dB at 1 kHz, and waiting for a good moment and a dry-aware choice reached 4 of 56 at best and were not kept (engineer's run). **Round-four verifier, measured** (`.audit/fx-verify/r4-mod.md` finding 2: 48 kHz, depth 0.8, 120 BPM, 26 notes, loops of 2.63 / 1.37 / 0.81 / 3.5 beats, each channel against the mode's own minimum over 60 s; a hole is more than 3 dB under it for at least 5 ms; the same detector finds 0 on the steady render): at mix 0.35, 161 of 2288 channel-jumps have a hole (7.0 %, 12 of 26 notes), 53 deeper than 10 dB, deepest 19.7 dB for 20 ms (1500 Hz), longest 48 ms (4.7 dB, 952 Hz); at mix 0.5, 122 of 2288 (5.3 %, 13 notes), 43 deeper than 10 dB, deepest 33.5 dB for 5 ms (758.7 Hz), longest 17 ms (7.2 dB, 306 Hz); at mix 1, 27 of 2288 (1.2 %, 3 notes), 12 deeper than 10 dB, and a 53 ms hole with the right channel at −44 to −47 dBFS where its steady minimum over 90 s is −26.0 dBFS (481.7 Hz). So the count is as stated and the depth and length are worse (12.1 dB against 33.5 dB, 5 ms against 53 ms). **The round-three fix did not improve Tri:** with the 0.5th-percentile reference on both builds the holes went from 109 to 171 at mix 0.35, 128 to 136 at mix 0.5 and 28 to 29 at mix 1 (the 53 ms hole is in both); 44.1 kHz decorrelated stereo and 96 kHz mono show the same picture (mix 0.5: 221 and 45 holes, deepest 39 and 50 dB). **The holes are a single-note effect; chords show none:** an E chord, an A power chord, E1 and a high triad, 20 ms frames, 0 of 2976 channel-jumps more than 3 dB under the steady minimum, worst 0.6 dB, every mode. Wide, CE and Dimension: the author's run reads worst −2.82 dB, 0 of 56 under −3 dB; the verifier confirms it (Wide and CE 0 of 13 728 against the 60 s minimum, Dimension 0 of 6864 against the 0.5th-percentile reference). CH30 keeps its bound for those three. CH30t holds Tri to at most 8 of 56 jumps under −3 dB and none under −14 dB, regression guards set from the author's measured worst (6 of 56, −12.11 dB), **not design targets and not the verifier's figures**. |
+| D-55 | **Chorus mode switches on single notes: 5 of 60 outside the bound** (0fde1ee). | Known limit, **understated by the author's figure; corrected to the round-four verifier's (measured).** Author's run: worst −20.3 dB, Classic to CE at mix 1: Classic's phase turns about 25 Hz at 1 kHz, faster than the 20 ms fade. The rest are CE to Dimension at 440 Hz (antiphase through the whole 400 ms wait, −4.4 dB; engineer's run) and Tri to Classic on the guitar-like take (−3.04 dB). CH33 is a distribution bound, at most 6 of 60 outside and none under −22 dB, over +2.0 dB or above −60 dBFS; measured worst −20.29 dB, +1.76 dB, −69.7 dBFS (engineer's run). **Round-four verifier, measured** (`.audit/fx-verify/r4-mod.md`, verdict table, finding 3 and "The declared limits"; 20 ordered pairs, 9 notes, 4 times, each channel against the 60 s steady minima, 2880 channel-switches per mix, two settings: 0.8 Hz depth 0.5 at 48 kHz, and 3 Hz depth 0.8 at 44.1 kHz with decorrelated stereo): **mix 0.35** 2 of 2880 dip, at most 5.3 dB for 9 ms (the row holds); **mix 0.5** 13 of 2880, deepest 15.2 dB for 15 ms (Dimension to Tri, 1318.5 Hz), deeper than the row's −4.4 dB; **mix 1** 91 of 2880 (3.2 %), 41 deeper than 10 dB, deepest 40.1 dB for 6 ms (Classic to CE, 440.3 Hz, against the row's 20.3 dB) and 34.6 dB for 8 ms **without Classic** (CE to Dimension, 82.4 Hz), so the dips are not specific to Classic. At 0.8 Hz, depth 0.5, 48 kHz: with Classic 26 of 576 channel-switches (4.5 %), 9 deeper than 10 dB, deepest 27.0 dB for 7 ms (Dimension to Classic, 1318.5 Hz); modes 1 to 4 only 17 of 864 (2.0 %), 10 deeper than 10 dB, deepest 34.6 dB. At 3 Hz, depth 0.8, 44.1 kHz: with Classic 32 of 576 (5.6 %), 17 deeper than 10 dB; modes 1 to 4 at mix 1 16 of 864, deepest 23.7 dB for 5 ms (Wide to CE, 82.4 Hz). **The rise passes the +2.0 dB bound:** +3.49 dB over both modes' maxima (Classic to CE, 440.3 Hz, at 3 Hz) and +2.35 dB without Classic (CE to Dimension, 1318.5 Hz); +1.85 dB with Classic at 0.8 Hz. The click bound holds (loudest −75.5 dBFS at 0.8 Hz; at 3 Hz −57.1 dBFS where the modes' own read −57.7). Chords and a bass note, 20 ms frames: 11 of 1920 dip more than 3 dB, worst 5.7 dB, all at mix 1. The guards of CH33 are the author's regression guards, not design targets, and the verifier's grid is outside them at mix 1. |
 | D-56 | **Chorus tap crossfade: glide where it keeps up, crossfade for lag only** (0fde1ee, `Chorus.h`). | A crossfade slides each voice's phase by up to half a cycle in 30 ms, a pitch blip of up to 25 Hz (about +460 cents at 82 Hz, +43 at 1 kHz) that no fade shape removes, because gliding the same delay change as fast would bend every note as much. So a change glides, at most 4 cents beyond the settings' own detune, wherever that lags a stopped knob by under 80 ms or a moving one by under 100 ms, and is crossfaded otherwise, at most once per 250 ms while a knob keeps moving. Cost (engineer's run): rate ramps of 0.05 to 10 Hz in 0.5 / 2 / 10 s read +140 / +118 / +181 cents at 82 Hz (were +139 / +174 / +97: fewer catch-ups, each larger), and a ramp's lag behind the knob is 135 ms (was 80; bar 150). Single steps are unchanged (Wide depth 0.4 → 0.8 +315 / +43 / +6 cents over steady at 82 / 220 / 997 Hz). Longer fades (45 and 60 ms) halve the blip but deepen the comb under them (CH25 wet −2.08 / −1.83 dB against its −1.5 dB bar), so they were dropped. |
 | D-57 | **Phaser voicing switch: 4 of 1200 switches still dip more than 6 dB** (006f743). | Known limit. Worst 17.3 dB for 3.5 ms, all into the script Phase 90 at 2479 Hz (was 19 of 1200). Off the note the energy is at worst −52.1 dBFS, 9 of 720 above −60 dBFS (was 101; parent's run). The engineer attributes the dips to that voicing's own notch on a fresh start, where an ideal fade dips 15.6 dB; not independently verified. Small Stone Color on's own sweep reads about −50 dBFS at 200 to 256 Hz and an ideal 40 ms fade −55.7 dBFS at 110 Hz, so −60 dBFS everywhere is not reachable (engineer's run). **Row P19 passes at 3.00 dB against its 3 dB bar, with no margin.** |
 | D-58 | **EQ: narrow low bells answer a gain move more slowly; E29 leaves out the 800 Hz Graphic band** (d2234ab). | A bell's gain moves no faster than a third of its own decay time, up to 20 ms per pole at 100 Hz, Q 8, +15 dB, where other bells keep 5 ms. Through 5 ms poles a cut-to-boost sweep still rang +2.0 dB at 0.92 × the centre. Off-centre frequency moves overshoot +1.30 dB, equal to the analog reference within 0.001 dB (engineer's run). The far-band row E29 leaves out the 800 Hz Graphic band, three octaves above the 98 Hz note: it rings at −75 dBFS when its gain and damping move, as it did in the second round (−69 dBFS), and that is the band's own response. |
+| D-59 | **Gate: closing rule version 5.1 replaces version 3; Tight's hold default is 10 ms** (bd1f69a, 8a1081a, 5b4377f). | Declared difference from the version 3 text of D-24 and D-35. The wait after a stop is the hold plus remembered troughs; a slow fall is ridden; an in-band stop closes a stop onto a floor just under the threshold; a single deadline puts the gain at the range `hold` + 250 ms after the level last was over the open level; reopening after a deadline close needs 6 dB over the lowest floor estimate since (§4.1.5). `gate_hold` defaults to 10 (`kGateHoldDefault {6, 10, 10}`; the UI starting points the same, §7.3); it was 6 for Tight. Versions 1 to 4 were rejected by independent verification (chatter, palm mutes, a 30 s latch, chord chatter); version 5 was specified from an offline model validated against the engine and implemented to match a Python reference within 0.1 dB (measured worst 0.0138 dB on 153 signals, implementer's run). Full `check_gate.py` run on the merged build: 130 checks, 0 FAIL (coordinator's run). The limits that remain are D-60 to D-64 and the sidechain default of D-35. |
+| D-60 | **Gate known limit: a slowly decaying note is faded out `hold` + 250 ms after it falls under the open level, even if it is still inside the 6 dB band.** | Known limit, by design: the deadline is the bound that ends the 30 s latch of version 3. The cap on the gain is 0 dB until `hold` + 170 ms and falls over the last 80 ms, so a chord's troughs up to about `hold` + 190 ms keep the gain over −6 dB. Measured (coordinator's run): R6 gain over −6 dB at most 200.6 ms after the level was last over the open level (limit 202); TB1 the longest stretch under the open level with the gain over −60 dB, beyond the hold, 235.3 ms (limit 236); Tight at the range for the rest of 30 s over a pulsing floor, at unity for 0.0 to 0.1 s (verifier's `r3_gate_latch`, merged build). A lower threshold moves the deadline later in the note's decay. Smooth takes its expander law instead of the range. |
+| D-61 | **Gate known limit: palm-mute gaps of 40 to 52 ms at hold 10 end at −18 to −23 dB, not fully closed.** | Known limit, arithmetic of the rule: a gap closes after the 12 ms window, the fall to 6 dB under the note, the hold (10 ms) and a release to −20 dB (10 ms at the default 30 ms). Measured: X13 40 ms gaps median −23.4 dB, worst −23.1; 30 ms gaps −4.2; 50 ms gaps −43.4 (coordinator's run). One seeded near-hiss chug (82 Hz, 52 ms gaps, threshold 5.4 dB over the hiss) ends one gap at −18.4 dB instead of −20 (model, SPEC_v51 §6.3 and §7). Hold 6 closes them further (X13 40 ms gap −31 dB, model; R4 staccato at 180 bpm: median −29.1 dB at hold 6, −21.1 at hold 10, 11 of 16 gaps under −20 dB at hold 10) and costs chords: the `info` rows show B2 at hold 6 with reopening clicks (g3: 4 cases, worst +8.2 dB; g3b: 9 cases, worst +7.1 dB) and B1 at hold 6 with 9 of 382 cases dipping under −1 dB (5 under −6 dB). Hold is the knob: 6 closes 38 ms staccato gaps (16 of 16), 10 rides chords (0 of 256 chord cases dip, against 2 of 256 at hold 6; verifier's g1 script). |
+| D-62 | **Gate known limit: a loud note stopped 0.1 s after a quiet chord that sits about 6 dB over the threshold keeps one or two more dips than the chord alone (4 cases of 72).** | Known limit (row B2 g3b, bar: at most 4 cells, all at gap 0.1 s). The cells are C2+Eb2 at threshold −36 with the loud note +12, +20 and +28 dB over the chord, and E2+G#2 at −36, +28 dB. The loud note stops while the quiet chord, only 6 dB over the threshold, is in a beat trough under the open level: that is the in-band stop of I4 (a fall from a note onto a level inside the band), and the chord's crest returns 4 to 7 ms later. Measured: deepest dip −14.5 dB, longest 12 ms, at most 2 in one case, 0 at the range inside 60 ms, 0 clicks. Removing them breaks hand stops: an extra in-band wait of 4 ms leaves 2 cells and an I4 margin of +0.2 ms, 8 ms leaves 0 cells and 24 of 120 stops over the I4 bound (worst margin −3.8 ms) (model, SPEC_v51 §6.1); a 0.2 ms margin would not survive float differences between the engine and the model. Not changed. |
+| D-63 | **Gate known limit: after a deadline close, a note less than 6 dB over a floor that sits inside the band does not reopen the gate.** | Known limit, the price of the reopening test (§4.1.5 point 9): a level over the open level counts only if it is also 6 dB over the lowest floor estimate since the close, so when the floor's estimate is inside the band (under the open level by less than 6 dB) a note between the open level and the estimate + 6 dB stays shut out. The threshold is too close to the floor. A threshold at least 6 dB over the floor's own reading is never held to more than the open level. Only a deadline close sets the test; a stop close does not. Noise peaking at the threshold, which the test was added for, held the gate to 2 changes at most over 30 s (X4 long, 42 cases) where version 5 had 80. |
+| D-64 | **Gate known limit: a decay with the threshold 3 dB over the hiss keeps the floor audible for 346 ms in one of 76 cases.** | Known limit (coordinator's figure from the model run, SPEC_v51 §7; unchanged by version 5.1). It counts the time the note plus the hiss still cross the open level, measured from the script's point (the note alone under the hiss's peak reading); from the last crossing it is `hold` + 235.3 ms at every rate, which is the bound of D-60 (TB1: 235.3 ms). The verifier's decay grid on the merged build (`r3_gate_decay`, hold 6) reads at most 162.5 ms of floor-alone tail. |
 ---
 
 ## Appendix A — parameter count

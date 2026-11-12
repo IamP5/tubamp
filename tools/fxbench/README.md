@@ -136,8 +136,8 @@ What `--trace` and `--meters` write, per adapter:
 | drive, eq | none | none |
 
 The check scripts' `--rows` and `--verbose`: `check_gate.py --rows=A,B,...` runs only the named
-closing-rule rows (A to G; `X` adds X10-X20 and the other verifier rows), for iterating (the full run
-is the acceptance); `check_gate.py --verbose` lists every dip that rows B and C classify. `check_comp.py`
+rows (`I` the closing rule's invariants, `A` to `G` and `R` its other rows, `T` its targets on seeded
+draws; `X` adds X10-X20 and the other verifier rows), for iterating (the full run is the acceptance); `check_gate.py --verbose` lists every dip that rows B and C classify. `check_comp.py`
 also takes `--rows=C3,C10,...` (and `--no-common`, `--no-tables`), `check_eq.py` takes `--only=E5,E12`
 and `--measure`, `check_drive.py` takes `--only-specific`.
 
