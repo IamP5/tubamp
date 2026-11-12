@@ -53,6 +53,7 @@ constexpr double kHighCutOffHz = 19999.0;     // [§4.4.2] at or above: off
 constexpr double kHighCutMaxFs = 0.45;        // [§4.4.4] high cut at most 0.45 fs
 constexpr double kMaxFs = 0.49;               // [§2.2] every frequency at most 0.49 fs before tan()
 constexpr double kTiltPivotHz = 700.0;        // [study: R2, own constant] geometric centre of 80 Hz-6 kHz
+constexpr double kBellRingFraction = 1.0 / 3.0;  // [choice] the bell gain's poles: a third of its decay time
 
 // Matched bell (see matchedBell): the third match point sits a fraction c of the way from f0 to
 // Nyquist, c = 0.75 up to f0 = 0.45 Nyquist, falling to 0.02 at 0.74 Nyquist, never above 20 kHz
@@ -65,6 +66,7 @@ constexpr double kMatchTopHz = 20000.0;
 constexpr int kGraphicBands = 7;
 constexpr double kGraphicHz[kGraphicBands] { 100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0, 6400.0 };  // [study: R5]
 constexpr double kGraphicQ = 1.4142135623730951;  // [study: R5; Q is the study's own] one-octave half-gain width
+constexpr double kGraphicScale = 1.0 / kGraphicQ;  // SvfSection's input scale: 1/Q, as Parametric's bell
 
 // Stack (§4.4.5): Yeh & Smith, "Discretization of the '59 Fender Bassman tone stack", DAFx-06.
 struct StackVoicing
@@ -140,11 +142,12 @@ double neutralKnob (float knob, double dbPerUnit) noexcept
     return std::abs (dbPerUnit * ((double) knob - 5.0)) < kNeutralDb ? 5.0 : (double) knob;
 }
 
-/** (1 - a)^n and n a (1 - a)^n for n = 0..16: the two cascaded one-poles advanced n
-    samples in closed form (e1' = r^n e1, e2' = r^n e2 + n a r^n e1, errors from the target). */
+/** (1 - a)^n, n a (1 - a)^n and n (n + 1)/2 a^2 (1 - a)^n for n = 0..16: the cascaded one-poles
+    advanced n samples in closed form (e1' = r^n e1, e2' = r^n e2 + n a r^n e1,
+    e3' = r^n e3 + n a r^n e2 + n (n + 1)/2 a^2 r^n e1, errors from the target). */
 struct StepTable
 {
-    double r[kControlInterval + 1] {}, nar[kControlInterval + 1] {};
+    double r[kControlInterval + 1] {}, nar[kControlInterval + 1] {}, tri[kControlInterval + 1] {};
 
     void prepare (double sampleRate) noexcept
     {
@@ -155,44 +158,53 @@ struct StepTable
         {
             r[n] = rn;
             nar[n] = (double) n * a * rn;
+            tri[n] = 0.5 * (double) n * (double) (n + 1) * a * a * rn;
             rn *= 1.0 - a;
         }
     }
 };
 
 /** One control through two cascaded one-poles, s1 += a (v - s1); s2 += a (s1 - s2) per
-    sample [study: R1; ver: V:65], moved a whole control interval at a time. */
+    sample [study: R1; ver: V:65], moved a whole control interval at a time; with `third`, a
+    third one-pole after them, so the control's curvature is continuous as well. */
 struct TwoPole
 {
-    double s1 = 0.0, s2 = 0.0, target = 0.0;
-    bool moving = false;
+    double s1 = 0.0, s2 = 0.0, s3 = 0.0, target = 0.0;
+    bool moving = false, third = false;
+
+    double value() const noexcept { return third ? s3 : s2; }
 
     void snap (double v) noexcept
     {
-        s1 = s2 = target = v;
+        s1 = s2 = s3 = target = v;
         moving = false;
     }
 
     void setTarget (double v) noexcept
     {
-        if (! (juce::exactlyEqual (v, target) && juce::exactlyEqual (s1, v) && juce::exactlyEqual (s2, v)))
+        if (! (juce::exactlyEqual (v, target) && juce::exactlyEqual (s1, v) && juce::exactlyEqual (s2, v)
+               && juce::exactlyEqual (s3, v)))
         {
             target = v;
             moving = true;
         }
     }
 
-    void advance (const StepTable& t, int n) noexcept
+    void advance (const StepTable& t, int n) noexcept { advance (t.r[n], t.nar[n], t.tri[n]); }
+
+    /** The same step with the table's three entries for n samples given directly. */
+    void advance (double r, double nar, double tri) noexcept
     {
-        const double e1 = s1 - target, e2 = s2 - target;
-        s1 = target + t.r[n] * e1;
-        s2 = target + t.r[n] * e2 + t.nar[n] * e1;
+        const double e1 = s1 - target, e2 = s2 - target, e3 = s3 - target;
+        s1 = target + r * e1;
+        s2 = target + r * e2 + nar * e1;
+        s3 = third ? target + r * e3 + nar * e2 + tri * e1 : s2;
     }
 
-    /** Snaps to the target once both stages are within eps of it. */
+    /** Snaps to the target once every stage is within eps of it. */
     void settle (double eps) noexcept
     {
-        if (std::abs (s1 - target) <= eps && std::abs (s2 - target) <= eps)
+        if (std::abs (s1 - target) <= eps && std::abs (s2 - target) <= eps && std::abs (s3 - target) <= eps)
             snap (target);
     }
 };
@@ -900,11 +912,17 @@ SvfCoeffs cut (double sampleRate, double hz, bool highPass, double amount) noexc
 }
 
 //==============================================================================
-/** One SVF section, two channels of state. The core is fed k x and mixed with m1/k and m2/k,
-    the same filter as feeding x and mixing m1 and m2, but its states then hold what a held
-    note leaves at the resonance (x in the band-pass, -jx in the low-pass) whatever k is. Fed x,
-    they hold x/k there, so a fast Q or bell-gain move rescaled the band-pass term at once
-    while its state lagged: +11.6 dB over the steady level for Q 8 to 0.5 at +15 dB (row E25). */
+/** One SVF section, two channels of state. The core is fed s x and mixed with m1/s and m2/s:
+    the same filter whatever s is, but s decides what the states hold, and that is what a move
+    inherits. Fed x, a bell holds x/k at its resonance (k its damping), so a fast Q move rescaled
+    the band-pass term at once while the state lagged: +11.6 dB for Q 8 to 0.5 at +15 dB (row
+    E25a). Fed k x it holds x there whatever k is, but off the resonance its states scale with k,
+    and a bell's gain moves k too: a Q 8 bell stepped from -15 to +15 dB overshot +5.4 dB under a
+    note a sixth of an octave off its centre, and a band moving far above a low note dragged the
+    k x its low-pass held, a click of -58 dBFS (r3-engines EQ 1, 2). A bell is fed x/Q: a Q move
+    still finds the resonance right (the states hold A x there, A the root of the bell's gain), a
+    gain move leaves the state alone, and so does a band far from the note. Shelves and cuts have
+    a fixed k and are fed k x. */
 class SvfSection
 {
 public:
@@ -918,22 +936,24 @@ public:
     }
 
     /** After reset() only: the state is already clear. */
-    void snapTo (const SvfCoeffs& c) noexcept
+    void snapTo (const SvfCoeffs& c, double scale) noexcept
     {
-        cur = target = inputScaled (c);
+        cur = target = c;
+        curS = targetS = sA = sB = scale;
         rampLeft = 0;
-        skipped = false;
+        scaleMoving = skipped = false;
         finishRamp();
     }
 
-    void rampTo (const SvfCoeffs& designed) noexcept
+    void rampTo (const SvfCoeffs& c, double scale) noexcept
     {
-        const auto c = inputScaled (designed);
         target = c;
+        targetS = scale;
 
         if (skipped && c.isIdentity())
         {
             cur = c;
+            curS = sA = sB = scale;
             return;
         }
 
@@ -941,9 +961,11 @@ public:
         rampLeft = kControlInterval;
         const double s = 1.0 / (double) kControlInterval;
         inc = { (c.g - cur.g) * s, (c.k - cur.k) * s, (c.m0 - cur.m0) * s, (c.m1 - cur.m1) * s, (c.m2 - cur.m2) * s };
+        incS = (scale - curS) * s;
+        scaleMoving = scaleMoving || ! juce::exactlyEqual (scale, sB);
     }
 
-    bool isRamping() const noexcept { return rampLeft > 0; }
+    bool isRamping() const noexcept { return rampLeft > 0 || scaleMoving; }
 
     template <int NC>
     void process (double (&buf)[2][kChunk], int n) noexcept
@@ -951,24 +973,24 @@ public:
         if (skipped)
             return;
 
-        if (rampLeft > 0)
+        if (isRamping())
         {
             processRamp<NC> (buf, n);
             return;
         }
 
-        const double a1 = sa1, a2 = sa2, a3 = sa3, k = cur.k;
+        const double a1 = sa1, a2 = sa2, a3 = sa3, s = sB;
 
         if (identity)
         {
             for (int i = 0; i < n; ++i)
                 for (int ch = 0; ch < NC; ++ch)
-                    tick (ch, k * buf[ch][i], a1, a2, a3);
+                    tick (ch, s * buf[ch][i], a1, a2, a3);
 
             return;
         }
 
-        const double m0 = cur.m0, m1 = cur.m1, m2 = cur.m2;
+        const double m0 = cur.m0, m1 = sm1, m2 = sm2;
 
         for (int i = 0; i < n; ++i)
         {
@@ -976,7 +998,7 @@ public:
             {
                 const double x = buf[ch][i];
                 double v1, v2;
-                tick (ch, k * x, a1, a2, a3, v1, v2);
+                tick (ch, s * x, a1, a2, a3, v1, v2);
                 buf[ch][i] = m0 * x + m1 * v1 + m2 * v2;
             }
         }
@@ -992,8 +1014,12 @@ public:
     }
 
 private:
-    /** (g, k, m0, m1, m2) as the section runs them: (g, k, m0, m1/k, m2/k), k > 0 for every design. */
-    static SvfCoeffs inputScaled (const SvfCoeffs& c) noexcept { return { c.g, c.k, c.m0, c.m1 / c.k, c.m2 / c.k }; }
+    // The input scale follows its knots through two one-poles of 8 samples. Ramped linearly, it
+    // turned a low note into a 16-sample comb of kinks fed straight into the core: a Q step on a
+    // 3 kHz bell rang it at -66 dBFS under a 41 Hz note at 44.1 kHz. The mix divides by the same
+    // scale every sample, so the filter is the design's whatever the scale does.
+    static constexpr double kScaleCoeff = 0.1175030974154046;   // 1 - exp(-1/8)
+    static constexpr double kScaleSettle = 1.0e-10;             // relative; then snapped
 
     void tick (int ch, double u, double a1, double a2, double a3) noexcept
     {
@@ -1020,6 +1046,7 @@ private:
                 if (--rampLeft == 0)
                 {
                     cur = target;
+                    curS = targetS;
                 }
                 else
                 {
@@ -1028,21 +1055,37 @@ private:
                     cur.m0 += inc.m0;
                     cur.m1 += inc.m1;
                     cur.m2 += inc.m2;
+                    curS += incS;
                 }
 
                 computeA (cur, ra1, ra2, ra3);
             }
 
+            if (scaleMoving)
+            {
+                sA += kScaleCoeff * (curS - sA);
+                sB += kScaleCoeff * (sA - sB);
+            }
+
+            const double s = sB, inv = 1.0 / s;
+
             for (int ch = 0; ch < NC; ++ch)
             {
                 const double x = buf[ch][i];
                 double v1, v2;
-                tick (ch, cur.k * x, ra1, ra2, ra3, v1, v2);
-                buf[ch][i] = cur.m0 * x + cur.m1 * v1 + cur.m2 * v2;
+                tick (ch, s * x, ra1, ra2, ra3, v1, v2);
+                buf[ch][i] = cur.m0 * x + (cur.m1 * v1 + cur.m2 * v2) * inv;
             }
         }
 
-        if (rampLeft == 0)
+        if (rampLeft == 0 && scaleMoving && std::abs (sA - targetS) <= kScaleSettle * targetS
+            && std::abs (sB - targetS) <= kScaleSettle * targetS)
+        {
+            sA = sB = targetS;
+            scaleMoving = false;
+        }
+
+        if (rampLeft == 0 && ! scaleMoving)
             finishRamp();
     }
 
@@ -1056,6 +1099,8 @@ private:
     void finishRamp() noexcept
     {
         computeA (cur, sa1, sa2, sa3);
+        sm1 = cur.m1 / sB;
+        sm2 = cur.m2 / sB;
         identity = cur.isIdentity();
 
         if (identity && skipsWhenIdentity && ! skipped)
@@ -1065,11 +1110,12 @@ private:
         }
     }
 
-    SvfCoeffs cur, target, inc;
+    SvfCoeffs cur, target, inc;                  // as designed: the mix is divided by the scale
+    double curS = 1.0, targetS = 1.0, incS = 0.0, sA = 1.0, sB = 1.0, sm1 = 0.0, sm2 = 0.0;
     double sa1 = 1.0, sa2 = 0.0, sa3 = 0.0, ra1 = 1.0, ra2 = 0.0, ra3 = 0.0;
     double ic1[2] {}, ic2[2] {};
     int rampLeft = 0;
-    bool identity = true, skipped = false;
+    bool identity = true, skipped = false, scaleMoving = false;
 };
 
 /** First-order tilt around a pivot, T = 10^(tilt/20), gp = tan(pi fp / fs):
@@ -1314,6 +1360,12 @@ public:
         tilt.prepare (rate);
         sections[lowCut].skipsWhenIdentity = true;
         sections[highCut].skipsWhenIdentity = true;
+        // The bell's gain and Q glide through a third one-pole, so their curvature does not jump
+        // when a move starts: a Q step rang a 3 kHz bell at -54 dBFS above 1 kHz under a 41 Hz
+        // note through two (row E29), and a -15 dB cut moved from Q 0.5 to 8 an octave above a
+        // note overshot +1.0 dB (E25a). The mid frequency keeps two, as the other controls.
+        controls[cMid].third = true;
+        controls[cMidQ].third = true;
         reset();
     }
 
@@ -1350,10 +1402,10 @@ public:
                 controls[c].snap (v[c]);
 
             for (int s = 0; s < numSections; ++s)
-                sections[s].snapTo (designSection (s));
+                snapSection (s);
 
-            tilt.snapTo (controls[cTilt].s2);
-            level.snapTo (dbToGain (controls[cLevel].s2));
+            tilt.snapTo (controls[cTilt].value());
+            level.snapTo (dbToGain (controls[cLevel].value()));
             return;
         }
 
@@ -1385,31 +1437,35 @@ public:
 
             if (s.moving)
             {
-                s.advance (steps, kControlInterval);
+                if (c == cMid)
+                    advanceBellGain();
+                else
+                    s.advance (steps, kControlInterval);
+
                 s.settle (kSettle);
             }
         }
 
         if (moved[cLowHz] || moved[cLowOn])
-            sections[lowCut].rampTo (designSection (lowCut));
+            rampSection (lowCut);
 
         if (moved[cBass])
-            sections[bassShelf].rampTo (designSection (bassShelf));
+            rampSection (bassShelf);
 
         if (moved[cMid] || moved[cMidHz] || moved[cMidQ])
-            sections[midBell].rampTo (designSection (midBell));
+            rampSection (midBell);
 
         if (moved[cTreble])
-            sections[trebleShelf].rampTo (designSection (trebleShelf));
+            rampSection (trebleShelf);
 
         if (moved[cHighHz] || moved[cHighOn])
-            sections[highCut].rampTo (designSection (highCut));
+            rampSection (highCut);
 
         if (moved[cTilt])
-            tilt.rampTo (controls[cTilt].s2);
+            tilt.rampTo (controls[cTilt].value());
 
         if (moved[cLevel])
-            level.rampTo (dbToGain (controls[cLevel].s2));
+            level.rampTo (dbToGain (controls[cLevel].value()));
     }
 
     template <int NC>
@@ -1438,18 +1494,55 @@ private:
     enum Control { cBass, cMid, cTreble, cMidHz, cMidQ, cLowHz, cLowOn, cHighHz, cHighOn, cTilt, cLevel, numControls };
     enum Section { lowCut, bassShelf, midBell, trebleShelf, highCut, numSections };
 
+    /** The bell's gain moves no faster than a third of the bell's own decay time, 2 / (k w0) at
+        the narrower of where it is and where it goes, and never faster than the other controls.
+        Fed x/Q, a narrow bell swept from cut to boost under a note just off its centre still
+        rang over its steady level whatever the state held: Q 8 at 100 Hz, -15 to +15 dB, a 92 Hz
+        note, +2.0 dB through 5 ms poles, +1.5 dB for a 50 ms ramp, since the boost decays in
+        60 ms. At most 20 ms per pole (100 Hz, Q 8, +15 dB): +0.5 dB; a bell at 1 kHz or of Q 2
+        and below keeps the 5 ms poles [r3-engines EQ 1; choice: the third]. */
+    void advanceBellGain() noexcept
+    {
+        auto& s = controls[cMid];
+        const double hz = std::exp2 (controls[cMidHz].value()), q = std::exp2 (controls[cMidQ].value());
+        const auto damping = [q] (double knob) { return std::exp (-kMidDb * (knob - 5.0) * (std::log (10.0) / 40.0)) / q; };
+        const double ring = 2.0 / (juce::jmin (damping (s.value()), damping (s.target)) * 2.0 * kPi * hz);
+        const double tau = juce::jmax (kSmoothSeconds, kBellRingFraction * ring);
+        const double a = 1.0 - std::exp (-1.0 / (tau * sampleRate));
+        const double r = std::pow (1.0 - a, (double) kControlInterval), n = (double) kControlInterval;
+        s.advance (r, n * a * r, 0.5 * n * (n + 1.0) * a * a * r);
+    }
+
+    /** The input scale of SvfSection: 1/Q for the bell, k (fixed) for shelves and cuts. */
+    double sectionScale (int s, const SvfCoeffs& c) const noexcept
+    {
+        return s == midBell ? std::exp2 (-controls[cMidQ].value()) : c.k;
+    }
+
+    void snapSection (int s) noexcept
+    {
+        const auto c = designSection (s);
+        sections[s].snapTo (c, sectionScale (s, c));
+    }
+
+    void rampSection (int s) noexcept
+    {
+        const auto c = designSection (s);
+        sections[s].rampTo (c, sectionScale (s, c));
+    }
+
     SvfCoeffs designSection (int s) const noexcept
     {
-        const auto knobDb = [this] (int c, double dbPerUnit) { return dbPerUnit * (controls[c].s2 - 5.0); };
+        const auto knobDb = [this] (int c, double dbPerUnit) { return dbPerUnit * (controls[c].value() - 5.0); };
 
         switch (s)
         {
-            case lowCut:      return cut (sampleRate, std::exp2 (controls[cLowHz].s2), true, controls[cLowOn].s2);
+            case lowCut:      return cut (sampleRate, std::exp2 (controls[cLowHz].value()), true, controls[cLowOn].value());
             case bassShelf:   return lowShelf (sampleRate, kBassShelfHz, kShelfQd, knobDb (cBass, kBassDb));
-            case midBell:     return matchedBell (sampleRate, std::exp2 (controls[cMidHz].s2), std::exp2 (controls[cMidQ].s2),
+            case midBell:     return matchedBell (sampleRate, std::exp2 (controls[cMidHz].value()), std::exp2 (controls[cMidQ].value()),
                                            knobDb (cMid, kMidDb));
             case trebleShelf: return highShelf (sampleRate, kTrebleShelfHz, kShelfQd, knobDb (cTreble, kTrebleDb));
-            case highCut:     return cut (sampleRate, std::exp2 (controls[cHighHz].s2), false, controls[cHighOn].s2);
+            case highCut:     return cut (sampleRate, std::exp2 (controls[cHighHz].value()), false, controls[cHighOn].value());
             default:          break;
         }
 
@@ -1475,6 +1568,12 @@ public:
     {
         sampleRate = rate;
         steps.prepare (rate);
+
+        // A third one-pole as Parametric's bell: g1k6 stepped under a 98 Hz note boosted by the
+        // other bands rang -77.9 dBFS above 1 kHz at 44.1 kHz through two, -84.5 through three (E29).
+        for (auto& g : gains)
+            g.third = true;
+
         reset();
     }
 
@@ -1496,11 +1595,11 @@ public:
             for (int b = 0; b < kGraphicBands; ++b)
             {
                 gains[b].snap (neutralDb (p.graphicDb[b]));
-                bands[b].snapTo (matchedBell (sampleRate, kGraphicHz[b], kGraphicQ, gains[b].s2));
+                bands[b].snapTo (matchedBell (sampleRate, kGraphicHz[b], kGraphicQ, gains[b].value()), kGraphicScale);
             }
 
             levelDb.snap (neutralDb (p.levelDb));
-            level.snapTo (dbToGain (levelDb.s2));
+            level.snapTo (dbToGain (levelDb.value()));
             return;
         }
 
@@ -1529,7 +1628,7 @@ public:
             {
                 s.advance (steps, kControlInterval);
                 s.settle (kSettle);
-                bands[b].rampTo (matchedBell (sampleRate, kGraphicHz[b], kGraphicQ, s.s2));
+                bands[b].rampTo (matchedBell (sampleRate, kGraphicHz[b], kGraphicQ, s.value()), kGraphicScale);
             }
         }
 
@@ -1537,7 +1636,7 @@ public:
         {
             levelDb.advance (steps, kControlInterval);
             levelDb.settle (kSettle);
-            level.rampTo (dbToGain (levelDb.s2));
+            level.rampTo (dbToGain (levelDb.value()));
         }
     }
 
@@ -1618,7 +1717,7 @@ public:
             levelDb.snap (neutralDb (p.levelDb));
             design (cur);
             rampLeft = 0;
-            level.snapTo (dbToGain (levelDb.s2));
+            level.snapTo (dbToGain (levelDb.value()));
             return;
         }
 
@@ -1659,7 +1758,7 @@ public:
         {
             levelDb.advance (steps, kControlInterval);
             levelDb.settle (kSettle);
-            level.rampTo (dbToGain (levelDb.s2));
+            level.rampTo (dbToGain (levelDb.value()));
         }
     }
 
@@ -1753,7 +1852,7 @@ private:
         enum { nA, nO, nB, nC, nD, nE, numNodes };
         constexpr int src = -1, gnd = -2;
         const auto& v = kVoicings[voice];
-        const double t = knobs[0].s2 / 10.0, m = taper (knobs[1].s2 / 10.0), l = taper (knobs[2].s2 / 10.0);
+        const double t = knobs[0].value() / 10.0, m = taper (knobs[1].value() / 10.0), l = taper (knobs[2].value() / 10.0);
         const double G[3] { 2.0 * v.c1 * sampleRate, 2.0 * v.c2 * sampleRate, 2.0 * v.c3 * sampleRate };
         const int capP[3] { src, nC, nC }, capQ[3] { nA, nB, nE };
 
@@ -1875,6 +1974,9 @@ struct EqFx::Impl
     EqParams params;
     int activeKey = 0, activeSlot = parametricSlot, incomingKey = 0, incomingSlot = parametricSlot;
     int settleLeft = 0, fadePos = 0, settleSamples = kControlInterval, fadeSamples = 1, gridPhase = 0;
+    int turnPos = 0, turnLen = 0;           // turnLen > 0: the fade has turned round (see turnFade)
+    double fadeW = 0.0, fadeStep = 0.0;     // the incoming weight now, and its last per-sample change
+    double turnW = 0.0, turnV = 0.0, turnTo = 0.0;
     bool switching = false, snapEngine = true;
     float incomingInput[2][kControlInterval] {};
     double power[3][2] {}, powerCoeff = 0.1;   // <o o>, <i i>, <o i>, each through two one-poles
@@ -1949,8 +2051,15 @@ struct EqFx::Impl
             return;
         }
 
+        const bool goingBack = turnLen > 0 && juce::exactlyEqual (turnTo, 0.0);
+
         if (requested == incomingKey)
+        {
+            if (goingBack)
+                turnFade (1.0);
+
             return;
+        }
 
         if (requested == activeKey)
         {
@@ -1962,10 +2071,9 @@ struct EqFx::Impl
             }
 
             // Asked back during the fade: both engines run, so the fade turns round where it is.
-            std::swap (activeKey, incomingKey);
-            std::swap (activeSlot, incomingSlot);
-            std::swap (power[0], power[1]);
-            fadePos = fadeSamples - fadePos;
+            if (! goingBack)
+                turnFade (0.0);
+
             return;
         }
 
@@ -1981,10 +2089,34 @@ struct EqFx::Impl
         incomingSlot = slotFor (key, activeSlot);
         resetSlot (incomingSlot, key);
         settleLeft = settleSamples;
-        fadePos = 0;
+        fadePos = turnPos = turnLen = 0;
+        fadeW = fadeStep = 0.0;
 
         for (auto& p : power)
             p[0] = p[1] = 0.0;
+    }
+
+    /** Turns a running fade towards `to` (0: back to the active engine, 1: on to the incoming
+        one). Reversing the raised cosine's direction in place left a corner in the weight, a
+        click of -45.6 dBFS above 1 kHz (r3-engines EQ 3); the weight now leaves on a cubic
+        Hermite from where it is with the speed it has, and arrives at rest after one fade time. */
+    void turnFade (double to) noexcept
+    {
+        turnW = fadeW;
+        turnV = fadeStep * (double) fadeSamples;
+        turnTo = to;
+        turnPos = 0;
+        turnLen = fadeSamples;
+    }
+
+    double nextWeight() noexcept
+    {
+        if (turnLen == 0)
+            return 0.5 - 0.5 * std::cos (kPi * (double) ++fadePos / (double) fadeSamples);
+
+        const double t = (double) ++turnPos / (double) turnLen, t2 = t * t, t3 = t2 * t;
+        const double w = (2.0 * t3 - 3.0 * t2 + 1.0) * turnW + (t3 - 2.0 * t2 + t) * turnV + (3.0 * t2 - 2.0 * t3) * turnTo;
+        return juce::jlimit (0.0, 1.0, w);
     }
 
     /** One piece of a switch, never across a grid point. The two outputs are mixed with raised-
@@ -2027,7 +2159,9 @@ struct EqFx::Impl
             if (settleLeft > 0)
                 continue;
 
-            const double w = 0.5 - 0.5 * std::cos (kPi * (double) ++fadePos / (double) fadeSamples);
+            const double w = nextWeight();
+            fadeStep = w - fadeW;
+            fadeW = w;
             const double po = juce::jmax (0.0, power[0][1]), pi = juce::jmax (0.0, power[1][1]), poi = power[2][1];
             const double mix = (1.0 - w) * (1.0 - w) * po + w * w * pi + 2.0 * w * (1.0 - w) * poi;
             const double target = (1.0 - w) * std::sqrt (po) + w * std::sqrt (pi);
@@ -2039,7 +2173,14 @@ struct EqFx::Impl
                 *out = (float) (gain * ((1.0 - w) * (double) *out + w * (double) incomingInput[ch][i]));
             }
 
-            if (fadePos == fadeSamples)
+            if (turnLen > 0 && turnPos == turnLen && juce::exactlyEqual (turnTo, 0.0))
+            {
+                // Back on the active engine: the rest of the block already holds its output.
+                switching = false;
+                return;
+            }
+
+            if (turnLen > 0 ? turnPos == turnLen : fadePos == fadeSamples)
             {
                 for (int ch = 0; ch < channels; ++ch)
                     std::copy (incomingInput[ch] + i + 1, incomingInput[ch] + n, block.getChannelPointer ((size_t) ch) + i + 1);

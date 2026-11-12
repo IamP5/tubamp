@@ -5,7 +5,9 @@ the effect's own table (§4.4.9, rows E1-E19), then E20-E24, added after the ver
 range, non-finite input, host float noise on neutral controls, re-enabling after a bypass, and
 a Classic retarget in a ramp's last segment; then E25-E28, added after the second
 verification (.audit/fx-verify/r2-tone.md): overshoot when a control moves under a held note,
-Classic knob moves at every rate and block, type-switch click and level, absurd finite input.
+Classic knob moves at every rate and block, type-switch click and level, absurd finite input;
+then, after the third verification (.audit/fx-verify/r3-engines.md), E25a off the band's
+centre, E29 a band above the note moved, E30 a type switch asked back.
 Prints a PASS/FAIL table and a table of measurements; exit status 1 on any FAIL.
 
     python3 -I tools/fxbench/check_eq.py [--quick] [--types 1,2] [--only E5,E12] [--no-common]
@@ -848,8 +850,38 @@ def e25_cases(quick):
                     for f in (41.2, 196.0):
                         c.append(("E25c", f"S {VOICE_NAMES[v]} {k} {a}->{b} others {other} at {f:g} Hz",
                                   {"type": 2, "voice": v, "bass": other, "mid": other, "treble": other}, k, a, b, f))
+    c += e25_off_centre_cases()
     if quick:
         c = c[::3]
+    return c
+
+
+def e25_off_centre_cases():
+    """E25a off the band's centre (r3-engines EQ 1, 2): the note one octave below to one octave
+    above a 110 Hz bell in quarter octaves and at 0.9, 0.95, 1.05, 1.1 times its centre (where
+    the verification found the worst case), under gain, Q and half-octave frequency moves; and a
+    Graphic band's gain with the note around 100 and 800 Hz. The k-scaled section overshot
+    +5.39 dB at 90 Hz under a 100 Hz Q 8 bell stepped from -15 to +15 dB. The frequency moves go
+    to E25b: a narrow cut swept off a note rings as it empties, +1.30 dB over the path for Q 8,
+    -15 dB, 155.6 -> 110 Hz under a 155.6 Hz note, and the verification's analog reference
+    (r3_eq_ref.py) gives the same on every one of them to 0.001 dB."""
+    c = []
+    for ratio in sorted([2.0 ** (k / 4) for k in (-4, -3, -2, -1, 1, 2, 3, 4)] + [0.9, 0.95, 1.05, 1.1]):
+        f = 110.0 * ratio
+        tag = f"note {f:.1f} Hz"
+        for q in (8, 0.7):
+            for a, b in ((0, 10), (10, 0), (5, 10), (10, 5), (5, 0), (0, 5)):
+                c.append(("E25a", f"P mid {a}->{b} Q {q}, {tag}", {"type": 1, "mid_freq": 110, "mid_q": q}, "mid", a, b, f))
+            for g in (10, 0):
+                for fa, fb in ((110, 155.6), (155.6, 110)):
+                    c.append(("E25b", f"P mid freq {fa}->{fb} Q {q} knob {g}, {tag}", {"type": 1, "mid": g, "mid_q": q},
+                              "mid_freq", fa, fb, f))
+        for g in (10, 0, 7, 3):
+            for qa, qb in ((8, 0.5), (0.5, 8), (8, 2), (2, 8)):
+                c.append(("E25a", f"P mid Q {qa}->{qb} at knob {g}, {tag}", {"type": 1, "mid": g, "mid_freq": 110}, "mid_q", qa, qb, f))
+        for k, centre in (("g100", 100.0), ("g800", 800.0)):
+            for a, b in ((-12, 12), (12, -12), (0, 12), (0, -12)):
+                c.append(("E25a", f"G {k} {a}->{b}, note {centre * ratio:.1f} Hz", {"type": 3}, k, a, b, centre * ratio))
     return c
 
 
@@ -887,8 +919,11 @@ def e25_overshoot(report, quick):
         y = fx.run(EFFECT, signal(kind, f0, secs, sr), toks, ["--block=64", "--channels=1"], sr)[0][0]
         return float(np.max(np.abs(y[int(t_move * sr):len(y) - int(0.3 * sr)])))
 
-    jobs = [(c, kind, sr) for c in cases for kind in ("sine", "guitar")
-            for sr in ([48000, 96000] if c[3] in ("mid_q", "mid") and not quick else [48000])]
+    def off_centre(c):
+        return ", note " in c[1]
+
+    jobs = [(c, kind, sr) for c in cases for kind in (("sine",) if off_centre(c) else ("sine", "guitar"))
+            for sr in ([48000, 96000] if c[3] in ("mid_q", "mid") and not quick and not off_centre(c) else [48000])]
     statics = pmap(steady, [(c, v, kind, sr) for c, kind, sr in jobs for v in path(c[3], c[4], c[5])])
     bound = {}
     for i, (c, kind, sr) in enumerate(jobs):
@@ -904,6 +939,8 @@ def e25_overshoot(report, quick):
         worst.setdefault(row + "n", [0, 0])
         worst[row + "n"][0] += 1
         worst[row + "n"][1] += over > 1.0
+        if off_centre(c) and over > worst.get(row + "off", (-1e9,))[0]:
+            worst[row + "off"] = (over, f"{c[1]}, {'step' if d == 0 else f'{d:g} s'}")
     scopes = {"E25a": "Parametric gain, Q, shelves, cuts, tilt, level; Graphic",
               "E25b": "Parametric mid-frequency moves", "E25c": "Stack, every knob and voice"}
     for row in ("E25a", "E25b", "E25c"):
@@ -915,9 +952,10 @@ def e25_overshoot(report, quick):
         # passive circuit with its capacitors as state: both overshoots are the filters' own
         # response to a 10 ms knob move, not a state mismatch (r2 fix round; FX-ENGINES section 8).
         limit = {"E25a": 1.0, "E25b": 3.0, "E25c": 2.0}[row]
-        report.add(f"{row} move overshoot", scopes[row], over <= limit,
+        off = worst.get(row + "off")
+        report.add(f"{row} move overshoot", scopes[row] + (", note off centre" if off else ""), over <= limit,
                    f"worst {over:+.2f} dB over the path's steady peak ({where}); {bad} of {n} moves above +1 dB "
-                   f"(limit {limit:+g})")
+                   + (f"; off centre worst {off[0]:+.2f} dB ({off[1]}) " if off else "") + f"(limit {limit:+g})")
 
 
 def e26_classic_moves(report, quick):
@@ -1056,6 +1094,103 @@ def e28_absurd_input(report, quick):
     report.add("E28 absurd input", f"one sample of 1e4..3e38, {len(cases)} settings x blocks", not bad and kept,
                ("; ".join(bad[:4]) + "; " if bad else f"{len(jobs)} renders equal the render with the sample at 0; ")
                + f"one sample of 999 processed as the old code: {kept}")
+
+
+def e29_far_band_click(report, quick):
+    """A band well above a held low note moves (third verification, r3-engines EQ 2): the peak
+    above 1 kHz (eighth-order high-pass) from 10 ms before the step to 300 ms after must stay
+    under -80 dBFS. Verification: Graphic g3k2 12 -> -12 with the other bands at +12 under 98 Hz
+    read -57.6 dBFS (round 2 -93.7); Parametric Q 0.5 -> 8 on a +15 dB bell at 1 kHz under 41.2 Hz
+    at -3 dBFS -59.3 dBFS at 96 kHz (round 2 -99.6). Steps, block 64, 44.1 / 48 / 96 kHz. "Above"
+    is four octaves or more, as in the verification: g800, three octaves over the 98 Hz note and
+    its skirt reaching 1 kHz, rings at about -75 dBFS when its gain (and with it its damping,
+    fourfold) moves under the +12 dB note, as it did in round 2 (-69): the band's own response."""
+    t = 1.0
+    all12 = {k: 12 for k in GRAPHIC_KEYS}
+    cases = []
+    for k in ("g1k6", "g3k2", "g6k4"):
+        for a, b in ((12, -12), (-12, 12)):
+            cases.append((f"G {k} {a}->{b}, others +12", {"type": 3, **{q: v for q, v in all12.items() if q != k}}, k, a, b, 98.0, -12))
+            cases.append((f"G {k} {a}->{b}", {"type": 3}, k, a, b, 98.0, -12))
+    for f in (1000, 3000):
+        for qa, qb in ((0.5, 8), (8, 0.5)):
+            for g in (10, 0):
+                cases.append((f"P Q {qa}->{qb} knob {g} at {f} Hz", {"type": 1, "mid": g, "mid_freq": f}, "mid_q", qa, qb, 41.2, -3))
+        for a, b in ((10, 0), (0, 10)):
+            for q in (8, 0.7):
+                cases.append((f"P mid {a}->{b} Q {q} at {f} Hz", {"type": 1, "mid_q": q, "mid_freq": f}, "mid", a, b, 98.0, -12))
+    for a, b in ((10, 0), (0, 10)):
+        cases.append((f"P treble {a}->{b}", {"type": 1}, "treble", a, b, 98.0, -12))
+    rates = [48000] if quick else [44100, 48000, 96000]
+    jobs = [(c, sr) for c in cases for sr in rates]
+
+    def one(job):
+        (name, base, key, a, b, f0, lv), sr = job
+        toks = [f"{k}={v}" for k, v in base.items()] + [f"{key}={a}", f"{key}@{t}={b}"]
+        y = fx.run(EFFECT, fx.sine(f0, lv, 1.6, sr), toks, ["--block=64", "--channels=1"], sr)[0][0]
+        return hp_peak(y, sr, int((t - 0.01) * sr), int((t + 0.3) * sr)), f"{name} under {f0:g} Hz {lv} dBFS, {sr // 1000}k"
+
+    res = pmap(one, jobs)
+    w = max(res)
+    report.add("E29 far-band click", f"{len(jobs)} steps of a band above the note", w[0] <= -80.0,
+               f"worst {w[0]:.1f} dBFS above 1 kHz ({w[1]}); {sum(r[0] > -80 for r in res)} above -80 (limit -80)")
+
+
+def e30_switch_reversal(report, quick):
+    """A type switch asked back (third verification, r3-engines EQ 3: back at 52 to 88 ms clicked
+    at -45.6 dBFS above 1 kHz, Classic <-> Parametric, 82.41 Hz). Every ordered pair of types under
+    strong settings, the first type asked back every 4 ms from 0 to 120 ms after the switch: the
+    click (as E27, under a 98 Hz -12 dBFS note, 10 ms before to 400 ms after) at most -75 dBFS, and
+    the 5 ms RMS of a guitar-like 110 Hz note never more than 1 dB outside the span of both types'
+    own steady levels. 48 kHz, block 64 (37 for one setting)."""
+    t_sw = 1.0
+    sr = 48000
+    pairs = [(a, b) for a in range(4) for b in range(4) if a != b]
+    backs = [ms / 1000 for ms in range(0, 124, 4)]
+    sets = [("low boost", 64), ("extremes", 64), ("high cut", 37)]
+    jobs = [(name, block, a, b, back) for name, block in sets for a, b in pairs for back in backs]
+    if quick:
+        jobs = jobs[::5]
+
+    def env(y):
+        n = int(0.005 * sr)
+        c = np.concatenate([[0.0], np.cumsum(y * y)])
+        return np.sqrt(np.maximum(c[n:] - c[:-n], 0.0) / n)
+
+    steady = {}
+
+    def own(job):
+        name, block, typ = job
+        toks = [f"{k}={v}" for k, v in E27_SETS[name].items()] + [f"type={typ}"]
+        e = env(fx.run(EFFECT, guitar(110.0, 1.6, sr), toks, [f"--block={block}", "--channels=1"], sr)[0][0])
+        e = e[int(0.5 * sr):]
+        return float(e.min()), float(e.max())
+
+    keys = sorted({(name, block, t) for name, block in sets for t in range(4)})
+    for k, v in zip(keys, pmap(own, keys)):
+        steady[k] = v
+
+    def one(job):
+        name, block, a, b, back = job
+        toks = [f"{k}={v}" for k, v in E27_SETS[name].items()] + [f"type={a}", f"type@{t_sw}={b}", f"type@{t_sw + back:.4f}={a}"]
+        opts = [f"--block={block}", "--channels=1"]
+        y = fx.run(EFFECT, fx.sine(98.0, -12.0, 2.0, sr), toks, opts, sr)[0][0]
+        click = hp_peak(y, sr, int((t_sw - 0.01) * sr), int((t_sw + 0.4) * sr))
+        e = env(fx.run(EFFECT, guitar(110.0, 2.2, sr), toks, opts, sr)[0][0])
+        tt = np.arange(len(e)) / sr
+        during = e[(tt >= t_sw - 0.005) & (tt <= t_sw + 0.6)]
+        lo = min(steady[(name, block, a)][0], steady[(name, block, b)][0])
+        hi = max(steady[(name, block, a)][1], steady[(name, block, b)][1])
+        return click, float(fx.db(during.min() / lo)), float(fx.db(during.max() / hi)), f"{a}->{b}->{a} at +{back * 1000:.0f} ms {name}/{block}"
+
+    res = pmap(one, jobs)
+    wc = max(res, key=lambda r: r[0])
+    wd = min(res, key=lambda r: r[1])
+    wb = max(res, key=lambda r: r[2])
+    ok = wc[0] <= -75.0 and wd[1] >= -1.0 and wb[2] <= 1.0
+    report.add("E30 switch asked back", f"{len(jobs)} reversals, 0-120 ms", ok,
+               f"click worst {wc[0]:.1f} dBFS ({wc[3]}; limit -75); level dip {wd[1]:+.2f} dB ({wd[3]}), "
+               f"bump {wb[2]:+.2f} dB ({wb[3]}) (limits +-1 dB outside both types' own ranges)")
 
 
 # ---------------------------------------------------------------------------- measurements
@@ -1275,6 +1410,10 @@ def specific_checks(report, args):
         e27_switch_quality(report, quick)
     if want("E28"):
         e28_absurd_input(report, quick)
+    if want("E29"):
+        e29_far_band_click(report, quick)
+    if want("E30"):
+        e30_switch_reversal(report, quick)
     if want("E19") and len(results) == 4:
         report.add("E19 rates", "E2, E4, E6, E7 at " + ", ".join(f"{r // 1000}k" for r in rates3), all(results.values()),
                    ", ".join(f"{k} {'ok' if v else 'FAIL'}" for k, v in results.items()))
