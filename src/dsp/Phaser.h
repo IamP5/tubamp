@@ -13,6 +13,12 @@
 // Phase 90 and Small Stone are docs/research/fx/phaser/voicings.md, matched to its numeric
 // reference prototype/phaser_ref.py. They read rate, color and syncPhase only: depth and mix
 // are pinned to the stock pedal.
+//
+// A song-position jump glides the sweep to the new phase in 10 ms (Small Stone Color on: 40 ms).
+// Phase 90 then reaches it only through its gate smoothing, the circuit's own RC between the LFO
+// and the JFET gates (3.54 Hz, a 45 ms time constant): 63 to 201 ms to within -40 dB of the voicing
+// at the new phase all along, depending on the jump. That is the voicing's sweep, as the pedal's own
+// would lag a jump of its LFO, not the glide; shortening it would mean leaving the circuit.
 namespace tubamp
 {
 /** Everything a phaser needs for one block; the Modulation dispatcher fills it. */

@@ -13,7 +13,10 @@ fixes): pitch deviation of a held note against Guitar Rig 6 (evidence/fit/motion
 null of a guitar-like take against Guitar Rig 6 (evidence/fit/gr6_takes/), song-position jumps at every
 block size and rate, the phase lock under host jitter and tempo changes, the level of every model
 and Color switch, and loudness against bypass (with the full-scale peak). The P13/P14 references
-are rendered by evidence/fit/reftakes.py. --quick runs P1 at blocks 37/512, P2 at 48 kHz, P4 at
+are rendered by evidence/fit/reftakes.py. P19-P20 (round-3 fixes): a switch between two voicings
+near antiphase, followed until the output is the new voicing's; a host whose song position
+drifts from its reported tempo (the adapter's host_drift key: the position advances 1 + D times
+as fast as the reported tempo says). --quick runs P1 at blocks 37/512, P2 at 48 kHz, P4 at
 the noon rates only and P9 at 44.1/48/96 kHz. Temporary WAVs go to check-tmp/ next to the
 tubamp_fxbench build.
 """
@@ -904,6 +907,49 @@ def p16_sync_lock(report):
                    "44.1k/64, 44.1k/4096, 96k/512, 192k/16")
 
 
+def drift_job(args):
+    """A host whose song position runs `drift` (a fraction) faster than its reported tempo says, as when the
+    tempo parameter lags the host's own. -> (args, jumps glided, tick dBFS, largest phase error after 2 s)."""
+    model, color, sr, bs, drift, note = args
+    secs = 4.0
+    t = np.arange(int(secs * sr)) / sr
+    x = (fx.amp(-12.0) * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32).astype(np.float64)[None, :]
+    tokens = [f"model={model}", f"color={color}", f"host_note={note}", "host_ppq=0.3", "host_bpm=120", f"host_drift={drift}"]
+    ref_tokens = [f"model={model}", f"color={color}", f"sync_phase={0.3 * note % 1.0}", f"sync_phase@{0.5 * bs / sr}=-1",
+                  f"rate={2.0 * note * (1.0 + drift)}"]
+    r = fx.invoke(EFFECT, x, tokens, [f"--block={bs}", "--trace"], sr)
+    ref = fx.invoke(EFFECT, x, ref_tokens, [f"--block={bs}"], sr).out[0]
+    ends = np.arange(bs - 1, len(t), bs)
+    err = np.abs(wrap_half(r.trace[0][ends].astype(np.float64) - r.trace[2][ends].astype(np.float64)))
+    tick = tick_db(r.out[0] - ref, sr, int(0.3 * sr), len(t) - int(0.05 * sr))
+    return args, int(round(float(r.trace[1][-1]))), tick, float(err[ends / sr > 2.0].max())
+
+
+def p20_sync_drift(report):
+    """Round-3 N12: a rate error the host does not report (host_drift, the adapter's simulated host) is a
+    slow drift, not a jump: the lock follows it and leaves no more phase error than its jitter dead band.
+    The tick is P16's (the high-passed difference from the same voicing running free at the host's true
+    rate), on the 1/4 notes as there: at 1/16 (8 Hz) the Color-on sweep's own content above 2 kHz moves
+    with any LFO offset (1e-4 cycle is -87 dBFS of difference, 1e-3 is -72), which the pull-in and the
+    dead band leave by design; the 1/16 notes are checked for glides and phase error."""
+    drifts = (0.01, 0.05, 0.10, -0.10)
+    settings = ((44100, 64), (48000, 512), (44100, 4096), (192000, 16))
+    jobs = [(m, c, sr, bs, d, note) for (m, c) in VOICINGS for sr, bs in settings for d in drifts for note in (1, 4)]
+    with ProcessPoolExecutor(WORKERS) as pool:
+        res = list(pool.map(drift_job, jobs))
+    for (m, c), name in VOICINGS.items():
+        rows = [r for r in res if r[0][:2] == (m, c)]
+        glides = sum(r[1] for r in rows)
+        tick = max((r for r in rows if r[0][5] == 1), key=lambda r: r[2])
+        err = max(rows, key=lambda r: r[3])
+        ok = glides == 0 and tick[2] <= -80.0 and err[3] < 0.01
+        where = lambda r: f"{100 * r[0][4]:+g} % 1/{4 * r[0][5]} {r[0][2] / 1000:g}k/{r[0][3]}"  # noqa: E731
+        report.add("P20 sync drift", name, ok,
+                   f"{glides} glides (0), worst tick {tick[2]:.1f} dBFS (<= -80, 1/4 notes; {where(tick)}), phase error "
+                   f"after 2 s {err[3]:.2e} cycle (< 0.01; {where(err)}); song position 1/5/10 % faster and 10 % "
+                   "slower than the reported 120 BPM (1/4, 1/16 notes); 44.1k/64, 48k/512, 44.1k/4096, 192k/16")
+
+
 # ---------------------------------------------------------------------------- P17 (switch level)
 
 SWITCH_VOICES = {"Classic": (0, 1), "script": (1, 0), "block": (1, 1), "Stone off": (2, 0), "Stone on": (2, 1)}
@@ -966,6 +1012,115 @@ def p17_switch_level(report):
                f"at most {up[1]:+.2f} dB above the higher steady level (<= 1.5; {where(up)}), {down[2]:.2f} dB below the "
                f"lower (<= 3; {where(down)}), click {click[3]:.1f} dBFS (<= -60; {where(click)}); 20 ms frames over 90 ms "
                "from the switch; held notes 82/196/440 Hz at -12 dBFS and a guitar-like take")
+
+
+def analytic_band(y, sr, f0, lo, hi):
+    """y band-limited to [lo f0, hi f0] with raised-cosine edges a tenth of f0 wide, as the analytic
+    signal (zero phase, by FFT: numpy only)."""
+    f = np.fft.fftfreq(len(y), 1.0 / sr)
+    edge = 0.1 * f0
+
+    def ramp(v):
+        return 0.5 - 0.5 * np.cos(np.pi * np.clip(v, 0.0, 1.0))
+    w = ramp((f - lo * f0 + edge) / edge) * ramp((hi * f0 + edge - f) / edge)
+    return np.fft.ifft(2.0 * np.fft.fft(y) * w)
+
+
+def transit_job(args):
+    """One ordered pair on one signal at one rate, switched at four LFO phases of the outgoing voicing
+    (a quarter cycle apart). Against both voicings' own outputs at the same samples (the outgoing one
+    unswitched, the incoming one started fresh at the switch block as the switch starts it, the adapter's
+    start_reset): the deepest dip under the lower and the highest rise over the higher, from the request
+    until the output is the incoming voicing's: held notes in 5 ms windows of the note's band (+-50 %),
+    the scale of the antiphase blip; the guitar-like take in P17's 20 ms frames (its 5 ms level is that
+    of whichever partials a window holds, which two phasers' crossfade combs by design); a dip counted
+    where the lower voicing is within 40 dB of the input (not in a voicing's own deep notch, where the
+    two windows differ in the last digits); the peak outside the note's band (+-40 %) from the request
+    to 20 ms after the end, with the higher of the two voicings' own steady peaks there and that of an
+    ideal fade (equal power on the same smoother-step ramp, no correction, no bridge) between the two
+    voicings at the engine's own moment and length; and the time from the request until the output is
+    the incoming voicing's."""
+    a, b, kind, rate = args
+    sr, bs = 48000, 128
+    times = [1.0 + k / (4.0 * rate) for k in range(4)]
+    secs = times[-1] + 0.6
+    t = np.arange(int(secs * sr)) / sr
+    if kind == "guitar":
+        x = load_fit_module("refmeasure").guitar(len(t), sr, seed=11, gap=0.25)[None, :]
+    else:
+        x = (fx.amp(-12.0) * np.sin(2 * np.pi * float(kind) * t)).astype(np.float32).astype(np.float64)[None, :]
+    before = keys_for(*SWITCH_VOICES[a], rate=rate)
+    after = keys_for(*SWITCH_VOICES[b], rate=rate)
+    ya = fx.invoke(EFFECT, x, before, [f"--block={bs}"], sr).out[0]
+    own = None
+    if kind != "guitar":
+        f0 = float(kind)
+        yb_all = fx.invoke(EFFECT, x, dict(after, start_reset=1), [f"--block={bs}"], sr).out[0]
+        steady = slice(int(0.5 * sr), len(t) - int(0.1 * sr))
+        own = max(20 * math.log10(max(float(np.max(np.abs((y - np.real(analytic_band(y, sr, f0, 0.6, 1.4)))[steady]))), 1e-12))
+                  for y in (ya, yb_all))
+    res = []
+    for ts in times:
+        out = fx.invoke(EFFECT, x, fx._tokens(before) + [f"model@{ts}={after['model']}", f"color@{ts}={after['color']}"],
+                        [f"--block={bs}"], sr).out[0]
+        t_s = int(math.ceil(ts * sr / bs) * bs)
+        yb = np.zeros_like(out)
+        yb[t_s:] = fx.invoke(EFFECT, x[:, t_s:], dict(after, start_reset=1), [f"--block={bs}"], sr).out[0]
+        late = np.nonzero(np.abs(out[t_s:] - yb[t_s:]) > 1e-6)[0]
+        t_end = t_s + (int(late[-1]) + 1 if len(late) else 0)
+        lo, hi = t_s, max(t_end, t_s + 1)
+        off = None
+        n = int(0.005 * sr)
+        if kind == "guitar":
+            e_out, e_a, e_b, e_x = (frame_db(y[None, :], lo, hi, 4 * n, n // 2) for y in (out, ya, yb, x[0]))
+        else:
+            band = [np.abs(analytic_band(y, sr, f0, 0.5, 1.5)) for y in (out, ya, yb)]
+            e_out, e_a, e_b = (frame_db(z[None, :], lo - n // 2, hi - n // 2, n, n // 4) for z in band)
+            e_x = np.full_like(e_out, 20 * math.log10(fx.amp(-12.0)))
+            moved = np.nonzero(out[t_s:] != ya[t_s:])[0]
+            t_f = t_s + (int(moved[0]) if len(moved) else 0)
+            u = np.clip((np.arange(len(out)) - t_f) / max(t_end - t_f, 1), 0.0, 1.0)
+            r = u ** 3 * (u * (6.0 * u - 15.0) + 10.0)
+            ideal = np.cos(0.5 * np.pi * r) * ya + np.sin(0.5 * np.pi * r) * yb
+            ideal[:t_f] = ya[:t_f]
+            rest = [y - np.real(analytic_band(y, sr, f0, 0.6, 1.4)) for y in (out, ideal)]
+            off = tuple(20 * math.log10(max(float(np.max(np.abs(z[lo:hi + int(0.02 * sr)]))), 1e-12)) for z in rest)
+            off = (off[0], own, off[1])
+        lower = np.minimum(e_a, e_b)
+        dips = np.where(lower > e_x - 40.0, lower - e_out, 0.0)
+        res.append((ts, float(np.max(dips)), float(np.max(e_out - np.maximum(e_a, e_b))), off, 1e3 * (t_end - t_s) / sr))
+    return args, res
+
+
+def p19_switch_transit(report):
+    """Round-3 N6: two voicings near antiphase on a held note cancel where the crossfade's gains meet.
+    Every ordered pair of the five voicings, held notes (256 and 368 Hz cancel worst) and a guitar-like
+    take, two rates, four LFO phases; the whole switch, however long it waits for a moment to fade."""
+    kinds = ("110.0", "256.0", "368.0", "659.3", "guitar")
+    jobs = [(a, b, k, r) for a in SWITCH_VOICES for b in SWITCH_VOICES if a != b for k in kinds for r in (0.3, 1.3)]
+    with ProcessPoolExecutor(WORKERS) as pool:
+        res = [(args, r) for args, rows in pool.map(transit_job, jobs) for r in rows]
+    dip = max(res, key=lambda r: r[1][1])
+    up = max(res, key=lambda r: r[1][2])
+    # Off the note: what the switch adds above -60 dBFS, above both voicings' own steady content there
+    # (Small Stone's sweep alone reaches -50 dBFS outside a 200 Hz note's band) and above what the fade
+    # itself spreads: an ideal fade between the two at the same moment (on a 110 Hz note a 40 ms fade,
+    # P7, spreads beyond 40 % of the note when the two outputs differ).
+    excess = lambda r: r[1][3][0] - max(-60.0, r[1][3][1], r[1][3][2])  # noqa: E731
+    off = max((r for r in res if r[1][3] is not None), key=excess)
+    low = max((r for r in res if r[1][3] is not None and float(r[0][2]) < 200.0), key=lambda r: r[1][3][0])
+    span = [r[1][4] for r in res]
+    ok = dip[1][1] <= 3.0 and up[1][2] <= 1.5 and excess(off) <= 0.5 and max(span) <= 400.0
+    where = lambda r: f"{r[0][0]} -> {r[0][1]}, {r[0][2]}, {r[0][3]} Hz, {r[1][0]:.3f} s"  # noqa: E731
+    report.add("P19 switch transit", f"20 ordered pairs x 5 signals x 2 rates x 4 phases", ok,
+               f"at most {dip[1][1]:.2f} dB under the lower voicing (<= 3; {where(dip)}), {up[1][2]:+.2f} dB over the higher "
+               f"(<= 1.5; {where(up)}), off the note at most {excess(off):+.1f} dB over the higher of -60 dBFS, the voicings' "
+               f"own steady content and an ideal fade's (<= +0.5; {where(off)}: {off[1][3][0]:.1f} against {off[1][3][1]:.1f} "
+               f"and {off[1][3][2]:.1f} dBFS; worst at 110 Hz {low[1][3][0]:.1f} against {low[1][3][1]:.1f} and "
+               f"{low[1][3][2]:.1f}), request to "
+               f"fully new {min(span):.0f}-{max(span):.0f} ms (<= 400); {sum(r[1][1] > 3.0 for r in res)} of {len(res)} "
+               "switches dip more than 3 dB; held notes 110/256/368/659 Hz at -12 dBFS (5 ms windows of the note's band) "
+               "and a guitar-like take (20 ms frames), rates 0.3/1.3 Hz")
 
 
 def switch_rt(report):
@@ -1089,6 +1244,8 @@ def specific_checks(report, args):
         p15_sync_jumps(report, args.quick)
         p16_sync_lock(report)
         p17_switch_level(report)
+        p19_switch_transit(report)
+        p20_sync_drift(report)
         switch_rt(report)
         p18_level(report)
         out_of_range(report)

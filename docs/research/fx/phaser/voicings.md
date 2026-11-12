@@ -334,10 +334,13 @@ The prototype has no song position, no bypass and no bad input; the engine adds:
 - **Song position** (the processor passes the host's LFO phase for each block's first sample).
   Two things are kept apart: a discontinuity in the host's own phase, and the engine's error
   against it. The engine keeps the host phase and rate of the last block that brought one and
-  predicts this block's host phase as `previous + rate × samples since / fs`; the host's phase minus
-  that prediction, wrapped to ±0.5 cycle, is the host's step.
-  - A step of at least 0.01 cycle and at least 2 ms of LFO time (`kJumpCycles`,
-    `kJumpLfoSeconds`) is a **jump**: transport start, locate, a loop that is not a whole number of
+  predicts this block's host phase as `previous + rate × (1 + D) × samples since / fs`, D the rate
+  error the lock has learnt (below); the host's phase minus that prediction, wrapped to ±0.5 cycle,
+  is the host's step.
+  - A step of at least 0.01 cycle, at least 2 ms of LFO time and more than a rate error of 15 % could
+    make since the last position (`kJumpCycles`, `kJumpLfoSeconds`, `kJumpDriftRate`; the last
+    matters only for long blocks: 0.022 cycle for 1/4 notes at 4096 samples and 44.1 kHz) is a
+    **jump**: transport start, locate, a loop that is not a whole number of
     cycles, a note-value change; switching sync on counts as one. [choice: the smallest real jump
     tested is 0.1 cycle, and at the fastest rate, 20 Hz, 2 ms is 0.04 cycle; what must not count is
     below 0.004 cycle: host jitter of ±8 samples is 0.18 ms at 44.1 kHz (0.0036 cycle at 20 Hz),
@@ -360,38 +363,93 @@ The prototype has no song position, no bypass and no bad input; the engine adds:
     and 192 kHz: Phase 90 script 172 ms, block 140 ms (the gate smoothing's 45 ms time constant
     dominates), Color off 8 ms, Color on 41 ms, each within 1.1 ms over every block size (P15).
   - Any smaller step is **no jump**: the LFO runs at the tempo's rate and its own error against
-    the host is pulled in by bending the rate, never by a glide: `nudge = (|e| − d)·sign(e) / τ`,
-    τ = 0.15 s (`kLockSeconds`), at most ±3 % of the rate (`kLockMaxNudge`), with a dead band
-    d = min(0.002 cycle, 0.5 ms of LFO time) (`kLockDeadCycles`, `kLockDeadLfoSeconds`) [choice:
-    τ in the middle of 0.1 to 0.25 s; the dead band takes host jitter of a few samples out of the
-    LFO (±8 samples at 44.1 kHz is 0.18 ms) and leaves at most 0.002 cycle of error standing]. The
-    nudge is set once per block. P16: song position jittered by ±2 and ±8 samples per block, tempo
-    stepped by 1 BPM from 120 to 135, ramped from 100 to 140 BPM over 4 s, 1/4 and 1/16 notes,
-    44.1 kHz/64 to 192 kHz/16: no glide, the high-passed difference from an exact host (or from
-    the free-running LFO at the same rates) at most −86.6 dBFS, phase error after one second at
-    most 0.0058 cycle (the 1/16-note ramp at 4096-sample blocks).
+    the host is pulled in by bending the rate, never by a glide, with a second-order lock: a phase
+    term `(|e| − d)·sign(e) / τ`, τ = 0.15 s (`kLockSeconds`), at most ±3 % of the rate
+    (`kLockMaxNudge`), plus an integral D that learns a rate error the host does not report (a
+    tempo parameter that lags the host's own), `D += (|e| − d)·sign(e)·Δt / (τ T_i · rate)`,
+    T_i = 0.3 s (`kLockIntegralSeconds`, damping 0.71), D within ±10 % (`kLockMaxDrift`); nudge =
+    phase term + D × rate. The dead band d = min(0.002 cycle, 0.5 ms of LFO time)
+    (`kLockDeadCycles`, `kLockDeadLfoSeconds`) holds for both terms [choice: τ in the middle of 0.1
+    to 0.25 s; the dead band takes host jitter of a few samples out of the LFO (±8 samples at
+    44.1 kHz is 0.18 ms), so a constant rate error of any size up to 10 % leaves at most 0.002
+    cycle standing where the old proportional lock, capped at 3 %, never closed a 5 % one (round-3
+    N12). Without the dead band the error goes to zero, but jitter of ±8 samples at 4096-sample
+    blocks then moves Color on's 8 Hz sweep enough to show −71 dBFS in P16's difference]. A jump
+    keeps D. The nudge is set once per block. P16: song position jittered by ±2 and ±8 samples per
+    block, tempo stepped by 1 BPM from 120 to 135, ramped from 100 to 140 BPM over 4 s, 1/4 and 1/16
+    notes, 44.1 kHz/64 to 192 kHz/16: no glide, the high-passed difference from an exact host (or
+    from the free-running LFO at the same rates) at most −86.4 dBFS, phase error after one second
+    at most 0.0056 cycle (the 1/16-note ramp at 4096-sample blocks). P20: a song position 1, 5 and
+    10 % faster and 10 % slower than the reported tempo, same notes and settings: no glide, phase
+    error after 2 s at most 0.0024 cycle, at most −85.4 dBFS of difference from the voicing running
+    free at the true rate (1/4 notes; at 1/16 Color on's sweep shows any LFO offset, 1e-4 cycle as
+    −87 dBFS, as in P16).
   The first phase after `reset()` or the start of a model switch is taken directly. Free-running
   behaviour is unchanged (P2).
-- **Model and Color switches** (all five voicings, Classic included): the outgoing voicing keeps
-  running on one copy of the input; the incoming one is reset and runs on another copy, unheard,
-  for 30 ms (`kSwitchWarmSeconds`: its states and the power estimates below settle), then the two
-  cross over in 40 ms (`kSwitchFadeSeconds`) with a raised cosine s: out = g·((1 − s)·A + s·B).
-  g makes the power of the sum, predicted from short-term powers of A and B and their cross term
-  (two cascaded one-poles of 2.5 ms each, `kSwitchStatSeconds`), follow the straight line between
-  the two powers: g² = P_t / (P_sum + 4s(1 − s)·P_t / 8²), P_t = (1 − s)·P_A + s·P_B,
-  P_sum = (1 − s)²·P_A + s²·P_B + 2s(1 − s)·P_AB. On one held note two phasers can sit in
-  antiphase, where every crossfade of the two passes a null; the bound term caps g at +18 dB
-  (`kSwitchMaxGain` 8) and vanishes at both ends of the fade, so the gains have no corner. [choice,
-  measured with P17: every ordered pair of the five voicings, held notes at 82, 196 and 440 Hz at
-  −12 dBFS and a guitar-like take, switched at two times: the level, in 20 ms frames, stays within
-  +0.95 dB of the higher and −2.88 dB of the lower of the two voicings' own levels (bars +1.5 and
-  −3 dB), click at most −93.8 dBFS above 2 kHz. With a hard cap at +12 dB and 4 ms estimates (and the old make-ups): +1.20
-  / −3.28 dB and a −54.6 dBFS click where the cap engaged. The old switch faded through the dry
-  input: +11.5 dB above and 20.3 dB below both levels (round-2 N6)]. Classic's own output is
-  untouched (it is the same code path whenever no switch is in flight). A request that arrives
-  during a switch is taken when it ends. The engine holds two Phase 90 / Small Stone instances
-  that share one set of coefficient tables, and a scratch buffer of four channels of the
-  maximum block size, all allocated in `prepare()`.
+- **Model and Color switches** (all five voicings, Classic included): the outgoing voicing A keeps
+  running on one copy of the input; the incoming one B is reset and runs on another copy, unheard,
+  for 30 ms (`kSwitchWarmSeconds`: its states and the estimates below settle). On one held note two
+  phasers can sit near antiphase, where every crossfade of the two passes a null that no gain
+  repairs, and near it a large correcting gain is itself heard (round 3: blips of −14 to −26 dB
+  for up to 5 ms, −25 dBFS off the note). So:
+  - **Estimates.** Short-term powers and cross terms (two cascaded one-poles of 2.5 ms,
+    `kSwitchStatSeconds`) of the analytic signals of A, B and the input, each from a 90° allpass
+    pair (two chains of four first-order sections in z², ±1° from 20 Hz to 20 kHz at 44.1 kHz;
+    Niemitalo's coefficients, `kQuadratureA`, `kQuadratureB`; their inputs come in over the
+    warm-up, as a step would ring in their slow poles): a held note gives them no ripple at twice its
+    frequency, which through the gains would put sidebands beside the note. In two bands split at
+    1 kHz by a one-pole (`kSwitchSplitHz`), as `PowerCrossfade` in FxBlocks.
+  - **Moment.** After the warm-up the fade waits, as `PowerCrossfade` does, for A and B to correlate
+    no worse than −0.5 (`kSwitchMinCorrelation`) and, by the correlation's trend over the fade, not
+    to fall below it; after 250 ms (`kSwitchWaitSeconds`) any moment that is good now, after
+    280 ms (`kSwitchLongestWaitSeconds`) any moment. Request to fully new: 70 to 390 ms.
+  - **Fade.** 40 ms (`kSwitchFadeSeconds`) on a smoother-step ramp r (continuous to the second
+    derivative: a half-cycle turn of a held note in 40 ms stays 53 dB under it from 80 Hz off it
+    on, where the smooth-step reaches −44 dB), with gains halfway between equal amplitude and equal
+    power, √((1 − r) cos(πr/2)) and √(r sin(πr/2)) (−4.5 dB at the middle: where the estimates lag a
+    pick attack, two correlated outputs rise 1.5 dB and two uncorrelated ones fall 1.5 dB).
+  - **Bridge.** In a band whose two outputs correlate worse than −0.2 (in full from −0.7,
+    `kSwitchBridgeFrom`, `kSwitchBridgeFull`, a smooth step between; this need followed through
+    two 5 ms one-poles, `kSwitchTurnSmoothSeconds`, as two phasers near resonance can swing from
+    in phase to antiphase within a few ms, and so fast a change of the gains is heard beside the
+    note) and are both coherent with the input (|A X*|² / (|A|²|X|²) from 0.6 to 0.9,
+    `kSwitchBridgeCoherence`: a held note, not a chord through two phasers whose partials turn
+    apart; not smoothed, as the bridge's direction is not to be trusted where it falls), the input's
+    quadrature pair turned to the phase midway between A and B (the bisector of their directions,
+    kept on its side once heard; its weight also falls as sin²(angle/2) as the two come to one
+    phase, where there is nothing to bridge and the bisector's normal, reversing, would flip it
+    across: without that, a 3 kHz Stone on → off switch put −47 dBFS beside the note) joins with
+    weight sin θ, θ = πr, at the level the band should have, and A and B take (1 ± cos θ)/2: with
+    B = −A that is cos θ·A + sin θ·R, a turn of constant
+    power from A to B instead of a pass through the null. A fade that starts through the bridge in
+    the louder band takes 80 ms (`kSwitchTurnSeconds`), so that a 110 Hz note turned by half a
+    cycle stays nearer under the notes beside it.
+  - **Level.** Each band is scaled so that the power of its mix, predicted from the estimates,
+    follows the straight line in dB between the two outputs', softly bounded at +1.4 dB
+    (`kSwitchMaxGain` 1.18; was +18 dB). The bound is a trade: a correction inside a 40 ms fade is
+    itself a bump of the note of that length, which spreads beyond 40 % of a 200 Hz note (at +6 dB a
+    Stone on → off switch put −47 dBFS there where an uncorrected fade puts −69), while a smaller one
+    leaves more of a partial cancellation standing (P19 at +1.2 dB: 3.09 dB under the lower level).
+  [choice, measured with P19 (every ordered pair of the five voicings, held notes at 110, 256, 368
+  and 659 Hz at −12 dBFS and a guitar-like take, rates 0.3 and 1.3 Hz, four LFO phases, followed
+  until the output is the incoming voicing's): at most 3.00 dB under the lower and +1.25 dB over the
+  higher of the two voicings' own levels (5 ms windows of the note's band; the take in P17's 20 ms
+  frames), and off the note at most 0.5 dB over the higher of −60 dBFS, the voicings' own steady
+  content and an ideal fade's (equal power on the same ramp, at the engine's own moment and length,
+  no correction: on a 110 Hz note a 40 ms fade between two outputs that differ spreads beyond 40 %
+  of the note by itself, −55.7 dBFS at worst). Of the round-3 tick probe's 720 switches, 54 put more
+  than −60 dBFS beside the note; an ideal fade at the same moments puts 53 there, and in 48 the
+  incoming voicing alone does after the switch (Small Stone Color on's own sweep at 200 to 256 Hz,
+  −50 dBFS); one (Stone on → off, 200 Hz) is 7.9 dB over the ideal fade's. The round-3 dip probe's
+  dips at 2479 Hz into Phase 90 script are the incoming voicing's own: started from reset, its gate
+  smoothing primed at the sweep bottom puts its notch on the note for a moment, 44 dB under the
+  lowest level its steady sweep reaches (the probe's reference); the output stays 27 dB above it.
+  The 40 ms fade of P7 holds].
+  Classic's own output is untouched (it is the same code path whenever no switch is in flight). A
+  request that arrives before anything of the incoming voicing is heard replaces it (back to the
+  outgoing voicing: the switch is dropped); one that arrives during the fade is taken when it ends.
+  The engine holds two Phase 90 / Small Stone instances that share one set of coefficient tables,
+  and a scratch buffer of four channels of the maximum block size, all allocated in `prepare()`.
 - **Reset**: `reset()` clears every stage, lag and Color-network state, the LFO phase (to the
   sweep bottom), the gate smoothing, any glide and the phase lock, any switch in flight (the next
   block starts on the requested model) and the parameter smoothers (next `setParameters()`

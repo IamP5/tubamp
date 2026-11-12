@@ -22,18 +22,40 @@ constexpr double kStateFloor = 1.0e-15;        // recursive states below this ar
 // Song position (voicings.md, "Engine behaviour outside the prototype").
 constexpr double kJumpCycles = 0.01;           // a host phase step at least this large is a jump [choice: voicings.md]
 constexpr double kJumpLfoSeconds = 0.002;      // ... and at least this much LFO time [choice: voicings.md]
-constexpr double kLockSeconds = 0.15;          // time constant of the phase lock between jumps [choice: voicings.md]
-constexpr double kLockMaxNudge = 0.03;         // the lock bends the rate by at most this fraction [choice: voicings.md]
+constexpr double kLockSeconds = 0.15;          // time constant of the phase lock's proportional term [choice: voicings.md]
+constexpr double kLockMaxNudge = 0.03;         // the proportional term bends the rate by at most this fraction [choice: voicings.md]
+constexpr double kLockIntegralSeconds = 0.3;   // integral term: gain 1 / (kLockSeconds x this), damping 0.71 [choice: voicings.md]
+constexpr double kLockMaxDrift = 0.10;         // the integral term follows a rate error of at most this fraction [choice: voicings.md]
+constexpr double kJumpDriftRate = 0.15;        // a step a rate error this large could make since the last position is no jump [choice: voicings.md]
 constexpr double kLockDeadCycles = 0.002;      // errors below this much of a cycle ... [choice: voicings.md]
 constexpr double kLockDeadLfoSeconds = 0.0005; // ... or this much LFO time, whichever is less, are host jitter [choice: voicings.md]
 // A jump glides the sweep over this many seconds: script, block, Small Stone off, on [choice: voicings.md].
 constexpr double kGlideSeconds[4] { 0.010, 0.010, 0.010, 0.040 };
 
-// Model and Color switches: the incoming voicing runs unheard from reset, then a crossfade.
+// Model and Color switches: the incoming voicing runs unheard from reset, waits for a moment the two
+// will not cancel through, then a crossfade.
 constexpr double kSwitchWarmSeconds = 0.030;   // [choice: voicings.md]
 constexpr double kSwitchFadeSeconds = 0.040;   // [choice: voicings.md]
+constexpr double kSwitchTurnSeconds = 0.080;   // ... and where it starts through the bridge: a held note turns by up to half a cycle [choice: voicings.md]
 constexpr double kSwitchStatSeconds = 0.0025;  // each of the two one-poles of the power estimates [choice: voicings.md]
-constexpr double kSwitchMaxGain = 8.0;         // bound of the constant-power correction (+18 dB) [choice: voicings.md]
+constexpr double kSwitchMinCorrelation = -0.5; // the fade starts where the two correlate at least this well [choice: FxBlocks.h PowerCrossfade]
+constexpr double kSwitchWaitSeconds = 0.25;    // after the warm-up, waits this long for a moment that will stay good [choice: voicings.md]
+constexpr double kSwitchLongestWaitSeconds = 0.28; // ... then for one good now, until this: request to fully new <= 0.39 s [choice: voicings.md]
+constexpr double kSwitchMaxGain = 1.18;        // bound of the power correction in each band (+1.4 dB) [choice: voicings.md]
+constexpr double kSwitchSplitHz = 1000.0;      // the two bands it corrects apart meet here [choice: FxBlocks.cpp kSplitHz]
+constexpr double kSwitchPowerFloor = 1.0e-12;  // [choice: FxBlocks.cpp kPowerFloor]
+// Where a band's two outputs correlate worse than kSwitchBridgeFrom, a bridge between them joins the
+// fade, in full from kSwitchBridgeFull on [choice: voicings.md].
+constexpr double kSwitchBridgeFrom = -0.2, kSwitchBridgeFull = -0.7;
+// ... where both outputs are this coherent with the input, from none to all [choice: voicings.md].
+constexpr double kSwitchBridgeCoherence[2] { 0.6, 0.9 };
+constexpr double kSwitchTurnSmoothSeconds = 0.005; // each of the two one-poles through which the bridge follows its need [choice: voicings.md]
+// The bridge's quadrature pair: coefficients a^2 of two chains of four allpasses in z^2, 90 +- 1
+// degrees apart from 20 Hz to 20 kHz at 44.1 kHz [Niemitalo, "Hilbert transform" IIR pair].
+constexpr double kQuadratureA[4] { 0.6923878 * 0.6923878, 0.9360654322959 * 0.9360654322959,
+                                   0.9882295226860 * 0.9882295226860, 0.9987488452737 * 0.9987488452737 };
+constexpr double kQuadratureB[4] { 0.4021921162426 * 0.4021921162426, 0.8561710882420 * 0.8561710882420,
+                                   0.9722909545651 * 0.9722909545651, 0.9952884791278 * 0.9952884791278 };
 
 // Discretisation (voicings.md, "Shared building block").
 constexpr int kTableN = 256;                   // coefficient table intervals over the sweep position [choice]
@@ -573,7 +595,7 @@ public:
         glideOffset = 0.0;
         glideLeft = 0;
         phasePrimed = synced = false;
-        nudge = 0.0;
+        nudge = drift = 0.0;
         rate.snapToTarget();
     }
 
@@ -602,7 +624,7 @@ public:
         else if (sync == Sync::off)
         {
             synced = false;
-            nudge = 0.0;
+            nudge = drift = 0.0;
         }
 
         phasePrimed = true;
@@ -647,7 +669,10 @@ private:
     /** A step in the host's own phase (transport start, locate, a loop that is not a whole number
         of cycles, a note-value change, sync switched on) is one jump, honoured with one glide. Any
         smaller difference, the engine's own drift, is pulled in by bending the rate; a difference
-        within a few samples' worth (host jitter) is left alone. */
+        within a few samples' worth (host jitter) is left alone. The lock is second order: a phase
+        term, and an integral that learns a rate error the host does not report (a tempo parameter
+        that lags the host's own), so a constant one leaves no error standing beyond the dead band,
+        however large it is (within kLockMaxDrift). */
     void follow (double host, double hostRate, Voicing voicing) noexcept
     {
         if (! phasePrimed)
@@ -656,24 +681,29 @@ private:
         }
         else if (! synced)
         {
-            jump (host, voicing);
+            jump (host, hostRate, voicing);
         }
         else
         {
-            const double predicted = hostLast + hostRateLast * (double) samplesSinceHost * t->invSampleRate;
+            const double since = (double) samplesSinceHost * t->invSampleRate;
+            const double predicted = hostLast + hostRateLast * (1.0 + drift) * since;
             const double step = wrapHalf (host - predicted);
 
-            if (std::abs (step) >= std::max (kJumpCycles, hostRate * kJumpLfoSeconds))
+            if (std::abs (step) >= std::max ({ kJumpCycles, hostRate * kJumpLfoSeconds, kJumpDriftRate * hostRate * since }))
             {
-                jump (host, voicing);
+                jump (host, hostRate, voicing);
             }
             else
             {
+                // The dead band holds for both terms: host jitter then moves neither the LFO nor the
+                // rate it has learnt, and a constant rate error is left at the band's edge.
                 const double error = wrapHalf (host - phase);
                 const double dead = std::min (kLockDeadCycles, hostRate * kLockDeadLfoSeconds);
                 const double pull = std::max (0.0, std::abs (error) - dead) * (error < 0.0 ? -1.0 : 1.0);
                 const double limit = kLockMaxNudge * hostRate;
-                nudge = juce::jlimit (-limit, limit, pull / kLockSeconds);
+                drift = juce::jlimit (-kLockMaxDrift, kLockMaxDrift,
+                                      drift + pull * since / (kLockSeconds * kLockIntegralSeconds * hostRate));
+                nudge = juce::jlimit (-limit, limit, pull / kLockSeconds) + drift * hostRate;
             }
         }
 
@@ -684,8 +714,9 @@ private:
     }
 
     /** The phase is set to the host's; the sweep glides from where it is (a glide still running
-        included) to the new phase's position with a raised cosine of fixed length. */
-    void jump (double host, Voicing voicing) noexcept
+        included) to the new phase's position with a raised cosine of fixed length. A rate error the
+        lock has learnt stays: a jump does not change the host's tempo. */
+    void jump (double host, double hostRate, Voicing voicing) noexcept
     {
         const bool phase90 = voicing == Voicing::script || voicing == Voicing::block;
         const double kappa = phase90 ? kP90Kappa : kSsKappa, norm = phase90 ? t->p90Norm : t->stoneNorm;
@@ -695,7 +726,7 @@ private:
         glideOffset = from - rcTriangle (host, kappa, norm);
         glideSamples = t->glideSamples[(size_t) voicing];
         glideLeft = glideSamples;
-        nudge = 0.0;
+        nudge = drift * hostRate;
         ++jumps;
     }
 
@@ -907,7 +938,7 @@ private:
     const PedalTables* t = nullptr;
     Channel channels[2];
     double phase = 0.0, lastPhase = 0.0, gate = 0.0, frozen = std::numeric_limits<double>::quiet_NaN();
-    double glideOffset = 0.0, nudge = 0.0;
+    double glideOffset = 0.0, nudge = 0.0, drift = 0.0; // drift: the lock's integral, a fraction of the rate
     double hostLast = 0.0, hostRateLast = 0.0;
     int glideLeft = 0, glideSamples = 1, samplesSinceHost = 0, jumps = 0;
     bool gatePrimed = false, phasePrimed = false, synced = false;
@@ -920,6 +951,50 @@ int engineKey (const PhaserParams& p) noexcept
 {
     return p.model == (int) PhaserFx::Model::classic ? 0 : p.model * 2 + (p.color ? 1 : 0);
 }
+
+/** Two outputs of one input 90 degrees apart (kQuadratureA one sample late against kQuadratureB).
+    Each section is a first-order allpass in z^2, in transposed form: one state per sample parity. */
+class QuadraturePair
+{
+public:
+    void reset() noexcept
+    {
+        for (auto* st : { &stateA, &stateB })
+            for (auto& section : *st)
+                section[0] = section[1] = 0.0;
+
+        late = 0.0;
+        parity = 0;
+    }
+
+    void process (double x, double& i, double& q) noexcept
+    {
+        double a = x, b = x;
+
+        for (size_t k = 0; k < 4; ++k)
+        {
+            double& sa = stateA[k][parity];
+            const double ya = kQuadratureA[k] * a + sa;
+            sa = kQuadratureA[k] * ya - a;
+            a = ya;
+
+            double& sb = stateB[k][parity];
+            const double yb = kQuadratureB[k] * b + sb;
+            sb = kQuadratureB[k] * yb - b;
+            b = yb;
+        }
+
+        parity ^= 1;
+        i = late;
+        late = a;
+        q = b;
+    }
+
+private:
+    std::array<std::array<double, 2>, 4> stateA {}, stateB {};
+    double late = 0.0;
+    size_t parity = 0;
+};
 
 Voicing voicingFor (int key) noexcept
 {
@@ -961,22 +1036,113 @@ struct PhaserFx::Impl
         else
             pedals[incomingPedal].reset();
 
-        switchPos = 0;
-        std::fill (std::begin (power), std::end (power), 0.0);
+        switchPos = waited = fadePos = 0;
+        std::fill (&power[0][0], &power[0][0] + 6, 0.0);
+
+        for (auto& band : bands)
+            band = {};
+
+        for (auto& low : lows)
+            std::fill (std::begin (low), std::end (low), 0.0);
+
+        for (auto& pairs : quadrature)
+            for (auto& q : pairs)
+                q.reset();
+
+        correlationLag = 1.0;
+    }
+
+    // Short-term figures of one band, from analytic signals (a quadrature pair's outputs I, Q make
+    // I - jQ, as Q leads I by 90 degrees) of the outgoing output A, the incoming one B and the input
+    // pair's in-phase output X: |A|^2, |B|^2, Re A B*, A X*, B X*, |X|^2. A held note gives them no
+    // ripple at twice its frequency, which products of the real signals have and which, through the
+    // gains, would put sidebands beside the note.
+    enum Stat { sAA, sBB, sAB, sAXr, sAXi, sBXr, sBXi, sXX, numStats };
+
+    struct SwitchBand
+    {
+        double stat[2][numStats] {}; // two smoothing stages
+        double side = 1.0;           // the bridge's side of the two
+        double bridge = 0.0;         // its gain at the last sample
+        double turn[2] {};           // how far the fade goes through it: two smoothing stages
+    };
+
+    /** The bridge of one band: cI I + cQ Q of the input's quadrature pair, of unit power, at the
+        phase midway between the outgoing and the incoming outputs, so that it correlates equally
+        (in antiphase: not at all) with both; crossA, crossB are its cross terms with the two; fit,
+        in [0, 1], how well each output is one complex gain of the input (a held note, where a
+        bridge can stand in for the note the two cancel on; not a chord through two phasers, whose
+        partials turn apart). False where the input or either output carries nothing. */
+    static bool bridgeOf (SwitchBand& band, double& cI, double& cQ, double& crossA, double& crossB, double& fit) noexcept
+    {
+        const double* st = band.stat[1];
+        const double na = std::hypot (st[sAXr], st[sAXi]), nb = std::hypot (st[sBXr], st[sBXi]);
+
+        if (st[sXX] < kSwitchPowerFloor || na * na < kSwitchPowerFloor * st[sXX] || nb * nb < kSwitchPowerFloor * st[sXX])
+            return false;
+
+        // The bisector w of the two directions is parallel to p, the normal of their difference,
+        // which keeps a direction through antiphase, where w vanishes. The side of p is w's until
+        // the bridge is heard; from then on it is kept, as the two may pass through antiphase and
+        // the bridge must not jump to the other side.
+        const double ea[2] { st[sAXr] / na, st[sAXi] / na }, eb[2] { st[sBXr] / nb, st[sBXi] / nb };
+        const double w[2] { ea[0] + eb[0], ea[1] + eb[1] };
+        const double pn[2] { eb[1] - ea[1], ea[0] - eb[0] };
+        const double along = pn[0] * w[0] + pn[1] * w[1], np = std::hypot (pn[0], pn[1]);
+
+        if (np < 1.0e-6)
+            return false;
+
+        // fit also falls to nothing as the two come to one phase, (|p| / 2)^2: there the bridge has
+        // nothing to bridge, and p, reversing, would flip it to the other side.
+        const double coherence = std::min (na * na / (st[sAA] * st[sXX]), nb * nb / (st[sBB] * st[sXX]));
+        const double over = juce::jlimit (0.0, 1.0, (coherence - kSwitchBridgeCoherence[0]) / (kSwitchBridgeCoherence[1] - kSwitchBridgeCoherence[0]));
+        fit = over * over * (3.0 - 2.0 * over) * 0.25 * np * np;
+
+        if (band.bridge == 0.0 && std::abs (along) > 0.1)
+            band.side = along > 0.0 ? 1.0 : -1.0;
+
+        // The direction d is relative to I, and Q leads I by a quarter cycle: d0 I + d1 Q.
+        const double norm = 1.0 / std::sqrt (st[sXX]);
+        const double d[2] { band.side * pn[0] / np, band.side * pn[1] / np };
+        cI = d[0] * norm;
+        cQ = d[1] * norm;
+        crossA = (st[sAXr] * d[0] + st[sAXi] * d[1]) * norm;
+        crossB = (st[sBXr] * d[0] + st[sBXi] * d[1]) * norm;
+        return true;
+    }
+
+    /** True where the fade about to start goes mostly through the bridge in the band that carries
+        more of the two outputs: a held note the two cancel on. */
+    bool turnsAtStart() noexcept
+    {
+        const auto& loud = bands[bands[1].stat[1][sAA] + bands[1].stat[1][sBB] > bands[0].stat[1][sAA] + bands[0].stat[1][sBB] ? 1 : 0];
+        const double* st = loud.stat[1];
+        const double pair = std::sqrt (st[sAA] * st[sBB]);
+        const double rho = pair < kSwitchPowerFloor ? 1.0 : st[sAB] / pair;
+        auto probe = loud;
+        double cI, cQ, crossA, crossB, fit = 0.0;
+        return rho < 0.5 * (kSwitchBridgeFrom + kSwitchBridgeFull) && bridgeOf (probe, cI, cQ, crossA, crossB, fit) && fit > 0.5;
     }
 
     /** A switch in flight: the outgoing voicing on one copy of the input, the incoming one on
-        another. The incoming one is not heard for its first kSwitchWarmSeconds; then the two
-        cross over with a raised cosine, the pair of gains scaled so that the power of the sum,
-        predicted from short-term powers and the cross term of the two outputs, follows the
-        straight line between their powers. Two phasers can sit near antiphase on one note,
-        where any crossfade of the two passes a null: the scale is bounded by kSwitchMaxGain, with a
-        soft bound that vanishes at both ends of the fade so the gains have no corner. */
+        another. The incoming one is not heard for its first kSwitchWarmSeconds. Two phasers can sit
+        near antiphase on one held note, where any crossfade of the two passes a null, so the fade
+        waits (as FxBlocks.h PowerCrossfade does) for a moment where they correlate no worse than
+        kSwitchMinCorrelation and, by the correlation's trend, will not fall below it before the fade
+        is over; after kSwitchWaitSeconds the first moment that is good enough now, after
+        kSwitchLongestWaitSeconds any. The fade runs on a cornerless ramp, in two bands: in a band
+        whose two outputs still oppose each other, the bridge (bridgeOf) comes in and goes out with
+        the ramp's arch, so the band passes from one to the other through the bridge instead of
+        through the null; and each band is scaled so that the power of its sum, predicted from
+        short-term powers and cross terms, follows the straight line in dB between the two outputs',
+        the scale softly bounded at kSwitchMaxGain, where a large gain would itself be heard. */
     void processSwitch (juce::dsp::AudioBlock<float> block)
     {
         const int numChannels = juce::jmin (2, (int) block.getNumChannels());
         const auto total = block.getNumSamples();
         const auto capacity = (size_t) scratch.getNumSamples();
+        const double slackRatio = 1.0 / (kSwitchMaxGain * kSwitchMaxGain - 1.0);
 
         for (size_t start = 0; start < total; start += capacity)
         {
@@ -989,14 +1155,15 @@ struct PhaserFx::Impl
                 continue;
             }
 
-            float* a[2] {}, *b[2] {};
+            float* a[2] {}, *b[2] {}, *out[2] {};
 
             for (int ch = 0; ch < numChannels; ++ch)
             {
                 a[ch] = scratch.getWritePointer (ch);
                 b[ch] = scratch.getWritePointer (2 + ch);
-                juce::FloatVectorOperations::copy (a[ch], sub.getChannelPointer ((size_t) ch), (int) n);
-                juce::FloatVectorOperations::copy (b[ch], sub.getChannelPointer ((size_t) ch), (int) n);
+                out[ch] = sub.getChannelPointer ((size_t) ch);
+                juce::FloatVectorOperations::copy (a[ch], out[ch], (int) n);
+                juce::FloatVectorOperations::copy (b[ch], out[ch], (int) n);
             }
 
             runKey (activeKey, activePedal, juce::dsp::AudioBlock<float> (a, (size_t) numChannels, n), start);
@@ -1004,54 +1171,178 @@ struct PhaserFx::Impl
 
             for (size_t i = 0; i < n; ++i)
             {
-                double aa = 0.0, bb = 0.0, ab = 0.0;
+                // Per band (low, high) and channel: A and B as heard; the pair outputs of A, of B and
+                // of the input (the bridge's I and Q); and the pair outputs of that I (its analytic
+                // signal, against which A and B are measured). out[ch][i] still holds the input.
+                double v[2][10][2] {}, raw[3] {}, sums[2][numStats] {};
+
+                // The pairs start from rest on signals already running: their inputs come in over
+                // the warm-up, as a step would ring in their slow poles at DC and at Nyquist, and the
+                // bridge carries the input pair's outputs to the output.
+                const int pos = switchPos + (int) i;
+                const double onset = pos < warmSamples ? 0.5 - 0.5 * std::cos (kPi * pos / warmSamples) : 1.0;
 
                 for (int ch = 0; ch < numChannels; ++ch)
                 {
-                    const double x = a[ch][i], y = b[ch][i];
-                    aa += x * x;
-                    bb += y * y;
-                    ab += x * y;
-                }
+                    double whole[10] { a[ch][i], b[ch][i] };
+                    quadrature[ch][0].process (onset * whole[0], whole[2], whole[3]);
+                    quadrature[ch][1].process (whole[1], whole[4], whole[5]);
+                    quadrature[ch][2].process (onset * out[ch][i], whole[6], whole[7]);
+                    quadrature[ch][3].process (whole[6], whole[8], whole[9]);
+                    raw[0] += whole[2] * whole[2] + whole[3] * whole[3];
+                    raw[1] += whole[4] * whole[4] + whole[5] * whole[5];
+                    raw[2] += whole[2] * whole[4] + whole[3] * whole[5];
 
-                const double in[3] { aa, bb, ab };
+                    // Complementary bands, low = one-pole low-pass and high = the rest.
+                    for (int k = 0; k < 10; ++k)
+                    {
+                        lows[k][ch] += splitCoeff * (whole[k] - lows[k][ch]);
+                        v[0][k][ch] = lows[k][ch];
+                        v[1][k][ch] = whole[k] - lows[k][ch];
+                    }
+
+                    for (int m = 0; m < 2; ++m)
+                    {
+                        const double aI = v[m][2][ch], aQ = v[m][3][ch], bI = v[m][4][ch], bQ = v[m][5][ch];
+                        const double xI = v[m][8][ch], xQ = v[m][9][ch];
+                        const double terms[numStats] { aI * aI + aQ * aQ, bI * bI + bQ * bQ, aI * bI + aQ * bQ,
+                                                       aI * xI + aQ * xQ, aI * xQ - aQ * xI,
+                                                       bI * xI + bQ * xQ, bI * xQ - bQ * xI, xI * xI + xQ * xQ };
+
+                        for (int k = 0; k < numStats; ++k)
+                            sums[m][k] += terms[k];
+                    }
+                }
 
                 for (int k = 0; k < 3; ++k)
                 {
-                    power[2 * k] += powerCoeff * (in[k] - power[2 * k]);
-                    power[2 * k + 1] += powerCoeff * (power[2 * k] - power[2 * k + 1]);
+                    power[0][k] += powerCoeff * (raw[k] - power[0][k]);
+                    power[1][k] += powerCoeff * (power[0][k] - power[1][k]);
                 }
 
-                const int pos = switchPos + (int) i;
+                for (int m = 0; m < 2; ++m)
+                {
+                    auto& st = bands[m].stat;
 
-                if (pos < warmSamples)
-                {
-                    for (int ch = 0; ch < numChannels; ++ch)
-                        sub.getChannelPointer ((size_t) ch)[i] = a[ch][i];
+                    for (int k = 0; k < numStats; ++k)
+                    {
+                        st[0][k] += powerCoeff * (sums[m][k] - st[0][k]);
+                        st[1][k] += powerCoeff * (st[0][k] - st[1][k]);
+                    }
                 }
-                else if (pos < warmSamples + fadeSamples)
-                {
-                    const double s = 0.5 - 0.5 * std::cos (kPi * (pos - warmSamples) / fadeSamples);
-                    const double pa = power[1], pb = power[3], pab = power[5];
-                    const double target = (1.0 - s) * pa + s * pb;
-                    const double sum = (1.0 - s) * (1.0 - s) * pa + s * s * pb + 2.0 * s * (1.0 - s) * pab;
-                    const double floor = 4.0 * s * (1.0 - s) * target / (kSwitchMaxGain * kSwitchMaxGain);
-                    const double g = target > 1.0e-20 ? std::sqrt (target / (std::max (sum, 0.0) + floor)) : 1.0;
-                    const double ga = g * (1.0 - s), gb = g * s;
 
-                    for (int ch = 0; ch < numChannels; ++ch)
-                        sub.getChannelPointer ((size_t) ch)[i] = (float) (ga * a[ch][i] + gb * b[ch][i]);
+                const double both = std::sqrt (power[1][0] * power[1][1]);
+                const double correlation = both < kSwitchPowerFloor ? 1.0 : power[1][2] / both;
+
+                // The trend: the difference from its own copy lagged by one more one-pole is the
+                // slope times that time constant.
+                correlationLag += powerCoeff * (correlation - correlationLag);
+
+                if (fadePos == 0)
+                {
+                    bool starts = pos >= warmSamples;
+
+                    if (starts)
+                    {
+                        const double ahead = correlation + (correlation - correlationLag) * powerCoeff * fadeSamples;
+                        const bool goodNow = correlation >= kSwitchMinCorrelation;
+                        const bool heading = correlation >= correlationLag || ahead >= 0.0;
+                        starts = (goodNow && (heading || waited >= waitSamples)) || waited >= longestWaitSamples;
+
+                        if (! starts)
+                            ++waited;
+                    }
+
+                    if (! starts)
+                    {
+                        for (int ch = 0; ch < numChannels; ++ch)
+                            out[ch][i] = a[ch][i];
+
+                        continue;
+                    }
+
+                    fadeLength = turnsAtStart() ? turnSamples : fadeSamples;
                 }
-                else
+
+                if (++fadePos >= fadeLength)
                 {
                     for (int ch = 0; ch < numChannels; ++ch)
-                        sub.getChannelPointer ((size_t) ch)[i] = b[ch][i];
+                        out[ch][i] = b[ch][i];
+
+                    continue;
+                }
+
+                const double ramp = fadePos / (double) fadeLength;
+                // Smoother-step (corners down to the second derivative): a 40 ms exchange of two
+                // different outputs on a held note stays 53 dB under the note from 80 Hz off it on,
+                // where the plain smooth-step reaches -44 dB.
+                const double r = ramp * ramp * ramp * (ramp * (6.0 * ramp - 15.0) + 10.0);
+                // Gains halfway between equal amplitude and equal power (-4.5 dB at the middle): where
+                // the power estimates lag (a pick attack inside the fade), two correlated outputs rise
+                // 1.5 dB and two uncorrelated ones fall 1.5 dB, instead of 3 dB either way.
+                const double gOutPlain = std::sqrt ((1.0 - r) * std::cos (0.5 * kPi * r));
+                const double gInPlain = std::sqrt (r * std::sin (0.5 * kPi * r));
+                // Through the bridge, a turn by theta: with B = -A, (1 + cos)/2 A + (1 - cos)/2 B +
+                // sin R is cos A + sin R, of constant power, from A to B.
+                const double theta = kPi * r;
+                const double gOutTurn = 0.5 + 0.5 * std::cos (theta), gInTurn = 0.5 - 0.5 * std::cos (theta);
+                const double arch = std::sin (theta);
+                double g[2][4] {};
+
+                // Each band on its own figures: two voicings' lows can cancel while their highs (a
+                // pick's attack) add, and one broadband gain would lift the attack by the lows'
+                // correction.
+                for (int m = 0; m < 2; ++m)
+                {
+                    const double* st = bands[m].stat[1];
+                    const double pOut = st[sAA], pIn = st[sBB], pCross = st[sAB];
+                    const double want = (pOut + kSwitchPowerFloor) * std::exp (r * std::log ((pIn + kSwitchPowerFloor) / (pOut + kSwitchPowerFloor)));
+                    const double pair = std::sqrt (pOut * pIn);
+                    const double rho = pair < kSwitchPowerFloor ? 1.0 : pCross / pair;
+                    // Without corners: a kink here is a kink in the band's gains, which a held note
+                    // turns into sidebands.
+                    const double over = juce::jlimit (0.0, 1.0, (kSwitchBridgeFrom - rho) / (kSwitchBridgeFrom - kSwitchBridgeFull));
+                    const double need = over * over * (3.0 - 2.0 * over);
+                    double cI = 0.0, cQ = 0.0, crossA = 0.0, crossB = 0.0, fit = 0.0;
+                    auto& turns = bands[m].turn;
+                    const bool bridged = (need > 0.0 || turns[1] > 1.0e-9) && bridgeOf (bands[m], cI, cQ, crossA, crossB, fit);
+
+                    // The bridge and the gains' law follow the need no faster than two one-poles: the
+                    // correlation of two phasers near resonance can swing in a few ms, and so fast a
+                    // change of either is heard beside a held note. The fit is not smoothed: where it
+                    // falls, the bridge's direction is no longer to be trusted.
+                    turns[0] += turnCoeff * ((bridged ? need : 0.0) - turns[0]);
+                    turns[1] += turnCoeff * (turns[0] - turns[1]);
+                    const double turn = turns[1] * fit;
+                    const double gBridge = bridged ? turn * arch * std::sqrt (want) : 0.0;
+
+                    bands[m].bridge = gBridge;
+                    const double gOut = gOutPlain + turn * (gOutTurn - gOutPlain);
+                    const double gIn = gInPlain + turn * (gInTurn - gInPlain);
+                    const double got = gOut * gOut * pOut + gIn * gIn * pIn + 2.0 * gOut * gIn * pCross
+                                       + gBridge * (gBridge + 2.0 * (gOut * crossA + gIn * crossB));
+                    const double slack = slackRatio * want + 1.0e-30;
+                    const double scale = std::sqrt ((want + slack) / (std::max (0.0, got) + slack));
+                    g[m][0] = scale * gOut;
+                    g[m][1] = scale * gIn;
+                    g[m][2] = scale * gBridge * cI;
+                    g[m][3] = scale * gBridge * cQ;
+                }
+
+                for (int ch = 0; ch < numChannels; ++ch)
+                {
+                    double y = 0.0;
+
+                    for (int m = 0; m < 2; ++m)
+                        y += g[m][0] * v[m][0][ch] + g[m][1] * v[m][1][ch] + g[m][2] * v[m][6][ch] + g[m][3] * v[m][7][ch];
+
+                    out[ch][i] = (float) y;
                 }
             }
 
             switchPos += (int) n;
 
-            if (switchPos >= warmSamples + fadeSamples)
+            if (fadePos >= fadeLength)
             {
                 activeKey = incomingKey;
                 activePedal = incomingPedal;
@@ -1065,11 +1356,15 @@ struct PhaserFx::Impl
     PedalPhaser pedals[2];
     juce::AudioBuffer<float> scratch;        // outgoing L/R, incoming L/R
     PhaserParams params;
-    double sampleRate = 48000.0, powerCoeff = 1.0;
-    double power[6] {};                      // two one-poles each of |A|^2, |B|^2, A.B
+    double sampleRate = 48000.0, powerCoeff = 1.0, splitCoeff = 1.0, turnCoeff = 1.0, correlationLag = 1.0;
+    double power[2][3] {};                   // two smoothing stages of: |A|^2, |B|^2, A.B
+    SwitchBand bands[2];                     // low, high
+    double lows[10][2] {};                   // the band split's low-passes (see processSwitch) per channel
+    QuadraturePair quadrature[2][4];         // per channel: of A, of B, of the input, of the input's I
     int activeKey = 0, activePedal = 0;      // the voicing heard and its pedal instance
     int incomingKey = -1, incomingPedal = 1; // a switch is in flight while incomingKey >= 0
-    int switchPos = 0, warmSamples = 1, fadeSamples = 1;
+    int switchPos = 0, warmSamples = 1, fadeSamples = 1, turnSamples = 1, fadeLength = 1, waitSamples = 0, longestWaitSamples = 0;
+    int waited = 0, fadePos = 0;             // samples waited after the warm-up; samples into the fade
     bool snapEngine = true, snapParams = true;
 };
 
@@ -1082,7 +1377,12 @@ void PhaserFx::prepare (const juce::dsp::ProcessSpec& spec)
     s.sampleRate = spec.sampleRate;
     s.warmSamples = (int) std::lround (kSwitchWarmSeconds * spec.sampleRate);
     s.fadeSamples = std::max (1, (int) std::lround (kSwitchFadeSeconds * spec.sampleRate));
+    s.turnSamples = std::max (1, (int) std::lround (kSwitchTurnSeconds * spec.sampleRate));
+    s.waitSamples = (int) std::lround (kSwitchWaitSeconds * spec.sampleRate);
+    s.longestWaitSamples = (int) std::lround (kSwitchLongestWaitSeconds * spec.sampleRate);
     s.powerCoeff = 1.0 - std::exp (-1.0 / (kSwitchStatSeconds * spec.sampleRate));
+    s.splitCoeff = 1.0 - std::exp (-2.0 * kPi * kSwitchSplitHz / spec.sampleRate);
+    s.turnCoeff = 1.0 - std::exp (-1.0 / (kSwitchTurnSmoothSeconds * spec.sampleRate));
     s.scratch.setSize (4, juce::jmax (1, (int) spec.maximumBlockSize), false, true, false);
     s.classic.prepare (spec);
     s.tables.prepare (spec.sampleRate);
@@ -1160,7 +1460,18 @@ void PhaserFx::process (juce::dsp::AudioBlock<float> block)
     }
 
     if (s.incomingKey < 0 && key != s.activeKey)
+    {
         s.startSwitch (key);
+    }
+    else if (s.incomingKey >= 0 && s.fadePos == 0 && key != s.incomingKey)
+    {
+        // Nothing of the incoming voicing has been heard yet: a request back is dropped, another
+        // one takes its place.
+        if (key == s.activeKey)
+            s.incomingKey = -1;
+        else
+            s.startSwitch (key);
+    }
 
     if (s.incomingKey < 0)
         s.runKey (s.activeKey, s.activePedal, block, 0);
