@@ -87,7 +87,7 @@ absent, so the adapter's default applies. Keys are passed to the adapter as doub
 | drive | `type` | `gain tone level on` |
 | eq | `type` | `bass mid treble lowcut highcut mid_freq mid_q tilt level voice g100 g200 g400 g800 g1k6 g3k2 g6k4 on reenable` |
 | chorus | `mode` | `rate depth mix width tone sync_phase solo on reset host_bpm host_beats host_jitter host_play host_loop_len host_loop_end` |
-| phaser | `model` | `rate depth mix color sync_phase on reset_on_enable freeze_u host_bpm host_note host_ppq host_jitter` |
+| phaser | `model` | `rate depth mix color sync_phase on reset_on_enable freeze_u start_reset host_bpm host_note host_ppq host_jitter host_drift` |
 | tremolo | `voice` | `rate depth mix width tone shape wave sync_phase on host_sync host_bpm host_beats host_play host_ppq host_jitter` |
 
 `on=0` is the processor's bypass: comp calls `skip()`, the others neither update nor run
@@ -102,7 +102,7 @@ Keys that are not engine parameters (test hooks in the adapters):
 | gate | `lag` | with `deferred=1`, the mono signal the curve is applied to is delayed by this many samples (clamped to `0..GateFx::kMaxCurveDelaySamples`); default 0 |
 | gate | `prepare_block` | `N > 0` re-prepares the gate for blocks of at most N samples and calls `reset()` when the value changes; 0 (default) is the spec's own block size |
 | eq | `reenable` | default 1: when `on` goes from 0 to 1 and the type is not Classic, `reset()` is called, as the processor does (processor: in progress). 0 replays the frozen state, which is what the old processor did |
-| chorus | `reset` | a change of this value (any number, compared with the previous block's) calls `reset()` at that block; default 0 |
+| chorus | `reset` | a change of this value (any number, compared with the previous block's) calls `reset()` at that block, on the engine and on the legacy reference (its own `reset()`, as `ChorusFx::reset()` does for Classic); default 0 |
 | chorus | `solo` | routes one voice (its index) to both outputs at mix 1 (`ChorusFx::setDebugSolo`); `-1`, the default, is off. The `--trace` below is written only while a voice is soloed |
 | chorus | `host_bpm` | a simulated play head: when above 0 the adapter resolves `rate` and `sync_phase` from the tempo as the dispatcher does and runs a song position that advances by each block's tempo; 0 (default) is off and `rate` / `sync_phase` are the plain keys |
 | chorus | `host_beats` | beats per LFO cycle (the note value; 1 = 1/4, 0.25 = 1/16); default 1 |
@@ -111,10 +111,12 @@ Keys that are not engine parameters (test hooks in the adapters):
 | chorus | `host_loop_len`, `host_loop_end` | `host_loop_len > 0` wraps the song position back by that many beats once it reaches `host_loop_end` (beats); default 0 (no loop) |
 | phaser | `reset_on_enable` | 1: when `on` goes from 0 to 1, `reset()` is called; default 0 (frozen state replayed) |
 | phaser | `freeze_u` | test only: holds the sweep position at this value in [-1, 1] (-1 is the bottom; `PhaserFx::freezeSweep`), the frozen-response probe; absent means the LFO runs |
+| phaser | `start_reset` | 1: `reset()` is called after the first block's parameters are set, so the engine starts as a voicing switched in does; without it Classic's LFO glides from juce's 1 Hz to the set rate; default 0 |
 | phaser | `host_bpm` | a simulated host: present means synced; the tempo in BPM (default 120 when the key is present), setting `rate` and `sync_phase` |
 | phaser | `host_note` | LFO cycles per beat (default 1); the phase is song position times this, so a change of `host_note` is a jump |
 | phaser | `host_ppq` | the song position of the first block, in beats (default 0); the tempo is integrated between block starts as a straight line, as a host ramping its tempo does |
 | phaser | `host_jitter` | N samples: from the second block on, each block's reported position is off by a whole number of samples drawn uniformly from -N..N (not accumulated); default 0 |
+| phaser | `host_drift` | D: the song position advances 1 + D times as fast as the reported tempo says, as when the tempo parameter lags the host's own; the `--trace` host phase follows it; default 0 |
 | tremolo | (`on`) | no extra key: when `on` goes from 0 to 1 with `voice` other than 0 the adapter calls `reset()` before the next block, as the processor will |
 | tremolo | `host_sync` | 1: the adapter stands in for the processor's dispatcher: `rate = host_bpm / (60 * host_beats)` (limited to 0.01-20 Hz) and, while `host_play` is 1, `sync_phase = frac (ppq / host_beats)` at each block start; default 0 (the plain `rate` and `sync_phase` keys) |
 | tremolo | `host_bpm`, `host_beats` | tempo (default 120) and beats per LFO cycle (default 1) |
@@ -212,6 +214,7 @@ M=/Users/tuba/Dev/projects/tubamp/build/_deps/neuralampmodelercore-src/example_m
 $G --verify tests/golden/fx-golden.tsv --model $M                       # strict: every row identical
 $G --verify tests/golden/fx-golden.tsv --model $M --expected tests/golden/expected-changes.tsv
 $G --params build/params.tsv && diff <(head -167 build/params.tsv) tests/golden/params-base.tsv
+$G --both-orders host|preset --model $M                                 # restore before and after prepareToPlay: equal renders
 $G --legacy-check [--dump <dir>]
 $G --list
 ```
@@ -224,6 +227,11 @@ the six `ampM`/`gateampM` rows are skipped. `--only <glob>` restricts the cases.
 `--verify` stays the check during the parallel phase; `--expected` applies
 `expected-changes.tsv` (§5.4.3) once the integration lands (until then its drive latency
 and exact-flat rows fail by design).
+
+`--both-orders host|preset` renders every row twice and requires the same hash and latency: the case's old
+session (every newer id left out) restored before `prepareToPlay`, and onto an instance already prepared,
+with 100 ms of silence ahead of the music (`host` restores through `setStateInformation`, `preset` through
+`applyStateVar`). It compares the two orders with each other, not with the base capture.
 
 `--legacy-check` proves `legacy/` is the code the processor runs: it renders each case
 through the processor with a one-block chain and, in lockstep, through the legacy class fed
