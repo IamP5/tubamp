@@ -41,7 +41,22 @@ constexpr double kSwitchStatSeconds = 0.0025;  // each of the two one-poles of t
 constexpr double kSwitchMinCorrelation = -0.5; // the fade starts where the two correlate at least this well [choice: FxBlocks.h PowerCrossfade]
 constexpr double kSwitchWaitSeconds = 0.25;    // after the warm-up, waits this long for a moment that will stay good [choice: voicings.md]
 constexpr double kSwitchLongestWaitSeconds = 0.28; // ... then for one good now, until this: request to fully new <= 0.39 s [choice: voicings.md]
-constexpr double kSwitchMaxGain = 1.18;        // bound of the power correction in each band (+1.4 dB) [choice: voicings.md]
+// The two sweeps turn the outputs' phase difference on a held note at about kSwitchSweepTurn per Hz
+// of LFO rate (the 90th percentile over voicing pairs, notes and moments; up to 18 degrees per ms just
+// after the warm-up at 8 Hz), so a 40 ms fade that starts in phase can end in antiphase. Where the
+// difference takes less than kSwitchFadeSeconds to turn by kSwitchHeldSpan at that rate (above 1.5 Hz),
+// any fade lasts only that long, and no shorter than kSwitchShortestFadeSeconds; and on a held note
+// (A B* this coherent, kSwitchHeldCoherence, once its shrinking by the smoothing of a turning phase
+// is undone) the fade starts where the difference, extrapolated from its measured turn past the
+// estimates' delay, stays within kSwitchHeldPhase of zero over the middle half of the fade
+// [measured: docs/FX-ENGINES.md D-57].
+constexpr double kSwitchSweepTurn = kPi / 180.0 * 1000.0;    // radians per second per Hz: 1 degree per ms per Hz
+constexpr double kSwitchHeldSpan = kPi / 3.0;
+constexpr double kSwitchShortestFadeSeconds = 0.005;
+constexpr double kSwitchHeldCoherence = 0.75;
+constexpr double kSwitchHeldPhase = kPi / 3.0;
+constexpr double kSwitchEstimateDelaySeconds = 2.0 * 0.0025; // the two one-poles of kSwitchStatSeconds
+constexpr double kSwitchMaxGain = 1.18;       // bound of the power correction in each band (+1.4 dB) [choice: voicings.md]
 constexpr double kSwitchSplitHz = 1000.0;      // the two bands it corrects apart meet here [choice: FxBlocks.cpp kSplitHz]
 constexpr double kSwitchPowerFloor = 1.0e-12;  // [choice: FxBlocks.cpp kPowerFloor]
 // Where a band's two outputs correlate worse than kSwitchBridgeFrom, a bridge between them joins the
@@ -1037,7 +1052,7 @@ struct PhaserFx::Impl
             pedals[incomingPedal].reset();
 
         switchPos = waited = fadePos = 0;
-        std::fill (&power[0][0], &power[0][0] + 6, 0.0);
+        std::fill (&power[0][0], &power[0][0] + 8, 0.0);
 
         for (auto& band : bands)
             band = {};
@@ -1050,6 +1065,7 @@ struct PhaserFx::Impl
                 q.reset();
 
         correlationLag = 1.0;
+        turnRate = lastCross[0] = lastCross[1] = 0.0;
     }
 
     // Short-term figures of one band, from analytic signals (a quadrature pair's outputs I, Q make
@@ -1131,7 +1147,9 @@ struct PhaserFx::Impl
         waits (as FxBlocks.h PowerCrossfade does) for a moment where they correlate no worse than
         kSwitchMinCorrelation and, by the correlation's trend, will not fall below it before the fade
         is over; after kSwitchWaitSeconds the first moment that is good enough now, after
-        kSwitchLongestWaitSeconds any. The fade runs on a cornerless ramp, in two bands: in a band
+        kSwitchLongestWaitSeconds any. At a fast LFO the fade is shorter, and on a held note it waits
+        instead for the moment the two will be in phase through the fade's middle (kSwitchSweepTurn).
+        The fade runs on a cornerless ramp, in two bands: in a band
         whose two outputs still oppose each other, the bridge (bridgeOf) comes in and goes out with
         the ramp's arch, so the band passes from one to the other through the bridge instead of
         through the null; and each band is scaled so that the power of its sum, predicted from
@@ -1143,6 +1161,12 @@ struct PhaserFx::Impl
         const auto total = block.getNumSamples();
         const auto capacity = (size_t) scratch.getNumSamples();
         const double slackRatio = 1.0 / (kSwitchMaxGain * kSwitchMaxGain - 1.0);
+        const double sweepTurn = kSwitchSweepTurn / sampleRate * (double) juce::jlimit (0.01f, 20.0f, params.rateHz);
+        const int rateLength = (int) juce::jlimit ((double) shortestFadeSamples, (double) turnSamples, kSwitchHeldSpan / sweepTurn);
+        // Below about 1.5 Hz the fades keep their lengths and the start keeps the correlation rule:
+        // there it already holds (D-57), and the phase rule waits too long for slow sweeps.
+        const bool fast = rateLength < fadeSamples;
+        const int plainLength = std::min (rateLength, fadeSamples), turnLength = fast ? rateLength : turnSamples;
 
         for (size_t start = 0; start < total; start += capacity)
         {
@@ -1174,7 +1198,7 @@ struct PhaserFx::Impl
                 // Per band (low, high) and channel: A and B as heard; the pair outputs of A, of B and
                 // of the input (the bridge's I and Q); and the pair outputs of that I (its analytic
                 // signal, against which A and B are measured). out[ch][i] still holds the input.
-                double v[2][10][2] {}, raw[3] {}, sums[2][numStats] {};
+                double v[2][10][2] {}, raw[4] {}, sums[2][numStats] {};
 
                 // The pairs start from rest on signals already running: their inputs come in over
                 // the warm-up, as a step would ring in their slow poles at DC and at Nyquist, and the
@@ -1192,6 +1216,7 @@ struct PhaserFx::Impl
                     raw[0] += whole[2] * whole[2] + whole[3] * whole[3];
                     raw[1] += whole[4] * whole[4] + whole[5] * whole[5];
                     raw[2] += whole[2] * whole[4] + whole[3] * whole[5];
+                    raw[3] += whole[3] * whole[4] - whole[2] * whole[5];
 
                     // Complementary bands, low = one-pole low-pass and high = the rest.
                     for (int k = 0; k < 10; ++k)
@@ -1214,7 +1239,7 @@ struct PhaserFx::Impl
                     }
                 }
 
-                for (int k = 0; k < 3; ++k)
+                for (int k = 0; k < 4; ++k)
                 {
                     power[0][k] += powerCoeff * (raw[k] - power[0][k]);
                     power[1][k] += powerCoeff * (power[0][k] - power[1][k]);
@@ -1238,16 +1263,43 @@ struct PhaserFx::Impl
                 // slope times that time constant.
                 correlationLag += powerCoeff * (correlation - correlationLag);
 
+                // A held note: the outputs are one complex gain of each other, whose angle and its rate
+                // of turn (smoothed as the estimates are) predict when the two will be in phase.
+                const double step = std::atan2 (power[1][3] * lastCross[0] - power[1][2] * lastCross[1],
+                                                power[1][2] * lastCross[0] + power[1][3] * lastCross[1]);
+                turnRate += powerCoeff * (step - turnRate);
+                lastCross[0] = power[1][2];
+                lastCross[1] = power[1][3];
+                // The two one-poles shrink A B* turning at w by 1 + (w tau)^2: undone, up to twice.
+                const double turnTau = turnRate / powerCoeff;
+                const double cross = std::hypot (power[1][2], power[1][3]) * std::min (2.0, 1.0 + turnTau * turnTau);
+                const bool held = both >= kSwitchPowerFloor && cross >= kSwitchHeldCoherence * both;
+
                 if (fadePos == 0)
                 {
                     bool starts = pos >= warmSamples;
 
                     if (starts)
                     {
-                        const double ahead = correlation + (correlation - correlationLag) * powerCoeff * fadeSamples;
                         const bool goodNow = correlation >= kSwitchMinCorrelation;
-                        const bool heading = correlation >= correlationLag || ahead >= 0.0;
-                        starts = (goodNow && (heading || waited >= waitSamples)) || waited >= longestWaitSamples;
+
+                        if (held && fast)
+                        {
+                            const double phase = std::atan2 (power[1][3], power[1][2]);
+                            const auto within = [&] (double ahead)
+                            {
+                                return std::abs (std::remainder (phase + turnRate * (delaySamples + ahead * plainLength), 2.0 * kPi)) <= kSwitchHeldPhase;
+                            };
+                            heldInPhase = within (0.25) && within (0.75);
+                            starts = heldInPhase || (goodNow && waited >= waitSamples) || waited >= longestWaitSamples;
+                        }
+                        else
+                        {
+                            const double ahead = correlation + (correlation - correlationLag) * powerCoeff * fadeSamples;
+                            const bool heading = correlation >= correlationLag || ahead >= 0.0;
+                            heldInPhase = false;
+                            starts = (goodNow && (heading || waited >= waitSamples)) || waited >= longestWaitSamples;
+                        }
 
                         if (! starts)
                             ++waited;
@@ -1261,7 +1313,7 @@ struct PhaserFx::Impl
                         continue;
                     }
 
-                    fadeLength = turnsAtStart() ? turnSamples : fadeSamples;
+                    fadeLength = ! heldInPhase && turnsAtStart() ? turnLength : plainLength;
                 }
 
                 if (++fadePos >= fadeLength)
@@ -1357,7 +1409,8 @@ struct PhaserFx::Impl
     juce::AudioBuffer<float> scratch;        // outgoing L/R, incoming L/R
     PhaserParams params;
     double sampleRate = 48000.0, powerCoeff = 1.0, splitCoeff = 1.0, turnCoeff = 1.0, correlationLag = 1.0;
-    double power[2][3] {};                   // two smoothing stages of: |A|^2, |B|^2, A.B
+    double power[2][4] {};                   // two smoothing stages of: |A|^2, |B|^2, Re and Im of A B*
+    double turnRate = 0.0, lastCross[2] {};  // the turn of A B* in radians per sample; A B* a sample ago
     SwitchBand bands[2];                     // low, high
     double lows[10][2] {};                   // the band split's low-passes (see processSwitch) per channel
     QuadraturePair quadrature[2][4];         // per channel: of A, of B, of the input, of the input's I
@@ -1365,6 +1418,9 @@ struct PhaserFx::Impl
     int incomingKey = -1, incomingPedal = 1; // a switch is in flight while incomingKey >= 0
     int switchPos = 0, warmSamples = 1, fadeSamples = 1, turnSamples = 1, fadeLength = 1, waitSamples = 0, longestWaitSamples = 0;
     int waited = 0, fadePos = 0;             // samples waited after the warm-up; samples into the fade
+    int shortestFadeSamples = 1;
+    double delaySamples = 0.0;
+    bool heldInPhase = false;
     bool snapEngine = true, snapParams = true;
 };
 
@@ -1378,6 +1434,8 @@ void PhaserFx::prepare (const juce::dsp::ProcessSpec& spec)
     s.warmSamples = (int) std::lround (kSwitchWarmSeconds * spec.sampleRate);
     s.fadeSamples = std::max (1, (int) std::lround (kSwitchFadeSeconds * spec.sampleRate));
     s.turnSamples = std::max (1, (int) std::lround (kSwitchTurnSeconds * spec.sampleRate));
+    s.shortestFadeSamples = std::max (1, (int) std::lround (kSwitchShortestFadeSeconds * spec.sampleRate));
+    s.delaySamples = kSwitchEstimateDelaySeconds * spec.sampleRate;
     s.waitSamples = (int) std::lround (kSwitchWaitSeconds * spec.sampleRate);
     s.longestWaitSamples = (int) std::lround (kSwitchLongestWaitSeconds * spec.sampleRate);
     s.powerCoeff = 1.0 - std::exp (-1.0 / (kSwitchStatSeconds * spec.sampleRate));
