@@ -21,7 +21,11 @@ public:
         modulation.prepare ({ sampleRate, (juce::uint32) maxBlock, (juce::uint32) numChannels });
     }
 
-    void reset() override { modulation.reset(); }
+    void reset() override
+    {
+        modulation.reset();
+        lastReset = 0.0;
+    }
 
     void setParams (const fxbench::Args& a) override
     {
@@ -30,6 +34,16 @@ public:
 
         if (! on)
             return;
+
+        // The reset key calls the legacy block's own reset(), as ChorusBench calls ChorusFx's:
+        // --classic-null then compares Classic after a reset with the old chorus after its own.
+        const double resetKey = a.get ("reset", 0.0);
+
+        if (! juce::exactlyEqual (resetKey, lastReset))
+        {
+            lastReset = resetKey;
+            modulation.reset();
+        }
 
         modulation.setParameters (tubamp::legacy::Modulation::Type::chorus, (float) a.get ("rate", 1.0),
                                   (float) a.get ("depth", 0.4), (float) a.get ("mix", 0.35));
@@ -43,6 +57,7 @@ public:
 
 private:
     tubamp::legacy::Modulation modulation;
+    double lastReset = 0.0;
     bool on = true;
 };
 

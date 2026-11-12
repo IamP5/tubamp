@@ -11,6 +11,14 @@
 //   CE         one bucket-brigade-style voice per channel, fixed 2.7 ms sweep, bent triangle.
 //   Dimension  two antiphase lines fed from the mono sum, slow triangle (mono: line A alone).
 //   Tri        three lines at 120 degrees, slow sine + fixed 6 Hz shimmer.
+//
+// The limit of a transition (rate, depth, a song-position jump): a change made by a tap
+// crossfade slides each voice's phase by up to half a cycle in 30 ms, a pitch blip of up to
+// 25 Hz (about +460 cents at 82 Hz, +43 at 1 kHz) that no fade shape removes, because gliding
+// the same delay change as fast bends every note by as much. So a change glides, at most
+// 4 cents beyond the settings' own detune, wherever that lags a stopped knob by under 80 ms or
+// a moving one by under 100 ms, and is crossfaded otherwise, at most once per 250 ms while a
+// knob keeps moving.
 namespace tubamp
 {
 /** Everything a chorus needs for one block; the Modulation dispatcher fills it. */

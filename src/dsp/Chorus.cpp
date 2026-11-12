@@ -78,22 +78,32 @@ constexpr float kPitchAllowance = 0.0023131618f;   // 2^(4/1200) - 1
 // apart carry no pitch of their own, only a comb while both sound, so the fade keeps the
 // wet's short-term power on the straight line between the two taps' own (measured, as for a
 // mode switch). Fading the wet out and back in instead leaves a hole at mix 1.
+// Glide or crossfade (Chorus.h states the limit). A glide bends every note by at most the
+// 4-cent allowance but takes (delay change) x range / allowance; a crossfade slides each
+// voice's phase by the delay change, at most half a cycle, within kTapFadeSeconds, 1.5 times
+// as fast at its steepest (smoothstep), which bends 82 Hz more than the glide does as soon as
+// the glide would take over 20 ms. So the glide is the smaller bend wherever it keeps up, and
+// the crossfade is the tool for lag alone.
 // A knob that stopped this long ago is a step [choice: a hand's knob move pauses longer]...
 constexpr float kQuietSeconds = 0.030f;
-// ...and a step whose glide would need longer than this is crossfaded instead.
-constexpr float kGlideSeconds = 0.050f;
+// ...and a step whose glide would need longer than this is crossfaded instead [choice: the
+// longest that still settles inside 150 ms of the knob stopping].
+constexpr float kGlideSeconds = 0.080f;
 // A moving knob is followed by the glide; once the glide falls this far behind, the rest
-// is crossfaded without waiting for the knob to stop, but not sooner than kCatchUpGapSeconds
-// after the last crossfade ended [choice: a hand's move then starts one or two, not one per
-// glide that falls behind].
+// is crossfaded without waiting for the knob to stop.
 constexpr float kCatchUpSeconds = 0.100f;
-constexpr float kCatchUpGapSeconds = 0.100f;
+// At most one knob crossfade starts in this long [choice: an automation ramp the glide
+// cannot follow then lags between two, instead of firing a train of blips].
+constexpr float kFadeSpacingSeconds = 0.250f;
 // The new tap's power is measured this long before it fades in [choice: as the mode switch].
 constexpr float kTapMeasureSeconds = 0.010f;
 // A retarget restarts the measurement only inside this much pre-roll; later ones wait for
 // the fade to end, so a knob in motion cannot postpone the fade indefinitely.
 constexpr float kTapPrerollSeconds = 0.020f;
-constexpr float kTapFadeSeconds = 0.030f;          // [spec: 20 - 30 ms, cornerless]
+// [spec: 20 - 30 ms, cornerless] A longer fade would slide the phase more slowly (60 ms halves
+// the blip) but deepens the comb the taps leave against the dry and the steady wets while the
+// LFO moves under it (wet -1.8 dB at 60 ms, -2.1 at 45 ms on a depth ramp, CH25; jumps CH30).
+constexpr float kTapFadeSeconds = 0.030f;
 constexpr float kTapPowerSeconds = 0.004f;         // two cascaded one-poles, as kSwitchPowerSeconds
 // Headroom of the power correction: at most +8.8 dB. The path choice keeps a tone's two faded
 // taps no worse than -0.5 correlated, which this lifts to -0.53 dB at the midpoint.
@@ -116,16 +126,30 @@ constexpr float kLockSeconds = 0.150f;
 constexpr double kLockMaxRatio = 0.25;
 // An error this large is not drift: it is taken as a jump.
 constexpr double kLockLostCycles = 0.25;
+// A discontinuity this soon after the last one is noise, not a locate or a loop [choice: a loop
+// shorter than a quarter second is not music]: the LFO runs free until the host settles.
+constexpr float kJumpTrainSeconds = 0.250f;
 
-// Mode switches crossfade the outgoing and incoming wets [choice: §2.4's 20 ms], scaled so
-// the wet's short-term power moves straight from one mode's to the other's whatever the two
-// wets' correlation (a chord gives -0.3 to +0.45 between modes, so a plain equal-power fade
-// would dip or bump by up to 1.6 dB).
+// Mode switches crossfade the outgoing and incoming outputs [choice: §2.4's 20 ms], scaled so
+// the short-term power moves straight from one mode's to the other's whatever the two
+// outputs' correlation (a chord gives -0.3 to +0.45 between modes' wets, so a plain
+// equal-power fade would dip or bump by up to 1.6 dB).
 constexpr float kSwitchSeconds = 0.020f;
 // The powers are two cascaded one-poles (so a low note's ripple does not modulate the fade),
 // run for kSwitchMeasureSeconds before the fade starts.
 constexpr float kSwitchPowerSeconds = 0.004f;
 constexpr float kSwitchMeasureSeconds = 0.010f;
+// Two modes on one held note can sit near antiphase, where no gain undoes the null their fade
+// passes, so it starts where every channel's two outputs correlate no worse than kSwitchMinCorrelation
+// and are not heading below it; after kSwitchMaxWaitSeconds on any moment good enough now, after
+// kSwitchLongestWaitSeconds on any [choice: as FxBlocks' PowerCrossfade, the processor's effect
+// switch]. Each channel is corrected on its own, in two bands split at kSwitchSplitHz (two
+// modes' lows can cancel while their highs add), by at most +18 dB.
+constexpr float kSwitchMinCorrelation = -0.5f;
+constexpr float kSwitchMaxWaitSeconds = 0.250f;
+constexpr float kSwitchLongestWaitSeconds = 0.400f;
+constexpr float kSwitchSplitHz = 1000.0f;
+constexpr float kSwitchSlack = 1.0f / (7.943f * 7.943f - 1.0f);
 constexpr float kMinMultiplier = 0.02f;
 constexpr float kNoCap = 1.0e30f;
 
@@ -343,10 +367,11 @@ public:
         tapPreroll = (int) std::ceil (kTapPrerollSeconds * sampleRate);
         slopeBlend = 2.0f / (float) std::max (2, tapMeasure);
         lockA = 1.0 - std::exp (-1.0 / std::max (1.0, (double) kLockSeconds * newSampleRate));
+        jumpTrain = (int) std::ceil (kJumpTrainSeconds * sampleRate);
         quietSamples = quietNeeded = (int) std::ceil (kQuietSeconds * sampleRate);
         glideSamples = kGlideSeconds * sampleRate;
         catchUpSamples = kCatchUpSeconds * sampleRate;
-        fadeGapSamples = (int) std::ceil (kCatchUpGapSeconds * sampleRate);
+        fadeSpacing = (int) std::ceil (kFadeSpacingSeconds * sampleRate);
 
         for (auto& line : lines)
             line.setSize ((int) std::ceil (kLineSeconds * sampleRate) + 8);
@@ -382,12 +407,15 @@ public:
         clamped = false;
         rawDirty = true;
         sinceMove = sinceFade = 1 << 30;
+        lastFadeStopped = false;
         xf = XFade::none;
         xfSamples = 0;
         xfPos = 0.0f;
-        jumpPending = syncLand = viaMid = false;
+        jumpPending = syncLand = false;
+        std::fill (std::begin (viaMid), std::end (viaMid), false);
         hostValid = false;
         sinceHost = 0;
+        sinceJump = 1 << 30;
         lockError = lockMax = 0.0;
         wet = Wet::silent;
         wetPos = wetStep = 0.0f;
@@ -426,6 +454,7 @@ public:
         hostPhase = other.hostPhase;
         hostRate = other.hostRate;
         sinceHost = other.sinceHost;
+        sinceJump = other.sinceJump;
         hostValid = other.hostValid;
         lockError = other.lockError;
     }
@@ -446,8 +475,18 @@ public:
         sinceHost = 0;
         hostValid = true;
 
-        if (std::abs (jump) > slack || std::abs (error) > kLockLostCycles)
+        const bool discontinuous = std::abs (jump) > slack;
+
+        if (discontinuous && sinceJump < jumpTrain)
         {
+            // One of a train: the host's position is noisier than the slack, and following it
+            // would hold the outgoing taps for good. Run free at the tempo's rate instead.
+            sinceJump = 0;
+            lockError = 0.0;
+        }
+        else if (discontinuous || std::abs (error) > kLockLostCycles)
+        {
+            sinceJump = 0;
             ++counts.syncJumps;
             requestJump (true);
         }
@@ -509,8 +548,6 @@ public:
     }
 
     bool autoFadeIn = true;
-    // During a switch: the wet term goes here and only the dry term into the block.
-    float* wetTap[2] { nullptr, nullptr };
     ChorusFx::DebugCounts counts;
 
 private:
@@ -518,11 +555,6 @@ private:
     // landing: the outgoing taps alone, the new ones land on their law at the next control
     // tick; measuring: both run, the new ones silent; fading: the crossfade.
     enum class XFade { none, landing, measuring, fading };
-
-    struct Pair
-    {
-        float l, r;
-    };
 
     static double wrapHalf (double x) noexcept
     {
@@ -544,7 +576,7 @@ private:
             land();
             xf = XFade::measuring;
             xfSamples = 0;
-            std::fill (&tapPower[0][0], &tapPower[0][0] + 12, 0.0f);
+            std::fill (&tapPower[0][0][0], &tapPower[0][0][0] + 48, 0.0f);
         }
 
         const float f = rate.current;
@@ -613,7 +645,7 @@ private:
         lockMax = std::min (kLockMaxRatio * fe, 0.9 * (double) kPitchAllowance / std::max (swingSlope, 1.0e-9)) * invSampleRate;
 
         sinceMove = std::min (sinceMove + kControlInterval, 1 << 30);
-        sinceFade = xf == XFade::none ? std::min (sinceFade + kControlInterval, 1 << 30) : 0;
+        sinceFade = std::min (sinceFade + kControlInterval, 1 << 30);
     }
 
     /** Moves each swing towards its target no faster than keeps every voice inside
@@ -690,10 +722,19 @@ private:
 
         const bool still = sinceMove >= quietNeeded;
 
-        if (xf != XFade::fading && remaining > (still ? glideSamples : catchUpSamples) && (still || sinceFade >= fadeGapSamples))
+        // A knob that has stopped (twice the quiet time: steps 40 ms apart never do) may finish
+        // with one crossfade at once, unless the last was a stopped knob's too.
+        const bool stopped = sinceMove >= 2 * quietNeeded;
+        const bool spaced = sinceFade >= fadeSpacing || (stopped && ! lastFadeStopped);
+
+        if (xf != XFade::fading && remaining > (still ? glideSamples : catchUpSamples) && (xf != XFade::none || spaced))
         {
             if (xf == XFade::none)
+            {
                 ++counts.knobFades;
+                sinceFade = 0;
+                lastFadeStopped = stopped;
+            }
 
             requestJump (false);
         }
@@ -853,78 +894,104 @@ private:
             lockError = error;
     }
 
-    /** One sample of the tap crossfade, from the outgoing taps to the new ones either
-        directly or through the taps half way between them, whichever path's two ends are
-        the more alike (a tone's taps half a period apart cancel; the midpoint tap is a
-        quarter period from each). Each leg is out = s (cos * from + sin * to), s keeping
-        the wet's short-term power on the straight line between the old and the new taps'. */
-    Pair crossfade (Pair now, Pair old, Pair mid) noexcept
+    /** One sample of the tap crossfade: every voice from its outgoing tap to its new one,
+        directly or through the tap half way between, whichever path's two ends are the more
+        alike for that voice (a tone's taps half a period apart cancel; the midpoint tap is a
+        quarter period from each). Each leg is s (cos * from + sin * to), s keeping the
+        voice's short-term power on the straight line between its old and new taps'. Decided
+        and corrected per voice, not on the sum: one channel's taps can meet in antiphase
+        while the other's add, and a shared path and gain then leave a hole in that channel
+        (CE on a loop wrap: -32 dB). Where voices share a channel with each other and the dry
+        (Tri at mix 0.5), no path choice holds every note: the best dips 4 - 6 dB at 1 kHz.
+        `now` returns what each voice plays. */
+    template <int N>
+    void crossfade (float (&now)[N], const float (&old)[N], const float (&mid)[N]) noexcept
     {
         if (xf == XFade::landing)
-            return old;
-
-        ++xfSamples;
-        const float raw[6] { old.l * old.l + old.r * old.r, now.l * now.l + now.r * now.r, mid.l * mid.l + mid.r * mid.r,
-                             old.l * now.l + old.r * now.r, old.l * mid.l + old.r * mid.r, mid.l * now.l + mid.r * now.r };
-
-        for (int k = 0; k < 6; ++k)
         {
-            tapPower[0][k] += tapPowerA * (raw[k] - tapPower[0][k]);
-            tapPower[1][k] += tapPowerA * (tapPower[0][k] - tapPower[1][k]);
+            std::copy (std::begin (old), std::end (old), std::begin (now));
+            return;
         }
 
-        const float* p = tapPower[1];
+        ++xfSamples;
+
+        for (int v = 0; v < N; ++v)
+        {
+            const float raw[6] { old[v] * old[v], now[v] * now[v], mid[v] * mid[v],
+                                 old[v] * now[v], old[v] * mid[v], mid[v] * now[v] };
+            float* p0 = tapPower[0][v];
+            float* p1 = tapPower[1][v];
+
+            for (int k = 0; k < 6; ++k)
+            {
+                p0[k] += tapPowerA * (raw[k] - p0[k]);
+                p1[k] += tapPowerA * (p0[k] - p1[k]);
+            }
+        }
 
         if (xf == XFade::measuring)
         {
             if (xfSamples >= tapMeasure)
             {
                 const auto alike = [] (float cross, float a, float b) { return cross / std::sqrt (a * b + 1.0e-30f); };
-                viaMid = std::min (alike (p[4], p[0], p[2]), alike (p[5], p[2], p[1])) > alike (p[3], p[0], p[1]);
+
+                for (int v = 0; v < N; ++v)
+                {
+                    const float* p = tapPower[1][v];
+                    viaMid[v] = std::min (alike (p[4], p[0], p[2]), alike (p[5], p[2], p[1])) > alike (p[3], p[0], p[1]);
+                }
+
                 xf = XFade::fading;
                 xfPos = 0.0f;
             }
 
-            return old;
+            std::copy (std::begin (old), std::end (old), std::begin (now));
+            return;
         }
 
         xfPos = std::min (1.0f, xfPos + tapStep);
-        Pair from = old, to = now;
-        float pFrom = p[0], pTo = p[1], cross = p[3], u = xfPos;
-
-        if (viaMid)
-        {
-            if (xfPos < 0.5f)
-            {
-                to = mid;
-                pTo = p[2];
-                cross = p[4];
-                u = 2.0f * xfPos;
-            }
-            else
-            {
-                from = mid;
-                pFrom = p[2];
-                cross = p[5];
-                u = 2.0f * xfPos - 1.0f;
-            }
-        }
 
         // Smoothstep first, so no gain starts or stops moving with a corner.
-        const float r = u * u * (3.0f - 2.0f * u);
-        float gTo, gFrom;
-        sinCosTurns (0.25f * r, gTo, gFrom);
         const float total = xfPos * xfPos * (3.0f - 2.0f * xfPos);
-        const float want = p[0] + total * (p[1] - p[0]);
-        const float got = gFrom * gFrom * pFrom + gTo * gTo * pTo + 2.0f * gFrom * gTo * cross;
-        const float slack = kTapSlack * want + 1.0e-12f;
-        const float scale = std::sqrt ((want + slack) / (std::max (got, 0.0f) + slack));
-        const Pair out { scale * (gFrom * from.l + gTo * to.l), scale * (gFrom * from.r + gTo * to.r) };
+        const bool firstLeg = xfPos < 0.5f;
+        const float u = firstLeg ? 2.0f * xfPos : 2.0f * xfPos - 1.0f;
+        float gToDirect, gFromDirect, gToLeg, gFromLeg;
+        sinCosTurns (0.25f * total, gToDirect, gFromDirect);
+        sinCosTurns (0.25f * u * u * (3.0f - 2.0f * u), gToLeg, gFromLeg);
+
+        for (int v = 0; v < N; ++v)
+        {
+            const float* p = tapPower[1][v];
+            float from = old[v], to = now[v], pFrom = p[0], pTo = p[1], cross = p[3];
+            float gFrom = gFromDirect, gTo = gToDirect;
+
+            if (viaMid[v])
+            {
+                gFrom = gFromLeg;
+                gTo = gToLeg;
+
+                if (firstLeg)
+                {
+                    to = mid[v];
+                    pTo = p[2];
+                    cross = p[4];
+                }
+                else
+                {
+                    from = mid[v];
+                    pFrom = p[2];
+                    cross = p[5];
+                }
+            }
+
+            const float want = p[0] + total * (p[1] - p[0]);
+            const float got = gFrom * gFrom * pFrom + gTo * gTo * pTo + 2.0f * gFrom * gTo * cross;
+            const float slack = kTapSlack * want + 1.0e-12f;
+            now[v] = std::sqrt ((want + slack) / (std::max (got, 0.0f) + slack)) * (gFrom * from + gTo * to);
+        }
 
         if (xfPos >= 1.0f)
             endCrossfade();
-
-        return out;
     }
 
     void startFade (float stepSize) noexcept
@@ -1002,12 +1069,15 @@ private:
         }
     }
 
-    /** The wet pair, through the crossfade while one runs. */
-    template <typename Wets>
-    Pair wetPair (const float* now, const float* old, const float* mid, Wets&& wets) noexcept
+    /** Every voice's tap, or taps while a crossfade runs: -> what each voice plays, in `now`. */
+    template <int N>
+    void readHeard (const float (&target)[N], const int (&line)[N], float (&now)[N]) noexcept
     {
-        const Pair w = wets (now);
-        return xf == XFade::none ? w : crossfade (w, wets (old), wets (mid));
+        float old[N], mid[N];
+        readVoices (target, line, now, old, mid);
+
+        if (xf != XFade::none)
+            crossfade (now, old, mid);
     }
 
     void writeTrace (int i, int voice) const noexcept
@@ -1017,7 +1087,7 @@ private:
 
         traceOut[0][i] = delay[voice];
         traceOut[1][i] = xf == XFade::none ? delay[voice] : oldDelay[voice];
-        traceOut[2][i] = xf == XFade::none ? 0.0f : (xf != XFade::fading ? 1.0f : (viaMid ? 3.0f : 2.0f));
+        traceOut[2][i] = xf == XFade::none ? 0.0f : (xf != XFade::fading ? 1.0f : (viaMid[voice] ? 3.0f : 2.0f));
     }
 
     /** Starts every rounding one-pole on its input, so nothing glides in after a reset. */
@@ -1078,6 +1148,7 @@ private:
             i += len;
             tick = (tick + len) & (kControlInterval - 1);
             sinceHost = std::min (sinceHost + len, 1 << 30);
+            sinceJump = std::min (sinceJump + len, 1 << 30);
 
             if (refilling)
             {
@@ -1100,8 +1171,6 @@ private:
     struct Output
     {
         float dry, wet, width;
-
-        Output (float dryGain, float wetGain, float widthGain) noexcept : dry (dryGain), wet (wetGain), width (widthGain) {}
 
         Output (Smoothed& mixS, Smoothed& widthS, float a) noexcept
         {
@@ -1128,40 +1197,12 @@ private:
         }
     };
 
-    void emit (const Output& out, float* outL, float* outR, int i, float xL, float xR, float wL, float wR, bool stereo) const noexcept
+    static void writeSolo (float* outL, float* outR, int i, float v, bool stereo) noexcept
     {
-        if (wetTap[0] == nullptr)
-        {
-            out.write (outL, outR, i, xL, xR, wL, wR, stereo);
-            return;
-        }
-
-        const Output dryPart { out.dry, 0.0f, out.width };
-        const Output wetPart { 0.0f, out.wet, out.width };
-        dryPart.write (outL, outR, i, xL, xR, wL, wR, stereo);
-        wetPart.write (wetTap[0], wetTap[1], i, xL, xR, wL, wR, stereo);
-    }
-
-    void writeSolo (float* outL, float* outR, int i, float v, bool stereo) const noexcept
-    {
-        float* l = outL;
-        float* r = outR;
-
-        if (wetTap[0] != nullptr)
-        {
-            outL[i] = 0.0f;
-
-            if (stereo)
-                outR[i] = 0.0f;
-
-            l = wetTap[0];
-            r = wetTap[1];
-        }
-
-        l[i] = v;
+        outL[i] = v;
 
         if (stereo)
-            r[i] = v;
+            outR[i] = v;
     }
 
     template <bool solo>
@@ -1202,26 +1243,23 @@ private:
 
                 const float target[4] { base0 + swing[0] * shape[0], base0 + swing[0] * shape[1],
                                         base1 + swing[1] * shape[2], base1 + swing[1] * shape[3] };
-                float now[4], old[4], mid[4];
-                readVoices (target, lineOf, now, old, mid);
+                float v[4];
+                readHeard (target, lineOf, v);
                 swing[0] += swingStep[0];
                 swing[1] += swingStep[1];
                 advance (std::min (f, cap0), std::min (f * kWidePair2Ratio, cap1));
 
                 if constexpr (solo)
                 {
-                    const Pair w = wetPair (now, old, mid,[&] (const float* v) { return Pair { v[soloVoice], v[soloVoice] }; });
                     writeTrace (i, soloVoice);
-                    writeSolo (outL, outR, i, w.l * wetGain(), stereo);
+                    writeSolo (outL, outR, i, v[soloVoice] * wetGain(), stereo);
                 }
                 else
                 {
-                    const Pair w = wetPair (now, old, mid,[] (const float* v)
-                    {
-                        return Pair { (v[0] + kWidePair2Gain * v[2]) * kWideNorm, (v[1] + kWidePair2Gain * v[3]) * kWideNorm };
-                    });
+                    const float wl = (v[0] + kWidePair2Gain * v[2]) * kWideNorm;
+                    const float wr = (v[1] + kWidePair2Gain * v[3]) * kWideNorm;
                     const float g = wetGain();
-                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
+                    out.write (outL, outR, i, xL, xR, wl * g, wr * g, stereo);
                 }
             }
         });
@@ -1258,23 +1296,21 @@ private:
                 shape[1] += ra * (bentTriangle (p + kCeOffsetR) - shape[1]);
 
                 const float target[2] { base + swing[0] * (shape[0] - 0.5f), base + swing[0] * (shape[1] - 0.5f) };
-                float now[2], old[2], mid[2];
-                readVoices (target, lineOf, now, old, mid);
+                float v[2];
+                readHeard (target, lineOf, v);
                 swing[0] += swingStep[0];
                 const float fe = std::min (f, cap);
                 advance (fe, fe);
 
                 if constexpr (solo)
                 {
-                    const Pair w = wetPair (now, old, mid,[&] (const float* v) { return Pair { v[soloVoice], v[soloVoice] }; });
                     writeTrace (i, soloVoice);
-                    writeSolo (outL, outR, i, w.l * wetGain(), stereo);
+                    writeSolo (outL, outR, i, v[soloVoice] * wetGain(), stereo);
                 }
                 else
                 {
-                    const Pair w = wetPair (now, old, mid,[] (const float* v) { return Pair { v[0], v[1] }; });
                     const float g = wetGain();
-                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
+                    out.write (outL, outR, i, xL, xR, v[0] * g, v[1] * g, stereo);
                 }
             }
         });
@@ -1308,31 +1344,23 @@ private:
                 // Line B runs the inverted triangle (u_B = 1 - u_A).
                 const float sweep = swing[0] * (2.0f * shape[0] - 1.0f);
                 const float target[2] { base + sweep, base - sweep };
-                float now[2], old[2], mid[2];
-                readVoices (target, lineOf, now, old, mid);
+                float v[2];
+                readHeard (target, lineOf, v);
                 swing[0] += swingStep[0];
                 const float fe = std::min (f, cap);
                 advance (fe, fe);
 
                 if constexpr (solo)
                 {
-                    const Pair w = wetPair (now, old, mid,[&] (const float* v) { return Pair { v[soloVoice], v[soloVoice] }; });
                     writeTrace (i, soloVoice);
-                    writeSolo (outL, outR, i, w.l * wetGain(), stereo);
-                }
-                else if (stereo)
-                {
-                    const Pair w = wetPair (now, old, mid,[] (const float* v) { return Pair { v[0], v[1] }; });
-                    const float g = wetGain();
-                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
+                    writeSolo (outL, outR, i, v[soloVoice] * wetGain(), stereo);
                 }
                 else
                 {
                     // Mono: line A alone. Summed, the antiphase lines cancel each other's
                     // detune and leave only a comb.
-                    const Pair w = wetPair (now, old, mid,[] (const float* v) { return Pair { v[0], v[0] }; });
                     const float g = wetGain();
-                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
+                    out.write (outL, outR, i, xL, xR, v[0] * g, (stereo ? v[1] : v[0]) * g, stereo);
                 }
             }
         });
@@ -1377,26 +1405,21 @@ private:
                 const float target[3] { base + swing[0] * shape[0] + swing[1] * shape[3],
                                         base + swing[0] * shape[1] + swing[1] * shape[4],
                                         base + swing[0] * shape[2] + swing[1] * shape[5] };
-                float now[3], old[3], mid[3];
-                readVoices (target, lineOf, now, old, mid);
+                float v[3];
+                readHeard (target, lineOf, v);
                 swing[0] += swingStep[0];
                 swing[1] += swingStep[1];
                 advance (std::min (f, cap0), kTriFastHz);
 
                 if constexpr (solo)
                 {
-                    const Pair w = wetPair (now, old, mid,[&] (const float* v) { return Pair { v[soloVoice], v[soloVoice] }; });
                     writeTrace (i, soloVoice);
-                    writeSolo (outL, outR, i, w.l * wetGain(), stereo);
+                    writeSolo (outL, outR, i, v[soloVoice] * wetGain(), stereo);
                 }
                 else
                 {
-                    const Pair w = wetPair (now, old, mid,[] (const float* v)
-                    {
-                        return Pair { kTriPairGain * (v[0] + v[1]), kTriPairGain * (v[1] + v[2]) };
-                    });
                     const float g = wetGain();
-                    emit (out, outL, outR, i, xL, xR, w.l * g, w.r * g, stereo);
+                    out.write (outL, outR, i, xL, xR, kTriPairGain * (v[0] + v[1]) * g, kTriPairGain * (v[1] + v[2]) * g, stereo);
                 }
             }
         });
@@ -1443,22 +1466,22 @@ private:
     float hold[2] {}, rawSlope[2] {};
     float rateCap[2] { kNoCap, kNoCap };      // Hz, while a swing is too large for the rate
     float delay[4] {}, step[4] {}, voiceLimit[4] {};   // samples; samples per sample
-    int sinceMove = 0, sinceFade = 0, quietSamples = 1, quietNeeded = 1, fadeGapSamples = 1;
+    int sinceMove = 0, sinceFade = 0, quietSamples = 1, quietNeeded = 1, fadeSpacing = 1;
     float glideSamples = 1.0f, catchUpSamples = 1.0f;
-    bool clamped = false, rawDirty = true;
+    bool clamped = false, rawDirty = true, lastFadeStopped = false;
 
     // Tap crossfade: the outgoing taps read oldDelay, which moves by oldSlope per sample.
     XFade xf = XFade::none;
     float oldDelay[4] {}, oldSlope[4] {}, oldStep[4] {}, oldMax = 1.0f, slopeBlend = 1.0f;
-    float tapPower[2][6] {};   // two smoothing stages of: old, new, mid wet powers; old.new, old.mid, mid.new
+    float tapPower[2][4][6] {};   // two smoothing stages, per voice: old, new, mid tap powers; old.new, old.mid, mid.new
     float xfPos = 0.0f, tapStep = 1.0f, tapPowerA = 1.0f;
     int xfSamples = 0, tapMeasure = 1, tapPreroll = 1;
-    bool jumpPending = false, syncLand = false, viaMid = false;
+    bool jumpPending = false, syncLand = false, viaMid[4] {};
 
     // Song-position lock: the host's phase at its last block start, sinceHost samples ago,
     // moving at hostRate; lockError is the part of the LFO's error not yet pulled in.
     double hostPhase = 0.0, hostRate = 0.0, lockError = 0.0, lockMax = 0.0, lockA = 0.0;
-    int sinceHost = 0;
+    int sinceHost = 0, sinceJump = 1 << 30, jumpTrain = 1;
     bool hostValid = false;
 
     Wet wet = Wet::silent;
@@ -1484,17 +1507,21 @@ struct ChorusFx::Impl
 {
     juce::dsp::Chorus<float> classic;
     ModernChorus modern[2];
-    // During a switch: the block's input, the incoming mode's output, and the two wet taps.
-    juce::AudioBuffer<float> input, scratch, tapOut, tapIn;
+    // During a switch: the block's input and the incoming mode's output.
+    juce::AudioBuffer<float> input, scratch;
     ChorusParams params;
     double sampleRate = 48000.0;
     int maxBlock = 512, numChannels = 2, solo = -1;
     int active = (int) Mode::wide, slot = 0;   // the mode heard, and its instance if modern
     int incoming = -1, incomingSlot = 1;
     int classicFilled = 0;
-    float blend = 0.0f, switchStep = 0.0f, powerA = 1.0f;
-    float power[2][3] {};   // two smoothing stages of: outgoing wet, incoming wet, their product
-    int measureSamples = 0, measured = 0;
+    float blend = 0.0f, switchStep = 0.0f, powerA = 1.0f, splitA = 1.0f;
+    // Per channel: two smoothing stages of the outgoing and incoming wets' powers and product,
+    // whole and per band (below and above kSwitchSplitHz); the bands' low-pass states; the
+    // correlation lagged by one more stage (its trend).
+    float power[2][2][3] {}, bandPower[2][2][2][3] {}, lowOut[2] {}, lowIn[2] {}, correlationLag[2] {};
+    int measureSamples = 0, measured = 0, waited = 0, maxWait = 0, longestWait = 0;
+    bool fadeStarted = false;
     enum class Stage { idle, filling, fading } stage = Stage::idle;
     bool snapEngine = true, snapParams = true;
     float* const* trace = nullptr;
@@ -1503,9 +1530,9 @@ struct ChorusFx::Impl
     static bool isModern (int mode) noexcept { return mode != (int) Mode::classic; }
 
     /** A mode switch keeps the outgoing mode sounding while the incoming one fills its line
-        from the live input, then crossfades by measured power: two modern modes on the wet
-        alone (the dry is common to both), anything with Classic on the whole output (their
-        mix laws differ). The level holds instead of falling back to the dry. */
+        from the live input, then crossfades the two whole outputs by measured power: what is
+        heard is what holds, the dry's interference with each wet included (fading the wets
+        alone held their power and still left Tri -> Wide at mix 0.5 -9.4 dB on a held note). */
     void begin (int mode)
     {
         incoming = mode;
@@ -1539,8 +1566,13 @@ struct ChorusFx::Impl
     {
         stage = Stage::fading;
         blend = 0.0f;
-        measured = 0;
-        std::fill (&power[0][0], &power[0][0] + 6, 0.0f);
+        measured = waited = 0;
+        fadeStarted = false;
+        std::fill (&power[0][0][0], &power[0][0][0] + 12, 0.0f);
+        std::fill (&bandPower[0][0][0][0], &bandPower[0][0][0][0] + 24, 0.0f);
+        std::fill (std::begin (lowOut), std::end (lowOut), 0.0f);
+        std::fill (std::begin (lowIn), std::end (lowIn), 0.0f);
+        std::fill (std::begin (correlationLag), std::end (correlationLag), 1.0f);
 
         if (isModern (incoming))
             modern[incomingSlot].setWetSteady();
@@ -1557,9 +1589,6 @@ struct ChorusFx::Impl
 
     void abandon() noexcept
     {
-        for (auto& m : modern)
-            m.wetTap[0] = m.wetTap[1] = nullptr;
-
         incoming = -1;
         stage = Stage::idle;
     }
@@ -1588,51 +1617,89 @@ struct ChorusFx::Impl
         engine.process (block, mode, solo, traceTo);
     }
 
-    /** out += s (cos * a + sin * b), s keeping the short-term power of the sum on the
-        straight line between the powers of a (outgoing) and b (incoming). */
-    void blendTaps (juce::dsp::AudioBlock<float>& block, size_t channels, size_t n) noexcept
+    /** block = s (cos * block + sin * scratch), the outgoing and incoming outputs, per channel
+        and band, s keeping the short-term power of each on the straight line between the two's,
+        once a moment comes where they will not cancel through the fade (kSwitchMinCorrelation). */
+    void crossfadeOutputs (juce::dsp::AudioBlock<float>& block, size_t channels, size_t n) noexcept
     {
+        const int numCh = (int) std::min<size_t> (channels, 2);
+        const float fadeLength = 1.0f / switchStep;
+
         for (size_t i = 0; i < n; ++i)
         {
-            float a = 0.0f, b = 0.0f, ab = 0.0f;
+            float x[2] {}, y[2] {}, xl[2] {}, yl[2] {};
+            bool good = true, heading = true;
 
-            for (size_t ch = 0; ch < channels; ++ch)
+            for (int ch = 0; ch < numCh; ++ch)
             {
-                const float wa = tapOut.getReadPointer ((int) ch)[i];
-                const float wb = tapIn.getReadPointer ((int) ch)[i];
-                a += wa * wa;
-                b += wb * wb;
-                ab += wa * wb;
-            }
+                x[ch] = block.getChannelPointer ((size_t) ch)[i];
+                y[ch] = scratch.getReadPointer (ch)[i];
+                lowOut[ch] += splitA * (x[ch] - lowOut[ch]);
+                lowIn[ch] += splitA * (y[ch] - lowIn[ch]);
+                xl[ch] = lowOut[ch];
+                yl[ch] = lowIn[ch];
+                const float xh = x[ch] - xl[ch], yh = y[ch] - yl[ch];
+                const float raw[3][3] { { x[ch] * x[ch], y[ch] * y[ch], x[ch] * y[ch] },
+                                        { xl[ch] * xl[ch], yl[ch] * yl[ch], xl[ch] * yl[ch] },
+                                        { xh * xh, yh * yh, xh * yh } };
 
-            const float raw[3] { a, b, ab };
+                for (int k = 0; k < 3; ++k)
+                {
+                    power[0][ch][k] += powerA * (raw[0][k] - power[0][ch][k]);
+                    power[1][ch][k] += powerA * (power[0][ch][k] - power[1][ch][k]);
 
-            for (int k = 0; k < 3; ++k)
-            {
-                power[0][k] += powerA * (raw[k] - power[0][k]);
-                power[1][k] += powerA * (power[0][k] - power[1][k]);
+                    for (int band = 0; band < 2; ++band)
+                    {
+                        float& p0 = bandPower[0][ch][band][k];
+                        float& p1 = bandPower[1][ch][band][k];
+                        p0 += powerA * (raw[band + 1][k] - p0);
+                        p1 += powerA * (p0 - p1);
+                    }
+                }
+
+                const float* p = power[1][ch];
+                const float both = std::sqrt (p[0] * p[1]);
+                const float correlation = both < 1.0e-12f ? 1.0f : p[2] / both;
+                const float trend = correlation - correlationLag[ch];
+                correlationLag[ch] += powerA * trend;
+                good &= correlation >= kSwitchMinCorrelation;
+                heading &= trend >= 0.0f || correlation + trend * powerA * fadeLength >= 0.0f;
             }
 
             if (measured < measureSamples)
                 ++measured;
-            else
-                blend = std::min (1.0f, blend + switchStep);
+            else if (! fadeStarted)
+                fadeStarted = (good && (heading || waited >= maxWait)) || waited >= longestWait;
 
-            const float powerOut = power[1][0], powerIn = power[1][1], cross = power[1][2];
+            if (! fadeStarted)
+            {
+                waited += measured >= measureSamples ? 1 : 0;
+                continue;
+            }
+
+            blend = std::min (1.0f, blend + switchStep);
             // Smoothstep first, so neither gain starts or stops moving with a corner.
             const float r = blend * blend * (3.0f - 2.0f * blend);
             float gIn, gOut;
             sinCosTurns (0.25f * r, gIn, gOut);
-            const float want = powerOut + r * (powerIn - powerOut);
-            const float got = gOut * gOut * powerOut + gIn * gIn * powerIn + 2.0f * gOut * gIn * cross;
-            // Half the target added to both sides: the correction stays smooth (at most +4.8 dB)
-            // where two coherent signals nearly cancel, and still takes two thirds of a dip or bump.
-            const float slack = 0.5f * want + 1.0e-12f;
-            const float scale = std::sqrt ((want + slack) / (std::max (got, 0.0f) + slack));
 
-            for (size_t ch = 0; ch < channels; ++ch)
-                block.getChannelPointer (ch)[i] += scale * (gOut * tapOut.getReadPointer ((int) ch)[i]
-                                                            + gIn * tapIn.getReadPointer ((int) ch)[i]);
+            for (int ch = 0; ch < numCh; ++ch)
+            {
+                float scale[2];
+
+                for (int band = 0; band < 2; ++band)
+                {
+                    const float* p = bandPower[1][ch][band];
+                    const float want = p[0] + r * (p[1] - p[0]);
+                    const float got = gOut * gOut * p[0] + gIn * gIn * p[1] + 2.0f * gOut * gIn * p[2];
+                    const float slack = kSwitchSlack * want + 1.0e-12f;
+                    scale[band] = std::sqrt ((want + slack) / (std::max (got, 0.0f) + slack));
+                }
+
+                const float low = gOut * xl[ch] + gIn * yl[ch];
+                const float all = gOut * x[ch] + gIn * y[ch];
+                block.getChannelPointer ((size_t) ch)[i] = scale[0] * low + scale[1] * (all - low);
+            }
         }
     }
 
@@ -1673,7 +1740,7 @@ struct ChorusFx::Impl
 
         if (stage == Stage::idle && requested != active)
             begin (requested);
-        else if (stage == Stage::filling && requested != incoming)
+        else if ((stage == Stage::filling || (stage == Stage::fading && ! fadeStarted)) && requested != incoming)
             requested == active ? abandon() : begin (requested);
 
         if (stage == Stage::filling && incomingReady())
@@ -1685,18 +1752,8 @@ struct ChorusFx::Impl
             return;
         }
 
-        const bool wets = stage == Stage::fading && isModern (active) && isModern (incoming);
-
         for (size_t ch = 0; ch < channels; ++ch)
             juce::FloatVectorOperations::copy (input.getWritePointer ((int) ch), block.getChannelPointer (ch), (int) n);
-
-        if (wets)
-        {
-            modern[slot].wetTap[0] = tapOut.getWritePointer (0);
-            modern[slot].wetTap[1] = tapOut.getWritePointer (numChannels - 1);
-            modern[incomingSlot].wetTap[0] = tapIn.getWritePointer (0);
-            modern[incomingSlot].wetTap[1] = tapIn.getWritePointer (numChannels - 1);
-        }
 
         runEngine (active, slot, block, firstPiece, traceTo);
 
@@ -1714,18 +1771,7 @@ struct ChorusFx::Impl
             return;
         }
 
-        if (! wets)
-        {
-            // With Classic the whole outputs are the two signals blended.
-            for (size_t ch = 0; ch < channels; ++ch)
-            {
-                juce::FloatVectorOperations::copy (tapOut.getWritePointer ((int) ch), block.getChannelPointer (ch), (int) n);
-                juce::FloatVectorOperations::copy (tapIn.getWritePointer ((int) ch), scratch.getReadPointer ((int) ch), (int) n);
-                juce::FloatVectorOperations::clear (block.getChannelPointer (ch), (int) n);
-            }
-        }
-
-        blendTaps (block, channels, n);
+        crossfadeOutputs (block, channels, n);
 
         if (blend >= 1.0f)
             finish();
@@ -1750,12 +1796,15 @@ void ChorusFx::prepare (const juce::dsp::ProcessSpec& spec)
     for (auto& m : s.modern)
         m.prepare (spec.sampleRate);
 
-    for (auto* b : { &s.input, &s.scratch, &s.tapOut, &s.tapIn })
+    for (auto* b : { &s.input, &s.scratch })
         b->setSize (s.numChannels, s.maxBlock);
 
     s.switchStep = 1.0f / juce::jmax (1.0f, kSwitchSeconds * (float) spec.sampleRate);
     s.powerA = 1.0f - std::exp (-1.0f / juce::jmax (1.0f, kSwitchPowerSeconds * (float) spec.sampleRate));
     s.measureSamples = (int) std::ceil (kSwitchMeasureSeconds * spec.sampleRate);
+    s.maxWait = (int) std::ceil (kSwitchMaxWaitSeconds * spec.sampleRate);
+    s.longestWait = (int) std::ceil (kSwitchLongestWaitSeconds * spec.sampleRate);
+    s.splitA = 1.0f - std::exp (-fx::kTwoPi * kSwitchSplitHz / (float) spec.sampleRate);
     reset();
 }
 
