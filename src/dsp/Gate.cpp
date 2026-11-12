@@ -38,24 +38,46 @@ constexpr float kDbToGain = 0.11512925464970229f;      // ln(10) / 20
 // floor), the unfiltered signal stops with the note. On a guitar note the unfiltered peak is the
 // higher, so the hysteresis stays whole (check_gate X10, B1); hum keeps the filtered one lower.
 
-// The closing rule (Gate.h). How fast the level fell through the hysteresis band tells a stop from
-// a fade, not how far it fell: a hand stop crosses it in 1 to 44 ms whatever the floor, a decay at
-// 60 dB/s takes 100 ms. [choice, check_gate A1-A4, X10-X12, B1, B2, C]
+// The closing rule (Gate.h; the gate5 specification). How fast the level fell through the
+// hysteresis band tells a stop from a fade: a hand stop crosses it in 1 to 44 ms whatever the
+// floor, a decay at 60 dB/s takes 100 ms. [choice, check_gate A-D, R, T rows, I1, I3-I5]
 constexpr double kFastFallSeconds = 0.05;              // the band in less: a stop, wait the hold
 constexpr double kRideRatio = 2.0;                     // slower: wait twice the band time (a beat trough lasts up to 1.7x it) ...
 constexpr float kStillFallingRatio = 0.89125094f;      // ... from the last new low 1 dB under the one before
 constexpr float kReboundRatio = 2.0f;                  // and from scratch once the level climbs 6 dB back
 constexpr double kRideMaxSeconds = 1.0;
 // Dips the level came back from: a fall of kDipDb under its own maximum over kFastFallSeconds and a
-// return to within kBackDb of it. With the gate open (a chord's partials beating 15 to 40 times a
-// second, which the window cannot fill) they lengthen the wait after a stop, by at most 20 ms.
+// return to within kBackDb of it. With the gate open (a chord's partials beating, which the window
+// cannot fill) they lengthen the wait after a stop. E2+F2 near threshold leaves troughs of 105 to
+// 146 ms, hence the 150 ms cap. Dips under kDipMinSeconds are a low note's own crest gaps (one
+// period of 41.2 Hz minus the window): remembered, they would delay its hand stops.
 constexpr float kDipDb = 6.0f;
 constexpr float kBackDb = 3.0f;
 constexpr double kDipMaxSeconds = 0.2;
-constexpr double kExtendMaxSeconds = 0.02;
+constexpr double kDipMinSeconds = 0.0125;
+constexpr double kExtendMaxSeconds = 0.15;
 constexpr double kExtendRatio = 1.25;
 constexpr double kExtendMarginSeconds = 0.001;
 constexpr double kDipForget = 0.04;                    // memory lost per sample: 40 ms a second
+// The deadline: under the open level for hold + T the gain is at the range, whatever the stop rule
+// says; it stays at 0 dB until the last 80 ms, then falls -90 dB x u^2, so it is still over -6 dB
+// at hold + 191 ms (longer than every chord trough measured but one) and the floor is heard at
+// most hold + 250 ms. A release slower than T / 1.5 keeps its own fall to -90 dB.
+constexpr double kDeadlineSeconds = 0.25;
+constexpr double kDeadlineSpanFraction = 0.32;
+constexpr double kDeadlineDepthDb = -90.0;
+// In the band (a stop onto a floor just under the threshold never crosses the close level): a
+// level kDipDb under its 50 ms maximum and kBandMarginDb deeper than any trough remembered is a
+// stop after the hold plus one beat period. Beats: successive dips kBeatDipDb under the maximum
+// (re-armed within kBeatRearmDb of it), two intervals in a row within kBeatSteadyRatio of each
+// other and 25 to 150 ms long (faster is a low note's own crests).
+constexpr double kBandMarginDb = 6.0;
+constexpr double kTroughDepthForgetDbPerSecond = 10.0;
+constexpr float kBeatDipDb = 6.0f;
+constexpr float kBeatRearmDb = 3.0f;
+constexpr double kBeatMinSeconds = 0.025;
+constexpr double kBeatMaxSeconds = 0.15;
+constexpr double kBeatSteadyRatio = 0.25;
 // A beat trough that falls as fast as a stop cannot be told from one: the gate reaches -20 dB on
 // the stop's timing, then falls only 20 dB per 1.5 remembered dip lengths (troughs lengthen as the
 // note decays), so the trough costs a partial dip, not a cut to mute. Dips the gate closed in count
@@ -338,6 +360,12 @@ public:
         riseSlow = (int) std::lround (kDipRiseSeconds * sampleRate);
         extendMax = kExtendMaxSeconds * sampleRate;
         extendMargin = kExtendMarginSeconds * sampleRate;
+        dipMin = kDipMinSeconds * sampleRate;
+        troughForget = kTroughDepthForgetDbPerSecond / sampleRate;
+        beatTrigger = 2.0f * std::pow (10.0f, -kBeatDipDb / 20.0f);    // x top, half the maximum
+        beatRearm = 2.0f * std::pow (10.0f, -kBeatRearmDb / 20.0f);
+        beatMin = kBeatMinSeconds * sampleRate;
+        beatMax = kBeatMaxSeconds * sampleRate;
         dipRatio = std::pow (10.0f, -kDipDb / 20.0f);
         backRatio = std::pow (10.0f, (kDipDb - kBackDb) / 20.0f);
         openMin = kOpenMinSeconds * sampleRate;
@@ -359,7 +387,7 @@ public:
         main.clear();
         raw.clear();
         crest.clear();
-        open = false;
+        open = openedSinceReset = false;
         below = 0;
         crossed = -1;
         slowFall = false;
@@ -370,6 +398,15 @@ public:
         reopenedSlowly = false;
         dipRef = lowest = lowMark = 0.0f;
         memory = closedMemory = 0.0;
+        dipTop = dipLow = 0.0f;
+        troughDepth = pendingDepth = 0.0;
+        beat = 0.0;
+        beatArmed = false;
+        beatAge = beatPrev = kLongAgo;
+        bandAt = -1;
+        bandRef = 0.0f;
+        rideFloorDb = 0.0f;
+        rideSince = 0;
         floorDb = 0.0f;
         floorSince = 0;
         settle = windowSamples;
@@ -393,6 +430,9 @@ public:
         {
             lastRelease = releaseMs;
             releaseStep = (float) (60.0 / ((double) releaseMs * 0.001 * sampleRate));
+            deadlineSamples = std::round (juce::jmax (kDeadlineSeconds, -kDeadlineDepthDb / 60.0 * (double) releaseMs * 0.001)
+                                          * sampleRate);
+            deadlineSpan = deadlineSamples * kDeadlineSpanFraction;
         }
 
         if (! juce::exactlyEqual (holdMs, lastHold))
@@ -449,22 +489,56 @@ public:
         mainPeak = peak;
         sinceOpen = level >= openLevel ? 0 : juce::jmin (sinceOpen + 1, kLongAgo);
         sinceLow = level < closeLevel ? 0 : juce::jmin (sinceLow + 1, kLongAgo);
-        learnDips (level);
+        const float top = learnDips (level);
         followRange();
+
+        // Under the open level: the deadline, and Smooth's estimate of what it is riding (the
+        // closed estimate's law, restarted at the fall under the open level, not at the close).
+        float deadline = 0.0f, smoothCap = 0.0f;
+
+        if (level < openLevel)
+        {
+            if (sinceOpen == 1)
+                rideSince = 0;
+
+            const float levelDb = 20.0f * std::log10 (juce::jmax (level, kPeakFloor));
+
+            if (rideSince == 0)
+                rideFloorDb = levelDb;
+            else
+                rideFloorDb += (levelDb - rideFloorDb) * (rideSince < floorGrowSamples
+                                                              ? (float) (1.0 / juce::jmax (1.0, kFloorTauGrowth * rideSince))
+                                                              : (float) (1.0 / floorTauMax));
+
+            rideSince = juce::jmin (rideSince + 1, floorGrowSamples);
+            // Not before the first opening since a reset: Tight is at the range already, and Smooth,
+            // never having opened, has nothing to ride and follows its expander as version 3 did.
+            if (openedSinceReset)
+                deadline = deadlineGr (sinceOpen);
+
+            if (deadline < 0.0f)
+                smoothCap = juce::jmax (deadline, juce::jlimit (range, 0.0f, (kExpanderSlope - 1.0f) * rideFloorDb - smoothOffsetDb));
+        }
 
         if (level >= openLevel)
         {
             below = 0;
             crossed = -1;
+            bandAt = -1;
 
             if (! open)
             {
                 open = true;
+                openedSinceReset = true;
                 reopenedSlowly = sinceLow >= riseSlow;
 
                 if (reopenedSlowly)
+                {
                     closedMemory = juce::jmax (closedMemory, (double) pendingDip);
+                    troughDepth = juce::jmax (troughDepth, pendingDepth);
+                }
 
+                pendingDepth = 0.0;
                 pendingDip = 0;
                 const double steps = juce::jlimit (openMin, openMax, kOpenRatio * (double) sinceLow + 1.0);
                 openStep = 1.0f / (float) steps;
@@ -475,6 +549,30 @@ public:
         }
         else if (open)
         {
+            bool closeNow = false;
+
+            // In the band: deeper than any trough ridden lately, a stop after the hold and one
+            // beat period; a return to 3 dB under the maximum it fell from cancels it.
+            if (bandAt < 0 && level >= closeLevel && level < top
+                && 20.0 * std::log10 ((double) (2.0f * top / level)) > troughDepth + kBandMarginDb)
+            {
+                bandAt = 0;
+                bandRef = top * backRatio;
+            }
+
+            if (bandAt >= 0)
+            {
+                if (level >= bandRef)
+                {
+                    bandAt = -1;
+                }
+                else if ((double) ++bandAt > holdSamples + juce::jmin (extendMax, beat))
+                {
+                    closeNow = true;
+                    wait = holdSamples;
+                }
+            }
+
             if (level >= closeLevel)
             {
                 below = 0;
@@ -491,6 +589,14 @@ public:
                 }
 
                 ++crossed;
+
+                // A slow fall that then drops 6 dB under its own recent maximum is a stop from here.
+                if (slowFall && level < top)
+                {
+                    slowFall = false;
+                    wait = holdSamples + extension();
+                    below = 0;
+                }
 
                 // After a slow fall the wait runs from where the level stops falling, and starts
                 // over if it climbs back (a beat trough, not a decay on the floor); 1 s at most.
@@ -511,14 +617,22 @@ public:
                 }
 
                 if ((double) ++below > wait || (slowFall && (double) crossed > rideMax))
-                {
-                    open = false;
-                    crossed = -1;
-                    tight.closing = smooth.closing = true;
-                    const double dip = juce::jmax (memory, closedMemory);
-                    gentleStep = dip > wait ? juce::jmin (releaseStep, (float) (kGentleDbPerDip / dip)) : releaseStep;
-                    floorSince = 0;
-                }
+                    closeNow = true;
+            }
+
+            if ((double) sinceOpen >= holdSamples + deadlineSamples)
+                closeNow = true;
+
+            if (closeNow)
+            {
+                open = false;
+                crossed = -1;
+                bandAt = -1;
+                beatPrev = kLongAgo;   // a trough the gate closed in breaks the chain: palm-mute gaps are not beats
+                tight.closing = smooth.closing = true;
+                const double dip = juce::jmax (memory, closedMemory);
+                gentleStep = dip > wait ? juce::jmin (releaseStep, (float) (kGentleDbPerDip / dip)) : releaseStep;
+                floorSince = 0;
             }
         }
 
@@ -526,6 +640,13 @@ public:
         {
             advanceOpening (tight);
             advanceOpening (smooth);
+
+            if (deadline < 0.0f)
+            {
+                tight.gr = juce::jmin (tight.gr, deadline);
+                smooth.gr = juce::jmin (smooth.gr, smoothCap);
+            }
+
             return;
         }
 
@@ -547,9 +668,18 @@ public:
 
         floorSince = juce::jmin (floorSince + 1, floorGrowSamples);
 
+        const float smoothBefore = smooth.gr;
         advanceClosed (tight, range, kNoSlewLimit);
         advanceClosed (smooth, juce::jlimit (range, 0.0f, (kExpanderSlope - 1.0f) * floorDb - smoothOffsetDb),
                        settling ? kNoSlewLimit : floorSlew);
+
+        // Inside the deadline's window Smooth only falls: a fresh closed estimate landing low on
+        // an instant of the level would otherwise slew back up and read as a reopening.
+        if (deadline < 0.0f)
+        {
+            tight.gr = juce::jmin (tight.gr, deadline);
+            smooth.gr = juce::jmin (smooth.gr, smoothBefore, smoothCap);
+        }
     }
 
     float tightGain() noexcept { return gainFor (tight.gr, tightCache); }
@@ -583,8 +713,7 @@ private:
     /** The wait under the close level, decided as the level crosses it (Gate.h). */
     double waitSamples() const noexcept
     {
-        const double extend = memory > 0.0 ? juce::jmin (extendMax, kExtendRatio * memory + extendMargin) : 0.0;
-        const double afterStop = holdSamples + extend;
+        const double afterStop = holdSamples + extension();
 
         if (sinceOpen <= fastSamples)
             return afterStop;
@@ -592,26 +721,83 @@ private:
         return juce::jmax (afterStop, juce::jmin (rideMax, kRideRatio * (double) sinceOpen));
     }
 
-    /** Remembers how long the level's recent dips lasted (see kDipDb, kGentleFromDb). */
-    void learnDips (float level) noexcept
+    /** The deadline's gain at `since` samples under the open level (Gate.h). */
+    float deadlineGr (int since) const noexcept
+    {
+        const double start = holdSamples + deadlineSamples - deadlineSpan;
+
+        if ((double) since <= start)
+            return 0.0f;
+
+        const double u = ((double) since - start) / deadlineSpan;
+        return juce::jmax (range, u < 1.0 ? (float) (kDeadlineDepthDb * u * u) : -100.0f);
+    }
+
+    /** The remembered trough's share of the wait after a stop. */
+    double extension() const noexcept
+    {
+        return memory > 0.0 ? juce::jmin (extendMax, kExtendRatio * memory + extendMargin) : 0.0;
+    }
+
+    /** Remembers how long and how deep the level's recent dips were, and its beat period (see
+        kDipDb, kBandMarginDb, kGentleFromDb). Returns `top`: half the level's 50 ms maximum. */
+    float learnDips (float level) noexcept
     {
         const float top = crest.push (level) * dipRatio;
         memory = juce::jmax (0.0, memory - kDipForget);
         closedMemory = juce::jmax (0.0, closedMemory - kDipForget);
+        troughDepth = juce::jmax (0.0, troughDepth - troughForget);
+        beat = juce::jmax (0.0, beat - kDipForget);
+        beatAge = juce::jmin (beatAge + 1, kLongAgo);
+
+        if (open)
+        {
+            if (beatArmed && level < top * beatTrigger)
+            {
+                beatArmed = false;
+                const int interval = beatAge;
+                const bool steady = std::abs ((double) (interval - beatPrev)) <= kBeatSteadyRatio * (double) beatPrev;
+                beatAge = 0;
+                beatPrev = interval;
+
+                if (steady && (double) interval >= beatMin && (double) interval <= beatMax && (double) interval > beat)
+                    beat = (double) interval;
+            }
+            else if (! beatArmed && level >= top * beatRearm)
+            {
+                beatArmed = true;
+            }
+        }
 
         if (dipActive)
         {
             ++dipAge;
             dipTainted = dipTainted || ! open;
+            dipLow = juce::jmin (dipLow, level);
 
             if (level >= dipRef)
             {
+                const bool longEnough = (double) dipAge >= dipMin;
+
+                if (longEnough && (! dipTainted || reopenedSlowly))
+                    troughDepth = juce::jmax (troughDepth, dipDepth());
+
                 if (! dipTainted)
-                    memory = juce::jmax (memory, (double) dipAge);
+                {
+                    if (longEnough)
+                        memory = juce::jmax (memory, (double) dipAge);
+                }
                 else if (reopenedSlowly)
+                {
                     closedMemory = juce::jmax (closedMemory, (double) dipAge);
+                }
                 else if (! open)
+                {
                     pendingDip = dipAge;   // came back before the gate reopened: judged when it does
+
+                    if (longEnough)
+                        pendingDepth = dipDepth();
+                }
 
                 dipActive = false;
             }
@@ -632,7 +818,16 @@ private:
             dipAge = 0;
             reopenedSlowly = false;
             dipRef = top * backRatio;
+            dipTop = 2.0f * top;
+            dipLow = level;
         }
+
+        return top;
+    }
+
+    double dipDepth() const noexcept
+    {
+        return 20.0 * std::log10 ((double) dipTop / juce::jmax ((double) dipLow, 1.0e-12));
     }
 
     void followRange() noexcept
@@ -725,6 +920,15 @@ private:
     bool open = false, slowFall = false;
     bool dipActive = false, dipBlocked = false, dipTainted = false, reopenedSlowly = false;
     double wait = 0.0, memory = 0.0, closedMemory = 0.0;
+
+    // Deadline, in-band stop, trough depth and beat period (Gate.h).
+    double deadlineSamples = 12000.0, deadlineSpan = 3840.0, dipMin = 600.0, troughForget = 2.0e-4;
+    double beatMin = 1200.0, beatMax = 7200.0;
+    float beatTrigger = 1.0f, beatRearm = 1.4f;
+    float dipTop = 0.0f, dipLow = 0.0f, bandRef = 0.0f, rideFloorDb = 0.0f;
+    double troughDepth = 0.0, pendingDepth = 0.0, beat = 0.0;
+    int beatAge = 0, beatPrev = 0, bandAt = -1, rideSince = 0;
+    bool beatArmed = false, openedSinceReset = false;
 
     GainCache tightCache, smoothCache;
     float lastThreshold = -1.0e9f, lastRelease = -1.0e9f, lastHold = -1.0e9f, lastRange = -1.0e9f, lastHpf = -1.0e9f;
