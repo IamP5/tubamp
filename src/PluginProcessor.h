@@ -249,15 +249,14 @@ public:
     std::array<std::atomic<float>, params::maxInstances> compGrDb {};
 
 private:
-    /** Any thread: the chain, the state or a model changed. On the message thread the figure
-        for the new chain is reported at once; elsewhere the timer picks it up. */
+    /** Any thread: the chain, the state or a model changed. The timer reports the new figure at
+        its next tick. */
     void updateLatency();
 
-    /** Message thread only, the one place setLatencySamples is called. `chainEdit`: the
-        message thread just changed what the latency depends on, so its own figure stands until
-        the audio thread has run with the change. Otherwise, while audio runs, the audio
-        thread's figure; with none, the message thread's. */
-    void reportLatency (bool chainEdit);
+    /** The timer's tick (message thread), the one place setLatencySamples is called, once per
+        tick at most and only when the figure changed: while audio runs, the audio thread's
+        figure from a callback that saw the last edit; with none, the message thread's own. */
+    void reportLatency();
     void timerCallback() override;
 
     /** DriveFx's type switch as it moves the drive's output in time (Drive.cpp, DriveFx::Impl::
@@ -359,8 +358,27 @@ private:
     };
 
     /** Audio thread: silences one block instance that is re-entering the chain, so it
-        cannot replay what it was holding when it left. Allocation-free. */
-    void resetBlockInstance (chain::BlockId id) noexcept;
+        cannot replay what it was holding when it left. `snap`: a restored state, so the block
+        takes its on or off at once instead of fading in. Allocation-free. */
+    void resetBlockInstance (chain::BlockId id, bool snap) noexcept;
+
+    /** Any thread: what selects a block's engine type (type, voicing, colour), so a restore can
+        tell a block it retyped. 0 for blocks without one. */
+    int blockSignature (chain::BlockId id) const noexcept;
+
+    /** Marks a whole-state apply (setStateInformation, applyStateVar) for its duration, and
+        once more when it ends, for the audio thread (processBlock's restore branch). */
+    struct RestoreScope
+    {
+        explicit RestoreScope (TubampAudioProcessor& p) : owner (p) { owner.stateRestoring.store (true, std::memory_order_release); }
+        ~RestoreScope()
+        {
+            owner.stateRestored.store (true, std::memory_order_release);
+            owner.stateRestoring.store (false, std::memory_order_release);
+        }
+
+        TubampAudioProcessor& owner;
+    };
 
     /** Audio thread: block `id`'s engine processes this callback. True when it must start
         from its reset first: it holds audio from before it last stopped. Classic types too:
@@ -725,14 +743,15 @@ private:
 
     // The latency hand-over (reportLatency). The audio thread stores, every callback, the
     // figure it applies with the latencyGeneration it read before decoding the chain, and
-    // counts its callbacks; the message thread bumps the generation whenever it changes the
-    // chain, the state or a model, so it never adopts a figure computed before its own edit.
+    // counts its callbacks; every change the latency depends on (the chain, the state, a model,
+    // a latency parameter, on any thread) bumps the generation, so no figure computed before
+    // a change is reported after it.
     std::atomic<std::uint64_t> audioLatency { 0 };
-    std::atomic<std::uint32_t> latencyGeneration { 0 }, audioCallbacks { 0 };
-    std::atomic<bool> latencyRecheck { false };
+    std::atomic<std::uint32_t> latencyGeneration { 1 }, audioCallbacks { 0 };
+    std::atomic<std::uint32_t> audioIdleMs { 250 };
     // Message thread only.
-    std::uint32_t seenCallbacks = 0, lastAudioMs = 0;
-    bool audioSeen = false, idleReported = false;
+    std::uint32_t seenCallbacks = 0, lastAudioMs = 0, idleGeneration = 0;
+    bool audioSeen = false;
 
     /** What the previous block ran, for spotting a block re-entering the chain.
         Audio thread only. */
@@ -743,6 +762,11 @@ private:
         switch can re-enter half a dozen blocks in one block. A block whose reset is
         still pending processes as bypassed (silent, never stale). Audio thread only. */
     std::array<bool, chain::numBlockTypes> pendingReset {};
+
+    /** A state is being applied / was applied since the last callback (RestoreScope). */
+    std::atomic<bool> stateRestoring { false }, stateRestored { false };
+    /** blockSignature as of the last callback, per block. Audio thread only. */
+    std::array<int, chain::numBlockTypes> lastSignature {};
 
     /** Per block: its engine processed last callback / this callback; it holds audio from
         before it last stopped. Audio thread only. */

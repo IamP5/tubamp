@@ -32,15 +32,14 @@ constexpr int kMaxResetsPerCallback = 2;
 constexpr double kLaneTapFadeSeconds = 0.01;
 
 // The parameters a latency depends on besides the chain, the models and the hosted plugins.
-// Their listeners only raise a flag off the message thread (reportLatency).
+// Their listeners only raise a flag, for the timer (reportLatency).
 constexpr const char* kLatencyParameterIds[] { params::driveOn, params::drive2On, params::drive3On,
                                                params::driveType, params::drive2Type, params::drive3Type,
                                                params::ampOn, params::amp2On };
 
-// How often the message thread hands the audio thread's latency to the host, and how long after
-// the last audio callback it counts the audio as stopped (longer than any host's block).
+// How often the message thread hands the audio thread's latency to the host (the only place it
+// does, so at most one report per tick).
 constexpr int kLatencyTimerMs = 20;
-constexpr std::uint32_t kAudioIdleMs = 500;
 
 // A sample this large or larger is no audio signal (+120 dBFS): the engines treat it as
 // non-finite, and so does the processor, at its input and at its output.
@@ -495,20 +494,18 @@ void TubampAudioProcessor::parameterChanged (const juce::String& parameterID, fl
         return;
     }
 
-    // One of kLatencyParameterIds. Host automation calls this on the audio thread, where only
-    // the flag may be touched; the timer then reports, or a message-thread change does at once.
-    latencyRecheck.store (true, std::memory_order_release);
-
-    if (juce::MessageManager::existsAndIsCurrentThread())
-        reportLatency (false);
+    // One of kLatencyParameterIds. Host automation calls this on the audio thread, where only an
+    // atomic may be touched (asking which thread this is takes a lock in JUCE): the figure the
+    // audio thread published before this is out of date, and the timer reports the next one.
+    latencyGeneration.fetch_add (1, std::memory_order_acq_rel);
 }
 
 void TubampAudioProcessor::timerCallback()
 {
-    reportLatency (false);
+    reportLatency();
 }
 
-void TubampAudioProcessor::reportLatency (bool chainEdit)
+void TubampAudioProcessor::reportLatency()
 {
     const auto now = juce::Time::getMillisecondCounter();
     const auto callbacks = audioCallbacks.load (std::memory_order_acquire);
@@ -520,27 +517,25 @@ void TubampAudioProcessor::reportLatency (bool chainEdit)
         audioSeen = true;
     }
 
-    const bool audioRunning = audioSeen && now - lastAudioMs < kAudioIdleMs;
-    const bool recheck = latencyRecheck.exchange (false, std::memory_order_acq_rel);
+    const bool audioRunning = audioSeen && now - lastAudioMs < audioIdleMs.load (std::memory_order_relaxed);
+    const auto generation = latencyGeneration.load (std::memory_order_acquire);
+    const auto published = audioLatency.load (std::memory_order_acquire);
+    const bool current = (std::uint32_t) (published >> 32) == generation;
     int wanted = 0;
 
-    if (audioRunning && ! chainEdit)
+    if (current)
     {
-        idleReported = false;
-        const auto published = audioLatency.load (std::memory_order_acquire);
-
-        // Computed before the message thread's last edit: wait for a callback that saw it.
-        if ((std::uint32_t) (published >> 32) != latencyGeneration.load (std::memory_order_acquire))
-            return;
-
+        // What the audio thread applied since the last change; with the audio stopped it stands.
         wanted = (int) (std::uint32_t) published;
     }
     else
     {
-        if (! chainEdit && ! recheck && idleReported)
+        // A change the audio thread has not run yet: while it runs, wait for a callback that did;
+        // with it stopped, work the figure out here, once per change.
+        if (audioRunning || idleGeneration == generation)
             return;
 
-        idleReported = ! audioRunning;
+        idleGeneration = generation;
 
         chain::Order orderCopy;
 
@@ -990,6 +985,11 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 
     preparedSampleRate.store (sampleRate, std::memory_order_relaxed);
 
+    // No callback for two blocks and a little: the audio has stopped, and the message thread
+    // works the latency out itself. Bounded for blocks of 1 sample and of many thousands.
+    audioIdleMs.store ((std::uint32_t) juce::jlimit (40.0, 250.0, 2000.0 * juce::jmax (1, samplesPerBlock) / sampleRate + 15.0),
+                       std::memory_order_relaxed);
+
     // Every instance is prepared whether or not it is in the current order: a block the
     // user drops onto the board has to run in the same block, and preparing one there
     // would allocate on the audio thread.
@@ -1109,6 +1109,9 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 
         for (int i = 0; i < count; ++i)
             prevPresent[(size_t) restored[(size_t) i]] = true;
+
+        for (int index = 0; index < chain::numBlockTypes; ++index)
+            lastSignature[(size_t) index] = blockSignature ((chain::BlockId) index);
     }
 
     updateLatency();
@@ -1282,15 +1285,42 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     prevPresent = present;
 
+    // A whole state applied (host restore, preset, A/B) is not a block switched during playback:
+    // every block takes its restored state at once, as the old build did. A block entering the
+    // chain is reset here, however many there are (no drain, no dry pass); one whose type the
+    // restore changed is reset onto it rather than crossfading; and every fader snaps to the
+    // block's restored on or off, with no settle and no fade. So a state restored onto a prepared
+    // or running instance renders as one restored before prepareToPlay.
+    if (stateRestoring.load (std::memory_order_acquire) || stateRestored.exchange (false, std::memory_order_acq_rel))
+    {
+        for (int index = 0; index < chain::numBlockTypes; ++index)
+        {
+            const auto id = (chain::BlockId) index;
+            const bool retyped = present[(size_t) index] && ! pendingReset[(size_t) index]
+                                 && blockSignature (id) != lastSignature[(size_t) index];
+
+            if (pendingReset[(size_t) index] || retyped)
+                resetBlockInstance (id, true);
+
+            pendingReset[(size_t) index] = false;
+        }
+
+        gateFader.snapNext();
+
+        for (int k = 0; k < params::maxInstances; ++k)
+            for (auto* fader : { &compFader[(size_t) k], &driveFader[(size_t) k], &eqFader[(size_t) k], &modFader[(size_t) k] })
+                fader->snapNext();
+    }
+
     for (int index = 0, drained = 0; index < chain::numBlockTypes; ++index)
     {
-        if (! pendingReset[(size_t) index])
+        if (present[(size_t) index])
+            lastSignature[(size_t) index] = blockSignature ((chain::BlockId) index);
+
+        if (! pendingReset[(size_t) index] || drained == kMaxResetsPerCallback)
             continue;
 
-        if (drained == kMaxResetsPerCallback)
-            break;
-
-        resetBlockInstance ((chain::BlockId) index);
+        resetBlockInstance ((chain::BlockId) index, false);
         pendingReset[(size_t) index] = false;
         ++drained;
     }
@@ -2418,15 +2448,10 @@ int TubampAudioProcessor::computeWantedLatency (const chain::BlockId* order, int
 
 void TubampAudioProcessor::updateLatency()
 {
-    // Whatever the audio thread published before this edit is now out of date.
+    // Whatever the audio thread published before this edit is now out of date; the timer reports
+    // the new figure at its next tick (from the audio thread's first callback with the edit, or
+    // worked out on the message thread when no audio runs), whichever thread the edit came from.
     latencyGeneration.fetch_add (1, std::memory_order_acq_rel);
-
-    // Restores and offline prepares come from the host's own threads, where the latency must
-    // not be reported (setLatencySamples from two threads): the timer picks it up.
-    if (juce::MessageManager::existsAndIsCurrentThread())
-        reportLatency (true);
-    else
-        latencyRecheck.store (true, std::memory_order_release);
 }
 
 void TubampAudioProcessor::DriveTimeline::prepare (double rate, int maximumBlockSize) noexcept
@@ -2509,35 +2534,52 @@ void TubampAudioProcessor::DriveTimeline::run (int type, int numSamples, float* 
     }
 }
 
-void TubampAudioProcessor::resetBlockInstance (chain::BlockId id) noexcept
+int TubampAudioProcessor::blockSignature (chain::BlockId id) const noexcept
+{
+    const auto k = (size_t) chain::instanceOf (id);
+
+    switch (chain::kindOf (id))
+    {
+        case chain::BlockId::gate:  return (int) valueOf (pp.gateMode);
+        case chain::BlockId::comp:  return (int) valueOf (pp.compType[k]);
+        case chain::BlockId::drive: return (int) valueOf (pp.driveType[k]);
+        case chain::BlockId::eq:    return (int) valueOf (pp.eqType[k]) * 16 + (int) valueOf (pp.eqVoice[k]);
+        case chain::BlockId::mod:
+            return ((int) valueOf (pp.modType[k]) * 16 + (int) valueOf (pp.modChorusMode[k])) * 256
+                   + (int) valueOf (pp.modPhaserModel[k]) * 32 + (int) valueOf (pp.modTremVoice[k]) * 2 + (isOn (pp.modColor[k]) ? 1 : 0);
+        default:                    return 0;
+    }
+}
+
+void TubampAudioProcessor::resetBlockInstance (chain::BlockId id, bool snap) noexcept
 {
     const auto k = (size_t) chain::instanceOf (id);
 
     // The engine below starts clean, so engineStarts() has nothing to reset; the block fades
-    // in from its input as it comes back.
+    // in from its input as it comes back, or after a state restore takes its state at once.
     engineStale[(size_t) id] = false;
 
     switch (id)
     {
         case chain::BlockId::comp:
         case chain::BlockId::comp2:
-        case chain::BlockId::comp3:   comp[k].reset();       compFader[k].reset (false);  break;
+        case chain::BlockId::comp3:   comp[k].reset();       compFader[k].reset (snap);  break;
 
         // Tight and Smooth would resume from the gain they had when the gate left; a
         // reset starts them closed. Classic only drops its curve, as it always did.
-        case chain::BlockId::gate:    gate.reset();          gateFader.reset (false);     break;
+        case chain::BlockId::gate:    gate.reset();          gateFader.reset (snap);     break;
 
         case chain::BlockId::drive:
         case chain::BlockId::drive2:
-        case chain::BlockId::drive3:  drive[k].reset();      driveFader[k].reset (false); driveTimeline[k].reset(); break;
+        case chain::BlockId::drive3:  drive[k].reset();      driveFader[k].reset (snap); driveTimeline[k].reset(); break;
 
         case chain::BlockId::eq:
         case chain::BlockId::eq2:
-        case chain::BlockId::eq3:     eq[k].reset();         eqFader[k].reset (false);    break;
+        case chain::BlockId::eq3:     eq[k].reset();         eqFader[k].reset (snap);    break;
 
         case chain::BlockId::mod:
         case chain::BlockId::mod2:
-        case chain::BlockId::mod3:    modulation[k].reset(); modFader[k].reset (false);   break;
+        case chain::BlockId::mod3:    modulation[k].reset(); modFader[k].reset (snap);   break;
 
         case chain::BlockId::delay:
         case chain::BlockId::delay2:
@@ -2808,6 +2850,10 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
     const auto order = chainState.order;
     const auto rows = chainState.rows;
 
+    // Until the state is in, every callback treats what it finds as restored (no fades); the
+    // first one after it does so once more.
+    const RestoreScope restoring (*this);
+
     if (auto paramState = root.getChildWithName (apvts.state.getType()); paramState.isValid())
     {
         // The pin goes into the tree itself, so replaceState sets each pinned id straight
@@ -2942,6 +2988,7 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
         rowsFromString (obj->getProperty ("chainRows").toString()));
 
     const juce::var paramsVar = obj->getProperty ("params");
+    const RestoreScope restoring (*this);
 
     if (auto* paramValues = paramsVar.getDynamicObject())
     {

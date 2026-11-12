@@ -104,6 +104,9 @@ public:
     /** The engine was just reset: it runs unheard for 10 ms before it fades in, so whatever
         its filters do while they fill from zero is over before it is heard. */
     void restart() noexcept { settle = settleSamples; }
+    /** The next process() lands at rest in the state it is asked for, as after prepare(): no
+        settle and no fade (a whole state restored). The input history is kept. */
+    void snapNext() noexcept { snap = true; settle = 0; }
     /** The engine has to run this block: the block is on, or still fading out. */
     bool needsEngine (bool on) const noexcept { return on || (wet > 0.0f && ! snap); }
     /** Where the input path's delay is heading: the slide in progress taken to its larger end. */
@@ -238,7 +241,7 @@ private:
 /** A crossfade between two outputs that keeps their sum's short-term power on the straight line
     in dB between the two (Drive.cpp's type switch, the chorus's mode switch): equal-power gains
     on a cornerless ramp, scaled by the measured powers and correlation of the two (two cascaded
-    4 ms one-poles each), in two bands split at 1 kHz with a gain each, the correction bounded
+    4 ms one-poles each), in three bands split at 150 Hz and 1 kHz, a gain for each band of each channel, the correction bounded
     at +18 dB where they nearly cancel. The
     outgoing output is heard alone for a hold first. Two outputs in antiphase (two effects on one
     held note sweep through it) cancel where their gained amplitudes meet, and no gain undoes a
@@ -264,14 +267,15 @@ public:
     int span() const noexcept { return elapsed; }
 
 private:
-    static constexpr int kMaxChannels = 8;
+    static constexpr int kMaxChannels = 8, kBands = 3;
 
-    double coefficient = 1.0, splitCoefficient = 1.0;
+    double coefficient = 1.0;
+    double splitCoefficient[kBands - 1] {};
     double power[2][3] {};   // two smoothing stages of: outgoing power, incoming power, their product
-    double bandPower[2][2][3] {};   // the same per band (low, high)
-    double lowOut[kMaxChannels] {}, lowIn[kMaxChannels] {};
+    double bandPower[kBands][kMaxChannels][2][3] {};   // the same per band (low, mid, high) and channel
+    double lowOut[kBands - 1][kMaxChannels] {}, lowIn[kBands - 1][kMaxChannels] {};
     double correlationLag = 1.0;
-    int hold = 0, length = 1, maxWait = 0, longestWait = 0, elapsed = 0, advanced = 0, waited = 0;
+    int hold = 0, length = 1, fadeLength = 1, maxWait = 0, longestWait = 0, elapsed = 0, advanced = 0, waited = 0;
 };
 
 /** Note values for mod_sync in quarter-note beats per LFO cycle; index 0 is "Off". The

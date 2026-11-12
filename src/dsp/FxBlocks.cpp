@@ -51,9 +51,13 @@ constexpr double kBypassFadeSeconds = 0.01;
 // effects on one note can sit near antiphase for the whole fade, where the drive's two types
 // of one pedal hardly do.
 constexpr double kPowerSeconds = 0.004;
-// The two bands PowerCrossfade corrects apart meet here [choice: below it a held note's
-// fundamental, above it the attack and the upper harmonics].
-constexpr double kSplitHz = 1000.0;
+// The bands PowerCrossfade corrects apart meet here [choice: below 150 Hz a bass or low guitar
+// note's fundamental, to 1 kHz its harmonics, above that the attack].
+constexpr double kSplitHz[2] { 150.0, 1000.0 };
+// A fade whose power lies mostly below 150 Hz is this many times as long [choice: 120 ms keeps
+// a 40 ms fade's spread of a 55 to 110 Hz note out of the sub-bass].
+constexpr double kBassShare = 0.5;
+constexpr int kBassLengthFactor = 3;
 constexpr double kPowerSlack = 1.0 / (7.943 * 7.943 - 1.0);
 constexpr double kPowerFloor = 1.0e-12;
 } // namespace
@@ -74,30 +78,33 @@ void DelayGlide::prepare (double sampleRate) noexcept
 void PowerCrossfade::prepare (double sampleRate) noexcept
 {
     coefficient = 1.0 - std::exp (-1.0 / (kPowerSeconds * sampleRate));
-    splitCoefficient = 1.0 - std::exp (-2.0 * juce::MathConstants<double>::pi * kSplitHz / sampleRate);
+
+    for (int n = 0; n < kBands - 1; ++n)
+        splitCoefficient[n] = 1.0 - std::exp (-2.0 * juce::MathConstants<double>::pi * kSplitHz[n] / sampleRate);
+
     start (0, 1, 0, 0);
 }
 
 void PowerCrossfade::start (int holdSamples, int lengthSamples, int maxWaitSamples, int longestWaitSamples) noexcept
 {
     std::fill (&power[0][0], &power[0][0] + 6, 0.0);
-    std::fill (&bandPower[0][0][0], &bandPower[0][0][0] + 12, 0.0);
-    std::fill (std::begin (lowOut), std::end (lowOut), 0.0);
-    std::fill (std::begin (lowIn), std::end (lowIn), 0.0);
+    std::fill (&bandPower[0][0][0][0], &bandPower[0][0][0][0] + kBands * kMaxChannels * 6, 0.0);
+    std::fill (&lowOut[0][0], &lowOut[0][0] + (kBands - 1) * kMaxChannels, 0.0);
+    std::fill (&lowIn[0][0], &lowIn[0][0] + (kBands - 1) * kMaxChannels, 0.0);
     correlationLag = 1.0;
     hold = juce::jmax (0, holdSamples);
     length = juce::jmax (1, lengthSamples);
     maxWait = juce::jmax (0, maxWaitSamples);
     longestWait = juce::jmax (maxWait, longestWaitSamples);
     elapsed = advanced = waited = 0;
+    fadeLength = length;
 }
 
 bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChannels, int i) noexcept
 {
     numChannels = juce::jmin (numChannels, kMaxChannels);
     double a = 0.0, b = 0.0, ab = 0.0;
-    double band[2][3] {};
-    double xl[kMaxChannels] {}, yl[kMaxChannels] {};
+    double xb[kBands][kMaxChannels] {}, yb[kBands][kMaxChannels] {};
 
     for (int ch = 0; ch < numChannels; ++ch)
     {
@@ -106,19 +113,35 @@ bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChan
         b += y * y;
         ab += x * y;
 
-        // Complementary bands, low = one-pole low-pass and high = the rest, so they sum back to
-        // the signal exactly.
-        lowOut[ch] += splitCoefficient * (x - lowOut[ch]);
-        lowIn[ch] += splitCoefficient * (y - lowIn[ch]);
-        xl[ch] = lowOut[ch];
-        yl[ch] = lowIn[ch];
-        const double xh = x - xl[ch], yh = y - yl[ch];
-        band[0][0] += xl[ch] * xl[ch];
-        band[0][1] += yl[ch] * yl[ch];
-        band[0][2] += xl[ch] * yl[ch];
-        band[1][0] += xh * xh;
-        band[1][1] += yh * yh;
-        band[1][2] += xh * yh;
+        // Complementary bands from one-pole low-passes: each band is the difference of two of
+        // them, so the bands sum back to the signal exactly.
+        double belowX = 0.0, belowY = 0.0;
+
+        for (int n = 0; n < kBands; ++n)
+        {
+            double lx = x, ly = y;
+
+            if (n < kBands - 1)
+            {
+                lowOut[n][ch] += splitCoefficient[n] * (x - lowOut[n][ch]);
+                lowIn[n][ch] += splitCoefficient[n] * (y - lowIn[n][ch]);
+                lx = lowOut[n][ch];
+                ly = lowIn[n][ch];
+            }
+
+            xb[n][ch] = lx - belowX;
+            yb[n][ch] = ly - belowY;
+            belowX = lx;
+            belowY = ly;
+
+            const double raw[3] { xb[n][ch] * xb[n][ch], yb[n][ch] * yb[n][ch], xb[n][ch] * yb[n][ch] };
+
+            for (int k = 0; k < 3; ++k)
+            {
+                bandPower[n][ch][0][k] += coefficient * (raw[k] - bandPower[n][ch][0][k]);
+                bandPower[n][ch][1][k] += coefficient * (bandPower[n][ch][0][k] - bandPower[n][ch][1][k]);
+            }
+        }
     }
 
     const double raw[3] { a, b, ab };
@@ -127,12 +150,6 @@ bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChan
     {
         power[0][k] += coefficient * (raw[k] - power[0][k]);
         power[1][k] += coefficient * (power[0][k] - power[1][k]);
-
-        for (int n = 0; n < 2; ++n)
-        {
-            bandPower[n][0][k] += coefficient * (band[n][k] - bandPower[n][0][k]);
-            bandPower[n][1][k] += coefficient * (bandPower[n][0][k] - bandPower[n][1][k]);
-        }
     }
 
     const int position = elapsed++;
@@ -153,7 +170,16 @@ bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChan
     // takes the first moment that is good enough now, and after longestWait any.
     if (advanced == 0)
     {
-        const double ahead = correlation + (correlation - correlationLag) * coefficient * length;
+        // A fade's own gain movement spreads a note by about the inverse of its length: 40 ms on a
+        // bass note puts that into the sub-bass, so a fade carried by the lowest band runs longer.
+        double low = 0.0;
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            low += bandPower[0][ch][1][0] + bandPower[0][ch][1][1];
+
+        fadeLength = low > kBassShare * (powerOut + powerIn) ? length * kBassLengthFactor : length;
+
+        const double ahead = correlation + (correlation - correlationLag) * coefficient * fadeLength;
         const bool goodNow = correlation >= kMinCorrelation;
         const bool heading = correlation >= correlationLag || ahead >= 0.0;
         const bool starts = (goodNow && (heading || waited >= maxWait)) || waited >= longestWait;
@@ -165,9 +191,7 @@ bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChan
         }
     }
 
-    ++advanced;
-
-    const double ramp = advanced / (double) length;
+    const double ramp = ++advanced / (double) fadeLength;
 
     if (ramp >= 1.0)
     {
@@ -181,24 +205,24 @@ bool PowerCrossfade::mix (float* const* out, const float* const* in, int numChan
     const double gOut = std::cos (0.5 * juce::MathConstants<double>::pi * r);
     const double gIn = std::sin (0.5 * juce::MathConstants<double>::pi * r);
 
-    // Each band corrected on its own figures: two effects' lows can cancel while their highs (a
-    // pick's attack) add, and one broadband gain would lift the attack by the lows' correction.
-    double scale[2];
-
-    for (int n = 0; n < 2; ++n)
-    {
-        const double pOut = bandPower[n][1][0], pIn = bandPower[n][1][1], pCross = bandPower[n][1][2];
-        const double want = std::exp ((1.0 - r) * std::log (pOut + kPowerFloor) + r * std::log (pIn + kPowerFloor));
-        const double got = gOut * gOut * pOut + gIn * gIn * pIn + 2.0 * gOut * gIn * pCross;
-        const double slack = kPowerSlack * want + 1.0e-30;
-        scale[n] = std::sqrt ((want + slack) / (juce::jmax (0.0, got) + slack));
-    }
-
+    // Each band of each channel corrected on its own figures: two effects' lows can cancel while
+    // their highs (a pick's attack) add, and a stereo effect's two sides can sit in antiphase on
+    // one side and in phase on the other; one gain for all would lift what adds by what cancels.
     for (int ch = 0; ch < numChannels; ++ch)
     {
-        const double low = gOut * xl[ch] + gIn * yl[ch];
-        const double all = gOut * out[ch][i] + gIn * in[ch][i];
-        out[ch][i] = (float) (scale[0] * low + scale[1] * (all - low));
+        double sum = 0.0;
+
+        for (int n = 0; n < kBands; ++n)
+        {
+            const double pOut = bandPower[n][ch][1][0], pIn = bandPower[n][ch][1][1], pCross = bandPower[n][ch][1][2];
+            const double want = std::exp ((1.0 - r) * std::log (pOut + kPowerFloor) + r * std::log (pIn + kPowerFloor));
+            const double got = gOut * gOut * pOut + gIn * gIn * pIn + 2.0 * gOut * gIn * pCross;
+            const double slack = kPowerSlack * want + 1.0e-30;
+            const double scale = std::sqrt ((want + slack) / (juce::jmax (0.0, got) + slack));
+            sum += scale * (gOut * xb[n][ch] + gIn * yb[n][ch]);
+        }
+
+        out[ch][i] = (float) sum;
     }
 
     return false;

@@ -8,6 +8,7 @@
 //                 [--restore host|preset]
 //   tubamp_golden --params <file.tsv>
 //   tubamp_golden --legacy-check [--dump <dir>]
+//   tubamp_golden --both-orders host|preset [--model ...] [--ir ...] [--only <glob>]
 //   tubamp_golden --list [--model ...] [--ir ...]
 //
 // Hashes are architecture- and build-type-specific: capture and verify on the same
@@ -263,10 +264,14 @@ void setUp (tubamp::TubampAudioProcessor& proc, const Case& c, const Inputs& inp
     loadInputs (proc, c, inputs);
 }
 
-/** Prepares `proc`, which holds the case's state, renders gen:music through it and hashes it. */
-Result renderPrepared (tubamp::TubampAudioProcessor& proc, const Case& c, const Config& cfg)
+/** Prepares `proc`, which holds the case's state, renders gen:music through it and hashes it.
+    `prepare` false: `proc` was prepared before its state arrived. `leadIn` seconds of silence go
+    ahead of the music (hashed with it). */
+Result renderPrepared (tubamp::TubampAudioProcessor& proc, const Case& c, const Config& cfg, bool prepare = true,
+                       double leadIn = 0.0)
 {
-    proc.prepareToPlay (cfg.sampleRate, cfg.block);
+    if (prepare)
+        proc.prepareToPlay (cfg.sampleRate, cfg.block);
 
     if (c.ir)
     {
@@ -275,9 +280,18 @@ Result renderPrepared (tubamp::TubampAudioProcessor& proc, const Case& c, const 
         juce::Thread::sleep (500);
     }
 
-    const int numFrames = (int) std::llround (6.0 * cfg.sampleRate);
+    const int silent = (int) std::llround (leadIn * cfg.sampleRate);
+    const int numFrames = (int) std::llround (6.0 * cfg.sampleRate) + silent;
     juce::AudioBuffer<float> audio (2, numFrames);
-    fxbench::fillMusic (audio, cfg.sampleRate);
+    audio.clear();
+
+    {
+        juce::AudioBuffer<float> music (2, numFrames - silent);
+        fxbench::fillMusic (music, cfg.sampleRate);
+
+        for (int ch = 0; ch < 2; ++ch)
+            audio.copyFrom (ch, silent, music, ch, 0, numFrames - silent);
+    }
 
     juce::MidiBuffer midi;
 
@@ -412,6 +426,73 @@ Restored renderRestored (const Case& c, const Config& cfg, const Inputs& inputs,
     out.restored = renderPrepared (proc, c, cfg);
     out.explicitClassic = renderPrepared (reference, c, cfg);
     return out;
+}
+
+/** --both-orders: the case's old session (every newer id left out) restored before
+    prepareToPlay, as a session load in most hosts, and onto an instance already prepared, as a
+    host that prepares first or a preset recall does. With 100 ms of silence ahead of the music the
+    two renders must be identical: a restored state takes effect at once, whatever the order. */
+std::pair<Result, Result> renderBothOrders (const Case& c, const Config& cfg, const Inputs& inputs, Restore restore)
+{
+    tubamp::TubampAudioProcessor writer;
+    writer.setChainOrder (c.order, {});
+
+    for (const auto& [id, value] : c.settings)
+        setParam (writer, id, value);
+
+    loadInputs (writer, c, inputs);
+
+    juce::StringArray newer;
+
+    for (auto* p : writer.getParameters())
+        if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*> (p); withId != nullptr && withId->getVersionHint() >= 4)
+            newer.add (withId->paramID);
+
+    juce::MemoryBlock blob;
+    writer.getStateInformation (blob);
+
+    if (auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize()))
+    {
+        if (auto* params = xml->getChildByName (writer.apvts.state.getType()))
+            for (auto* child = params->getFirstChildElement(); child != nullptr;)
+            {
+                auto* next = child->getNextElement();
+
+                if (newer.contains (child->getStringAttribute ("id")))
+                    params->removeChildElement (child, true);
+
+                child = next;
+            }
+
+        juce::AudioProcessor::copyXmlToBinary (*xml, blob);
+    }
+
+    auto state = writer.captureStateVar();
+
+    if (auto* values = state.getProperty ("params", {}).getDynamicObject())
+        for (const auto& id : newer)
+            values->removeProperty (id);
+
+    const auto restoreInto = [&] (tubamp::TubampAudioProcessor& target)
+    {
+        if (restore == Restore::preset)
+            target.applyStateVar (state);
+        else
+            target.setStateInformation (blob.getData(), (int) blob.getSize());
+
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    };
+
+    constexpr double leadIn = 0.1;
+    tubamp::TubampAudioProcessor restoredFirst, preparedFirst;
+    restoreInto (restoredFirst);
+    const auto first = renderPrepared (restoredFirst, c, cfg, true, leadIn);
+
+    preparedFirst.prepareToPlay (cfg.sampleRate, cfg.block);
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    restoreInto (preparedFirst);
+    const auto second = renderPrepared (preparedFirst, c, cfg, false, leadIn);
+    return { first, second };
 }
 
 std::string fileSha (const juce::File& f)
@@ -1431,6 +1512,7 @@ int usage()
                  "                [--restore host|preset]\n"
                  "  tubamp_golden --params <file.tsv>\n"
                  "  tubamp_golden --legacy-check [--dump <dir>]\n"
+                 "  tubamp_golden --both-orders host|preset [--model ...] [--ir ...] [--only <glob>]\n"
                  "  tubamp_golden --list [--model ...] [--ir ...]\n");
     return 2;
 }
@@ -1535,6 +1617,35 @@ int main (int argc, char** argv)
 
         std::printf ("captured %d rows -> %s\n", count, file.getFullPathName().toRawUTF8());
         return 0;
+    }
+
+    if (! opt ("--both-orders").empty())
+    {
+        const auto restore = opt ("--both-orders") == "preset" ? Restore::preset : Restore::host;
+        int rows = 0, differences = 0;
+
+        for (const auto& c : cases)
+        {
+            if (! selected (c.name))
+                continue;
+
+            for (const auto& cfg : configsFor (c))
+            {
+                const auto [first, second] = renderBothOrders (c, cfg, inputs, restore);
+                const bool same = first.hash == second.hash && first.latency == second.latency;
+                ++rows;
+                differences += same ? 0 : 1;
+                std::printf ("%s %-18s %6d %4d%s\n", same ? "ok  " : "FAIL", c.name.c_str(), (int) cfg.sampleRate, cfg.block,
+                             same ? "" : juce::String::formatted ("  restore then prepare %s (latency %d), prepare then restore %s "
+                                                                  "(latency %d)", first.hash.substr (0, 16).c_str(), first.latency,
+                                                                  second.hash.substr (0, 16).c_str(), second.latency).toRawUTF8());
+                std::fflush (stdout);
+            }
+        }
+
+        std::printf ("both-orders (%s): %d rows, %d with differences\n", restore == Restore::preset ? "preset" : "host",
+                     rows, differences);
+        return differences == 0 && rows > 0 ? 0 : 1;
     }
 
     if (! opt ("--verify").empty())
