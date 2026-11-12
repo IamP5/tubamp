@@ -38,10 +38,13 @@ constexpr float kDbToGain = 0.11512925464970229f;      // ln(10) / 20
 // floor), the unfiltered signal stops with the note. On a guitar note the unfiltered peak is the
 // higher, so the hysteresis stays whole (check_gate X10, B1); hum keeps the filtered one lower.
 
-// Opening follows the onset: half as long as the level took to climb the hysteresis band, from
-// version 2's 0.2 ms linear rise for a pick to a 5 ms smoothstep for a swell; linear at the
-// shortest (a 0.2 ms smoothstep splatters more), smoothstep from twice that. [choice, check_gate D1, D2, X16]
-constexpr double kOpenRatio = 0.5;
+// Opening follows the onset, timed over the last kOpenNearDb of the climb: a steady climb gets half
+// the time it took to cross the hysteresis band, as if timed from the close level, but a floor or a
+// scrape sitting lower in the band does not slow a pick. From version 2's 0.2 ms linear rise for a
+// pick to a 5 ms smoothstep for a swell; linear at the shortest (a 0.2 ms smoothstep splatters more),
+// smoothstep from twice that. [choice, check_gate D1-D4, X16]
+constexpr float kOpenNearDb = 1.0f;
+constexpr double kOpenRatio = 0.5 * kHysteresisDb / kOpenNearDb;
 constexpr double kOpenMinSeconds = 0.0002;
 constexpr double kOpenMaxSeconds = 0.005;
 
@@ -324,7 +327,7 @@ public:
         raw.clear();
         open = false;
         below = 0;
-        sinceLow = kLongAgo;
+        sinceNear = kLongAgo;
         floorDb = 0.0;
         floorSince = 0;
         settle = windowSamples;
@@ -341,6 +344,7 @@ public:
             lastThreshold = thresholdDb;
             openLevel = std::pow (10.0f, thresholdDb / 20.0f);
             closeLevel = openLevel * std::pow (10.0f, -kHysteresisDb / 20.0f);
+            nearLevel = openLevel * std::pow (10.0f, -kOpenNearDb / 20.0f);
             smoothOffsetDb = (kExpanderSlope - 1.0f) * 20.0f * std::log10 (closeLevel);
         }
 
@@ -402,8 +406,15 @@ public:
         }
 
         mainPeak = peak;
-        sinceLow = level < closeLevel ? 0 : juce::jmin (sinceLow + 1, kLongAgo);
+        sinceNear = level < nearLevel ? 0 : juce::jmin (sinceNear + 1, kLongAgo);
         followRange();
+
+        // Until the window has filled once after a reset, Smooth's estimate and expander take the
+        // level as it comes: there is no floor yet for the slew to protect.
+        const bool settling = settle > 0;
+
+        if (settling)
+            --settle;
 
         if (level >= openLevel)
         {
@@ -412,7 +423,7 @@ public:
             if (! open)
             {
                 open = true;
-                const double steps = juce::jlimit (openMin, openMax, kOpenRatio * (double) sinceLow + 1.0);
+                const double steps = juce::jlimit (openMin, openMax, kOpenRatio * (double) sinceNear + 1.0);
                 openStep = 1.0f / (float) steps;
                 openCurve = (float) juce::jlimit (0.0, 1.0, steps / openMin - 1.0);
                 startOpening (tight, tightCache);
@@ -439,13 +450,6 @@ public:
         }
 
         const double levelDb = 20.0 * std::log10 ((double) juce::jmax (level, kPeakFloor));
-
-        // Until the window has filled once after a reset, the estimate and the expander take the
-        // level as it comes: there is no floor yet for the slew to protect.
-        const bool settling = settle > 0;
-
-        if (settling)
-            --settle;
 
         if (floorSince == 0 || settling)
             floorDb = levelDb;
@@ -562,7 +566,7 @@ private:
 
     MaxWindow main, raw;   // filtered, unfiltered
 
-    float openLevel = 1.0e-4f, closeLevel = 5.0e-5f, smoothOffsetDb = 0.0f, mainPeak = 0.0f;
+    float openLevel = 1.0e-4f, closeLevel = 5.0e-5f, nearLevel = 8.9e-5f, smoothOffsetDb = 0.0f, mainPeak = 0.0f;
     float openStep = 1.0f, openCurve = 0.0f, floorSlew = 0.002f, rangeCoeff = 0.002f;
     float range = -90.0f, rangeTarget = -90.0f;
     double releaseStep = 0.04, holdSamples = 0.0, openMin = 9.6, openMax = 240.0, floorTauMax = 9600.0;
@@ -571,7 +575,7 @@ private:
 
     Ramp tight, smooth;
     double floorDb = 0.0;   // double: at 192 kHz a float estimate stalls 0.07 dB short of a steady floor
-    int floorSince = 0, below = 0, sinceLow = 0, settle = 0, windowSamples = 576;
+    int floorSince = 0, below = 0, sinceNear = 0, settle = 0, windowSamples = 576;
     bool open = false;
 
     GainCache tightCache, smoothCache;

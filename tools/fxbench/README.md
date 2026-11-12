@@ -24,7 +24,7 @@ cmake -S . -B build-fx/gate -DCMAKE_BUILD_TYPE=Release -DTUBAMP_BUNDLED_UI=OFF \
   -DTUBAMP_FXBENCH_ONLY=gate
 cmake --build build-fx/gate --target tubamp_fxbench -j 10
 export FXBENCH=$PWD/build-fx/gate/tubamp_fxbench_artefacts/Release/tubamp_fxbench
-python3 -I tools/fxbench/check_gate.py --quick
+python3 tools/fxbench/check_gate.py --quick   # not -I: it drops the user site-packages numpy may live in
 ```
 
 Replace `gate` (three times) with `comp`, `drive`, `eq`, `chorus`, `phaser` or `tremolo`.
@@ -136,9 +136,10 @@ What `--trace` and `--meters` write, per adapter:
 | drive, eq | none | none |
 
 The check scripts' `--rows` and `--verbose`: `check_gate.py --rows=A,B,...` runs only the named
-rows (`I` the rule's invariants, `P` the engine against a numpy port of the plain hysteresis rule and the
-round-5 verifier's findings, `A` to `G` and `R` the other rows, `T` the targets on seeded draws; `X` adds
-X10-X20 and the other verifier rows), for iterating (the full run is the acceptance); rows named `info ...`
+groups (`common` the common checks, `I` the rule's invariants, `P` the engine against a numpy port of the plain
+hysteresis rule and the round-5 verifier's findings, `G` G1-G19, `X` X1-X21, `A` to `F` and `R` the other rows,
+`T` the targets on seeded draws; a name that is not a group exits 1), for iterating (the full run is the
+acceptance); rows named `info ...`
 print figures and are never enforced; `check_gate.py --verbose` lists every dip that rows B and C count. `check_comp.py`
 also takes `--rows=C3,C10,...` (and `--no-common`, `--no-tables`), `check_eq.py` takes `--only=E5,E12`
 and `--measure`, `check_drive.py` takes `--only-specific`.
