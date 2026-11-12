@@ -19,18 +19,21 @@
 //    back from with the gate open (a chord's beating partials; at most 150 ms). A slower fall is
 //    ridden (twice the band time, at most 1 s, restarted whenever the level climbs back to the
 //    close level or 6 dB off its low) until the level drops 6 dB under its own 50 ms maximum,
-//    which makes it a stop. Inside the band, a level 6 dB under that maximum and 6 dB deeper than
-//    any trough already ridden is a stop after the hold plus one observed beat period (0 on a
-//    steady note), so a stop onto a floor just under the threshold closes too.
+//    which makes it a stop. Inside the band, a level 6 dB under the peak of its current excursion
+//    over the open level and 6 dB deeper than any trough already ridden is a stop after the hold
+//    plus one observed beat period (0 on a steady note), unless it climbs back to 5 dB under that
+//    peak first; so a stop onto a floor just under the threshold closes too. Only dips the gate
+//    rode open are remembered; a close forgets the beat period.
 //  - A deadline. Whatever the stop rule says, the gate is at the range hold + 250 ms (or 1.5 x a
 //    slower release) after the level was last over the open level: 0 dB, then -90 dB x u^2 over
 //    the last 80 ms, so chord troughs up to about hold + 190 ms keep the gain over -6 dB. Smooth
-//    only falls inside that window.
-// A beat trough that falls as fast as a stop cannot be told from one: the gate reaches -20 dB on
-// the stop's timing, then, if it remembers such troughs, falls only 20 dB per 1.5 remembered
-// trough lengths, so the trough costs a partial dip and the crest reopens it. Opening follows the
-// onset: a 0.2 ms linear rise for a pick, up to a 5 ms smoothstep for a swell (half the time the
-// level took to climb the band).
+//    only falls inside that window. After a deadline close, reopening also needs the level 6 dB
+//    over the lowest floor estimate since, so noise peaking at the threshold does not chatter.
+// Under -60 dB a release falls at most 30 dB per 40 ms, so a beat trough read as a stop costs a
+// partial dip and the crest reopens it. Smooth's closed estimate continues the one it kept while
+// riding and follows its law without the slew until the deadline. Opening follows the onset: a
+// 0.2 ms linear rise for a pick, up to a 5 ms smoothstep for a swell (half the time the level took
+// to climb the band).
 //
 // The gate measures where it sits and may apply its gain further down the chain (on the
 // amp's mono output), so it splits the usual process() into measure() and apply().
@@ -107,7 +110,7 @@ inline constexpr float kGateReleaseDefault[GateFx::numModes] { 30.0f, 30.0f, 80.
 /** Hold in ms: how long the gate stays open after a note stops (its level falls from the open to
     the close level within 50 ms), on top of the 12 ms detector window, at any floor depth. Tight
     takes 10, not 6: with 6 the short beat dips of low chords near the threshold read as stops
-    (11 of 256 chord cases chatter, against 1 with 10), while every 40 and 50 ms palm-mute gap
+    (version 5: 11 of 256 chord cases chatter, 1 with 10), while every 40 and 50 ms palm-mute gap
     still closes. Classic's entry is unused. */
 inline constexpr float kGateHoldDefault[GateFx::numModes] { 6.0f, 10.0f, 10.0f };
 /** Sidechain high-pass corner in Hz (4th-order Butterworth): a low E reads 1.7 dB under its

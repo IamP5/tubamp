@@ -42,7 +42,7 @@ NULL_KEYS = [{}, {"threshold": -40}, STEPS]
 
 # The engine's per-mode starting points (Gate.h kGateReleaseDefault, kGateHoldDefault). Tight's hold
 # is 10 ms (was 6): with 6 the short beat dips of low chords near the threshold read as stops (11 of
-# the 256 g1 chord cases chatter, 1 with 10; row A6). Under the closing rule (Gate.h) the hold is the
+# the 256 g1 chord cases chatter in version 5, 1 with 10; row TA1). Under the closing rule (Gate.h) the hold is the
 # wait after a stop at any floor depth (A rows, I4); whatever else happens the gate is at the range by
 # hold + T under the open level (I1).
 TIGHT = {"mode": 1, "release": 30.0, "hold": 10.0, "range": -90.0, "sc_hpf": 75.0}
@@ -355,7 +355,7 @@ def extra_checks(report, args, grid):
     # X4: no chatter on stationary noise at levels around the threshold: the gate changes between
     # open and closed at most twice in 5.5 s. Restated for the closing rule: version 3 counted every
     # sample under unity as closed, because only a close lowered the gain; now a dip into the band
-    # starts a gentle release at once, so open is >= -1 dB and closed <= -20 dB (the close-time bar).
+    # starts a release at once, so open is >= -1 dB and closed <= -20 dB (the close-time bar).
     worst, where = 0, ""
     for rms in range(-62, -44, 2):
         n = open_close_changes(fx.run(EFFECT, fx.white(6.0, rms, sr, seed=rms + 100), dict(TIGHT, threshold=-40),
@@ -364,6 +364,51 @@ def extra_checks(report, args, grid):
             worst, where = n, f"noise {rms} dBFS RMS"
     report.add("X4 no chatter", "white noise -62..-46 dBFS RMS, thr -40", worst <= 2,
                f"max {worst} open/close changes in 5.5 s{' (' + where + ')' if where else ''} (limit 2)")
+
+    # X4 long: 30 s of white noise whose median 12 ms reading sits within 3 dB of the threshold, either
+    # side: after the deadline closes, a peak of the same floor must not reopen the gate (version 5: up
+    # to 80 changes; SPEC_v51 4.1).
+    def x4_long(c):
+        off, seed = c
+        x = fx.white(30.0, -60.0, sr, seed=seed)
+        x = x * fx.amp(-40.0 + off - float(fx.db(np.median(reading(x, sr)[int(0.5 * sr):]))))
+        return off, seed, open_close_changes(fx.run(EFFECT, x, dict(TIGHT, threshold=-40), ["--trace"], sr)[1], int(0.5 * sr))
+    res = parallel(x4_long, [(off, 900 + s) for off in (-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0) for s in range(6)])
+    w = max(res, key=lambda q: q[2])
+    report.add("X4 long", f"{len(res)} cases: noise median reading -3..+3 dB re thr -40, 30 s, Tight", w[2] <= 2,
+               f"max {w[2]} open/close changes (median reading {w[0]:+.0f} dB, seed {w[1]}; limit 2); per offset: "
+               + ", ".join(f"{off:+.0f}: {max(q[2] for q in res if q[0] == off)}" for off in sorted({q[0] for q in res})))
+
+    # X21 swell after a decay: a note decays (20 or 60 dB/s) until the deadline closes the gate, then a
+    # volume swell rises linear in dB from the hiss (-75 dBFS) to -20 dBFS over 0.5-5 s. The gain must
+    # be over -1 dB within 10 ms of the level reading crossing the open level: a slow rise is judged
+    # against the floor it rose from, not against an estimate that follows it up (SPEC_v51_COORD 1).
+    def swell_case(c):
+        decay, swell, mode = c
+        n = int(sr * (3.0 + swell + 1.5))
+        t = np.arange(n) / sr
+        env = np.full(n, -200.0)
+        env[t < 0.6] = -20.0
+        b = (t >= 0.6) & (t < 3.0)
+        env[b] = -20.0 - decay * (t[b] - 0.6)
+        r = (t >= 3.0) & (t < 3.0 + swell)
+        env[r] = -75.0 + 55.0 * (t[r] - 3.0) / swell
+        env[t >= 3.0 + swell] = -20.0
+        y = sum(np.sin(2 * np.pi * 110.0 * k * t + k) / k for k in range(1, 6)) / 1.6
+        x = y * fx.amp(env) + fx.amp(-75.0) * np.random.default_rng(7).standard_normal(n)
+        g = fx.mono(fx.run(EFFECT, x, dict(TIGHT if mode == 1 else SMOOTH, threshold=-40), ["--trace"], sr)[1])
+        i0 = int(3.0 * sr)
+        closed = bool(g[i0 - 10] < 1e-3) if mode == 1 else True
+        cross = i0 + int(np.argmax(reading(x, sr)[i0:] >= fx.amp(-40.0)))
+        up = np.nonzero(g[cross:] > fx.amp(-1.0))[0]
+        return (up[0] / sr * 1e3 if len(up) else float("inf")), closed
+    cells = [(d, s, m) for m in (1, 2) for d in (20.0, 60.0) for s in (0.5, 1.0, 2.0, 3.0, 5.0)]
+    res = parallel(swell_case, cells)
+    (w, _), c = max(zip(res, cells), key=lambda rc: rc[0][0])
+    report.add("X21 swell after a decay", f"{len(cells)} cases: decay 20/60 dB/s, swell 0.5-5 s, Tight and Smooth",
+               w <= 10.0 and all(r[1] for r in res),
+               f"over -1 dB at most {w:.1f} ms after the reading crosses the open level ({TYPES[c[2]]}, decay {c[0]:g} dB/s, "
+               f"swell {c[1]:g} s; limit 10); Tight closed before every swell: {all(r[1] for r in res)}")
 
     # X5: opening does not eat the pick attack: level lost in the first 5 ms of a note.
     _, _, _, chug5 = chug_stats(dict(TIGHT, threshold=-40), sr)
@@ -1107,34 +1152,47 @@ def closing_rule_checks(report, args):
                    "; ".join(parts) + " dB (limit: version 1's -25 / -69)")
 
     if on("B"):
-        # B1, B2 (restated for the closing rule, as X10-X12): the second verifier's chords, with the holds
-        # its script used (6 ms for Tight, as at the time), dip only within the bound: none at the range
-        # inside 60 ms, no reopening clicks. Dips are counted: under -1 dB and, as the verifier
-        # counted them, under -6 dB.
+        # B1, B2 (restated for the closing rule, as X10-X12): the second verifier's chords dip only within
+        # the bound: none at the range inside 60 ms, no reopening clicks. Dips are counted: under -1 dB and,
+        # as the verifier counted them, under -6 dB. The verifier's script used hold 6 (the Tight default
+        # of its day); the rows use today's default, and the hold-6 variants are printed as information
+        # (hold 6 is where beats every 47-64 ms close in each trough: the hold-6 weakness of SPEC.md 10).
         def r2_chord(c):
             name, s, thr, t60, mode, hold = c
             x = strum(R2_CHORDS[name], 5.0, s, level_db=-8, t60=t60, seed=5, strum_ms=6) + hiss(5.0, s, -92, seed=2)
             out, tr = fx.run(EFFECT, x, dict(TIGHT if mode == 1 else SMOOTH, threshold=thr, hold=hold), ["--trace"], s)
             return trough_dips(fx.mono(tr), s, -90.0, x, fx.mono(out))
-        cells = [(n, sr, thr, t60, 1, 6.0) for n in R2_CHORDS for thr in range(-30, -70, -5) for t60 in (2.5, 6.0)]
-        for n in ("C2+G2+C3", "A1+E2+A2", "E2+G2", "E1+B1", "E2+F2", "B0+F#1", "A2 x2 +9c"):
-            for thr in (-35, -45, -55):
-                cells += [(n, s, thr, 4.0, 1, 6.0) for s in (44100, 96000, 192000)]
-                cells += [(n, sr, thr, 4.0, 2, 10.0), (n, sr, thr, 4.0, 1, 0.0), (n, sr, thr, 4.0, 1, 250.0)]
-        res = parallel(r2_chord, cells)
-        labels = [f"{c[0]} thr {c[2]} t60 {c[3]:g} {c[1]} Hz mode {c[4]} hold {c[5]:g}" for c in cells]
-        report.add("B1 chords (verifier 2)", f"{len(cells)} cases: 16 chords x thr x rates x holds", *dip_summary(labels, res))
-        deep = sorted(((min(d[2] for d in ds), lab, ds) for lab, ds in zip(labels, res) if any(d[2] < -6.0 for d in ds)))[:8]
-        info(report, "B1 deepest dips", "the cases under -6 dB, deepest first",
-             "; ".join(f"{lab}: {sum(1 for d in ds if d[2] < -6.0)} x, to {v:.0f} dB, {max(d[1] for d in ds if d[2] < -6.0):.0f} ms"
-                       for v, lab, ds in deep) or "none")
+
+        def b1_cells(hold):
+            cells = [(n, sr, thr, t60, 1, hold) for n in R2_CHORDS for thr in range(-30, -70, -5) for t60 in (2.5, 6.0)]
+            for n in ("C2+G2+C3", "A1+E2+A2", "E2+G2", "E1+B1", "E2+F2", "B0+F#1", "A2 x2 +9c"):
+                for thr in (-35, -45, -55):
+                    cells += [(n, s, thr, 4.0, 1, hold) for s in (44100, 96000, 192000)]
+                    cells += [(n, sr, thr, 4.0, 2, 10.0), (n, sr, thr, 4.0, 1, 0.0), (n, sr, thr, 4.0, 1, 250.0)]
+            return cells
+        for hold in (TIGHT["hold"], 6.0):
+            cells = b1_cells(hold)
+            res = parallel(r2_chord, cells)
+            labels = [f"{c[0]} thr {c[2]} t60 {c[3]:g} {c[1]} Hz mode {c[4]} hold {c[5]:g}" for c in cells]
+            ok, text = dip_summary(labels, res)
+            scope = f"{len(cells)} cases: 16 chords x thr x rates x holds 0/{hold:g}/250"
+            if hold == TIGHT["hold"]:
+                report.add("B1 chords (verifier 2)", scope, ok, text)
+                deep = sorted(((min(d[2] for d in ds), lab, ds) for lab, ds in zip(labels, res) if any(d[2] < -6.0 for d in ds)))[:8]
+                info(report, "B1 deepest dips", "the cases under -6 dB, deepest first",
+                     "; ".join(f"{lab}: {sum(1 for d in ds if d[2] < -6.0)} x, to {v:.0f} dB, {max(d[1] for d in ds if d[2] < -6.0):.0f} ms"
+                               for v, lab, ds in deep) or "none")
+            else:
+                info(report, "info B1 hold 6", scope, ("would pass: " if ok else "would fail: ") + text)
         cells = [(n, sr, thr, t60, 1, TIGHT["hold"]) for n in R2_CHORDS for thr in range(-30, -70, -5) for t60 in (2.5, 6.0)]
         res = parallel(r2_chord, cells)
         report.add("B1 chords (verifier 2)", f"{len(cells)} cases at the default hold {TIGHT['hold']:g} ms",
                    *dip_summary([f"{c[0]} thr {c[2]} t60 {c[3]:g}" for c in cells], res))
 
         # B2: a quiet decaying chord behind a louder note (g3_chatter2.py, g3b_sweep.py): bounded as B1,
-        # and never more dips under -6 dB than the same chord alone.
+        # and never more dips under -6 dB than the same chord alone; g3b: a loud note stopped 0.1 s after a
+        # quiet chord that sits about 6 dB over the threshold is a stop that lands in the band, which the
+        # gate must close as I4 requires, so up to 4 such gap-0.1 s cells may dip once more (SPEC_v51 6.1).
         def behind(c):
             name, thr, loud, quiet, gap, hold, mode, alone = c
             loud_note = hand_stop(strum((82.41, 123.47, 164.81), 0.5, sr, level_db=loud, t60=3.0, seed=9), sr, 0.12, 5.0)
@@ -1147,31 +1205,48 @@ def closing_rule_checks(report, args):
 
         def deeper6(ds):
             return sum(1 for d in ds if d[2] < -6.0)
-        cells = []
-        for n in ("C2+G2+C3", "A1+E2+A2", "E2+G2", "E2+G#2", "E1+B1", "E2+F2", "E2 x2 +3c", "A2 x2 +9c", "D2+A2+D3", "C2+Eb2"):
-            for quiet in (-26, -32):
-                cells += [(n, quiet - m, -3, quiet, 0.25, 6.0, 1) for m in (6, 10, 14, 18)]
-        for n in ("E2+G2", "C2+G2+C3", "A2 x2 +9c"):
-            for thr in (-38, -42):
-                cells += [(n, thr, -3, -28, 0.25, 6.0, 2), (n, thr, -3, -28, 0.25, 20.0, 1), (n, thr, -3, -28, 0.25, 50.0, 1),
-                          (n, thr, -12, -28, 0.25, 6.0, 1)]
-        res = parallel(behind, [c + (False,) for c in cells])
-        ref = parallel(behind, [c + (True,) for c in cells])
-        worse = [c for c, r, a in zip(cells, res, ref) if deeper6(r) > deeper6(a)]
-        ok, text = dip_summary([f"{c[0]} thr {c[1]} loud {c[2]} hold {c[5]:g} mode {c[6]}" for c in cells], res)
-        report.add("B2 behind a louder note", f"{len(cells)} cases (g3), loud -3/-12 dBFS 0.25 s before", ok and not worse,
-                   f"{len(worse)} with more dips under -6 dB than the same chord alone; " + text)
-        sweep = []
-        for n in ("E2+G2", "A1+E2+A2", "E2+G#2", "C2+Eb2"):
-            for diff in (12, 20, 28):
-                for gap in (0.1, 0.25, 0.6):
-                    sweep += [(n, -30 - m, -30 + diff, -30, gap, 6.0, 1) for m in (6, 14)]
-        res = parallel(behind, [c + (False,) for c in sweep])
-        ref = parallel(behind, [c + (True,) for c in sweep])
-        worse = [c for c, r, a in zip(sweep, res, ref) if deeper6(r) > deeper6(a)]
-        ok, text = dip_summary([f"{c[0]} thr {c[1]} +{c[2] - c[3]} dB gap {c[4]:g}" for c in sweep], res)
-        report.add("B2 behind a louder note", f"{len(sweep)} cases (g3b): +12..28 dB, 0.1-0.6 s", ok and not worse,
-                   f"{len(worse)} with more dips under -6 dB than the same chord alone (version 2: 22 of 104 in g3); " + text)
+
+        def g3_cells(hold):
+            cells = []
+            for n in ("C2+G2+C3", "A1+E2+A2", "E2+G2", "E2+G#2", "E1+B1", "E2+F2", "E2 x2 +3c", "A2 x2 +9c", "D2+A2+D3", "C2+Eb2"):
+                for quiet in (-26, -32):
+                    cells += [(n, quiet - m, -3, quiet, 0.25, hold, 1) for m in (6, 10, 14, 18)]
+            for n in ("E2+G2", "C2+G2+C3", "A2 x2 +9c"):
+                for thr in (-38, -42):
+                    cells += [(n, thr, -3, -28, 0.25, hold, 2), (n, thr, -3, -28, 0.25, 20.0, 1), (n, thr, -3, -28, 0.25, 50.0, 1),
+                              (n, thr, -12, -28, 0.25, hold, 1)]
+            return cells
+
+        def g3b_cells(hold):
+            return [(n, -30 - m, -30 + diff, -30, gap, hold, 1) for n in ("E2+G2", "A1+E2+A2", "E2+G#2", "C2+Eb2")
+                    for diff in (12, 20, 28) for gap in (0.1, 0.25, 0.6) for m in (6, 14)]
+        for hold in (TIGHT["hold"], 6.0):
+            cells = g3_cells(hold)
+            res = parallel(behind, [c + (False,) for c in cells])
+            ref = parallel(behind, [c + (True,) for c in cells])
+            worse = [c for c, r, a in zip(cells, res, ref) if deeper6(r) > deeper6(a)]
+            ok, text = dip_summary([f"{c[0]} thr {c[1]} loud {c[2]} hold {c[5]:g} mode {c[6]}" for c in cells], res)
+            ok = ok and not worse
+            scope = f"{len(cells)} cases (g3), loud -3/-12 dBFS 0.25 s before, hold {hold:g}"
+            text = f"{len(worse)} with more dips under -6 dB than the same chord alone; " + text
+            if hold == TIGHT["hold"]:
+                report.add("B2 behind a louder note", scope, ok, text)
+            else:
+                info(report, "info B2 g3 hold 6", scope, ("would pass: " if ok else "would fail: ") + text)
+
+            sweep = g3b_cells(hold)
+            res = parallel(behind, [c + (False,) for c in sweep])
+            ref = parallel(behind, [c + (True,) for c in sweep])
+            worse = [c for c, r, a in zip(sweep, res, ref) if deeper6(r) > deeper6(a)]
+            ok, text = dip_summary([f"{c[0]} thr {c[1]} +{c[2] - c[3]} dB gap {c[4]:g}" for c in sweep], res)
+            ok = ok and len(worse) <= 4 and all(c[4] == 0.1 for c in worse)
+            scope = f"{len(sweep)} cases (g3b): +12..28 dB, 0.1-0.6 s, hold {hold:g}"
+            text = (f"{len(worse)} with more dips under -6 dB than the same chord alone (limit 4, all at gap 0.1 s)"
+                    + "".join(f"; {c[0]} thr {c[1]} +{c[2] - c[3]} dB gap {c[4]:g}" for c in worse) + "; " + text)
+            if hold == TIGHT["hold"]:
+                report.add("B2 behind a louder note", scope, ok, text)
+            else:
+                info(report, "info B2 g3b hold 6", scope, ("would pass: " if ok else "would fail: ") + text)
 
     if on("C"):
         # C: two strings beating, troughs 6-20 dB at 0.5-8 Hz, decaying through the threshold (restated for
@@ -1709,13 +1784,13 @@ def target_checks(report):
 
     # TA1: the g1 chord grid (16 chords x 8 thresholds x 2 decays, the B1 signals), Tight and Smooth at hold 10
     # (Smooth with 21 extra cases at t60 4): cases with chatter. Version 3: 4 / 256 and 2 / 277; version 4:
-    # 148 / 256 and 70 / 277; the specification's model of this rule: 1 and 1.
+    # 148 / 256 and 70 / 277; version 5: 1 and 1; the model of version 5.1: 0 and 1.
     def grid(c):
         name, thr, t60, mode = c
         x = strum(R2_CHORDS[name], 5.0, sr, level_db=-8, t60=t60, seed=5, strum_ms=6) + hiss(5.0, sr, -92, seed=2)
         g = fx.mono(fx.run(EFFECT, x, dict(TIGHT if mode == 1 else SMOOTH, threshold=thr), ["--trace"], sr)[1]).astype(float)
         return chord_metrics(g, twin_level(x, sr, HPF), sr, thr)
-    for mode, limit in ((1, 8), (2, 4)):
+    for mode, limit, model in ((1, 8, 0), (2, 4, 1)):
         cells = [(n, thr, t60, mode) for n in R2_CHORDS for thr in range(-30, -70, -5) for t60 in (2.5, 6.0)]
         if mode == 2:
             cells += [(n, thr, 4.0, 2) for n in ("C2+G2+C3", "A1+E2+A2", "E2+G2", "E1+B1", "E2+F2", "B0+F#1", "A2 x2 +9c")
@@ -1723,7 +1798,7 @@ def target_checks(report):
         res = parallel(grid, cells)
         chat = [(c, r) for c, r in zip(cells, res) if r[0] > 0]
         report.add("TA1 chord grid (g1)", f"{len(cells)} cases, {TYPES[mode]} hold 10", len(chat) <= limit,
-                   f"{len(chat)} with chatter (under -6 dB, back within {CHATTER_MS:g} ms; limit {limit}; model 1)"
+                   f"{len(chat)} with chatter (under -6 dB, back within {CHATTER_MS:g} ms; limit {limit}; model {model})"
                    + "".join(f"; {c[0]} thr {c[1]} t60 {c[2]:g}" for c, _ in chat[:4])
                    + f"; {sum(1 for r in res if r[1] > 0)} with a legitimate close (>= {CHATTER_MS:g} ms)")
 
@@ -1765,7 +1840,7 @@ def target_checks(report):
     bad = [r for r in res if r[0] < r[1]]
     report.add("TC1 random chugs", "120 seeded: 41-110 Hz, gaps 50-250 ms, floors 12-40 dB under, thr +6..12", not bad,
                f"{len(res) - len(bad)} of {len(res)} with every gap under -20 dB over its last 10 ms; worst gap end "
-               f"{max(r[2] for r in res):.1f} dB (model -25.1)" + "".join(f"; {r[3]}: {r[0]}/{r[1]}" for r in bad[:3]))
+               f"{max(r[2] for r in res):.1f} dB (model -36.4)" + "".join(f"; {r[3]}: {r[0]}/{r[1]}" for r in bad[:3]))
 
     # TD1: hand stops after a beating chord: -20 dB within window + hold + 150 + release/3 + 3 ms of the end of
     # the fall (one remembered trough or beat period, at most 150 ms, on top of I4's bound).
