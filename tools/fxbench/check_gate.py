@@ -1723,7 +1723,7 @@ def closing_rule_checks(report, args):
 
         # D3: a pick after something in the band (round 6, finding 1; round 7, finding 3). The bar is the rule's
         # arithmetic: once the reading is 6 dB over the threshold the run-away finish brings the gain to 0 dB within
-        # 0.2 ms + one sample, so the energy of the pick's first 2 ms is at least the dry signal's from 0.2 ms + 2 samples
+        # 0.35 ms + one sample, so the energy of the pick's first 2 ms is at least the dry signal's from 0.35 ms + 2 samples
         # after the twin reading gets there (one sample for P1's rounding of the reading) to the end of the 2 ms; -0.01 dB
         # for float rounding. Enforced where the reading runs 6 dB over within 0.5 ms of reaching the threshold; the cells
         # whose pick climbs slower are counted. Printed beside it: the loss against the textbook gate, a fixed 0.2 ms
@@ -1752,7 +1752,7 @@ def closing_rule_checks(report, args):
             w = slice(on, end)
             tb = x * textbook_gain(g, opens, sr)
             ey = max(np.sum(y[w] ** 2), 1e-30)
-            full = kt + int(run[0]) + int(np.ceil(OPEN_MIN_MS * 1e-3 * sr)) + 2 if len(run) else end
+            full = kt + int(run[0]) + int(np.ceil(OPEN_FINISH_MS * 1e-3 * sr)) + 2 if len(run) else end
             bound = np.sum(x[max(on, full):end] ** 2)
             return (10 * np.log10(max(np.sum(tb[w] ** 2), 1e-30) / ey), fast,
                     10 * np.log10(bound / ey) if bound > 0 else -99.0)
@@ -1774,7 +1774,7 @@ def closing_rule_checks(report, args):
                    f"{len(precursors)} in-band precursors, Tight + Smooth", bool(judged) and lo <= 0.01 and not shut,
                    f"largest first-2-ms energy shortfall under the rule's floor {lo:+.2f} dB (negative: over it; "
                    f"{pdesc(cl) if cl else 'none judged'}); limit "
-                   f"+0.01 dB: the dry signal from 0.2 ms + 2 samples after the reading runs {RUN_AWAY_DB:g} dB over, where it "
+                   f"+0.01 dB: the dry signal from {OPEN_FINISH_MS:g} ms + 2 samples after the reading runs {RUN_AWAY_DB:g} dB over, where it "
                    "does so within 0.5 ms of the threshold. Against the textbook 0.2 ms rise: worst "
                    f"{tb_w[0]:.2f} dB ({pdesc(tb_w[1]) if tb_w[1] else '-'}), {sum(1 for r, _ in judged if r[0] > HEARD_DB)} over "
                    f"{HEARD_DB:g} dB. Not judged, the pick climbs slower: {len(slow)}; never reach the threshold: {len(shut)}")
@@ -2046,7 +2046,8 @@ def plain_reference(x, sr, keys):
     slew = 100.0 / sr
     k_db = np.log(10.0) / 20.0
     long_ago = 1 << 30
-    fast = 1.0 / open_min
+    finish = 1.0 / (OPEN_FINISH_MS * 1e-3 * sr)
+    fast = finish
     is_open, below, since_low = False, 0, long_ago
     t_gr = s_gr = rng_db
     t_from = s_from = 0.0
@@ -2072,6 +2073,7 @@ def plain_reference(x, sr, keys):
                 is_open = True
                 steps = min(open_max, max(open_min, OPEN_RATIO * since_low + 1.0))
                 o_step = 1.0 / steps
+                fast = max(o_step, finish)
                 o_curve = min(1.0, max(0.0, steps / open_min - 1.0))
                 t_from, t_ph, t_cl = gain(t_gr), (1.0 if t_gr >= 0.0 else 0.0), False
                 s_from, s_ph, s_cl = gain(s_gr), (1.0 if s_gr >= 0.0 else 0.0), False
@@ -2661,7 +2663,8 @@ def target_checks(report):
 OPEN_MIN_MS = 0.2       # kOpenMinSeconds: the fastest opening, a linear rise
 OPEN_MAX_MS = 5.0       # kOpenMaxSeconds: an opening started over the open level may finish under it
 OPEN_RATIO = 0.5        # kOpenRatio: the opening lasts half the samples since the reading was under the close level
-RUN_AWAY_DB = PLAIN_HYSTERESIS_DB   # a reading this far over the threshold during the ramp advances it at the 0.2 ms rate
+OPEN_FINISH_MS = 0.35   # kOpenFinishSeconds: the rate the run-away finish advances a slower ramp at
+RUN_AWAY_DB = PLAIN_HYSTERESIS_DB   # a reading this far over the threshold during the ramp advances it at the 0.35 ms rate
 EXPANDER_SLOPE = 3.0    # kExpanderSlope: Smooth's gain falls 2 dB per dB of floor under the close level
 TWIN_EPS_DB = 0.02      # the twin of the level against the engine's float arithmetic
 TWIN_LAW_EPS_DB = 0.1   # the same for Smooth's close and law: more than 0.02 dB seen (150 Hz filter, 192 kHz, hold 0)
@@ -2880,8 +2883,8 @@ def check_invariants(item):
         res["I3s"] = worst
 
     # I5 (closing and opening without a click), on the case's own type: the gain never falls faster than the release
-    # knob, nor rises faster than the rule's steepest opening: 1.5 x the 0.2 ms linear rate, the steepest slope of a
-    # smoothstep the run-away finish advances at the 0.2 ms rate (+1 % for float rounding). Smooth's first window after
+    # knob, nor rises faster than the rule's steepest opening, the 0.2 ms linear rate: a smoothstep that the run-away
+    # finish advances at the 0.35 ms rate peaks at 1.5 / 0.35 ms, under it (+1 % for float rounding). Smooth's first window after
     # the reset is out: there its law takes the level unslewed (Gate.cpp, settle).
     own = slice(int(round(WINDOW_MS * ms)) + 1 if keys["mode"] == 2 else 0, None)
     gd = fx.db(np.maximum(g, 1e-12))[own]
@@ -2889,7 +2892,7 @@ def check_invariants(item):
     knob = 60.0 / (rel * ms)
     live = (g[own][:-1] > 0) & (g[own][1:] > 0)
     res["I5c"] = float(np.max(np.where(live, fall - knob * 1.02 - 1e-5, -1.0)))
-    res["I5o"] = float(np.max(np.diff(g[own]) - 1.5 / (OPEN_MIN_MS * ms) * 1.01))
+    res["I5o"] = float(np.max(np.diff(g[own]) - max(1.0 / OPEN_MIN_MS, 1.5 / OPEN_FINISH_MS) / ms * 1.01))
     # I6 (a lower bound): once the reading has been over the open level (within the twin's rounding) for longer than
     # the longest opening (5 ms), the gain is 0 dB.
     over_n = runs_since(np.concatenate([[True], ~(lev >= op * eps)]))[1:]   # counted from the reset at the start
@@ -2964,7 +2967,7 @@ def invariant_checks(report, args):
     vc, rc, n = worst("I5c")
     vo, ro, _ = worst("I5o")
     report.add("I5 no click", f"{n} cases, each type's own gain", vc <= 0.0 and vo <= 0.0,
-               f"fall beyond the release knob {max(vc, 0):.2e} dB per sample; rise beyond 1.5 x the 0.2 ms linear opening "
+               f"fall beyond the release knob {max(vc, 0):.2e} dB per sample; rise beyond the 0.2 ms linear opening "
                f"{max(vo, 0):.2e} per sample" + ("" if vc <= 0 else " at " + where(rc)) + ("" if vo <= 0 else " at " + where(ro)))
     v, r, n = worst("I6")
     report.add("I6 open means 0 dB", f"{n} cases, {sum(q['I6n'] for q in cases)} samples judged", v <= 1e-6,

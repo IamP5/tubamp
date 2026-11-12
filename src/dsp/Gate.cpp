@@ -41,11 +41,13 @@ constexpr float kDbToGain = 0.11512925464970229f;      // ln(10) / 20
 // The opening ramp lasts half the time since the level was under the close level, from a 0.2 ms
 // linear rise to a 5 ms smoothstep (smoothstep from twice the shortest; a 0.2 ms smoothstep splatters
 // more). While it runs, any sample whose level is one hysteresis band over the threshold advances it
-// at the 0.2 ms rate: a pick runs that far within a fraction of a millisecond, a swell does not.
-// [choice, check_gate D1-D4, X16]
+// at the kOpenFinishSeconds rate, or its own if that is faster: a pick runs that far within a fraction
+// of a millisecond, a swell does not. At 0.35 ms the finish splatters no more than an opening from
+// silence does. [choice, check_gate D1-D4, X16]
 constexpr double kOpenRatio = 0.5;
 constexpr double kOpenMinSeconds = 0.0002;
 constexpr double kOpenMaxSeconds = 0.005;
+constexpr double kOpenFinishSeconds = 0.00035;
 
 // Smooth's floor estimate while closed: the dB peak level, averaged over half the time since the
 // gate closed, up to kFloorTauMaxSeconds; the expander gain follows it at most kFloorSlewDbPerSecond,
@@ -307,7 +309,7 @@ public:
         main.prepare (windowSamples);
         raw.prepare (windowSamples);
         openMin = kOpenMinSeconds * sampleRate;
-        fastStep = (float) (1.0 / openMin);
+        finishStep = (float) (1.0 / (kOpenFinishSeconds * sampleRate));
         openMax = kOpenMaxSeconds * sampleRate;
         floorTauMax = kFloorTauMaxSeconds * sampleRate;
         floorGrowSamples = (int) std::ceil (floorTauMax / kFloorTauGrowth);
@@ -425,6 +427,7 @@ public:
                 open = true;
                 const double steps = juce::jlimit (openMin, openMax, kOpenRatio * (double) sinceLow + 1.0);
                 openStep = 1.0f / (float) steps;
+                fastStep = juce::jmax (openStep, finishStep);
                 openCurve = (float) juce::jlimit (0.0, 1.0, steps / openMin - 1.0);
                 startOpening (tight, tightCache);
                 startOpening (smooth, smoothCache);
@@ -568,7 +571,7 @@ private:
     MaxWindow main, raw;   // filtered, unfiltered
 
     float openLevel = 1.0e-4f, closeLevel = 5.0e-5f, runAwayLevel = 2.0e-4f, smoothOffsetDb = 0.0f, mainPeak = 0.0f;
-    float openStep = 1.0f, fastStep = 1.0f, openCurve = 0.0f, floorSlew = 0.002f, rangeCoeff = 0.002f;
+    float openStep = 1.0f, fastStep = 1.0f, finishStep = 1.0f, openCurve = 0.0f, floorSlew = 0.002f, rangeCoeff = 0.002f;
     float range = -90.0f, rangeTarget = -90.0f;
     double releaseStep = 0.04, holdSamples = 0.0, openMin = 9.6, openMax = 240.0, floorTauMax = 9600.0;
     int floorGrowSamples = 19200;
