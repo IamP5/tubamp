@@ -11,29 +11,15 @@
 //   Smooth    Tight's detector and state machine; closed = 3:1 downward expander on a
 //             steadied estimate of the floor, which its gain follows at most 1 dB per 10 ms.
 //
-// The closing rule (Tight and Smooth). The level is the lower of two 12 ms windowed peaks, the
-// 4th-order sidechain filter's and the unfiltered signal's, so the filter's ringing after a loud
-// low note holds nothing open. Two clocks decide a close:
-//  - A stop. A fall from the open to the close level within 50 ms (a hand stop takes 1 to 44 ms)
-//    waits the hold plus the length of the longest dip of 12.5 ms or more the level recently came
-//    back from with the gate open (a chord's beating partials; at most 150 ms). A slower fall is
-//    ridden (twice the band time, at most 1 s, restarted whenever the level climbs back to the
-//    close level or 6 dB off its low) until the level drops 6 dB under its own 50 ms maximum,
-//    which makes it a stop. Inside the band, a level 6 dB under the peak of its current excursion
-//    over the open level and 6 dB deeper than any trough already ridden is a stop after the hold
-//    plus one observed beat period (0 on a steady note), unless it climbs back to 5 dB under that
-//    peak first; so a stop onto a floor just under the threshold closes too. Only dips the gate
-//    rode open are remembered; a close forgets the beat period.
-//  - A deadline. Whatever the stop rule says, the gate is at the range hold + 250 ms (or 1.5 x a
-//    slower release) after the level was last over the open level: 0 dB, then -90 dB x u^2 over
-//    the last 80 ms, so chord troughs up to about hold + 190 ms keep the gain over -6 dB. Smooth
-//    only falls inside that window. After a deadline close, reopening also needs the level 6 dB
-//    over the lowest floor estimate since, so noise peaking at the threshold does not chatter.
-// Under -60 dB a release falls at most 30 dB per 40 ms, so a beat trough read as a stop costs a
-// partial dip and the crest reopens it. Smooth's closed estimate continues the one it kept while
-// riding and follows its law without the slew until the deadline. Opening follows the onset: a
-// 0.2 ms linear rise for a pick, up to a 5 ms smoothstep for a swell (half the time the level took
-// to climb the band).
+// The rule (Tight and Smooth) is a plain hysteresis gate. The level is the lower of two 12 ms
+// windowed peaks, the 4th-order sidechain filter's and the unfiltered signal's, so the filter's
+// ringing after a loud low note holds nothing open. The gate opens when the level reaches the
+// threshold and closes once it has been under the close level (threshold - 6 dB) for more than the
+// hold; a return to the close level restarts that count. Nothing else opens or closes it, and
+// nothing lowers the gain while it is open. Closed, Tight falls 60 dB per release time to the
+// range; Smooth falls at the same rate to its expander's target, then follows it. Opening follows
+// the onset: a 0.2 ms linear rise for a pick, up to a 5 ms smoothstep for a swell (half the time
+// the level took to climb from the close level).
 //
 // The gate measures where it sits and may apply its gain further down the chain (on the
 // amp's mono output), so it splits the usual process() into measure() and apply().
@@ -107,12 +93,10 @@ private:
 
 /** Release in ms for 60 dB: short for the hard gate, longer for the expander. */
 inline constexpr float kGateReleaseDefault[GateFx::numModes] { 30.0f, 30.0f, 80.0f };
-/** Hold in ms: how long the gate stays open after a note stops (its level falls from the open to
-    the close level within 50 ms), on top of the 12 ms detector window, at any floor depth. Tight
-    takes 10, not 6: with 6 the short beat dips of low chords near the threshold read as stops
-    (version 5: 11 of 256 chord cases chatter, 1 with 10), while every 40 and 50 ms palm-mute gap
-    still closes. Classic's entry is unused. */
-inline constexpr float kGateHoldDefault[GateFx::numModes] { 6.0f, 10.0f, 10.0f };
+/** Hold in ms: how long the level must stay under the close level, past the 12 ms detector window,
+    before the gate closes. Smooth takes longer, so its expander rides a chord's beat troughs.
+    Classic's entry is unused. */
+inline constexpr float kGateHoldDefault[GateFx::numModes] { 6.0f, 10.0f, 40.0f };
 /** Sidechain high-pass corner in Hz (4th-order Butterworth): a low E reads 1.7 dB under its
     level, 50 / 60 Hz hum 14 / 8 dB. Was 90 Hz at 2nd order (3.9 dB; 11 / 8 dB). A guitar
     default: for bass use the knob's minimum (exactly off) or about 40 Hz (check_gate F rows). */
