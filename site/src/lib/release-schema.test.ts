@@ -74,3 +74,65 @@ test("isArch and formatSize", () => {
   assert.equal(isArch("ppc"), false);
   assert.equal(formatSize(12_345_678), "12.3 MB");
 });
+
+const BASE = "https://github.com/IamP5/tubamp/releases/download/v0.2.0/";
+const withUrl = (url: string, name?: string) => {
+  const m = good();
+  m.downloads.arm64.url = url;
+  if (name) m.downloads.arm64.name = name;
+  return parseManifest(m);
+};
+
+test("a download URL that traverses out of the repository is rejected", () => {
+  const evil =
+    "https://github.com/IamP5/tubamp/releases/download/../../../../evil/malware/releases/download/v1/x.pkg";
+  assert.equal(withUrl(evil, "x.pkg"), null);
+  assert.equal(withUrl(`${BASE}%2e%2e/tubamp-0.2.0-macos-arm64.pkg`), null);
+});
+
+test("a download URL must be https on github.com, with no query or fragment", () => {
+  const file = "tubamp-0.2.0-macos-arm64.pkg";
+  assert.equal(withUrl(`http://github.com/IamP5/tubamp/releases/download/v0.2.0/${file}`), null);
+  assert.equal(withUrl(`https://github.com.evil.example/IamP5/tubamp/releases/download/v0.2.0/${file}`), null);
+  assert.equal(withUrl(`https://user@github.com/IamP5/tubamp/releases/download/v0.2.0/${file}`), null);
+  assert.equal(withUrl(`${BASE}${file}?x=1`), null);
+  assert.equal(withUrl(`${BASE}${file}#frag`), null);
+  assert.equal(withUrl(`https://github.com/iamp5/tubamp/releases/download/v0.2.0/${file}`), null);
+});
+
+test("a download URL must carry the manifest's tag and the download's own name", () => {
+  assert.equal(
+    withUrl("https://github.com/IamP5/tubamp/releases/download/v0.1.0/tubamp-0.2.0-macos-arm64.pkg"),
+    null,
+  );
+  assert.equal(withUrl(`${BASE}tubamp-0.2.0-macos-x86_64.pkg`), null);
+  assert.equal(withUrl(`${BASE}nested/tubamp-0.2.0-macos-arm64.pkg`), null);
+});
+
+test("swapped names between architectures are rejected", () => {
+  const m = good();
+  [m.downloads.arm64.name, m.downloads.x86_64.name] = [m.downloads.x86_64.name, m.downloads.arm64.name];
+  assert.equal(parseManifest(m), null);
+});
+
+test("a download name must be a plain .pkg file name", () => {
+  assert.equal(withUrl(`${BASE}evil.sh`, "evil.sh"), null);
+  assert.equal(withUrl(`${BASE}a%20b.pkg`, "a b.pkg"), null);
+  assert.equal(withUrl(`${BASE}x.pkg.zip`, "x.pkg.zip"), null);
+});
+
+test("download size must be a safe integer from 1 to 1,000,000,000", () => {
+  const sized = (size: number) => {
+    const m = good();
+    m.downloads.arm64.size = size;
+    return parseManifest(m);
+  };
+  assert.equal(sized(0), null);
+  assert.equal(sized(-5), null);
+  assert.equal(sized(1.5), null);
+  assert.equal(sized(Number.NaN), null);
+  assert.equal(sized(1_000_000_001), null);
+  assert.equal(sized(Number.MAX_SAFE_INTEGER + 2), null);
+  assert.equal(sized(1)?.downloads.arm64.size, 1);
+  assert.equal(sized(1_000_000_000)?.downloads.arm64.size, 1_000_000_000);
+});

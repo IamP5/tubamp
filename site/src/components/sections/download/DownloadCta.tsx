@@ -1,6 +1,7 @@
 "use client";
 
 import ButtonLink from "@/components/ui/Button";
+import { ctaHref } from "./format";
 import { useDetectedArch } from "./useDetectedArch";
 
 export default function DownloadCta({
@@ -12,7 +13,7 @@ export default function DownloadCta({
 }) {
   const arch = useDetectedArch();
   return (
-    <ButtonLink href={`/download/${arch ?? "arm64"}`} className={className}>
+    <ButtonLink href={ctaHref(arch)} className={className}>
       {label}
     </ButtonLink>
   );

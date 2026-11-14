@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import ButtonLink from "@/components/ui/Button";
+import DownloadCta from "@/components/sections/download/DownloadCta";
 import { SITE } from "@/data/site";
 import HeroStage from "./HeroStage";
 
@@ -36,7 +36,7 @@ export default function HeroA({ version }: { version: string | null }) {
         actions={
           <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
             <div className="flex items-center gap-4">
-              <ButtonLink href="/download/arm64">Download for Mac</ButtonLink>
+              <DownloadCta />
               {version && <span className="label">v{version}</span>}
             </div>
             <a

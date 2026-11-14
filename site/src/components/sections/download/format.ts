@@ -26,3 +26,12 @@ export function macOS(version: string): string {
 export function archOrder(detected: Arch | null): readonly [Arch, Arch] {
   return detected === "x86_64" ? ["x86_64", "arm64"] : ["arm64", "x86_64"];
 }
+
+/**
+ * Where a "Download for Mac" button goes. A wrong-architecture installer
+ * installs a plugin that never loads, so an installer is named only when the
+ * architecture was detected; otherwise the visitor picks in the download field.
+ */
+export function ctaHref(detected: Arch | null): string {
+  return detected ? `/download/${detected}` : "#download";
+}

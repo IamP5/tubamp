@@ -10,12 +10,13 @@ import { useDetectedArch } from "./useDetectedArch";
 const { archLabels } = CHAPTERS.download;
 
 export default function ArchButtons({ downloads }: { downloads: Record<Arch, Download> }) {
-  const order = archOrder(useDetectedArch());
+  const detected = useDetectedArch();
+  const order = archOrder(detected);
   return (
     <ul className="grid gap-8 sm:grid-cols-2 sm:gap-4">
       {order.map((arch, i) => (
         <li key={arch} className="flex flex-col gap-3">
-          <a href={`/download/${arch}`} className={fieldButton(i === 0)}>
+          <a href={`/download/${arch}`} className={fieldButton(detected !== null && i === 0)}>
             <span>
               <span className="sr-only">Download for </span>
               {archLabels[arch]}

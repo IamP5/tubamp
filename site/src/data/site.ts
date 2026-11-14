@@ -19,10 +19,10 @@ export const SITE = {
   line: "A free amp plugin for Logic Pro.",
   what: "A free Audio Unit for Logic Pro that plays neural captures of real amps, in a signal chain you build yourself.",
   platforms: "macOS 11 or later. Apple Silicon and Intel.",
-  hosts: "Logic Pro and other Audio Unit hosts.",
+  hosts: "Logic Pro. Other Audio Unit hosts are untested.",
 } as const;
 
-/** The default chain, in order. Blocks can be reordered, removed and added again. */
+/** The blocks in their default order. They can be reordered, removed and added again. */
 export const CHAIN: readonly Block[] = [
   { id: "gate", name: "Gate", family: "dynamics", does: "Closes on the noise between notes." },
   { id: "comp", name: "Compressor", family: "dynamics", does: "Evens out the picking hand." },

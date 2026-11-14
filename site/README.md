@@ -9,6 +9,8 @@ Read it before you change how the page looks or moves.
 
 ## Run it
 
+Node 22.18 or later: the tests rely on Node's built-in type stripping.
+
 ```sh
 cd site
 npm install
@@ -35,15 +37,23 @@ The page never needs a deploy when the plugin ships a new version.
    a `manifest.json` asset (`docs/RELEASING.md` in the repository root).
 2. `getLatestRelease()` in `src/lib/release.ts` fetches
    `https://github.com/IamP5/tubamp/releases/latest/download/manifest.json`.
-   The result is cached and refreshed in the background every five minutes.
+   The result is cached and refreshed in the background once it is five
+   minutes old. Only a 404 means "no release yet". Any other failure (network
+   error, 5xx, 429, a body that is not a manifest) throws, so it never replaces
+   a good cached release, and a cold cache falls back to the "no release" state.
 3. `parseManifest()` in `src/lib/release-schema.ts` is the only place manifest
-   JSON becomes a `Release`. It rejects a manifest whose downloads point
-   outside this repository's release assets.
-4. The download buttons link to `/download/arm64` and `/download/x86_64`
+   JSON becomes a `Release`. It rejects a manifest unless each download's URL is
+   exactly `https://github.com/IamP5/tubamp/releases/download/<tag>/<name>`.
+4. The download field links to `/download/arm64` and `/download/x86_64`
    (`src/app/download/[arch]/route.ts`), which redirect to the latest
-   installer, or to the GitHub releases page when no release exists yet.
+   installer, or to the GitHub releases page when no release exists yet. The
+   "Download for Mac" buttons in the hero and nav link to an installer only
+   when the browser's architecture was detected; otherwise they scroll to
+   `#download`, because an installer for the wrong architecture installs a
+   plugin that never loads.
 
-A new release therefore reaches the page within about five minutes. To see a
+A new release reaches the page within about five minutes of the next request
+after the cache goes stale: with no visitors, nothing refreshes it. To see a
 new release sooner, redeploy from the Vercel dashboard.
 
 ## Media
@@ -133,8 +143,15 @@ One-time setup, in the Vercel dashboard:
 3. Framework preset: Next.js. No environment variables are required.
 
 After that, Vercel deploys every push to `main` and gives every pull request a
-preview URL. `vercel.json` skips a deploy when a push touches neither `site/`
-nor `ui/`.
+preview URL. `vercel.json` skips a deploy when nothing in `site/` or `ui/`
+changed since the last successful deployment of that branch
+(`VERCEL_GIT_PREVIOUS_SHA`), so a push of several commits deploys if any of
+them touched those folders. Vercel treats exit code 0 from the command as
+"skip" and 1 as "build". On a branch's first deployment the variable is empty
+and the command compares with the parent commit (`HEAD^`). If the previous
+commit is missing from the clone, `git diff` fails with exit code 128, which
+is not 0, so the deploy runs; Vercel's documentation does not describe that
+case, so check the deployment log if a deploy is unexpectedly skipped.
 
 To use your own domain, add it under **Settings, Domains** in the project. The
 Open Graph URLs follow the production domain automatically

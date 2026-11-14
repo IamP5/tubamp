@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { archOrder, macOS, releaseDate, shortHash } from "./format.ts";
+import { archOrder, ctaHref, macOS, releaseDate, shortHash } from "./format.ts";
 
 test("release date is day, short month, year in UTC", () => {
   assert.equal(releaseDate("2026-11-14T09:30:00Z"), "14 Nov 2026");
@@ -21,4 +21,10 @@ test("detected Mac goes first, Apple Silicon when unknown", () => {
   assert.deepEqual(archOrder("x86_64"), ["x86_64", "arm64"]);
   assert.deepEqual(archOrder("arm64"), ["arm64", "x86_64"]);
   assert.deepEqual(archOrder(null), ["arm64", "x86_64"]);
+});
+
+test("a download button names an installer only for a detected architecture", () => {
+  assert.equal(ctaHref("arm64"), "/download/arm64");
+  assert.equal(ctaHref("x86_64"), "/download/x86_64");
+  assert.equal(ctaHref(null), "#download");
 });
