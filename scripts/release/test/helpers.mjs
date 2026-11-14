@@ -54,7 +54,7 @@ export function plan(repo, args = []) {
   return JSON.parse(result.stdout);
 }
 
-export function fakeInstallers(version, { minimumMacOS = '11.0' } = {}) {
+export function fakeInstallers(version, { minimumMacOS = '11.0', updates = false } = {}) {
   const dir = tempDir('tubamp-release-dist-');
   const files = {};
   for (const arch of ['arm64', 'x86_64']) {
@@ -63,7 +63,7 @@ export function fakeInstallers(version, { minimumMacOS = '11.0' } = {}) {
     writeFileSync(join(dir, name), bytes);
     writeFileSync(
       join(dir, `tubamp-${version}-macos-${arch}.build.json`),
-      JSON.stringify({ version, arch, minimumMacOS }),
+      JSON.stringify({ version, arch, minimumMacOS, updates }),
     );
     files[arch] = { name, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
   }

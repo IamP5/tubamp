@@ -21,6 +21,21 @@
   flex: 1;
 }
 
+.settings {
+  position: relative;
+}
+
+.settingsDot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ds-r-full);
+  background: var(--ds-accent);
+  box-shadow: 0 0 0 2px var(--ds-bg);
+}
+
 /* ── Preset control ── */
 
 .preset {

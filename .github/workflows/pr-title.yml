@@ -4,7 +4,6 @@ name: pr-title
 # release. Kept apart from pr.yml so editing a title does not rebuild the installers.
 on:
   pull_request:
-    branches: [main]
     types: [opened, edited, reopened, synchronize]
 
 permissions:

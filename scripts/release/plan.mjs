@@ -3,8 +3,12 @@
 // last vX.Y.Z tag that change something the installer ships. Git tags are the only record
 // of released versions.
 //   node scripts/release/plan.mjs [--base-version 0.1.0] [--squash-title "<title>"] [--summary-label "<text>"]
+//                                 [--signing-key present|absent|throwaway]
 // --squash-title plans HEAD, a pull request's merge commit, as if the pull request were
 // squashed with that title; its $GITHUB_OUTPUT keys then start with squash_.
+// --signing-key says whether the release environment holds the update signing key, or
+// that a pull request's dry run signs with a throwaway key. With the committed public keys
+// it decides, once per run, whether the release ships the in-plugin updater.
 // Prints the plan as JSON and, under GitHub Actions, writes it to $GITHUB_OUTPUT.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -91,7 +95,45 @@ function candidateCommits(cwd, previousTag, squashTitle) {
   return [squashedPullRequest(cwd, squashTitle), ...onBase];
 }
 
-export function planRelease({ cwd = process.cwd(), baseVersion = '0.1.0', squashTitle = null } = {}) {
+export const SIGNING_SECRET = 'TUBAMP_UPDATE_SIGNING_KEYS';
+export const SIGNING_KEY_STATES = ['present', 'absent', 'throwaway'];
+
+/** Whether the release compiles the updater in and publishes its signed envelope. A
+    release is armed completely or not at all: the plugin, the archive and the envelope all
+    follow this one decision. Only public keys committed at HEAD count. With none the
+    updater is dormant. With two or more the repository is armed, and a release without
+    the envelope would silently cut every installed copy off from updates, so a missing
+    secret stops the plan. One key alone lacks the recovery key the design requires. */
+export function updatesDecision({ cwd, signingKey }) {
+  if (!SIGNING_KEY_STATES.includes(signingKey)) throw new Error(`--signing-key must be one of ${SIGNING_KEY_STATES.join(', ')}`);
+  const keys = git(cwd, 'ls-tree', '--name-only', 'HEAD', 'src/update/keys/')
+    .split('\n')
+    .filter((path) => path.endsWith('.pub.pem'));
+  if (keys.length === 0) {
+    return { updates: 'off', reason: 'no public key is committed in src/update/keys, so the updater stays dormant (docs/RELEASING.md)' };
+  }
+  if (keys.length === 1) {
+    throw new Error(
+      `src/update/keys holds 1 public key at HEAD (${keys[0]}); the updater needs the release key and the offline recovery key. `
+      + 'Commit the recovery key\'s public half, or remove the key to stay dormant (docs/RELEASING.md)',
+    );
+  }
+  if (signingKey === 'absent') {
+    throw new Error(
+      `${keys.length} public keys are committed in src/update/keys, so every release must ship update-v1.signed, `
+      + `but the release environment has no ${SIGNING_SECRET} secret. Add the secret and rerun (docs/RELEASING.md). `
+      + 'Releasing without it would leave every installed copy without updates',
+    );
+  }
+  return {
+    updates: 'on',
+    reason: signingKey === 'throwaway'
+      ? `${keys.length} public keys are committed, and this dry run signs with a throwaway key`
+      : `${keys.length} public keys are committed and the release environment holds ${SIGNING_SECRET}`,
+  };
+}
+
+export function planRelease({ cwd = process.cwd(), baseVersion = '0.1.0', squashTitle = null, signingKey = 'absent' } = {}) {
   if (!parseVersion(baseVersion)) throw new Error(`base version must be X.Y.Z, got "${baseVersion}"`);
   if (git(cwd, 'rev-parse', '--is-shallow-repository') === 'true') {
     throw new Error('the checkout is shallow; fetch the full history and tags (actions/checkout fetch-depth: 0)');
@@ -115,10 +157,13 @@ export function planRelease({ cwd = process.cwd(), baseVersion = '0.1.0', squash
     .filter((c) => changesInstaller(c.paths))
     .map(({ paths, invalidReleaseAs, ...c }) => c);
 
+  const { updates, reason: updatesReason } = updatesDecision({ cwd, signingKey });
   const base = {
     sha,
     previousTag: previous?.tag ?? null,
     commits,
+    updates,
+    updatesReason,
   };
 
   if (headTags.length > 0) {
@@ -197,6 +242,7 @@ function writeGithubOutput(plan, { keyPrefix, summaryLabel }) {
     previous_tag: plan.previousTag ?? '',
     build_version: plan.buildVersion,
     sha: plan.sha,
+    updates: plan.updates,
   };
   appendFileSync(
     process.env.GITHUB_OUTPUT,
@@ -205,7 +251,8 @@ function writeGithubOutput(plan, { keyPrefix, summaryLabel }) {
   if (process.env.GITHUB_STEP_SUMMARY) {
     const headline = plan.release ? `Release **${plan.tag}**` : 'No release';
     const label = summaryLabel ? `**${summaryLabel}.** ` : '';
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${label}${headline}: ${plan.reason}.\n\n`);
+    const updates = `Updates **${plan.updates}**: ${plan.updatesReason}.`;
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${label}${headline}: ${plan.reason}. ${updates}\n\n`);
   }
 }
 
@@ -215,11 +262,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       'base-version': { type: 'string', default: '0.1.0' },
       'squash-title': { type: 'string' },
       'summary-label': { type: 'string' },
+      'signing-key': { type: 'string', default: 'absent' },
     },
   });
   try {
     const squashTitle = values['squash-title'] ?? null;
-    const plan = planRelease({ baseVersion: values['base-version'], squashTitle });
+    const plan = planRelease({ baseVersion: values['base-version'], squashTitle, signingKey: values['signing-key'] });
     writeGithubOutput(plan, { keyPrefix: squashTitle == null ? '' : 'squash_', summaryLabel: values['summary-label'] });
     console.log(JSON.stringify(plan, null, 2));
   } catch (error) {

@@ -8,6 +8,7 @@
  */
 import { Button, Modal } from "../../components";
 import { useStore } from "../../store";
+import { UpdateRows } from "../update/UpdateRows";
 import s from "./settings.module.css";
 
 export interface SettingsSheetProps {
@@ -23,7 +24,7 @@ export function SettingsSheet({ open, onClose }: SettingsSheetProps) {
   const account = t3k.authenticated ? (t3k.username ?? "Signed in") : "Signed out";
 
   return (
-    <Modal open={open} onClose={onClose} title="Settings" width={400}>
+    <Modal open={open} onClose={onClose} title="Settings" width={460}>
       <div className={s.rows}>
         <div className={s.row}>
           <span className={s.label}>TONE3000 key</span>
@@ -45,6 +46,8 @@ export function SettingsSheet({ open, onClose }: SettingsSheetProps) {
             Sign out
           </Button>
         </div>
+
+        <UpdateRows open={open} />
       </div>
 
       <p className={s.attribution}>Powered by TONE3000</p>

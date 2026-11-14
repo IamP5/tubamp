@@ -1,0 +1,254 @@
+{
+  "about": "The update bridge contract as data. tubamp_update_tool test checks viewJson and parseCommand against it; tsc checks it against UpdateView and UpdateCommand (update-contract.check.ts). Each key under views, failures, manualReasons, checkProblems and commands is the kind, reason or type it holds.",
+  "views": {
+    "off": {
+      "running": "0.3.0",
+      "hostName": "Logic Pro",
+      "autoCheck": false,
+      "disclose": false,
+      "systemCopy": false,
+      "phase": {
+        "kind": "off"
+      }
+    },
+    "idle": {
+      "running": "0.3.0",
+      "hostName": "Logic Pro",
+      "autoCheck": true,
+      "disclose": false,
+      "systemCopy": false,
+      "phase": {
+        "kind": "idle"
+      }
+    },
+    "checking": {
+      "running": "0.3.0",
+      "hostName": "Logic Pro",
+      "autoCheck": true,
+      "disclose": false,
+      "systemCopy": false,
+      "phase": {
+        "kind": "checking"
+      }
+    },
+    "available": {
+      "running": "0.3.0",
+      "hostName": "Logic Pro",
+      "autoCheck": true,
+      "disclose": true,
+      "systemCopy": false,
+      "announce": "0.4.0",
+      "phase": {
+        "kind": "available",
+        "version": "0.4.0"
+      }
+    },
+    "downloading": {
+      "running": "0.3.0",
+      "hostName": "Logic Pro",
+      "autoCheck": true,
+      "disclose": false,
+      "systemCopy": false,
+      "phase": {
+        "kind": "downloading",
+        "version": "0.4.0",
+        "received": 5000000,
+        "total": 17345678
+      }
+    },
+    "installing": {
+      "running": "0.3.0",
+      "hostName": "Logic Pro",
+      "autoCheck": true,
+      "disclose": false,
+      "systemCopy": false,
+      "phase": {
+        "kind": "installing",
+        "version": "0.4.0"
+      }
+    },
+    "restartPending": {
+      "running": "0.3.0",
+      "hostName": "Logic Pro",
+      "autoCheck": true,
+      "disclose": false,
+      "systemCopy": true,
+      "phase": {
+        "kind": "restartPending",
+        "version": "0.4.0"
+      }
+    },
+    "failed": {
+      "running": "0.3.0",
+      "hostName": "Logic Pro",
+      "autoCheck": true,
+      "disclose": false,
+      "systemCopy": false,
+      "phase": {
+        "kind": "failed",
+        "version": "0.4.0",
+        "reason": "network"
+      }
+    },
+    "manual": {
+      "running": "0.3.0",
+      "hostName": "Logic Pro",
+      "autoCheck": true,
+      "disclose": false,
+      "systemCopy": false,
+      "announce": "0.4.0",
+      "phase": {
+        "kind": "manual",
+        "version": "0.4.0",
+        "reason": "systemDomain"
+      }
+    }
+  },
+  "checkProblems": {
+    "unreachable": {
+      "kind": "idle",
+      "problem": "unreachable"
+    },
+    "unverified": {
+      "kind": "idle",
+      "problem": "unverified"
+    }
+  },
+  "failures": {
+    "network": {
+      "kind": "failed",
+      "version": "0.4.0",
+      "reason": "network"
+    },
+    "verify": {
+      "kind": "failed",
+      "version": "0.4.0",
+      "reason": "verify"
+    },
+    "noSpace": {
+      "kind": "failed",
+      "version": "0.4.0",
+      "reason": "noSpace"
+    },
+    "notWritable": {
+      "kind": "failed",
+      "version": "0.4.0",
+      "reason": "notWritable"
+    }
+  },
+  "manualReasons": {
+    "systemDomain": {
+      "kind": "manual",
+      "version": "0.4.0",
+      "reason": "systemDomain"
+    },
+    "unexpectedPath": {
+      "kind": "manual",
+      "version": "0.4.0",
+      "reason": "unexpectedPath"
+    },
+    "readOnly": {
+      "kind": "manual",
+      "version": "0.4.0",
+      "reason": "readOnly"
+    },
+    "noAtomicSwap": {
+      "kind": "manual",
+      "version": "0.4.0",
+      "reason": "noAtomicSwap"
+    },
+    "notAnAudioUnit": {
+      "kind": "manual",
+      "version": "0.4.0",
+      "reason": "notAnAudioUnit"
+    }
+  },
+  "commands": {
+    "checkNow": {
+      "type": "checkNow"
+    },
+    "install": {
+      "type": "install",
+      "version": "0.4.0"
+    },
+    "cancel": {
+      "type": "cancel"
+    },
+    "setAutoCheck": {
+      "type": "setAutoCheck",
+      "enabled": false
+    },
+    "markAnnounced": {
+      "type": "markAnnounced",
+      "version": "0.4.0"
+    },
+    "markDisclosed": {
+      "type": "markDisclosed"
+    },
+    "openReleasePage": {
+      "type": "openReleasePage"
+    }
+  },
+  "refusedCommands": [
+    null,
+    "checkNow",
+    [],
+    {},
+    {
+      "type": "update"
+    },
+    {
+      "type": 7
+    },
+    {
+      "type": "CheckNow"
+    },
+    {
+      "type": "install"
+    },
+    {
+      "type": "install",
+      "version": "0.4"
+    },
+    {
+      "type": "install",
+      "version": "v0.4.0"
+    },
+    {
+      "type": "install",
+      "version": "0.4.0-beta"
+    },
+    {
+      "type": "install",
+      "version": 400
+    },
+    {
+      "type": "install",
+      "version": "0.4.0",
+      "url": "https://evil.example/x.zip"
+    },
+    {
+      "type": "setAutoCheck"
+    },
+    {
+      "type": "setAutoCheck",
+      "enabled": "true"
+    },
+    {
+      "type": "setAutoCheck",
+      "enabled": 1
+    },
+    {
+      "type": "markAnnounced",
+      "version": "1.2.256"
+    },
+    {
+      "type": "cancel",
+      "now": true
+    },
+    {
+      "type": "openReleasePage",
+      "url": "https://evil.example/"
+    }
+  ]
+}

@@ -105,9 +105,40 @@ shows the "UI bundle missing" page instead of pointing at an absent dev server.
 
 A push to `main` that contains a `feat`, `fix`, `perf`, or breaking Conventional
 Commit publishes a GitHub Release with an Apple Silicon and an Intel `.pkg`
-installer. The version comes from the commit messages and git tags. See
-`docs/RELEASING.md` for the commit convention, reruns, and how to build an
-installer locally (`scripts/release/build-installer.sh`).
+installer. Each installer installs for the current user only: it puts
+`tubamp.component` in `~/Library/Audio/Plug-Ins/Components` and asks for no
+password. The version comes from the commit messages and git tags. See
+`docs/RELEASING.md` for the commit convention, reruns, the in-plugin update
+keys, and how to build an installer locally
+(`scripts/release/build-installer.sh`).
+
+## If an update goes wrong
+
+When tubamp updates itself, it keeps the version you had before in
+`~/Library/Audio/Plug-Ins/.tubamp/previous/tubamp.component`, exactly as it was
+on disk. Logic never loads that copy, because it is outside the folders that
+Logic scans.
+
+If tubamp is missing from Logic after an update, or Logic says it failed
+validation:
+
+1. Quit Logic and start it again. Logic validates a new version once, at the
+   first start after the update.
+2. If tubamp is still missing, open **Logic Pro** > **Settings** >
+   **Plug-in Manager**, select tubamp, and click **Reset & Rescan Selection**.
+3. If tubamp still fails, quit Logic and put the previous version back. This
+   command moves the new version to the Trash and the previous one into place:
+
+	```sh
+	mv ~/Library/Audio/Plug-Ins/Components/tubamp.component ~/.Trash/tubamp-update-"$(date +%s)".component &&
+		mv ~/Library/Audio/Plug-Ins/.tubamp/previous/tubamp.component ~/Library/Audio/Plug-Ins/Components/
+	```
+
+4. Start Logic. It validates the previous version and lists it again.
+
+tubamp offers the update again after the restore. To stop that, turn off
+**Check for updates automatically** in tubamp's Settings, and install a later
+release from the release page when one is out.
 
 ## Library layout
 

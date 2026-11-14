@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Stands in for the gh CLI: keeps GitHub's tags and releases in the JSON file named by
-// FAKE_GH_STATE. FAKE_GH_CRASH_ON=<asset name> makes that asset's upload die first.
+// Stands in for the gh CLI: keeps GitHub's tags and releases, asset bytes included, in the
+// JSON file named by FAKE_GH_STATE. FAKE_GH_CRASH_ON=<asset name> makes that asset's
+// upload die first.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 
 const statePath = process.env.FAKE_GH_STATE;
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
@@ -28,7 +29,8 @@ if (args[0] === 'api' && args.includes('DELETE')) {
   } else if (path.includes('/releases?')) {
     const tag = /tag_name == "([^"]+)"/.exec(args[args.indexOf('--jq') + 1])[1];
     for (const r of state.releases.filter((x) => x.tag_name === tag)) {
-      process.stdout.write(`${JSON.stringify({ id: r.id, draft: r.draft, target: r.target, assets: r.assets })}\n`);
+      const assets = r.assets.map(({ name, state }) => ({ name, state }));
+      process.stdout.write(`${JSON.stringify({ id: r.id, draft: r.draft, target: r.target, assets })}\n`);
     }
   } else {
     process.stderr.write(`fake gh: unhandled api ${path}\n`);
@@ -49,8 +51,21 @@ if (args[0] === 'api' && args.includes('DELETE')) {
       process.exit(1);
     }
     release.assets = release.assets.filter((a) => a.name !== name);
-    release.assets.push({ name, state: 'uploaded' });
+    release.assets.push({ name, state: 'uploaded', content: readFileSync(file).toString('base64') });
     save();
+  }
+} else if (args[0] === 'release' && args[1] === 'download') {
+  const release = byTag(args[2]);
+  if (!release) process.exit(1);
+  const dir = args[args.indexOf('--dir') + 1];
+  const patterns = args.flatMap((a, i) => (args[i - 1] === '--pattern' ? [a] : []));
+  for (const name of patterns) {
+    const asset = release.assets.find((a) => a.name === name && a.state === 'uploaded');
+    if (!asset) {
+      process.stderr.write(`fake gh: no asset ${name}\n`);
+      process.exit(1);
+    }
+    writeFileSync(join(dir, name), Buffer.from(asset.content ?? '', 'base64'));
   }
 } else if (args[0] === 'release' && args[1] === 'edit') {
   const release = byTag(args[2]);

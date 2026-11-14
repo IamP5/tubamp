@@ -30,7 +30,9 @@ import type {
   ToggleParamState,
   UiState,
   Unsubscribe,
+  UpdateCommand,
 } from "./types";
+import { UPDATE_OFF } from "./types";
 
 /* ─────────────────────────── native function plumbing ──────────────────── */
 
@@ -160,6 +162,7 @@ const emptyUiState: UiState = {
   fxEmbed: { slot: -1, width: 0, height: 0, error: "" },
   fxSupported: false,
   eqAnalyser: { on: true, resolution: 1, speed: 1 },
+  update: UPDATE_OFF,
 };
 
 export const juceBridge: Bridge = {
@@ -340,6 +343,9 @@ export const juceBridge: Bridge = {
   fxSetEmbedVisible: async (visible) => {
     await native("fxSetEmbedVisible")(visible);
   },
+
+  updateCommand: (command: UpdateCommand) =>
+    call<ErrorResult>("updateCommand", { error: "The update command was not understood." }, command),
 };
 
 /* The two new events (`editorSizeChanged`, `fxEmbedChanged`) need no wiring of
