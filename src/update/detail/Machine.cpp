@@ -19,12 +19,26 @@ namespace
         return { std::move (m), { effect::SavePrefs { patch } } };
     }
 
+    // T19: the latest click during a check waits for it instead of being dropped.
+    Step queue (const Model& m, const Queued& click)
+    {
+        auto next = m;
+        auto& checking = std::get<activity::Checking> (next.activity);
+        if (checking.then == click)
+            return same (m);
+        checking.then = click;
+        return { std::move (next), {} };
+    }
+
     Step onCommand (const Model& m, const Command& command)
     {
+        const auto* checking = std::get_if<activity::Checking> (&m.activity);
         return std::visit (Overload {
             // T3
-            [&] (const command::CheckNow&) -> Step
+            [&] (const command::CheckNow& c) -> Step
             {
+                if (checking != nullptr && ! checking->manual)
+                    return queue (m, c);
                 if (! idle (m))
                     return same (m);
                 auto next = m;
@@ -36,7 +50,11 @@ namespace
             [&] (const command::Install& c) -> Step
             {
                 const bool notInstalled = ! m.disk.installed || *m.disk.installed < c.version;
-                if (! idle (m) || ! writable (m) || ! m.offer || m.offer->version() != c.version || ! notInstalled)
+                if (! writable (m) || ! m.offer || m.offer->version() != c.version || ! notInstalled)
+                    return same (m);
+                if (checking != nullptr)
+                    return queue (m, c);
+                if (! idle (m))
                     return same (m);
                 auto next = m;
                 next.activity = activity::Installing { *m.offer, Stage::download, 0 };
@@ -126,6 +144,9 @@ Step step (const Model& m, const Event& e)
                         next.lastCheckProblem = p;
                 },
             }, f.outcome);
+            // T19
+            if (checking->then)
+                return std::visit ([&] (const auto& click) { return onCommand (next, Command { click }); }, *checking->then);
             return { std::move (next), {} };
         },
         // T9
@@ -195,7 +216,7 @@ View project (const Model& m)
         view.phase = phase::Downloading { job->offer.version(), job->received, job->offer.archive().size };
     else if (job != nullptr)
         view.phase = phase::Installing { job->offer.version() };
-    else if (checking != nullptr && checking->manual)
+    else if (checking != nullptr && (checking->manual || checking->then))
         view.phase = phase::Checking {};
     else if (m.disk.installed && *m.disk.installed != m.running)
         view.phase = phase::RestartPending { *m.disk.installed };

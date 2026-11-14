@@ -38,12 +38,18 @@ namespace check
 }
 using CheckOutcome = std::variant<check::NotDue, check::Verified, CheckProblem>;
 
+/** A click that arrived while a check was running. It runs when the check finishes,
+    against the model the check produced, so it is never dropped and never acts on an
+    offer the check replaced. */
+using Queued = std::variant<command::CheckNow, command::Install>;
+
 namespace activity
 {
     struct None { bool operator== (const None&) const = default; };
     struct Checking
     {
         bool manual = false;
+        std::optional<Queued> then;   // the latest click; a later one replaces it
         bool operator== (const Checking&) const = default;
     };
     struct Installing
@@ -169,7 +175,7 @@ Step step (const Model&, const Event&);
       site is Off                              -> Off
       Installing at Stage::download            -> Downloading
       Installing at a later stage              -> Installing
-      Checking, manual                         -> Checking   (automatic checks are invisible)
+      Checking, manual or with a queued click  -> Checking   (automatic checks are invisible)
       disk.installed differs from running      -> RestartPending
       lastFailure                              -> Failed
       offer, site is Manual                    -> Manual

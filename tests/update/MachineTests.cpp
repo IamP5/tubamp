@@ -74,6 +74,8 @@ std::vector<Named> models()
         { "available", withOffer (base(), offerN()) },
         { "checking(auto)", withActivity (withOffer (base(), offerN()), activity::Checking { false }) },
         { "checking(manual)", withActivity (base(), activity::Checking { true }) },
+        { "checking(auto, CheckNow queued)",
+          withActivity (withOffer (base(), offerN()), activity::Checking { false, Queued { command::CheckNow {} } }) },
         { "downloading", installing (Stage::download) },
         { "installing(unpack)", installing (Stage::unpack) },
         { "installing(inspect)", installing (Stage::inspect) },
@@ -121,13 +123,16 @@ bool mayAct (const Model& m, const Event& e)
         return false;
     const bool idle = std::holds_alternative<activity::None> (m.activity);
     const auto* job = std::get_if<activity::Installing> (&m.activity);
+    const auto* checking = std::get_if<activity::Checking> (&m.activity);
+    const auto queuedAlready = [&] (const Queued& q) { return checking != nullptr && checking->then == q; };
 
     if (const auto* c = std::get_if<event::Commanded> (&e))
     {
         if (std::holds_alternative<command::CheckNow> (c->command))
-            return idle;
+            return idle || (checking != nullptr && ! checking->manual && ! queuedAlready (command::CheckNow {}));
         if (const auto* install = std::get_if<command::Install> (&c->command))
-            return idle && std::holds_alternative<site::Writable> (m.site) && m.offer && m.offer->version() == install->version
+            return (idle || (checking != nullptr && ! queuedAlready (*install)))
+                && std::holds_alternative<site::Writable> (m.site) && m.offer && m.offer->version() == install->version
                 && (! m.disk.installed || *m.disk.installed < install->version);
         if (std::holds_alternative<command::Cancel> (c->command))
             return job != nullptr && job->stage < Stage::commit;
@@ -190,7 +195,7 @@ void transitions()
                    && ! s.next.lastCheckProblem,
                "T3 CheckNow when idle: a manual Check, phase Checking");
         check (unchanged (installing (Stage::download), cmd (command::CheckNow {})), "T3 CheckNow during a job: ignored");
-        check (unchanged (withActivity (base(), activity::Checking { false }), cmd (command::CheckNow {})), "T3 CheckNow during an automatic check: ignored");
+        check (unchanged (withActivity (base(), activity::Checking { true }), cmd (command::CheckNow {})), "T3 CheckNow during a manual check: ignored");
     }
     // T4, T5, T6
     {
@@ -229,13 +234,49 @@ void transitions()
         failed.lastFailure = phase::Failed { N, Failure::network };
         const auto retry = step (failed, cmd (command::Install { N }));
         check (retry.effects.size() == 1 && ! retry.next.lastFailure, "T7 Install after a failure retries and clears it");
-        check (unchanged (withActivity (withOffer (base(), offerN()), activity::Checking { false }), cmd (command::Install { N })), "T7 guard: a job is running");
+        check (unchanged (installing (Stage::download), cmd (command::Install { N })), "T7 guard: an install is running");
         check (unchanged (withOffer (base (site::Manual { ManualReason::systemDomain }), offerN()), cmd (command::Install { N })), "T7 guard: copy cannot replace itself");
         check (unchanged (base(), cmd (command::Install { N })), "T7 guard: no offer");
         check (unchanged (withOffer (base(), offerN()), cmd (command::Install { M })), "T7 guard: not the version the user was shown");
         auto installed = withOffer (base(), offerN());
         installed.disk.installed = N;
         check (unchanged (installed, cmd (command::Install { N })), "T7 guard: already installed on disk");
+    }
+    // T19
+    {
+        const auto autoCheck = withActivity (withOffer (base(), offerN()), activity::Checking { false });
+        const auto clicked = step (autoCheck, cmd (command::Install { N }));
+        check (clicked.effects.empty() && std::get<activity::Checking> (clicked.next.activity).then == Queued { command::Install { N } },
+               "T19 Update during an automatic check is queued, not dropped");
+        check (phaseOf (clicked.next) == Phase { phase::Checking {} }, "T19 a queued click shows Checking, so no button is offered twice");
+        const auto ran = step (clicked.next, event::CheckFinished { check::NotDue {}, Prefs {} });
+        check (ran.effects == std::vector<Effect> { effect::Install { offerN() } }
+                   && phaseOf (ran.next) == Phase { phase::Downloading { N, 0, offerN().archive().size } },
+               "T19 the queued Update installs when the check finishes");
+        const auto replaced = step (clicked.next, event::CheckFinished { check::Verified { offerM() }, Prefs {} });
+        check (replaced.effects.empty() && phaseOf (replaced.next) == Phase { phase::Available { M } },
+               "T19 a check that finds a newer offer refuses the stale click and shows the new offer");
+        const auto withdrawn = step (clicked.next, event::CheckFinished { check::Verified { std::nullopt }, Prefs {} });
+        check (withdrawn.effects.empty() && phaseOf (withdrawn.next) == Phase { phase::Idle {} },
+               "T19 a check that withdraws the offer installs nothing");
+
+        const auto checkNow = step (withActivity (base(), activity::Checking { false }), cmd (command::CheckNow {}));
+        check (checkNow.effects.empty() && phaseOf (checkNow.next) == Phase { phase::Checking {} },
+               "T19 Check now during an automatic check is queued and shows Checking");
+        const auto manual = step (checkNow.next, event::CheckFinished { check::NotDue {}, Prefs {} });
+        check (manual.effects == std::vector<Effect> { effect::Check { true } } && phaseOf (manual.next) == Phase { phase::Checking {} },
+               "T19 the automatic check was not due: the queued click runs a manual check");
+        const auto afterProblem = step (checkNow.next, event::CheckFinished { CheckProblem::unreachable, Prefs {} });
+        check (afterProblem.effects == std::vector<Effect> { effect::Check { true } },
+               "T19 the automatic check failed silently: the manual check runs and will report");
+
+        const auto latest = step (step (autoCheck, cmd (command::CheckNow {})).next, cmd (command::Install { N }));
+        check (std::get<activity::Checking> (latest.next.activity).then == Queued { command::Install { N } }, "T19 the latest click wins");
+        check (unchanged (withActivity (withOffer (base(), offerN()), activity::Checking { true }), cmd (command::Install { M })),
+               "T19 a click the guards refuse is not queued");
+        check (unchanged (withActivity (withOffer (base (site::Manual { ManualReason::systemDomain }), offerN()), activity::Checking { false }),
+                          cmd (command::Install { N })),
+               "T19 Update on a copy that cannot replace itself is not queued");
     }
     // T8, T9
     {
