@@ -11,6 +11,7 @@
 #include "tubamp_update_release_keys.inc"
 
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <random>
@@ -18,6 +19,13 @@
 
 namespace tubamp::update::test
 {
+double wallClockSlack()
+{
+    const char* text = std::getenv ("TUBAMP_TEST_WALLCLOCK_SLACK");
+    const double slack = text != nullptr ? std::atof (text) : 1.0;
+    return slack >= 1.0 ? slack : 1.0;
+}
+
 namespace
 {
 int passed = 0, failed = 0;

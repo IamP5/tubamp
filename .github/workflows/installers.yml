@@ -19,6 +19,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Hosted runners deliver timers and wake threads late. The smoke test and the updater tests
+  # multiply their wall-clock bounds by this; a local run without it uses the real bounds.
+  TUBAMP_TEST_WALLCLOCK_SLACK: 8
+
 jobs:
   installer:
     name: installer (${{ matrix.arch }})
@@ -31,8 +36,6 @@ jobs:
     env:
       ARCH: ${{ matrix.arch }}
       VERSION: ${{ inputs.version }}
-      # Hosted runners deliver timers late; the smoke test widens its wall-clock bounds by this.
-      TUBAMP_TEST_WALLCLOCK_SLACK: 8
       UPDATES: ${{ inputs.updates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

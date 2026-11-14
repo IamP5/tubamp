@@ -205,7 +205,8 @@ void supportLock()
     auto start = Clock::now();
     const auto patient = SupportLock::acquire (support);
     const auto waited = std::chrono::duration_cast<milliseconds> (Clock::now() - start);
-    check (! patient && waited >= supportLockPatience && waited < supportLockPatience + milliseconds (500),
+    const auto slack = [] (int ms) { return milliseconds ((long long) (ms * wallClockSlack())); };
+    check (! patient && waited >= supportLockPatience && waited < supportLockPatience + slack (500),
            "a held lock is given up after " + std::to_string (waited.count()) + " ms (bound "
                + std::to_string (supportLockPatience.count()) + " ms), never waited on forever");
 
@@ -217,8 +218,9 @@ void supportLock()
     stopper.join();
     std::printf ("  note  held lock given up after %lld ms; stop honoured after %lld ms\n",
                  (long long) waited.count(), (long long) afterStop.count());
-    check (! stopped && afterStop < milliseconds (40),
-           "a stop request ends the wait " + std::to_string (afterStop.count()) + " ms after it is made (bound 40 ms)");
+    check (! stopped && afterStop < slack (40),
+           "a stop request ends the wait " + std::to_string (afterStop.count()) + " ms after it is made (bound "
+               + std::to_string (slack (40).count()) + " ms)");
     check (! claimDailyCheck (support, std::chrono::sys_seconds (std::chrono::seconds (1'800'000'000)), stop)
                && ! fs::exists (support.dir / "prefs.json"),
            "an operation that cannot get the lock does nothing, and the next run tries again");

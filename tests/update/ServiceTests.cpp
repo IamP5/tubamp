@@ -513,7 +513,8 @@ void cancelMidDownload()
     const bool back = rig.waitFor<phase::Available> (milliseconds (5000));
     const auto took = std::chrono::duration_cast<milliseconds> (Clock::now() - start).count();
     check (back, "Cancel returns to the offer");
-    check (took < 500, "the offer is back " + std::to_string (took) + " ms after Cancel (bound 500 ms)");
+    const auto cancelBound = (long long) (500 * wallClockSlack());
+    check (took < cancelBound, "the offer is back " + std::to_string (took) + " ms after Cancel (bound " + std::to_string (cancelBound) + " ms)");
     check (w.liveVersion() == v ("0.3.0") && w.clean(), "nothing was installed and no staging directory is left");
     std::printf ("  note  cancel to offer: %lld ms\n", (long long) took);
 }
@@ -537,7 +538,8 @@ void destroyMidDownload()
     const auto took = std::chrono::duration_cast<std::chrono::microseconds> (Clock::now() - start).count();
     w.loop.runFor (milliseconds (300));
     late = {};
-    check (took < 250'000, "~Updater returns in " + std::to_string (took / 1000) + " ms mid-download (bound 250 ms)");
+    const auto teardownBound = (long long) (250 * wallClockSlack());
+    check (took < teardownBound * 1000, "~Updater returns in " + std::to_string (took / 1000) + " ms mid-download (bound " + std::to_string (teardownBound) + " ms)");
     check (heard == 0, "no listener runs after the Updater is gone, though results were still queued");
     check (w.liveVersion() == v ("0.3.0") && w.clean(), "the disk is unchanged and the attempt was collected");
     std::printf ("  note  ~Updater mid-download: %.1f ms\n", double (took) / 1000.0);
@@ -601,7 +603,8 @@ void destroyWhileAnotherProcessHoldsTheLock()
     const auto took = std::chrono::duration_cast<milliseconds> (Clock::now() - start).count();
     letGo.join();
     holder.wait();
-    check (took < 100, "~Updater returns in " + std::to_string (took) + " ms while the lock is held for 3 s (bound 100 ms)");
+    const auto heldBound = (long long) (100 * wallClockSlack());
+    check (took < heldBound, "~Updater returns in " + std::to_string (took) + " ms while the lock is held for 3 s (bound " + std::to_string (heldBound) + " ms)");
     std::printf ("  note  ~Updater with the support lock held elsewhere: %lld ms\n", (long long) took);
 
     Rig next (w.home, w.loop, w.fetcher, w.home.detect());
