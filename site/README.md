@@ -148,10 +148,11 @@ changed since the last successful deployment of that branch
 (`VERCEL_GIT_PREVIOUS_SHA`), so a push of several commits deploys if any of
 them touched those folders. Vercel treats exit code 0 from the command as
 "skip" and 1 as "build". On a branch's first deployment the variable is empty
-and the command compares with the parent commit (`HEAD^`). If the previous
-commit is missing from the clone, `git diff` fails with exit code 128, which
-is not 0, so the deploy runs; Vercel's documentation does not describe that
-case, so check the deployment log if a deploy is unexpectedly skipped.
+and the command exits 1, so the first deployment of a branch always builds.
+If the previous commit is missing from the clone, `git diff` fails with exit
+code 128, which is not 0, so the deploy runs. Vercel's documentation does not
+describe that case. Check the deployment log if a deploy is skipped when you
+expected one.
 
 To use your own domain, add it under **Settings, Domains** in the project. The
 Open Graph URLs follow the production domain automatically
