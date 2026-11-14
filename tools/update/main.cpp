@@ -9,9 +9,11 @@
 //
 //   tubamp_update_tool verify-envelope --envelope <file> --running <X.Y.Z>
 //                      [--highest-seen <X.Y.Z>] [--macos <X.Y>] [--trust <pub.pem>]...
-//                      [--archive <zip> --installed <tubamp.component>...]
+//                      [--archive <zip> --installed <tubamp.component>...] [--expect-keys <n>]
 //       Opens the envelope exactly as the plugin does and prints the offer or the refusal.
-//       Without --trust it uses the release keys compiled into this build. With --archive
+//       Without --trust it uses the release keys compiled into this build. --expect-keys
+//       refuses unless exactly n release keys are compiled in, so a key file the plugin
+//       could not parse stops the release. With --archive
 //       it then runs the plugin's own download, unpack and inspect stages on the zip, once
 //       for each --installed bundle, in a temporary home where that bundle is the live
 //       copy. Nothing is swapped. Exit 0 only when there is an offer and every archive
@@ -205,7 +207,7 @@ int usage()
                   "usage: tubamp_update_tool test\n"
                   "       tubamp_update_tool verify-envelope --envelope <file> --running <X.Y.Z>\n"
                   "                          [--highest-seen <X.Y.Z>] [--macos <X.Y>] [--trust <pub.pem>]...\n"
-                  "                          [--archive <zip> --installed <tubamp.component>...]\n"
+                  "                          [--archive <zip> --installed <tubamp.component>...] [--expect-keys <n>]\n"
                   "       tubamp_update_tool fetch-check [--path <path under the repository>]\n");
     return 2;
 }
@@ -219,6 +221,7 @@ int verifyEnvelope (int argc, char** argv)
     bool customTrust = false;
     std::string archivePath;
     std::vector<std::string> installed;
+    std::optional<std::size_t> expectedKeys;
 
     for (int i = 2; i + 1 < argc; i += 2)
     {
@@ -243,16 +246,22 @@ int verifyEnvelope (int argc, char** argv)
             archivePath = value;
         else if (flag == "--installed")
             installed.push_back (value);
+        else if (flag == "--expect-keys")
+        {
+            if (value.empty() || value.find_first_not_of ("0123456789") != std::string::npos)
+                return usage();
+            expectedKeys = std::stoul (value);
+        }
         else if (flag == "--trust")
         {
             const auto pem = readFile (value);
-            const auto key = pem ? parsePublicKeyPem (*pem) : std::nullopt;
-            if (! key)
+            const auto key = pem ? std::optional (parsePublicKeyPem (*pem)) : std::nullopt;
+            if (! key || ! *key)
             {
                 std::fprintf (stderr, "refused: %s is not a P-256 public key PEM\n", value.c_str());
                 return 2;
             }
-            trusted.push_back (*key);
+            trusted.push_back (key->value());
             customTrust = true;
         }
         else
@@ -265,6 +274,14 @@ int verifyEnvelope (int argc, char** argv)
     if (! file)
     {
         std::fprintf (stderr, "refused: cannot read %s\n", envelopePath.c_str());
+        return 1;
+    }
+
+    const auto compiledIn = TrustRoot::release().keys().size();
+    std::printf ("release keys compiled in: %zu\n", compiledIn);
+    if (expectedKeys && compiledIn != *expectedKeys)
+    {
+        std::fprintf (stderr, "refused: %zu release keys are compiled in, %zu expected\n", compiledIn, *expectedKeys);
         return 1;
     }
 

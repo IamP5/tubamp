@@ -22,8 +22,11 @@ namespace detail { struct Environment; }
     by the first watch(). The audio thread never touches this class.
 
     Lifetime: construction does no I/O beyond InstallSite::detect's stat calls. The
-    destructor cancels the running fetch and joins the worker; it returns within tens of
-    milliseconds, and whatever the job left on disk is collected by reconcile().
+    destructor cancels the running fetch and any wait for the support lock, then joins
+    the worker. It returns within tens of milliseconds: the fetcher notices a cancel
+    within about 20 ms and a lock wait within 5 ms (supportLockPoll), even while another
+    process holds the lock indefinitely. Whatever the job left on disk is collected by
+    reconcile().
 
     It never installs without command::Install, never loads the new bundle, and never takes
     a URL from a caller.
@@ -65,9 +68,9 @@ public:
     };
 
     /** "An editor is looking." The listener gets every new View. Opening a watch
-        reconciles the disk and, when automatic checks are on and no process on this
-        account checked in the last 24 hours, runs one check. That is the only automatic
-        trigger. */
+        reconciles the disk and, when automatic checks are on, the disclosure toast has
+        been shown, and no process on this account checked in the last 24 hours,
+        runs one check. That is the only automatic trigger. */
     [[nodiscard]] Watch watch (std::function<void (const View&)> listener);
 
 private:

@@ -24,8 +24,9 @@ function github(initial = {}) {
   return {
     env: (extra = {}) => ({ PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: statePath, ...extra }),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')),
+    put: (state) => writeFileSync(statePath, JSON.stringify(state)),
     mutations: () =>
-      JSON.parse(readFileSync(statePath, 'utf8')).calls.filter((c) => c[0] === 'release' || c.includes('DELETE')),
+      JSON.parse(readFileSync(statePath, 'utf8')).calls.filter((c) => (c[0] === 'release' && c[1] !== 'download') || c.includes('DELETE')),
     resetCalls() {
       const s = JSON.parse(readFileSync(statePath, 'utf8'));
       writeFileSync(statePath, JSON.stringify({ ...s, calls: [] }));
@@ -273,4 +274,93 @@ test('the dry run lists exactly four assets with updates off and six with update
   const on = publish(github(), releaseAssets({ updates: true }), { updates: 'on', extra: ['--dry-run'] });
   assert.equal(on.code, 0, on.stderr);
   assert.match(on.stdout, /with updates on: .*universal\.zip, SHA256SUMS, update-v1\.signed, manifest\.json$/m);
+});
+
+// ditto -c -k is not reproducible, so a rerun builds an archive with other bytes, and an
+// envelope that names them. Installed copies may already hold the uploaded envelope.
+function rebuiltLocally(dir, bytes = Buffer.from('a rebuilt zip with other bytes')) {
+  writeArchiveAndEnvelope(dir, { archiveBytes: bytes });
+}
+
+const uploadedFiles = (gh) => gh.mutations().filter((c) => c[1] === 'upload').flat().map((a) => a.split('/').pop());
+const remoteBytes = (gh, name) => Buffer.from(gh.state().releases[0].assets.find((a) => a.name === name).content, 'base64');
+const asset = (dir, name) => ({ name, state: 'uploaded', content: readFileSync(join(dir, name)).toString('base64') });
+
+test('a full rerun of a complete armed release keeps the uploaded archive and envelope, and leaves them in --dir', () => {
+  const gh = github();
+  const first = releaseAssets({ updates: true });
+  assert.equal(publish(gh, first, { updates: 'on' }).code, 0);
+  const servedZip = readFileSync(join(first, ZIP));
+  const servedEnvelope = readFileSync(join(first, ENVELOPE));
+
+  const rerun = releaseAssets({ updates: true });
+  rebuiltLocally(rerun);
+  gh.resetCalls();
+  const result = publish(gh, rerun, { updates: 'on' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(gh.mutations(), [], 'nothing on GitHub changes');
+  assert.deepEqual(remoteBytes(gh, ZIP), servedZip);
+  assert.deepEqual(readFileSync(join(rerun, ZIP)), servedZip, 'the uploaded archive replaces the rebuilt one in --dir');
+  assert.deepEqual(readFileSync(join(rerun, ENVELOPE)), servedEnvelope, 'so the job checks the envelope it serves');
+});
+
+test('repairing a published armed release never replaces the archive an uploaded envelope names', () => {
+  const gh = github();
+  const first = releaseAssets({ updates: true });
+  assert.equal(publish(gh, first, { updates: 'on' }).code, 0);
+  const state = gh.state();
+  state.releases[0].assets = state.releases[0].assets.filter((a) => a.name !== 'manifest.json');
+  gh.put({ ...state, calls: [] });
+
+  const rerun = releaseAssets({ updates: true });
+  rebuiltLocally(rerun);
+  const result = publish(gh, rerun, { updates: 'on' });
+  assert.equal(result.code, 0, result.stderr);
+  const uploaded = uploadedFiles(gh);
+  assert.ok(uploaded.includes('manifest.json') && uploaded.includes('SHA256SUMS'), 'the missing asset and its partners go up');
+  assert.ok(!uploaded.includes(ZIP) && !uploaded.includes(ENVELOPE), 'the archive and the envelope are kept');
+  assert.deepEqual(remoteBytes(gh, ZIP), readFileSync(join(first, ZIP)));
+  assert.deepEqual(remoteBytes(gh, ENVELOPE), readFileSync(join(first, ENVELOPE)));
+});
+
+test('a draft that already holds a valid archive and envelope keeps them', () => {
+  const kept = releaseAssets({ updates: true });
+  const gh = github({ releases: [{ id: 1, tag_name: 'v0.2.0', draft: true, target: SHA, assets: [asset(kept, ZIP), asset(kept, ENVELOPE)] }] });
+  const rerun = releaseAssets({ updates: true });
+  rebuiltLocally(rerun);
+  const result = publish(gh, rerun, { updates: 'on' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(!uploadedFiles(gh).includes(ZIP) && !uploadedFiles(gh).includes(ENVELOPE));
+  assert.deepEqual(remoteBytes(gh, ZIP), readFileSync(join(kept, ZIP)));
+  assert.equal(gh.state().releases[0].draft, false);
+});
+
+test('a draft whose envelope does not name its archive gets this run\'s pair', () => {
+  const stale = releaseAssets({ updates: true });
+  writeFileSync(join(stale, ZIP), 'an archive the envelope does not name');
+  const gh = github({ releases: [{ id: 1, tag_name: 'v0.2.0', draft: true, target: SHA, assets: [asset(stale, ZIP), asset(stale, ENVELOPE)] }] });
+  const rerun = releaseAssets({ updates: true });
+  const result = publish(gh, rerun, { updates: 'on' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(remoteBytes(gh, ZIP), readFileSync(join(rerun, ZIP)));
+  assert.deepEqual(remoteBytes(gh, ENVELOPE), readFileSync(join(rerun, ENVELOPE)));
+});
+
+test('a published release whose envelope names an archive that is gone or different stops the run', async (t) => {
+  for (const [name, spoil] of [
+    ['the archive is missing', (assets) => assets.filter((a) => a.name !== ZIP)],
+    ['the archive differs', (assets) => assets.map((a) => (a.name === ZIP ? { ...a, content: Buffer.from('other').toString('base64') } : a))],
+  ]) {
+    await t.test(name, () => {
+      const first = releaseAssets({ updates: true });
+      const assets = spoil(ARMED.filter((n) => n !== 'manifest.json').map((n) => asset(first, n)));
+      const gh = github({ tags: { 'v0.2.0': SHA }, releases: [{ id: 1, tag_name: 'v0.2.0', draft: false, target: SHA, assets }] });
+      const rerun = releaseAssets({ updates: true });
+      rebuiltLocally(rerun);
+      const result = publish(gh, rerun, { updates: 'on' });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /published with an update-v1\.signed .*fix forward/);
+      assert.deepEqual(gh.mutations(), []);
+    });
+  }
 });

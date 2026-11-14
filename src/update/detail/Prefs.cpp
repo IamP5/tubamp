@@ -47,9 +47,9 @@ Prefs loadPrefs (const SupportPaths& support)
     return parse (readFile (prefsFile (support), maxPrefsBytes));
 }
 
-Prefs mutatePrefs (const SupportPaths& support, const PrefsPatch& patch)
+Prefs mutatePrefs (const SupportPaths& support, const PrefsPatch& patch, const CancelToken& stop)
 {
-    const auto lock = SupportLock::acquire (support);
+    const auto lock = SupportLock::acquire (support, stop);
     auto prefs = loadPrefs (support);
     apply (prefs, patch);
     if (lock)
@@ -57,9 +57,9 @@ Prefs mutatePrefs (const SupportPaths& support, const PrefsPatch& patch)
     return prefs;
 }
 
-bool claimDailyCheck (const SupportPaths& support, std::chrono::sys_seconds now)
+bool claimDailyCheck (const SupportPaths& support, std::chrono::sys_seconds now, const CancelToken& stop)
 {
-    const auto lock = SupportLock::acquire (support);
+    const auto lock = SupportLock::acquire (support, stop);
     if (! lock)
         return false;
     auto prefs = loadPrefs (support);

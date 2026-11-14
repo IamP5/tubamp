@@ -11,9 +11,13 @@
 // The release stays a draft until every asset is uploaded, in this order: the installers,
 // the archive and SHA256SUMS; then update-v1.signed, after the archive it names; then
 // manifest.json. So releases/latest/download/ never serves a file whose partner is missing.
+// An archive and envelope already uploaded to the release, and valid for it, are kept and
+// copied into --dir in place of this run's pair: `ditto -c -k` is not reproducible, and an
+// installed copy may hold the uploaded envelope, so the archive it names never changes.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { ARCHS, installerName } from './manifest.mjs';
@@ -83,6 +87,24 @@ if (!/^[0-9a-f]{40}$/.test(sha ?? '')) fail(`--sha must be a full commit SHA, go
 if (!notesFile || !existsSync(notesFile)) fail('--notes-file must name an existing file');
 if (updates !== 'on' && updates !== 'off') fail(`--updates must be on or off, got "${updates}"`);
 
+/** Why the envelope bytes do not describe the archive bytes for this release, or null. */
+function envelopeProblem(envelopeBytes, zip) {
+  let envelope;
+  try {
+    envelope = parseEnvelope(envelopeBytes).fields;
+  } catch (error) {
+    return error.message;
+  }
+  if (envelope.product !== PRODUCT || envelope.version !== version) {
+    return `${ENVELOPE_NAME} is for ${envelope.product} ${envelope.version}, expected ${PRODUCT} ${version}`;
+  }
+  const sha256 = createHash('sha256').update(zip).digest('hex');
+  if (envelope.archive?.sha256 !== sha256 || envelope.archive?.size !== zip.length) {
+    return `${ENVELOPE_NAME} names an archive of ${envelope.archive?.size} bytes with SHA-256 ${envelope.archive?.sha256}, not ${archive}`;
+  }
+  return null;
+}
+
 const installers = ARCHS.map((arch) => installerName(version, arch));
 const archive = archiveName(version);
 const manifestName = 'manifest.json';
@@ -109,20 +131,8 @@ if (updates === 'off') {
   const stray = updateAssets.filter((name) => existsSync(join(dir, name)));
   if (stray.length) fail(`${stray.join(', ')} in ${dir} but this release has --updates off; refusing a half-armed release`);
 } else {
-  let envelope;
-  try {
-    envelope = parseEnvelope(readFileSync(join(dir, ENVELOPE_NAME))).fields;
-  } catch (error) {
-    fail(error.message);
-  }
-  const zip = readFileSync(join(dir, archive));
-  const sha256 = createHash('sha256').update(zip).digest('hex');
-  if (envelope.product !== PRODUCT || envelope.version !== version) {
-    fail(`${ENVELOPE_NAME} is for ${envelope.product} ${envelope.version}, expected ${PRODUCT} ${version}`);
-  }
-  if (envelope.archive?.sha256 !== sha256 || envelope.archive?.size !== zip.length) {
-    fail(`${ENVELOPE_NAME} names an archive of ${envelope.archive?.size} bytes with SHA-256 ${envelope.archive?.sha256}, not ${archive}`);
-  }
+  const problem = envelopeProblem(readFileSync(join(dir, ENVELOPE_NAME)), readFileSync(join(dir, archive)));
+  if (problem) fail(problem);
 }
 
 checkTag();
@@ -150,6 +160,36 @@ if (!release) {
   if (!release) fail(`created a draft for ${tag} but cannot find it`);
 }
 
+/** Keeps the release's uploaded archive and envelope when they are valid for it, copying
+    them over this run's pair in --dir. A published release whose envelope does not name
+    an uploaded archive stops the run: no archive can be uploaded under that envelope. */
+function keepUploadedUpdatePair(r) {
+  const names = uploadedNames(r);
+  if (!names.includes(ENVELOPE_NAME)) return false;
+  const scratch = mkdtempSync(join(tmpdir(), 'tubamp-publish-'));
+  try {
+    const present = [archive, ENVELOPE_NAME].filter((name) => names.includes(name));
+    gh('release', 'download', tag, ...present.flatMap((name) => ['--pattern', name]), '--dir', scratch);
+    const problem = names.includes(archive)
+      ? envelopeProblem(readFileSync(join(scratch, ENVELOPE_NAME)), readFileSync(join(scratch, archive)))
+      : `${archive} is missing`;
+    if (problem && !r.draft) {
+      fail(`${tag} is published with an ${ENVELOPE_NAME} that installed copies may hold, and ${problem}. `
+        + 'A rebuilt archive would not match it; fix forward with a higher version');
+    }
+    if (problem) {
+      console.log(`${tag} has a draft whose update assets do not match (${problem}); uploading this run's pair`);
+      return false;
+    }
+    for (const name of [archive, ENVELOPE_NAME]) copyFileSync(join(scratch, name), join(dir, name));
+    console.log(`${tag} already holds a valid ${archive} and ${ENVELOPE_NAME}; keeping them and using them in ${dir}`);
+    return true;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+const kept = updates === 'on' && keepUploadedUpdatePair(release) ? [archive, ENVELOPE_NAME] : [];
 const uploaded = new Set(uploadedNames(release));
 const missing = assetNames.filter((name) => !uploaded.has(name));
 
@@ -160,7 +200,7 @@ if (!release.draft && missing.length === 0) {
 
 if (missing.length > 0) {
   console.log(`${tag} is missing ${missing.join(', ')}; uploading the full set so the checksums match`);
-  for (const group of uploadGroups) {
+  for (const group of uploadGroups.map((g) => g.filter((name) => !kept.includes(name))).filter((g) => g.length)) {
     mutate('release', 'upload', tag, ...group.map((name) => join(dir, name)), '--clobber');
   }
 }

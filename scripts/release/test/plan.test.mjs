@@ -318,25 +318,42 @@ test('the squash plan is written to GITHUB_OUTPUT under squash_ keys', () => {
 
 const KEY_FILES = ['src/update/keys/release.pub.pem', 'src/update/keys/recovery.pub.pem'];
 
-test('updates stay off while fewer than two public keys are committed, whatever the secret', () => {
+test('with no public key committed the updater stays dormant, whatever the secret', () => {
   const repo = makeRepo();
   repo.commit('feat: plate', ['Source/Reverb.cpp', 'src/update/keys/README.md']);
   for (const key of ['present', 'absent', 'throwaway']) {
     const p = plan(repo, ['--signing-key', key]);
+    assert.equal(p.release, true, key);
     assert.equal(p.updates, 'off', key);
-    assert.match(p.updatesReason, /holds 0 public key\(s\)/);
+    assert.match(p.updatesReason, /no public key is committed/);
   }
-  repo.commit('chore: release key', [KEY_FILES[0]]);
-  assert.match(plan(repo, ['--signing-key', 'present']).updatesReason, /holds 1 public key\(s\)/);
 });
 
-test('two committed keys turn updates on only with the signing secret or a dry run', () => {
+test('exactly one committed key stops the plan, because the recovery key is missing', () => {
+  const repo = makeRepo();
+  repo.commit('feat: plate', ['Source/Reverb.cpp', KEY_FILES[0]]);
+  for (const key of ['present', 'absent', 'throwaway']) {
+    const p = plan(repo, ['--signing-key', key]);
+    assert.equal(p.code, 1, key);
+    assert.match(p.error, /holds 1 public key .* recovery key/, key);
+  }
+});
+
+test('an armed repository without the signing secret stops the plan instead of releasing with updates off', () => {
   const repo = makeRepo();
   repo.commit('feat: plate', ['Source/Reverb.cpp', ...KEY_FILES]);
   const absent = plan(repo, ['--signing-key', 'absent']);
-  assert.equal(absent.updates, 'off');
-  assert.match(absent.updatesReason, /no TUBAMP_UPDATE_SIGNING_KEYS secret/);
-  assert.equal(plan(repo).updates, 'off', 'no flag means no secret');
+  assert.equal(absent.code, 1);
+  assert.match(absent.error, /2 public keys are committed .* no TUBAMP_UPDATE_SIGNING_KEYS secret/);
+  assert.equal(plan(repo).code, 1, 'no flag means no secret');
+
+  repo.commit('docs: explain presets', ['docs/presets.md']);
+  assert.equal(plan(repo, ['--signing-key', 'absent']).code, 1, 'also when no release is due');
+});
+
+test('two committed keys arm the release with the signing secret or a dry run', () => {
+  const repo = makeRepo();
+  repo.commit('feat: plate', ['Source/Reverb.cpp', ...KEY_FILES]);
   assert.equal(plan(repo, ['--signing-key', 'present']).updates, 'on');
   assert.equal(plan(repo, ['--signing-key', 'throwaway']).updates, 'on');
   assert.match(plan(repo, ['--signing-key', 'maybe']).error, /--signing-key must be one of/);
@@ -361,5 +378,5 @@ test('the updates decision reaches GITHUB_OUTPUT and the job summary', () => {
   });
   assert.equal(result.code, 0, result.stderr);
   assert.match(readFileSync(join(dir, 'output'), 'utf8'), /^updates=off$/m);
-  assert.match(readFileSync(join(dir, 'summary'), 'utf8'), /Updates \*\*off\*\*: src\/update\/keys holds 0 public key\(s\)/);
+  assert.match(readFileSync(join(dir, 'summary'), 'utf8'), /Updates \*\*off\*\*: no public key is committed/);
 });

@@ -6,7 +6,7 @@ tubamp tells you when a newer release exists and, after one click, installs it w
 
 **First install.** Both release installers, Apple Silicon and Intel, install for the current user only. Installer offers "Install for me only" and asks for no password. The component goes to `~/Library/Audio/Plug-Ins/Components/tubamp.component`, where tubamp can later replace itself without privileges. Each macOS account that uses tubamp runs the installer once.
 
-**The first time you open the plugin**, a toast says that tubamp checks GitHub once a day for a new version. It has a **Turn off** action, and it does not come back. The same switch lives in Settings.
+**The first time you open the plugin**, a toast says that tubamp checks GitHub once a day for a new version. It has a **Turn off** action, and it does not come back. The same switch lives in Settings. tubamp sends no request before that toast was shown: the first automatic check runs at a later editor open, and only if checks are still on. **Check now** checks at once.
 
 **When a release is out:**
 
@@ -32,7 +32,7 @@ A copy in `/Library/Audio/Plug-Ins/Components` cannot replace itself. It shows t
 | The disk is full or a folder is read-only | The reason, with **Get the installer** | Unchanged |
 | The host quits or crashes mid-update | Nothing then. The next time the plugin opens, it is either still the old version with the offer back, or already the new one. | Cleaned up by the next `reconcile()` |
 | Two hosts update at once | One installs. The other says the update is installed and asks for a restart. | One swap |
-| Logic rejects the new version after the restart | Nothing in the plugin, because no tubamp code runs. The README gives the one command that restores the previous bundle. | New version live, previous kept |
+| Logic rejects the new version after the restart | Nothing in the plugin, because no tubamp code runs. The README's "If an update goes wrong" section gives the command that restores the previous bundle. | New version live, previous kept |
 
 No in-plugin design can close the last row. Keeping the previous bundle makes the fix one command.
 
@@ -41,8 +41,8 @@ No in-plugin design can close the last row. Keeping the previous bundle makes th
 | Path | Meaning |
 | --- | --- |
 | `~/Library/Audio/Plug-Ins/Components/tubamp.component` | The installed version. Its `Info.plist` is the only record of what is installed. |
-| `~/Library/Audio/Plug-Ins/.tubamp/previous/tubamp.component` | The highest sealed version below the installed one, kept for a manual restore. |
-| `~/Library/Audio/Plug-Ins/.tubamp/update.XXXXXX/` | One attempt's staging directory, created by `mkdtemp` with mode 0700 and held by a `flock`. |
+| `~/Library/Audio/Plug-Ins/.tubamp/previous/tubamp.component` | The highest version below the installed one, kept as found for a manual restore. |
+| `~/Library/Audio/Plug-Ins/.tubamp/update.XXXXXX/` | One attempt's staging directory, created by `mkdtemp` with mode 0700 and held by a `flock`. `unpack` writes into its `unpacking/` folder and renames the finished bundle to `update.XXXXXX/tubamp.component`. |
 | `~/Library/Application Support/tubamp/update/latest.signed` | The newest signed file this account accepted, byte for byte. |
 | `~/Library/Application Support/tubamp/update/prefs.json` | `autoCheck`, `disclosed`, `lastCheckAt`, `announced`. |
 
@@ -50,7 +50,7 @@ No in-plugin design can close the last row. Keeping the previous bundle makes th
 
 There is no journal and no "restart pending" flag. Restart pending means that the version on disk differs from the version compiled into the running code. The offer after a restart comes from re-opening `latest.signed` through the same code as a fresh download. The replay floor is the version inside `latest.signed`. A crash therefore cannot leave two records that disagree.
 
-One `flock` on `Application Support/tubamp/update/lock` serializes every short write on the account: prefs, the cache, creating a staging directory, the swap, and `reconcile()`. `prefs.json` and `latest.signed` are written to a `.tmp` beside them and renamed, so each is always a complete old or a complete new file. Each staging directory also has its own `lock`, held for the life of the attempt. A directory whose lock anyone can take, or that has no lock file, belongs to a process that died.
+One `flock` on `Application Support/tubamp/update/lock` serializes every short write on the account: prefs, the cache, creating a staging directory, the swap, and `reconcile()`. A holder keeps it for milliseconds. A waiter tries with `LOCK_NB` every 5 ms and gives up after 2 s, or within 5 ms of the `Updater` shutting down, so a host stopped in a debugger while it holds the lock cannot freeze another host. An operation that gives up does nothing, and the next editor open tries again. `prefs.json` and `latest.signed` are written to a `.tmp` beside them and renamed, so each is always a complete old or a complete new file. Each staging directory also has its own `lock`, held for the life of the attempt. A directory whose lock anyone can take, or whose lock file is missing, belongs to a process that died. Any other error opening that lock, such as `EMFILE` or `EACCES`, says nothing about the owner, so `reconcile()` leaves the directory alone.
 
 ## How the bundle is replaced
 
@@ -59,7 +59,7 @@ One `flock` on `Application Support/tubamp/update/lock` serializes every short w
 The install then runs one step per type in the chain:
 
 1. `ArchiveSink` writes the download into a file in the staging directory that is unlinked as soon as it is opened. It hashes each chunk as it writes it and refuses the byte past the signed size. `finish` yields a `VerifiedArchive` only when the size and the SHA-256 equal the signed values.
-2. `unpack` reads the zip through that same descriptor. It reads the central directory, runs `planExtraction` over every entry before it writes one byte, then creates exactly the planned files with `openat(O_EXCL | O_NOFOLLOW)`. Each file is inflated to its declared size and must match its CRC-32. It accepts what `ditto -c -k` writes: stored or deflated entries, with no encryption, no zip64, and one disk.
+2. `unpack` reads the zip through that same descriptor. It reads the central directory, runs `planExtraction` over every entry before it writes one byte, then creates exactly the planned files with `openat(O_EXCL | O_NOFOLLOW)` under the staging directory's `unpacking/` folder. Each file is inflated to its declared size and must match its CRC-32. Only a complete bundle is renamed to the staging directory's `tubamp.component`. It accepts what `ditto -c -k` writes: stored or deflated entries, with no encryption, no zip64, and one disk.
 3. `inspect` checks the Info.plist pins, the offered version in `CFBundleShortVersionString` and in the `AudioComponents` integer, a CPU slice for every type the live bundle has and for the running one, and the code seal.
 4. `commit` takes the support lock, re-reads the installed version, and swaps the staged bundle with the live one in one `renamex_np(RENAME_SWAP)`. The old bundle is now in the staging directory.
 5. `reconcile()` moves the old bundle to `previous/` and deletes the staging directory.
@@ -78,13 +78,13 @@ Every stage of the install ends in `reconcile()`, and so does every editor that 
 | --- | --- | --- |
 | A prefs or cache write | A `.tmp` beside the complete old file | Deletes the `.tmp` |
 | The download | A staging directory holding only `lock`. The archive has no name, so the kernel frees it | Deletes the staging directory |
-| The unpack | A staging directory with a partial bundle | Deletes it, because the bundle is not sealed |
+| The unpack | A staging directory with a partial bundle in `unpacking/` | Deletes it. Nothing in `unpacking/` is ever kept |
 | The inspect, or before the swap | A staging directory with the complete new bundle | Deletes it, because the bundle is not below the installed version |
 | The swap | Either the row above or the row below. `renamex_np` is atomic | |
 | After the swap | The new bundle live, the old one in the staging directory | Moves the old bundle to `previous/`, replacing the older previous one, then deletes the staging directory |
 | `reconcile()` itself | Any mix of the rows above | Does the same steps again |
 
-`reconcile()` keeps in `previous/` the highest pinned, sealed bundle below the installed version. It never touches the live bundle. When the installed version cannot be read, it deletes the staging directories and leaves `previous/` alone. `tubamp_update_tool test` runs each row with a real child process that exits at that point, dies of `SIGXFSZ` inside a file, or gets `SIGKILL`, then reconciles twice and checks that the second run changes nothing.
+`reconcile()` keeps in `previous/` the highest pinned bundle below the installed version, as found. It reads the `Info.plist` pins and the version, and it does not check the seal or hash any file. The previous bundle is the user's working plugin as it was, never loaded by tubamp, only offered for a manual restore, so a `.DS_Store` that Finder wrote into it does not cost the user the rollback copy. Every candidate is complete, because a partial unpack never reaches a staging directory's `tubamp.component`. `reconcile()` never touches the live bundle. When the installed version cannot be read, it deletes the staging directories and leaves `previous/` alone. `tubamp_update_tool test` runs each row with a real child process that exits at that point, dies of `SIGXFSZ` inside a file, or gets `SIGKILL`, then reconciles twice and checks that the second run changes nothing.
 
 ## How a release is trusted
 
@@ -99,9 +99,9 @@ sig <16 hex key id> <base64 DER ECDSA P-256 signature>    (1 to 4 lines)
 
 Each signature covers `tubamp-update-v1`, a newline, and the payload, so a signature this key made for anything else is not an update. The key id is the first 8 bytes of SHA-256 over the 65-byte public point. The file is at most 16 KiB and the payload at most 8 KiB. The format version is in the file name, so a breaking change ships as `update-v2.signed` beside v1. Inside v1, fields can only be added, and the client ignores fields it does not read. It never reads a URL from the payload.
 
-The trusted keys are the `*.pub.pem` files in `src/update/keys`, compiled into the plugin. The release key is held in the `TUBAMP_UPDATE_SIGNING_KEYS` secret of the GitHub Actions environment `release`, which only `main` can use. The recovery key is kept offline. Security.framework verifies the signature.
+The trusted keys are the `*.pub.pem` files in `src/update/keys`, compiled into the plugin. Each file must hold exactly one PEM block with an uncompressed P-256 public key. CMake checks every file at configure time with `tools/update/keycheck.cpp`, which runs the plugin's own parser (`parsePublicKeyPem`), so CMake and the plugin cannot disagree about a file. If a file ever failed to parse at run time, the plugin would trust no key at all rather than a smaller set. The release key is held in the `TUBAMP_UPDATE_SIGNING_KEYS` secret of the GitHub Actions environment `release`, which only `main` can use. The recovery key is kept offline. Security.framework verifies the signature.
 
-The release workflow signs the envelope in its `publish` job with `scripts/release/envelope.mjs`, then runs `tubamp_update_tool verify-envelope --archive` on the signed file and the archive before it uploads either. A release is published with updates on only when two keys are committed and the secret exists, and then the plugin, the archive and the envelope all ship together. `docs/RELEASING.md` gives the pipeline, the one-time key setup, rotation, and what a lost key means.
+The release workflow signs the envelope in its `publish` job with `scripts/release/envelope.mjs`, then runs `tubamp_update_tool verify-envelope --archive --expect-keys <committed key count>` on the signed file and the archive before it uploads either. With no key committed, releases ship without the updater. With two or more keys committed, every release ships the plugin, the archive and the envelope together, and a missing secret stops the run. `docs/RELEASING.md` gives the pipeline, the one-time key setup, rotation, and what a lost key means.
 
 ## The chain of types
 
@@ -155,7 +155,7 @@ Every other pair of state and event returns the same model with no effects. A bu
 
 The model lives on the message thread. One worker thread runs the effects in order (reconcile, check, install, save settings) and posts each result back as an event. Listeners run on the message thread, and the editor's handle is destroyed first in its destructor, so no listener runs into a dead editor. A result that arrives after the `Updater` is gone is dropped. Every command republishes the current view, even one the machine ignored, so a stale page corrects itself.
 
-The destructor cancels the running fetch and joins the worker. The tests measure about 3 ms mid-download. The system fetcher notices a cancel within its 20 ms poll; `fetch-check --cancel-after` measured 11 to 19 ms on a real GET.
+The destructor cancels the running fetch and any wait for the support lock, then joins the worker. The tests measure about 3 ms mid-download, and 5 ms while another process holds the support lock. The system fetcher notices a cancel within its 20 ms poll; `fetch-check --cancel-after` measured 11 to 19 ms on a real GET. A lock wait notices it within 5 ms.
 
 A click on **Update** or **Check now** while a check is still running is not dropped. The machine allows one job at a time, so it keeps the latest click and shows `checking` until the check finishes (T19). Then the click runs as if it had just arrived. A kept **Check now** runs a manual check, which skips the daily claim, so it fetches even when the automatic check was not due. A kept **Update** installs only if the check left the same version on offer. If the check found a newer version, the page shows that offer and installs nothing the user did not see.
 
@@ -175,7 +175,13 @@ Body bytes reach the sink on the worker thread, never on the message or audio th
 
 With `TUBAMP_UPDATES=OFF`, none of this is compiled. `UiState` has no `update` field and no `updateCommand` exists. The page then shows no update row.
 
-For development, `-DTUBAMP_UPDATE_DEV_ROOTS=ON` takes the home and the system Components folder from `TUBAMP_UPDATE_HOME` and `TUBAMP_UPDATE_SYSTEM_COMPONENTS`. Without `TUBAMP_UPDATE_HOME`, the updater stays off. A build without the option contains no such `getenv` call.
+For development, `-DTUBAMP_UPDATE_DEV_ROOTS=ON` takes the home and the system Components folder from `TUBAMP_UPDATE_HOME` and `TUBAMP_UPDATE_SYSTEM_COMPONENTS`. Without `TUBAMP_UPDATE_HOME`, the updater stays off. A build without the option contains no such `getenv` call. A Release build with `TUBAMP_UPDATES=ON` fails to configure when `TUBAMP_UPDATE_DEV_ROOTS` or `TUBAMP_WEBUI_DEV` is on, so an installer can never carry either. Develop the updater in a Debug build.
+
+## Threat model
+
+The envelope is trusted for what its signature covers: the product, the version, the minimum macOS, and the archive's size and SHA-256. An attacker without a signing key cannot make the plugin download anything else, and cannot make it offer a version below the highest one this account has seen.
+
+The envelope has no expiry. Someone who can serve `releases/latest/download/update-v1.signed`, a network attacker or a stale mirror, can replay an older genuine envelope whose version is at or above the account's highest seen version. The plugin then offers that version, which is a real signed release, and installs it only after the user clicks **Update**. It cannot replay a version below the floor, and it cannot change a byte of the archive. Version 1 accepts this: an expiry field would make every installed copy refuse updates whenever releases pause.
 
 ## Tradeoffs
 

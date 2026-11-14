@@ -100,20 +100,30 @@ export const SIGNING_KEY_STATES = ['present', 'absent', 'throwaway'];
 
 /** Whether the release compiles the updater in and publishes its signed envelope. A
     release is armed completely or not at all: the plugin, the archive and the envelope all
-    follow this one decision. Only public keys committed at HEAD count. */
+    follow this one decision. Only public keys committed at HEAD count. With none the
+    updater is dormant. With two or more the repository is armed, and a release without
+    the envelope would silently cut every installed copy off from updates, so a missing
+    secret stops the plan. One key alone lacks the recovery key the design requires. */
 export function updatesDecision({ cwd, signingKey }) {
   if (!SIGNING_KEY_STATES.includes(signingKey)) throw new Error(`--signing-key must be one of ${SIGNING_KEY_STATES.join(', ')}`);
   const keys = git(cwd, 'ls-tree', '--name-only', 'HEAD', 'src/update/keys/')
     .split('\n')
     .filter((path) => path.endsWith('.pub.pem'));
-  if (keys.length < 2) {
-    return {
-      updates: 'off',
-      reason: `src/update/keys holds ${keys.length} public key(s), and the updater needs the release key and the recovery key (docs/RELEASING.md)`,
-    };
+  if (keys.length === 0) {
+    return { updates: 'off', reason: 'no public key is committed in src/update/keys, so the updater stays dormant (docs/RELEASING.md)' };
+  }
+  if (keys.length === 1) {
+    throw new Error(
+      `src/update/keys holds 1 public key at HEAD (${keys[0]}); the updater needs the release key and the offline recovery key. `
+      + 'Commit the recovery key\'s public half, or remove the key to stay dormant (docs/RELEASING.md)',
+    );
   }
   if (signingKey === 'absent') {
-    return { updates: 'off', reason: `the release environment has no ${SIGNING_SECRET} secret (docs/RELEASING.md)` };
+    throw new Error(
+      `${keys.length} public keys are committed in src/update/keys, so every release must ship update-v1.signed, `
+      + `but the release environment has no ${SIGNING_SECRET} secret. Add the secret and rerun (docs/RELEASING.md). `
+      + 'Releasing without it would leave every installed copy without updates',
+    );
   }
   return {
     updates: 'on',

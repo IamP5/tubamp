@@ -20,12 +20,12 @@ std::optional<Manifest> loadCachedEnvelope (const SupportPaths& support, const T
     return std::move (opened).value();
 }
 
-void storeEnvelope (const SupportPaths& support, ByteView file, const TrustRoot& trust)
+void storeEnvelope (const SupportPaths& support, ByteView file, const TrustRoot& trust, const CancelToken& stop)
 {
     const auto incoming = openEnvelope (file, trust);
     if (! incoming)
         return;
-    const auto lock = SupportLock::acquire (support);
+    const auto lock = SupportLock::acquire (support, stop);
     if (! lock)
         return;
     const auto cached = loadCachedEnvelope (support, trust);

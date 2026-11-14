@@ -23,9 +23,11 @@ private files never enter the repository.
 
 ## What CMake refuses
 
-Configuring fails when a file here holds a private key, is not a PEM public key, carries
-the `TEST KEY` marker, or is one of the test keys in `tests/update/fixtures`. With
-`TUBAMP_UPDATES=ON` it also fails with fewer than two keys.
+Configuring fails when a file here holds a private key, holds more than one PEM block,
+is anything but an uncompressed P-256 public key, carries the `TEST KEY` marker, or is
+one of the test keys in `tests/update/fixtures`. With `TUBAMP_UPDATES=ON` it also fails
+with fewer than two keys. CMake builds `tools/update/keycheck.cpp` with the plugin's own
+key parser and runs it, so a file CMake accepts is a file the plugin trusts.
 
 ## Check a key
 

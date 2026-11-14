@@ -34,12 +34,20 @@ private:
     int fd = -1;
 };
 
+/** How long acquire() keeps trying, and how often. Holders keep the lock for
+    milliseconds; a process stopped while it holds the lock (a debugger, a crash reporter)
+    keeps it indefinitely, and the waiter must not. */
+inline constexpr std::chrono::milliseconds supportLockPatience { 2000 }, supportLockPoll { 5 };
+
 /** flock(LOCK_EX) on <support>/lock, creating the folder and the file if needed. Held for
-    milliseconds. The kernel drops it when the process dies, so it is never stale. */
+    milliseconds. The kernel drops it when the process dies, so it is never stale.
+    acquire() polls with LOCK_NB and gives up, with nullopt, after supportLockPatience or
+    within supportLockPoll of `stop` being requested. Every caller treats nullopt as "do
+    nothing this time": reconcile() and the next editor open try again. */
 class SupportLock
 {
 public:
-    static std::optional<SupportLock> acquire (const SupportPaths&);
+    static std::optional<SupportLock> acquire (const SupportPaths&, const CancelToken& stop = neverCancelled());
 
 private:
     explicit SupportLock (Fd f) : fd (std::move (f)) {}
@@ -88,9 +96,6 @@ std::vector<int> cpuTypesOf (const fs::path& machO);
 
 /** The CPU type of the slice running this code. */
 int runningCpuType() noexcept;
-
-/** A bundle reconcile() may keep as the previous one: pinned and sealed. */
-std::optional<Version> sealedVersion (const fs::path& bundle);
 
 struct Layout;
 struct DiskState;

@@ -21,10 +21,28 @@ struct TrustedKey
     trusted list and the signer cannot disagree about ids. */
 KeyId keyIdOf (const TrustedKey&) noexcept;
 
-/** A "-----BEGIN PUBLIC KEY-----" block holding a P-256 SubjectPublicKeyInfo. Text
-    before the block (a comment line) is ignored. nullopt for anything else, including
-    a point that is not on the curve. */
-std::optional<TrustedKey> parsePublicKeyPem (std::string_view pem);
+enum class KeyFileError
+{
+    notOnePublicKeyBlock,   // no PEM block, a private key, or more than one block
+    notUncompressedP256,    // another curve, a compressed point, or a point off the curve
+};
+
+/** The text of one key file: exactly one "-----BEGIN PUBLIC KEY-----" block holding a
+    P-256 SubjectPublicKeyInfo with an uncompressed point. Text before the block (a
+    comment line) is ignored. CMake's key guard runs this same function
+    (tools/update/keycheck.cpp), so a file it accepts is a file the plugin trusts. */
+Result<TrustedKey, KeyFileError> parsePublicKeyPem (std::string_view pem);
+
+struct KeyFile
+{
+    std::string_view name, pem;
+};
+
+struct RefusedKeyFile
+{
+    std::string_view name;
+    KeyFileError why;
+};
 
 enum class SignatureError
 {
@@ -36,11 +54,17 @@ enum class SignatureError
 class TrustRoot
 {
 public:
-    /** The release keys, compiled in from the .pub.pem files in
-        src/update/keys. A plugin built with
-        TUBAMP_UPDATES=ON has at least two (CMake refuses fewer); other builds may have
-        none, and then nothing verifies. */
+    /** The release keys, compiled in from the .pub.pem files in src/update/keys. A
+        plugin built with TUBAMP_UPDATES=ON has at least two (CMake refuses fewer, and
+        any file parsePublicKeyPem refuses); other builds may have none, and then nothing
+        verifies. If a file ever failed to parse here, the set would be empty, never
+        partial. */
     static const TrustRoot& release();
+
+    /** One key per file, or the first file that does not parse. A partial set is never
+        built: a recovery key that dropped out silently would leave one key between the
+        channel and its death. */
+    static Result<TrustRoot, RefusedKeyFile> fromKeyFiles (std::span<const KeyFile>);
 
     /** Tests and `tubamp_update_tool --trust` only. */
     explicit TrustRoot (std::vector<TrustedKey> keys);

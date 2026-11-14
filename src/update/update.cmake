@@ -32,62 +32,6 @@ set(tubamp_update_include_dirs
 file(GLOB tubamp_update_release_keys CONFIGURE_DEPENDS "${tubamp_update_dir}/keys/*.pub.pem")
 file(GLOB tubamp_update_fixture_keys CONFIGURE_DEPENDS "${tubamp_update_tests_dir}/fixtures/*.pub.pem")
 
-function(tubamp_pem_body out file)
-    file(READ "${file}" text)
-    string(REGEX REPLACE ".*-----BEGIN PUBLIC KEY-----(.*)-----END PUBLIC KEY-----.*" "\\1" body "${text}")
-    string(REGEX REPLACE "[ \t\r\n]" "" body "${body}")
-    set(${out} "${body}" PARENT_SCOPE)
-endfunction()
-
-# Sets `out` to a description of everything wrong with a release key set, or to "".
-function(tubamp_release_key_problems out keys fixtures min_count)
-    set(problems "")
-    list(LENGTH keys count)
-    if(count LESS min_count)
-        string(APPEND problems "  ${count} release key(s) in src/update/keys, at least ${min_count} needed "
-                               "(see src/update/keys/README.md).\n")
-    endif()
-    foreach(key IN LISTS keys)
-        file(READ "${key}" text)
-        if(text MATCHES "PRIVATE KEY")
-            string(APPEND problems "  ${key} holds a private key. Delete it from the repository now.\n")
-        elseif(NOT text MATCHES "-----BEGIN PUBLIC KEY-----")
-            string(APPEND problems "  ${key} is not a PEM public key.\n")
-        endif()
-        if(text MATCHES "TEST KEY")
-            string(APPEND problems "  ${key} is marked as a test key.\n")
-        endif()
-        tubamp_pem_body(body "${key}")
-        foreach(fixture IN LISTS fixtures)
-            tubamp_pem_body(fixture_body "${fixture}")
-            if(body STREQUAL fixture_body)
-                string(APPEND problems "  ${key} is the test key ${fixture}.\n")
-            endif()
-        endforeach()
-    endforeach()
-    set(${out} "${problems}" PARENT_SCOPE)
-endfunction()
-
-# The guard must refuse the fixtures themselves and an empty set, or it guards nothing.
-tubamp_release_key_problems(self_test_fixtures "${tubamp_update_fixture_keys}" "${tubamp_update_fixture_keys}" 0)
-tubamp_release_key_problems(self_test_empty "" "" 2)
-list(LENGTH tubamp_update_fixture_keys fixture_count)
-if(fixture_count EQUAL 0 OR self_test_fixtures STREQUAL "" OR self_test_empty STREQUAL "")
-    message(FATAL_ERROR "src/update/update.cmake: the release-key guard failed its self-test.")
-endif()
-
-if(TUBAMP_UPDATES)
-    set(min_release_keys 2)
-else()
-    set(min_release_keys 0)
-endif()
-tubamp_release_key_problems(release_key_problems "${tubamp_update_release_keys}"
-                            "${tubamp_update_fixture_keys}" ${min_release_keys})
-if(NOT release_key_problems STREQUAL "")
-    message(FATAL_ERROR "Release keys refused:\n${release_key_problems}"
-                        "TUBAMP_UPDATES=ON needs the release key and the offline recovery key, and no test key.")
-endif()
-
 # One raw string literal per file. The runtime parses the PEM text itself, so the
 # committed files are the only source of the trusted set and nothing can drift.
 function(tubamp_write_text_table out_file type_decl files)
@@ -107,6 +51,86 @@ endfunction()
 tubamp_write_text_table("${tubamp_update_gen_dir}/tubamp_update_release_keys.inc"
     "struct ReleaseKeyFile { std::string_view name, pem; };\ninline constexpr auto releaseKeyFiles = std::array<ReleaseKeyFile, "
     "${tubamp_update_release_keys}")
+
+# The release-key guard is tools/update/keycheck.cpp built with the plugin's own key parser
+# (parsePublicKeyPem in Trust.cpp), so a key CMake accepts is a key the plugin trusts. A
+# regular expression here once passed a P-384 key, a compressed point, and a file whose
+# last block was checked while the parser trusted the first. Rebuilt only when its
+# sources change.
+set(tubamp_keycheck_sources
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/update/keycheck.cpp"
+    "${tubamp_update_dir}/detail/Trust.cpp"
+    "${tubamp_update_dir}/detail/Rules.cpp"
+    "${tubamp_update_dir}/UpdateTypes.cpp")
+set(tubamp_keycheck_inputs ${tubamp_keycheck_sources}
+    "${tubamp_update_dir}/detail/Trust.h" "${tubamp_update_dir}/detail/Rules.h"
+    "${tubamp_update_dir}/detail/Hosts.def" "${tubamp_update_dir}/UpdateTypes.h")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${tubamp_keycheck_inputs})
+set(tubamp_keycheck_fingerprint "${CMAKE_CXX_COMPILER}")
+foreach(f IN LISTS tubamp_keycheck_inputs)
+    file(SHA256 "${f}" digest)
+    string(APPEND tubamp_keycheck_fingerprint "${digest}")
+endforeach()
+string(SHA256 tubamp_keycheck_fingerprint "${tubamp_keycheck_fingerprint}")
+set(tubamp_keycheck "${tubamp_update_gen_dir}/tubamp_update_keycheck")
+set(tubamp_keycheck_stamp "${tubamp_keycheck}.fingerprint")
+set(tubamp_keycheck_built "")
+if(EXISTS "${tubamp_keycheck_stamp}")
+    file(READ "${tubamp_keycheck_stamp}" tubamp_keycheck_built)
+endif()
+if(NOT EXISTS "${tubamp_keycheck}" OR NOT tubamp_keycheck_built STREQUAL tubamp_keycheck_fingerprint)
+    set(keycheck_flags -std=c++20 -O1 "-I${tubamp_update_dir}" "-I${tubamp_update_gen_dir}"
+        "-I${nam_dir}/Dependencies/nlohmann" "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    if(CMAKE_OSX_SYSROOT)
+        list(APPEND keycheck_flags -isysroot "${CMAKE_OSX_SYSROOT}")
+    endif()
+    execute_process(
+        COMMAND "${CMAKE_CXX_COMPILER}" ${keycheck_flags} ${tubamp_keycheck_sources}
+                -framework Security -framework CoreFoundation -o "${tubamp_keycheck}"
+        RESULT_VARIABLE keycheck_result
+        ERROR_VARIABLE keycheck_log
+        OUTPUT_VARIABLE keycheck_log)
+    if(NOT keycheck_result EQUAL 0)
+        message(FATAL_ERROR "src/update/update.cmake: could not build the release-key guard:\n${keycheck_log}")
+    endif()
+    file(WRITE "${tubamp_keycheck_stamp}" "${tubamp_keycheck_fingerprint}")
+endif()
+
+# Sets `out` to a description of everything wrong with a release key set, or to "".
+function(tubamp_release_key_problems out keys fixtures min_count)
+    execute_process(
+        COMMAND "${tubamp_keycheck}" ${min_count} ${fixtures} -- ${keys}
+        RESULT_VARIABLE result
+        OUTPUT_VARIABLE problems
+        ERROR_VARIABLE problems)
+    if(result EQUAL 0)
+        set(problems "")
+    elseif(problems STREQUAL "")
+        set(problems "  the release-key guard failed (${result}).\n")
+    endif()
+    set(${out} "${problems}" PARENT_SCOPE)
+endfunction()
+
+# The guard must refuse the fixtures themselves and an empty set, or it guards nothing.
+tubamp_release_key_problems(self_test_fixtures "${tubamp_update_fixture_keys}" "${tubamp_update_fixture_keys}" 0)
+tubamp_release_key_problems(self_test_empty "" "${tubamp_update_fixture_keys}" 2)
+list(LENGTH tubamp_update_fixture_keys fixture_count)
+if(fixture_count EQUAL 0 OR self_test_fixtures STREQUAL "" OR self_test_empty STREQUAL "")
+    message(FATAL_ERROR "src/update/update.cmake: the release-key guard failed its self-test.")
+endif()
+
+if(TUBAMP_UPDATES)
+    set(min_release_keys 2)
+else()
+    set(min_release_keys 0)
+endif()
+tubamp_release_key_problems(release_key_problems "${tubamp_update_release_keys}"
+                            "${tubamp_update_fixture_keys}" ${min_release_keys})
+if(NOT release_key_problems STREQUAL "")
+    message(FATAL_ERROR "Release keys refused:\n${release_key_problems}"
+                        "TUBAMP_UPDATES=ON needs the release key and the offline recovery key, each an "
+                        "uncompressed P-256 public key alone in its file, and no test key.")
+endif()
 
 # The golden bridge contract is shared with the page: ui/src/bridge/update-contract.json.
 file(GLOB tubamp_update_fixture_files CONFIGURE_DEPENDS

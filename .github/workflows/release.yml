@@ -114,23 +114,32 @@ jobs:
           node scripts/release/notes.mjs --out dist/notes.md
           node scripts/release/manifest.mjs --version "$VERSION" --dir dist --notes-file dist/notes.md
 
+      # A network install runs here, in a step that holds no secret, so nothing it
+      # downloads ever shares an environment with the signing key.
+      - name: Find OpenSSL 3.2 or later
+        if: needs.plan.outputs.updates == 'on'
+        run: |
+          openssl="$(brew --prefix openssl@3 2>/dev/null)/bin/openssl"
+          [ -x "$openssl" ] || { brew install openssl@3 && openssl="$(brew --prefix openssl@3)/bin/openssl"; }
+          "$openssl" version
+          echo "OPENSSL=$openssl" >> "$GITHUB_ENV"
+
       - name: Sign the update envelope
         if: needs.plan.outputs.updates == 'on'
         env:
           TUBAMP_UPDATE_SIGNING_KEYS: ${{ secrets.TUBAMP_UPDATE_SIGNING_KEYS }}
-        run: |
-          openssl="$(brew --prefix openssl@3 2>/dev/null)/bin/openssl"
-          [ -x "$openssl" ] || { brew install openssl@3 && openssl="$(brew --prefix openssl@3)/bin/openssl"; }
-          OPENSSL="$openssl" node scripts/release/envelope.mjs --version "$VERSION" --dir dist
+        run: node scripts/release/envelope.mjs --version "$VERSION" --dir dist
 
       # The trusted keys compiled into the tool are the ones the plugin in this release
-      # ships with, so a release its own client refuses never goes up.
+      # ships with, so a release its own client refuses never goes up. Every committed key
+      # file must be among them: a recovery key the plugin cannot parse stops the release.
       - name: Check the envelope and the archive with the client's code
         if: needs.plan.outputs.updates == 'on'
         run: |
           for arch in arm64 x86_64; do mkdir -p "components/$arch" && tar -C "components/$arch" -xf "components/component-$arch.tar"; done
           chmod +x build/tool/tubamp_update_tool
-          build/tool/tubamp_update_tool verify-envelope --envelope dist/update-v1.signed --running 0.0.0 \
+          keys="$(git ls-files 'src/update/keys/*.pub.pem' | wc -l | tr -d ' ')"
+          build/tool/tubamp_update_tool verify-envelope --envelope dist/update-v1.signed --running 0.0.0 --expect-keys "$keys" \
             --archive "dist/tubamp-$VERSION-macos-universal.zip" \
             --installed components/arm64/tubamp.component --installed components/x86_64/tubamp.component
 

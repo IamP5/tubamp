@@ -15,5 +15,5 @@ std::optional<Manifest> loadCachedEnvelope (const SupportPaths&, const TrustRoot
 /** Open `file` with openEnvelope and, if it opens and supersedes() the cached version,
     replace latest.signed (temporary file and rename, under the lock). Unverified bytes
     are never written, and the cached version never goes down. */
-void storeEnvelope (const SupportPaths&, ByteView file, const TrustRoot&);
+void storeEnvelope (const SupportPaths&, ByteView file, const TrustRoot&, const CancelToken& stop = neverCancelled());
 } // namespace tubamp::update::detail

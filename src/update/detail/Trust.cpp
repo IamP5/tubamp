@@ -55,13 +55,21 @@ namespace
                                       msg.ref, sig.ref, nullptr);
     }
 
-    std::vector<TrustedKey> parseReleaseKeys()
+    TrustRoot parseReleaseKeys()
     {
-        std::vector<TrustedKey> keys;
+        std::vector<KeyFile> files;
         for (const auto& file : releaseKeyFiles)
-            if (auto key = parsePublicKeyPem (file.pem))
-                keys.push_back (*key);
-        return keys;
+            files.push_back ({ file.name, file.pem });
+        auto root = TrustRoot::fromKeyFiles (files);
+        return root ? std::move (root).value() : TrustRoot ({});
+    }
+
+    std::size_t occurrences (std::string_view text, std::string_view what)
+    {
+        std::size_t count = 0;
+        for (auto at = text.find (what); at != std::string_view::npos; at = text.find (what, at + what.size()))
+            ++count;
+        return count;
     }
 }
 
@@ -73,13 +81,17 @@ KeyId keyIdOf (const TrustedKey& key) noexcept
     return id;
 }
 
-std::optional<TrustedKey> parsePublicKeyPem (std::string_view pem)
+Result<TrustedKey, KeyFileError> parsePublicKeyPem (std::string_view pem)
 {
     constexpr std::string_view begin = "-----BEGIN PUBLIC KEY-----", end = "-----END PUBLIC KEY-----";
+    // One block only: with two, a guard that read one block and a parser that read the
+    // other would disagree about which key the file holds.
+    if (occurrences (pem, "-----BEGIN") != 1 || occurrences (pem, "-----END") != 1)
+        return KeyFileError::notOnePublicKeyBlock;
     const auto b = pem.find (begin);
     const auto e = pem.find (end);
     if (b == std::string_view::npos || e == std::string_view::npos || e < b)
-        return std::nullopt;
+        return KeyFileError::notOnePublicKeyBlock;
 
     std::string body;
     for (char c : pem.substr (b + begin.size(), e - b - begin.size()))
@@ -89,20 +101,33 @@ std::optional<TrustedKey> parsePublicKeyPem (std::string_view pem)
     const auto der = decodeBase64 (body);
     if (! der || der->size() != sizeof (p256SpkiPrefix) + 65
         || ! std::equal (std::begin (p256SpkiPrefix), std::end (p256SpkiPrefix), der->begin()))
-        return std::nullopt;
+        return KeyFileError::notUncompressedP256;
 
     TrustedKey key;
     std::copy (der->begin() + std::ptrdiff_t (sizeof (p256SpkiPrefix)), der->end(), key.point.begin());
 
     CFOwned<SecKeyRef> onCurve { makePublicKey (key) };
     if (key.point[0] != 0x04 || onCurve.ref == nullptr)
-        return std::nullopt;
+        return KeyFileError::notUncompressedP256;
     return key;
+}
+
+Result<TrustRoot, RefusedKeyFile> TrustRoot::fromKeyFiles (std::span<const KeyFile> files)
+{
+    std::vector<TrustedKey> keys;
+    for (const auto& file : files)
+    {
+        auto key = parsePublicKeyPem (file.pem);
+        if (! key)
+            return RefusedKeyFile { file.name, key.error() };
+        keys.push_back (key.value());
+    }
+    return TrustRoot (std::move (keys));
 }
 
 const TrustRoot& TrustRoot::release()
 {
-    static const TrustRoot root (parseReleaseKeys());
+    static const TrustRoot root = parseReleaseKeys();
     return root;
 }
 

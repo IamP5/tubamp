@@ -61,6 +61,7 @@ Result<VerifiedArchive, Failure> ArchiveSink::finish() &&
 
 namespace
 {
+    constexpr const char* unpackingDir = "unpacking";
     constexpr std::uint32_t endOfCentralSignature = 0x06054b50, centralSignature = 0x02014b50,
                             localSignature = 0x04034b50;
     constexpr std::uint8_t unixHost = 3;
@@ -319,7 +320,10 @@ Result<UnpackedBundle, Failure> unpack (VerifiedArchive&& verified, const Stagin
     if (! plan)
         return Failure::archive;
 
-    Fd root (::open (staging.dir().c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    Fd stagingDir (::open (staging.dir().c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (! stagingDir || ::mkdirat (stagingDir.get(), unpackingDir, 0700) != 0)
+        return failureOf (errno);
+    Fd root (::openat (stagingDir.get(), unpackingDir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
     if (! root)
         return failureOf (errno);
 
@@ -337,6 +341,9 @@ Result<UnpackedBundle, Failure> unpack (VerifiedArchive&& verified, const Stagin
         if (step)
             return *step;
     }
+    const auto bundle = std::string (bundleRoot);
+    if (::renameat (root.get(), bundle.c_str(), stagingDir.get(), bundle.c_str()) != 0)
+        return failureOf (errno);
     return UnpackedBundle();
 }
 } // namespace tubamp::update::detail

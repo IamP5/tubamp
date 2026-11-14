@@ -149,7 +149,9 @@ void prefsStore()
 
     TempDir fresh;
     const SupportPaths daily { fresh.path() / "support" };
-    check (claimDailyCheck (daily, now), "first claim wins");
+    check (! claimDailyCheck (daily, now) && ! loadPrefs (daily).lastCheckAt, "no claim before the disclosure was shown");
+    mutatePrefs (daily, PrefsPatch { {}, true, {} });
+    check (claimDailyCheck (daily, now), "first claim after the disclosure wins");
     check (! claimDailyCheck (daily, now + hours (23)), "a claim 23 h later loses");
     check (claimDailyCheck (daily, now + hours (24)), "a claim 24 h later wins");
     check (claimDailyCheck (daily, now - hours (5)), "a claim with the clock moved backwards wins");
@@ -158,6 +160,7 @@ void prefsStore()
 
     TempDir race;
     const auto raceDir = race.path() / "support";
+    mutatePrefs ({ raceDir }, PrefsPatch { {}, true, {} });
     std::string winnersPerRound;
     bool everyRoundOneWinner = true;
     for (int round = 0; round < 20; ++round)
@@ -186,6 +189,41 @@ void prefsStore()
     check (! claimDailyCheck (readOnly, now), "an unwritable support folder never claims, so never checks on every open");
     check (! mutatePrefs (readOnly, PrefsPatch { false, {}, {} }).autoCheck, "an unwritable folder still returns the patched value");
     ::chmod (readOnly.dir.c_str(), 0700);
+}
+
+void supportLock()
+{
+    group ("disk.lock");
+    using Clock = std::chrono::steady_clock;
+    using std::chrono::milliseconds;
+    TempDir dir;
+    const SupportPaths support { dir.path() / "support" };
+    check (SupportLock::acquire (support).has_value(), "a free support lock is taken at once");
+
+    Child holder ({ "hold-support", support.dir.string() });
+    check (holder.waitReady(), "another process holds the support lock");
+    auto start = Clock::now();
+    const auto patient = SupportLock::acquire (support);
+    const auto waited = std::chrono::duration_cast<milliseconds> (Clock::now() - start);
+    check (! patient && waited >= supportLockPatience && waited < supportLockPatience + milliseconds (500),
+           "a held lock is given up after " + std::to_string (waited.count()) + " ms (bound "
+               + std::to_string (supportLockPatience.count()) + " ms), never waited on forever");
+
+    CancelToken stop;
+    std::thread stopper ([&] { std::this_thread::sleep_for (milliseconds (50)); stop.request(); });
+    start = Clock::now();
+    const auto stopped = SupportLock::acquire (support, stop);
+    const auto afterStop = std::chrono::duration_cast<milliseconds> (Clock::now() - start) - milliseconds (50);
+    stopper.join();
+    std::printf ("  note  held lock given up after %lld ms; stop honoured after %lld ms\n",
+                 (long long) waited.count(), (long long) afterStop.count());
+    check (! stopped && afterStop < milliseconds (40),
+           "a stop request ends the wait " + std::to_string (afterStop.count()) + " ms after it is made (bound 40 ms)");
+    check (! claimDailyCheck (support, std::chrono::sys_seconds (std::chrono::seconds (1'800'000'000)), stop)
+               && ! fs::exists (support.dir / "prefs.json"),
+           "an operation that cannot get the lock does nothing, and the next run tries again");
+    holder.release();
+    check (holder.wait() == 0 && SupportLock::acquire (support).has_value(), "once the holder lets go, the lock is taken");
 }
 
 void envelopeCache()
@@ -455,7 +493,8 @@ void unpacking()
         auto e = forgedBundle();
         e.push_back (sized ({ "tubamp.component/bomb", 0100644, std::string (100000, 'z'), 8 }, 1000));
         const auto dir = attempt (forgeZip (e), Failure::archive, "refuses an entry that inflates past its declared size", false);
-        check (fs::file_size (dir / "tubamp.component" / "bomb") <= 1000, "and writes no byte past the declared size");
+        check (fs::file_size (dir / "unpacking" / "tubamp.component" / "bomb") <= 1000, "and writes no byte past the declared size");
+        check (! fs::exists (dir / "tubamp.component"), "a failed unpack never leaves a bundle at tubamp.component");
     }
     attempt (with ({ withCrc ({ "tubamp.component/crc", 0100644, "data" }, 12345) }), Failure::archive, "refuses a CRC-32 mismatch", false);
     attempt (with ({ sized ({ "tubamp.component/stored", 0100644, "data" }, 3) }), Failure::archive, "refuses a stored entry whose sizes disagree", false);
@@ -700,7 +739,7 @@ void reconciling()
         { "stale 0.3.0 < slot 0.4.0: the slot stays", "0.5.0", Variant::good, "0.4.0", { "0.3.0" }, "0.4.0" },
         { "slot 0.6.0 above installed 0.5.0: discarded", "0.5.0", Variant::good, "0.6.0", {}, nullptr },
         { "stale 0.5.0, the installed version: deleted, never kept", "0.5.0", std::nullopt, nullptr, { "0.5.0" }, nullptr },
-        { "unsealed slot: discarded, the sealed stale 0.3.0 kept", "0.5.0", Variant::resourceModified, "0.4.0", { "0.3.0" }, "0.3.0" },
+        { "a slot with a broken seal is kept as found: 0.4.0 stays over the stale 0.3.0", "0.5.0", Variant::resourceModified, "0.4.0", { "0.3.0" }, "0.4.0" },
         { "two stale bundles: the higher below installed wins", "0.5.0", std::nullopt, nullptr, { "0.3.0", "0.4.0" }, "0.4.0" },
     };
     for (const auto& row : rows)
@@ -721,6 +760,26 @@ void reconciling()
         const auto settled = listing (w.home.root);
         reconcile (site);
         check (listing (w.home.root) == settled, std::string (row.what) + ": a second reconcile changes nothing");
+    }
+    {
+        World w;
+        writeText (w.home.live() / "notes.txt", "a stray file, as Finder or a user leaves");
+        const auto installed = installJob (w.home.site(), fixtures().zip ("0.4.0"), "0.4.0", "0.3.0");
+        check (committed (installed) && versionOf (w.home.previous()) == v ("0.3.0") && fs::exists (w.home.previous() / "notes.txt"),
+               "the old bundle is kept as previous even when a stray file broke its seal, and kept as found");
+    }
+    {
+        World w;
+        std::optional<Staging> staging;
+        staging.emplace (std::move (stage (w.home.site()).value()));
+        const auto lockFile = staging->dir() / "lock";
+        ::chmod (lockFile.c_str(), 0);
+        reconcile (w.home.site());
+        check (w.home.stagingDirs().size() == 1, "a staging lock that cannot be opened (EACCES) is not a dead owner: the directory stays");
+        ::chmod (lockFile.c_str(), 0600);
+        staging.reset();
+        reconcile (w.home.site());
+        check (w.home.stagingDirs().empty(), "once its owner closes it, the directory is collected");
     }
     {
         World w ("0.5.0", "0.3.0");
@@ -790,9 +849,10 @@ void crashTable()
         if (row.fileSizeLimit != 0)
         {
             const auto dirs = w.home.stagingDirs();
-            const bool partial = dirs.size() == 1 && fs::exists (dirs.front() / "tubamp.component")
-                              && ! sealedVersion (dirs.front() / "tubamp.component");
-            check (partial, name + "it died with a partial, unsealed bundle staged");
+            const bool partial = dirs.size() == 1 && fs::exists (dirs.front() / "unpacking" / "tubamp.component")
+                              && ! codeSealIntact (dirs.front() / "unpacking" / "tubamp.component")
+                              && ! fs::exists (dirs.front() / "tubamp.component");
+            check (partial, name + "it died with a partial bundle in unpacking/, never at tubamp.component");
         }
         if (! row.committedBeforeDeath)
             check (inodeOf (w.home.live()) == liveInode && versionOf (w.home.live()) == v ("0.3.0"), name + "the live bundle is untouched");
@@ -929,6 +989,7 @@ void runDiskTests (int& passed, int& failed)
     failedCount = &failed;
     std::printf ("disk fixtures: %s\n", fixtures().description().c_str());
     prefsStore();
+    supportLock();
     envelopeCache();
     site();
     sink();
@@ -956,6 +1017,13 @@ int runDiskChild (int argc, char** argv)
         childReady();
         childAwaitRelease();
         return staging ? 0 : 1;
+    }
+    if (args.size() == 2 && args[0] == "hold-support")
+    {
+        const auto lock = SupportLock::acquire ({ args[1] });
+        childReady();
+        childAwaitRelease();
+        return lock ? 0 : 1;
     }
     if (args.size() == 2 && args[0] == "reconcile")
     {

@@ -45,7 +45,7 @@ std::string_view fixture (std::string_view name)
     throw std::runtime_error ("missing fixture " + std::string (name));
 }
 
-TrustedKey fixtureKey (std::string_view name) { return *parsePublicKeyPem (fixture (name)); }
+TrustedKey fixtureKey (std::string_view name) { return parsePublicKeyPem (fixture (name)).value(); }
 
 constexpr std::string_view hashHex = "0c47c115a3f4cf9bd3e0b2e0f1e1c7b0d1f2a3b4c5d6e7f8091a2b3c4d5e6f70";
 
@@ -232,13 +232,38 @@ void trust()
 
     group ("trust.keys");
     const auto pemA = fixture ("test-key-a.pub.pem");
-    check (parsePublicKeyPem (pemA).has_value(), "a PEM public key with a comment line before it parses");
+    check (bool (parsePublicKeyPem (pemA)), "a PEM public key with a comment line before it parses");
     std::string offCurve (pemA);
     const auto at = offCurve.find ("-----END") - 6;
     offCurve[at] = offCurve[at] == 'A' ? 'B' : 'A';
     check (! parsePublicKeyPem (offCurve), "a point edited off the curve is refused");
     check (! parsePublicKeyPem ("-----BEGIN EC PRIVATE KEY-----\nMHcCAQEE\n-----END EC PRIVATE KEY-----\n"), "a private key PEM is refused");
     check (! parsePublicKeyPem ("nothing here"), "text without a PEM block is refused");
+    std::string twoBlocks (pemA.substr (pemA.find ("-----BEGIN")));
+    twoBlocks += fixture ("test-key-b.pub.pem").substr (fixture ("test-key-b.pub.pem").find ("-----BEGIN"));
+    auto refusedAs = [] (std::string_view pem, KeyFileError why) { const auto k = parsePublicKeyPem (pem); return ! k && k.error() == why; };
+    check (refusedAs (twoBlocks, KeyFileError::notOnePublicKeyBlock), "a file with two PEM blocks is refused (CMake checked the last, the parser trusted the first)");
+    constexpr std::string_view p384 = R"pem(-----BEGIN PUBLIC KEY-----
+MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEUyh6iFDgZ7qLv039Kb4QV5Ixns/RRssy
+w8hAhQl8XQMk47R1THsvomGpaW/gKPHQNiGKpDBPnSwRnWu6jRaoEMN5KIaYvu8J
+31wiwh29ayoLO/L1Q9hIQ07r/xVx9nZT
+-----END PUBLIC KEY-----
+)pem";
+    constexpr std::string_view compressed = R"pem(-----BEGIN PUBLIC KEY-----
+MDkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDIgACd3NaZPhl85DmsNR3k692bNBtuPtl
+FjSBEOej0LnqKbI=
+-----END PUBLIC KEY-----
+)pem";
+    check (refusedAs (p384, KeyFileError::notUncompressedP256), "a P-384 public key is refused");
+    check (refusedAs (compressed, KeyFileError::notUncompressedP256), "a P-256 key with a compressed point is refused");
+
+    const KeyFile goodFiles[] = { { "release.pub.pem", pemA }, { "recovery.pub.pem", fixture ("test-key-b.pub.pem") } };
+    const auto both = TrustRoot::fromKeyFiles (goodFiles);
+    check (both && both.value().keys().size() == 2, "two good key files make a trust root of two keys");
+    const KeyFile oneBad[] = { { "release.pub.pem", pemA }, { "recovery.pub.pem", p384 } };
+    const auto refused = TrustRoot::fromKeyFiles (oneBad);
+    check (! refused && refused.error().name == "recovery.pub.pem" && refused.error().why == KeyFileError::notUncompressedP256,
+           "one unparseable file refuses the whole set and names the file, never a set of one");
 
     group ("trust.release-set");
     const auto& release = TrustRoot::release();
@@ -416,7 +441,9 @@ void prefs()
     using namespace std::chrono;
     const sys_seconds now { seconds (1'800'000'000) };
     Prefs p;
-    check (isCheckDue (p, now), "never checked: due");
+    check (! isCheckDue (p, now), "the disclosure not yet shown: not due");
+    p.disclosed = true;
+    check (isCheckDue (p, now), "disclosed, never checked: due");
     p.lastCheckAt = now - hours (23);
     check (! isCheckDue (p, now), "checked 23 h ago: not due");
     p.lastCheckAt = now - hours (24);

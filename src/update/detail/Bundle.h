@@ -10,6 +10,7 @@
 //     previous/tubamp.component                            kept for a manual restore
 //     update.XXXXXX/                                       one attempt (mkdtemp, 0700)
 //       lock                                               flock while the attempt lives
+//       unpacking/tubamp.component/                        the bundle while unpack() writes it
 //       tubamp.component/                                  new bundle, old one after swap
 //
 // .tubamp must be on the live bundle's volume, or the copy is NotSelfUpdatable
@@ -122,7 +123,8 @@ inline Site siteOf (const InstallSite& s)
 class Staging
 {
 public:
-    static Result<Staging, Failure> create (const SelfUpdatable&);   // noSpace | notWritable
+    static Result<Staging, Failure> create (const SelfUpdatable&,     // noSpace | notWritable
+                                            const CancelToken& stop = neverCancelled());
     Staging (Staging&&) noexcept;
     Staging (const Staging&) = delete;
     ~Staging();
@@ -180,8 +182,9 @@ private:
 class UnpackedBundle;
 /** Reads the zip's central directory through the fd (pread only: the bytes unpacked are
     the bytes hashed), runs planExtraction over every entry first, then creates exactly
-    the planned entries with openat(O_EXCL|O_NOFOLLOW) under the staging directory,
-    making missing parent directories 0755. Each file is inflated to its declared size
+    the planned entries with openat(O_EXCL|O_NOFOLLOW) under <staging>/unpacking, making
+    missing parent directories 0755, and renames the finished bundle to
+    <staging>/tubamp.component. A bundle at that name is therefore always complete. Each file is inflated to its declared size
     and no further, and must match its CRC-32. Accepts what `ditto -c -k` writes: stored
     or deflated entries, no encryption, no zip64, one disk. archive on any violation,
     noSpace on ENOSPC or EDQUOT, notWritable on other write errors. */
@@ -229,19 +232,21 @@ struct AlreadyInstalled { Version installed; };   // another process got there f
     the live bundle is gone or has no readable version: an uninstalled copy is not
     brought back by an update. */
 Result<std::variant<Committed, AlreadyInstalled>, Failure>
-    commit (InspectedBundle&&, const Staging&, const SelfUpdatable&);
+    commit (InspectedBundle&&, const Staging&, const SelfUpdatable&, const CancelToken& stop = neverCancelled());
 
 /** Converge the disk. Idempotent, safe in any process at any time, the only code that
     deletes. Under the support lock it:
       - deletes the support folder's *.tmp files (a writer that died mid-write);
-      - finds the ownerless staging directories (flock LOCK_NB wins, or no lock file);
-      - keeps in previous/ the highest pinned, sealed bundle below the installed version
-        among previous/ and those directories (a tie keeps previous/), moving it there
-        with one rename or RENAME_SWAP, and discards previous/ when there is none;
+      - finds the ownerless staging directories (flock LOCK_NB wins, or the lock file is
+        missing; any other error opening it leaves the directory alone);
+      - keeps in previous/ the highest pinned bundle below the installed version among
+        previous/ and those directories (a tie keeps previous/), moving it there with one
+        rename or RENAME_SWAP, and discards previous/ when there is none. Its seal is not
+        checked and nothing in it is hashed: it is kept as found;
       - deletes every ownerless staging directory.
     When the installed version is unreadable, previous/ is left alone. The live bundle
     is never touched. A crash inside leaves a disk this function accepts as input. */
-DiskState reconcile (const SelfUpdatable&);
+DiskState reconcile (const SelfUpdatable&, const CancelToken& stop = neverCancelled());
 
 /** For NotSelfUpdatable copies: the running bundle's version on disk, and whether a
     system copy other than the running one exists. Writes nothing. */

@@ -1,6 +1,7 @@
 #include "Files.h"
 
 #include <cerrno>
+#include <thread>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -15,16 +16,21 @@ void Fd::reset (int descriptor) noexcept
     fd = descriptor;
 }
 
-std::optional<SupportLock> SupportLock::acquire (const SupportPaths& support)
+std::optional<SupportLock> SupportLock::acquire (const SupportPaths& support, const CancelToken& stop)
 {
     std::error_code ignored;
     fs::create_directories (support.dir, ignored);
     Fd fd (::open ((support.dir / "lock").c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600));
     if (! fd)
         return std::nullopt;
-    while (::flock (fd.get(), LOCK_EX) != 0)
-        if (errno != EINTR)
+    const auto deadline = std::chrono::steady_clock::now() + supportLockPatience;
+    while (::flock (fd.get(), LOCK_EX | LOCK_NB) != 0)
+    {
+        if ((errno != EWOULDBLOCK && errno != EINTR) || stop.requested()
+            || std::chrono::steady_clock::now() >= deadline)
             return std::nullopt;
+        std::this_thread::sleep_for (supportLockPoll);
+    }
     return SupportLock (std::move (fd));
 }
 

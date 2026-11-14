@@ -12,12 +12,13 @@ The design is in `docs/UPDATES.md`. Each module owns one body of knowledge.
 | `detail/EnvelopeCache.h` | `latest.signed`, the offer cache and replay floor | Implemented in `EnvelopeCache.cpp` |
 | `detail/Bundle.h` | Where this copy lives, staging, the archive and bundle stages, `commit`, `reconcile` | Implemented: `Site.cpp` (`detect`, `readDisk`), `Archive.cpp` (`ArchiveSink`, the zip reader, `unpack`), `Inspect.cpp` (`inspect`), `Swap.cpp` (`Staging`, `commit`, `reconcile`) |
 | `detail/Files.h` | POSIX plumbing for the disk files: descriptors, the support lock, capped reads, replace-by-rename writes, and what a bundle on disk says about itself (Info.plist, CPU types) | Implemented in `Files.cpp` and `Inspect.cpp` |
-| `detail/Fetch.h` | The `Fetcher` interface and its contract, the redirect rule as a value (`HopPolicy`), the cancel token | Implemented; the system fetcher is `Fetch.mm` (NSURLSession, ARC) |
+| `detail/Fetch.h` | The `Fetcher` interface and its contract, the redirect rule as a value (`HopPolicy`) | Implemented; the system fetcher is `Fetch.mm` (NSURLSession, ARC) |
+| `detail/Cancel.h` | The cancel token that ends a download and a wait for the support lock | Implemented |
 | `detail/Environment.h` | What the shell takes from outside: version, site, keys, fetcher, clock, OS, how to reach the message thread, how to open the browser; the fetch limits | Implemented |
 | `Updater.h` | The service: `view`, `perform`, `watch`; one worker thread runs the effects | Implemented in `Updater.cpp` |
 | `Bridge.h` | `UiState.update` / `updateChanged` as JSON (`viewJson`) and the `updateCommand` parse (`parseCommand`) | Implemented, pure; held to `ui/src/bridge/update-contract.json` |
 | `plugin/Production.cpp` | The production `Environment` and `Updater()`: JUCE's message thread and browser, `dladdr`, the account's home | Plugin only |
-| `update.cmake` | Sources, the release-key guard, the generated key table, `tubamp_update_tool`, the disk-test fixture module | |
+| `update.cmake` | Sources, the release-key guard (`tools/update/keycheck.cpp`, built and run at configure time), the generated key table, `tubamp_update_tool`, the disk-test fixture module | |
 
 Nothing outside `src/update`, `tests/update` and `tools/update` includes a `detail/` header.
 
@@ -35,7 +36,7 @@ The disk tables (`tests/update/DiskTests.cpp`) run in temporary directories unde
 
 ## The service tests
 
-`tests/update/ServiceTests.cpp` runs the real `Updater` with a scripted `Fetcher` and a temporary home, and the test thread plays the message thread: `Environment::post` queues jobs that the test pumps. It covers the check and offer, a download with progress, the swap and restart pending, every install failure, cancel mid-download, two services on one home, a copy that cannot replace itself, and destruction mid-download. Cancel and destruction print their measured times.
+`tests/update/ServiceTests.cpp` runs the real `Updater` with a scripted `Fetcher` and a temporary home, and the test thread plays the message thread: `Environment::post` queues jobs that the test pumps. It covers the check and offer, the first automatic check waiting for the disclosure, a download with progress, the swap and restart pending, every install failure, cancel mid-download, two services on one home, a copy that cannot replace itself, destruction mid-download, and destruction while another process holds the support lock. Cancel and destruction print their measured times.
 
 `tests/update/BridgeTests.cpp` holds `viewJson` and `parseCommand` to `ui/src/bridge/update-contract.json` (embedded through the fixture table) and runs `HopPolicy` over hop sequences.
 

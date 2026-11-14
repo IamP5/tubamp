@@ -42,7 +42,8 @@ namespace
     }
 
     /** A staging directory whose owner is gone, with its lock now held by us (or with no
-        lock file at all: the owner died between mkdtemp and open). */
+        lock file at all: the owner died between mkdtemp and open). Any other failure to
+        open the lock (EMFILE, EACCES) says nothing about the owner, so the directory stays. */
     struct Ownerless
     {
         fs::path dir;
@@ -64,7 +65,8 @@ namespace
                 continue;
             }
             Fd lock (::open ((path / "lock").c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC));
-            if (! lock || ::flock (lock.get(), LOCK_EX | LOCK_NB) == 0)
+            const bool ownerless = lock ? ::flock (lock.get(), LOCK_EX | LOCK_NB) == 0 : errno == ENOENT;
+            if (ownerless)
                 found.push_back ({ path, std::move (lock) });
         }
         return found;
@@ -117,10 +119,10 @@ Staging::Staging (fs::path dir, int lockFd) : path (std::move (dir)), lock (lock
 Staging::Staging (Staging&& other) noexcept : path (std::move (other.path)), lock (std::exchange (other.lock, -1)) {}
 Staging::~Staging() { Fd closed (lock); }
 
-Result<Staging, Failure> Staging::create (const SelfUpdatable& site)
+Result<Staging, Failure> Staging::create (const SelfUpdatable& site, const CancelToken& stop)
 {
     const auto& layout = site.layout();
-    const auto supportLock = SupportLock::acquire (layout.support);
+    const auto supportLock = SupportLock::acquire (layout.support, stop);
     if (! supportLock)
         return Failure::notWritable;
     const auto dir = makeStagingDir (layout.privateDir);
@@ -133,11 +135,11 @@ Result<Staging, Failure> Staging::create (const SelfUpdatable& site)
 }
 
 Result<std::variant<Committed, AlreadyInstalled>, Failure>
-    commit (InspectedBundle&& bundle, const Staging& staging, const SelfUpdatable& site)
+    commit (InspectedBundle&& bundle, const Staging& staging, const SelfUpdatable& site, const CancelToken& stop)
 {
     using Outcome = std::variant<Committed, AlreadyInstalled>;
     const auto& layout = site.layout();
-    const auto lock = SupportLock::acquire (layout.support);
+    const auto lock = SupportLock::acquire (layout.support, stop);
     if (! lock)
         return Failure::notWritable;
 
@@ -153,10 +155,10 @@ Result<std::variant<Committed, AlreadyInstalled>, Failure>
     return Outcome (Committed { *installed, bundle.version() });
 }
 
-DiskState reconcile (const SelfUpdatable& site)
+DiskState reconcile (const SelfUpdatable& site, const CancelToken& stop)
 {
     const auto& layout = site.layout();
-    const auto lock = SupportLock::acquire (layout.support);
+    const auto lock = SupportLock::acquire (layout.support, stop);
     const auto disk = readDisk (layout);
     if (! lock)
         return disk;
@@ -172,9 +174,14 @@ DiskState reconcile (const SelfUpdatable& site)
     {
         struct Candidate { fs::path bundle; Version version; bool inSlot; };
         std::optional<Candidate> keep;
+        // Pins only, no seal: the previous bundle is the user's working plugin as it was,
+        // never loaded here, only offered for a manual restore, and a Finder .DS_Store in
+        // its root must not cost the user it. unpack() never leaves a partial bundle at
+        // <staging>/tubamp.component, so every candidate is a complete bundle.
         const auto consider = [&] (const fs::path& bundle, bool inSlot)
         {
-            const auto version = present (bundle) ? sealedVersion (bundle) : std::nullopt;
+            const auto facts = present (bundle) ? readBundleFacts (bundle) : std::nullopt;
+            const auto version = facts ? pinnedVersion (*facts) : std::nullopt;
             if (version && *version < *disk.installed && (! keep || *version > keep->version))
                 keep = Candidate { bundle, *version, inSlot };
         };

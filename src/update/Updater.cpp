@@ -40,10 +40,10 @@ namespace
         return std::nullopt;
     }
 
-    event::Reconciled reconcileJob (const Environment& env)
+    event::Reconciled reconcileJob (const Environment& env, const CancelToken& shutdown)
     {
         const auto disk = std::visit (Overload {
-            [] (const SelfUpdatable& self) { return reconcile (self); },
+            [&] (const SelfUpdatable& self) { return reconcile (self, shutdown); },
             [] (const InstallSite::NotSelfUpdatable& manual) { return readDisk (manual); },
             [] (const InstallSite::Off&) { return DiskState {}; },
         }, env.site.kind);
@@ -53,7 +53,7 @@ namespace
     CheckOutcome checkJob (const Environment& env, bool manual, const CancelToken& cancel)
     {
         const auto& support = supportOf (env.site);
-        if (! manual && ! claimDailyCheck (support, env.now()))
+        if (! manual && ! claimDailyCheck (support, env.now(), cancel))
             return check::NotDue {};
 
         Bytes body;
@@ -76,19 +76,22 @@ namespace
         {
             if (*none != NoOffer::upToDate && *none != NoOffer::needsNewerMacOS)
                 return CheckProblem::unverified;
-            storeEnvelope (support, body, *env.trust);
+            storeEnvelope (support, body, *env.trust, cancel);
             return check::Verified {};
         }
-        storeEnvelope (support, body, *env.trust);
+        storeEnvelope (support, body, *env.trust, cancel);
         return check::Verified { std::get<Offer> (evaluation) };
     }
 
     /** One attempt, from staging to the swap. Every stage's value is a local here, so the
-        Staging is closed when this returns, before the caller reconciles. */
+        Staging is closed when this returns, before the caller reconciles. `cancel` is the
+        user's Cancel, which ends the download; only `shutdown` ends a wait for the lock,
+        so a Cancel never turns into a failure. */
     InstallResult installAttempt (const Environment& env, const SelfUpdatable& site, const Offer& offer,
-                                  const CancelToken& cancel, const std::function<void (Event)>& send)
+                                  const CancelToken& cancel, const CancelToken& shutdown,
+                                  const std::function<void (Event)>& send)
     {
-        auto staging = Staging::create (site);
+        auto staging = Staging::create (site, shutdown);
         if (! staging)
             return staging.error();
         auto sink = ArchiveSink::open (staging.value(), offer);
@@ -146,7 +149,7 @@ namespace
             return Cancelled {};
 
         send (event::StageEntered { Stage::commit });
-        const auto committed = commit (std::move (inspected).value(), staging.value(), site);
+        const auto committed = commit (std::move (inspected).value(), staging.value(), site, shutdown);
         if (! committed)
             return committed.error();
         return Installed {};   // Committed, or AlreadyInstalled by another process
@@ -256,7 +259,7 @@ struct Updater::Impl
         std::visit (Overload {
             [this] (const effect::Reconcile&)
             {
-                enqueue ([this] { send (reconcileJob (env)); });
+                enqueue ([this] { send (reconcileJob (env, shutdown)); });
             },
             [this] (const effect::Check& c)
             {
@@ -277,8 +280,8 @@ struct Updater::Impl
                         send (event::InstallFinished { Failure::notWritable, {} });
                         return;
                     }
-                    const auto result = installAttempt (env, *site, offer, *cancel, [this] (Event e) { send (std::move (e)); });
-                    send (event::InstallFinished { result, reconcile (*site) });
+                    const auto result = installAttempt (env, *site, offer, *cancel, shutdown, [this] (Event e) { send (std::move (e)); });
+                    send (event::InstallFinished { result, reconcile (*site, shutdown) });
                 });
             },
             [this] (const effect::CancelInstall&)
@@ -288,7 +291,7 @@ struct Updater::Impl
             },
             [this] (const effect::SavePrefs& s)
             {
-                enqueue ([this, patch = s.patch] { send (event::PrefsSaved { mutatePrefs (supportOf (env.site), patch) }); });
+                enqueue ([this, patch = s.patch] { send (event::PrefsSaved { mutatePrefs (supportOf (env.site), patch, shutdown) }); });
             },
             [this] (const effect::OpenInBrowser& o)
             {

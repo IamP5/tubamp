@@ -240,12 +240,15 @@ struct Rig
     std::vector<std::string> opened;
 };
 
-/** A temporary home whose live bundle is 0.3.0, and a release 0.4.0 the fetcher serves. */
+/** A temporary home whose live bundle is 0.3.0, and a release 0.4.0 the fetcher serves.
+    The disclosure toast was already shown on this account unless `firstOpen`. */
 struct World
 {
-    World() : home (dir.path())
+    explicit World (bool firstOpen = false) : home (dir.path())
     {
         home.installLive (fixtures().bundle ("0.3.0"));
+        if (! firstOpen)
+            mutatePrefs (home.support, PrefsPatch { {}, true, {} });
         archive = readAll (fixtures().zip ("0.4.0"));
         fetcher->serve (std::string (envelopeUrl().text()), Script::of (envelopeFor (archive, "0.4.0")));
         fetcher->serve (archiveUrlFor ("0.4.0"), Script::of (archive));
@@ -272,7 +275,7 @@ struct World
 void offAndInert()
 {
     group ("service: a build with updates off is inert");
-    World w;
+    World w (true);
     Rig rig (w.home, w.loop, w.fetcher, InstallSite { InstallSite::Off {} });
     rig.open();
     rig.updater->perform (command::CheckNow {});
@@ -294,14 +297,13 @@ void happyPath()
 
     check (rig.waitFor<phase::Available>(), "the automatic check on first watch offers 0.4.0");
     const auto offered = rig.updater->view();
-    check (offered.announce == v ("0.4.0") && offered.disclose, "the offer is announced once and the disclosure is due");
+    check (offered.announce == v ("0.4.0") && ! offered.disclose, "the offer is announced once, after the disclosure was shown");
     check (w.fetcher->count (std::string (envelopeUrl().text())) == 1, "one envelope GET");
     check (fs::exists (w.home.support.dir / "latest.signed"), "the verified envelope is cached");
 
     rig.updater->perform (command::MarkAnnounced { v ("0.4.0") });
-    rig.updater->perform (command::MarkDisclosed {});
-    w.loop.pumpUntil ([&] { return ! rig.updater->view().announce && ! rig.updater->view().disclose; });
-    check (! rig.updater->view().announce && ! rig.updater->view().disclose, "MarkAnnounced and MarkDisclosed clear both");
+    w.loop.pumpUntil ([&] { return ! rig.updater->view().announce; });
+    check (! rig.updater->view().announce, "MarkAnnounced clears the announcement");
 
     rig.updater->perform (command::Install { v ("0.4.0") });
     check (rig.waitFor<phase::RestartPending>(), "the install ends in restart pending");
@@ -541,6 +543,72 @@ void destroyMidDownload()
     std::printf ("  note  ~Updater mid-download: %.1f ms\n", double (took) / 1000.0);
 }
 
+void firstOpenWaitsForTheDisclosure()
+{
+    group ("service: the first automatic check waits until the disclosure was shown");
+    const auto envelopeGets = [] (const World& w) { return w.fetcher->count (std::string (envelopeUrl().text())); };
+    {
+        World w (true);
+        Rig rig (w.home, w.loop, w.fetcher, w.home.detect());
+        rig.open();
+        w.loop.pumpUntil ([&] { return rig.updater->view().disclose; });
+        w.loop.runFor (milliseconds (300));
+        check (rig.updater->view().disclose && envelopeGets (w) == 0,
+               "the first editor open shows the disclosure and makes no request");
+        rig.updater->perform (command::MarkDisclosed {});
+        w.loop.pumpUntil ([&] { return ! rig.updater->view().disclose; });
+        w.loop.runFor (milliseconds (200));
+        check (envelopeGets (w) == 0, "showing the disclosure does not itself fire a request");
+
+        Rig later (w.home, w.loop, w.fetcher, w.home.detect());
+        later.open();
+        check (later.waitFor<phase::Available>() && envelopeGets (w) == 1, "the next open, with checks left on, checks once");
+    }
+    {
+        World w (true);
+        Rig rig (w.home, w.loop, w.fetcher, w.home.detect());
+        rig.open();
+        rig.updater->perform (command::SetAutoCheck { false });
+        w.loop.runFor (milliseconds (200));
+        Rig later (w.home, w.loop, w.fetcher, w.home.detect());
+        later.open();
+        w.loop.runFor (milliseconds (300));
+        check (envelopeGets (w) == 0, "Turn off on the disclosure means no request, now or on the next open");
+    }
+    {
+        World w (true);
+        Rig rig (w.home, w.loop, w.fetcher, w.home.detect());
+        rig.open();
+        w.loop.runFor (milliseconds (200));
+        rig.updater->perform (command::CheckNow {});
+        check (rig.waitFor<phase::Available>() && envelopeGets (w) == 1, "Check now checks at once, disclosure or not");
+    }
+}
+
+void destroyWhileAnotherProcessHoldsTheLock()
+{
+    group ("service: destroying the service while another process holds the support lock");
+    World w;
+    Child holder ({ "hold-support", w.home.support.dir.string() });
+    check (holder.waitReady(), "another process holds the support lock, as a host stopped in a debugger would");
+    std::thread letGo ([&] { std::this_thread::sleep_for (milliseconds (3000)); holder.release(); });
+
+    auto rig = std::make_unique<Rig> (w.home, w.loop, w.fetcher, w.home.detect());
+    rig->open();
+    std::this_thread::sleep_for (milliseconds (200));   // the worker is now waiting in reconcile()
+    const auto start = Clock::now();
+    rig->updater.reset();
+    const auto took = std::chrono::duration_cast<milliseconds> (Clock::now() - start).count();
+    letGo.join();
+    holder.wait();
+    check (took < 100, "~Updater returns in " + std::to_string (took) + " ms while the lock is held for 3 s (bound 100 ms)");
+    std::printf ("  note  ~Updater with the support lock held elsewhere: %lld ms\n", (long long) took);
+
+    Rig next (w.home, w.loop, w.fetcher, w.home.detect());
+    next.open();
+    check (next.waitFor<phase::Available>(), "once the lock is free, the next open reconciles and checks as usual");
+}
+
 void twoServices()
 {
     group ("service: two services on one account (two hosts)");
@@ -603,11 +671,13 @@ void runServiceTests (int& passed, int& failed)
     failedCount = &failed;
     offAndInert();
     happyPath();
+    firstOpenWaitsForTheDisclosure();
     ignoredCommandsStillPublish();
     checkProblems();
     installFailures();
     cancelMidDownload();
     destroyMidDownload();
+    destroyWhileAnotherProcessHoldsTheLock();
     twoServices();
     notSelfUpdatable();
     restartPendingFromDisk();

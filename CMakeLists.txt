@@ -121,6 +121,13 @@ option(TUBAMP_UPDATES "Compile the in-plugin updater into the plugin" OFF)
 # TUBAMP_UPDATE_HOME / TUBAMP_UPDATE_SYSTEM_COMPONENTS and stays off without them. A
 # build without this option contains no getenv for either.
 option(TUBAMP_UPDATE_DEV_ROOTS "Take the updater's folders from the environment (development)" OFF)
+# A release-shaped build (CMAKE_BUILD_TYPE Release, as scripts/release/build-installer.sh
+# makes it) with the updater must load the bundled page and the account's real folders.
+if(TUBAMP_UPDATES AND CMAKE_BUILD_TYPE STREQUAL "Release" AND (TUBAMP_WEBUI_DEV OR TUBAMP_UPDATE_DEV_ROOTS))
+    message(FATAL_ERROR "A Release build with TUBAMP_UPDATES=ON cannot also have TUBAMP_WEBUI_DEV=${TUBAMP_WEBUI_DEV} "
+                        "and TUBAMP_UPDATE_DEV_ROOTS=${TUBAMP_UPDATE_DEV_ROOTS}: both must be OFF. For development "
+                        "with the updater, build Debug.")
+endif()
 
 set(webui_dir "${CMAKE_CURRENT_SOURCE_DIR}/ui")
 

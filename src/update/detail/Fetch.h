@@ -5,6 +5,7 @@
 // is not reused: it sends a Bearer token, checks https on the first URL only, and never
 // hashes.
 
+#include "Cancel.h"
 #include "Rules.h"
 
 #include <atomic>
@@ -14,17 +15,6 @@
 
 namespace tubamp::update::detail
 {
-/** Set from the message thread (Cancel, shutdown), read by the worker. */
-class CancelToken
-{
-public:
-    void request() noexcept { flag.store (true, std::memory_order_relaxed); }
-    bool requested() const noexcept { return flag.load (std::memory_order_relaxed); }
-
-private:
-    std::atomic<bool> flag { false };
-};
-
 struct FetchLimits
 {
     std::uint64_t maxBytes = 0;                  // the transfer is aborted past this

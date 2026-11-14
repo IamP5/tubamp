@@ -149,15 +149,6 @@ int runningCpuType() noexcept
 #endif
 }
 
-std::optional<Version> sealedVersion (const fs::path& bundle)
-{
-    const auto facts = readBundleFacts (bundle);
-    const auto version = facts ? pinnedVersion (*facts) : std::nullopt;
-    if (! version || ! codeSealIntact (bundle))
-        return std::nullopt;
-    return version;
-}
-
 Result<InspectedBundle, Failure> inspect (UnpackedBundle&&, const Staging& staging, const Offer& offer,
                                           const SelfUpdatable& site)
 {
