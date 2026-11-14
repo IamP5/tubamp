@@ -114,6 +114,10 @@ else()
     set(tubamp_copy_after_build TRUE)
 endif()
 
+# In-plugin update (docs/UPDATES.md). Off by default, so a development build never checks
+# and is never replaced by a release. ON needs the release keys in src/update/keys.
+option(TUBAMP_UPDATES "Compile the in-plugin updater into the plugin" OFF)
+
 set(webui_dir "${CMAKE_CURRENT_SOURCE_DIR}/ui")
 
 # "juce-framework-frontend" is not published on npm and lives inside the
@@ -153,6 +157,8 @@ juce_add_plugin(tubamp
 file(GLOB_RECURSE tubamp_sources CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
+# The update core joins the plugin only with TUBAMP_UPDATES=ON (src/update/update.cmake).
+list(FILTER tubamp_sources EXCLUDE REGEX "/src/update/")
 
 # DSP + state + library only: everything the headless console targets can compile.
 # WebEditor pulls in WebBrowserComponent / relays / Web*ParameterAttachment, all of
@@ -254,6 +260,14 @@ target_link_libraries(tubamp
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/src/update/update.cmake")
+if(TUBAMP_UPDATES)
+    target_sources(tubamp PRIVATE ${tubamp_update_sources})
+    target_include_directories(tubamp PRIVATE ${tubamp_update_include_dirs})
+    target_compile_definitions(tubamp PUBLIC TUBAMP_UPDATES=1)
+    target_link_libraries(tubamp PRIVATE "-framework Security")
+endif()
 
 # ---------------------------------------------------------------------------
 # Headless end-to-end smoke test: real processor, real model, no editor.
