@@ -1,0 +1,101 @@
+/* Update rows in the Settings sheet; same grid as settings.module.css's rows. */
+
+.version,
+.auto {
+  position: relative;
+  display: grid;
+  align-items: center;
+  gap: var(--ds-3);
+  min-height: 40px;
+  border-top: 1px solid var(--ds-line);
+}
+
+.version {
+  grid-template-columns: 120px 1fr auto;
+  padding: var(--ds-2) 0;
+}
+
+.auto {
+  grid-template-columns: 1fr auto;
+}
+
+.label {
+  align-self: start;
+  font-size: var(--ds-fs-body);
+  line-height: 24px;
+  color: var(--ds-text);
+}
+
+.auto .label {
+  align-self: center;
+}
+
+.version > :global(button) {
+  align-self: start;
+}
+
+.value {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+/* Wraps: "0.4.0 is installed. Restart Logic Pro to use it." must read whole. */
+.status {
+  padding: 3px 0;
+  font-size: var(--ds-fs-body);
+  line-height: 18px;
+  color: var(--ds-text-2);
+}
+
+.problem {
+  color: var(--ds-text);
+}
+
+.running {
+  color: var(--ds-text);
+}
+
+/* A text link with a 24px hit area. */
+.link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0;
+  font-size: var(--ds-fs-label);
+  color: var(--ds-text-2);
+  background: transparent;
+  text-decoration: underline;
+  text-decoration-color: var(--ds-line-strong);
+  text-underline-offset: 3px;
+  transition: color var(--ds-t-fast) var(--ds-ease);
+}
+
+.link:hover {
+  color: var(--ds-text);
+}
+
+.note {
+  padding-top: var(--ds-1);
+  font-size: var(--ds-fs-caption);
+  line-height: 16px;
+  color: var(--ds-text-3);
+}
+
+.track {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+}
+
+.bar {
+  display: block;
+  height: 100%;
+  background: var(--ds-accent);
+  transform-origin: left center;
+  transition: transform var(--ds-t-base) var(--ds-ease);
+}

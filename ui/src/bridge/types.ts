@@ -793,6 +793,9 @@ export interface UiState {
   /** The EQ analyser's preferences, saved with the plugin's state (shared by
    *  every EQ instance). Missing from a C++ build that predates them. */
   eqAnalyser: EqAnalyserPrefs;
+  /** Same shape as the `updateChanged` payload. Optional so a C++ build that
+   *  predates the updater still hydrates (the store reads it as `UPDATE_OFF`). */
+  update?: UpdateView;
 }
 
 /** 0 = Low, 1 = Medium, 2 = High. */
@@ -806,6 +809,99 @@ export interface EqAnalyserPrefs {
   resolution: EqAnalyserStep;
   /** How fast the display falls (0 = Slow, 1 = Medium, 2 = Fast); UI-only. */
   speed: EqAnalyserStep;
+}
+
+/** "X.Y.Z". The page only compares versions for equality; ordering is C++'s. */
+export type UpdateVersion = string;
+
+/** Why an install attempt ended with nothing changed. `install` retries. */
+export type UpdateFailure =
+  /** No connection, timeout, HTTP error, refused redirect. */
+  | "network"
+  /** The download did not match the signed release: size, hash, an archive
+   *  rule, or a bundle that is not tubamp at the offered version. */
+  | "verify"
+  | "noSpace"
+  /** The plug-in folder refused the write. */
+  | "notWritable";
+
+/** Why this copy cannot replace itself. The UI offers the release page. */
+export type UpdateManualReason =
+  /** Installed in /Library for all users. */
+  | "systemDomain"
+  /** Moved or renamed. */
+  | "unexpectedPath"
+  | "readOnly"
+  /** The staging folder is on another volume, or the volume cannot swap. */
+  | "noAtomicSwap"
+  /** The Standalone app. */
+  | "notAnAudioUnit";
+
+/** Set only after a manual "Check now" failed. Automatic checks fail silently. */
+export type UpdateCheckProblem = "unreachable" | "unverified";
+
+export type UpdatePhase =
+  /** Development build: updates are compiled out. The UI shows no update row. */
+  | { kind: "off" }
+  | { kind: "idle"; problem?: UpdateCheckProblem }
+  | { kind: "checking" }
+  /** A verified newer release exists and this copy can install it. */
+  | { kind: "available"; version: UpdateVersion }
+  /** `total` is the signed size in bytes, known from the first event. */
+  | { kind: "downloading"; version: UpdateVersion; received: number; total: number }
+  /** Unpack, inspect, swap. Sub-second, not cancellable. */
+  | { kind: "installing"; version: UpdateVersion }
+  /** `version` is on disk; this host still runs `UpdateView.running`. */
+  | { kind: "restartPending"; version: UpdateVersion }
+  | { kind: "failed"; version: UpdateVersion; reason: UpdateFailure }
+  | { kind: "manual"; version: UpdateVersion; reason: UpdateManualReason };
+
+export interface UpdateView {
+  running: UpdateVersion;
+  /** "Logic Pro", for "Restart Logic Pro to use it." */
+  hostName: string;
+  autoCheck: boolean;
+  /** Present when the page should announce this version once. After the toast
+   *  the page sends `markAnnounced`; the field is then absent in every editor,
+   *  instance and host on this account. */
+  announce?: UpdateVersion;
+  /** True until the first-run disclosure toast has been shown (`markDisclosed`). */
+  disclose: boolean;
+  /** Another tubamp is installed in /Library/Audio/Plug-Ins/Components. */
+  systemCopy: boolean;
+  phase: UpdatePhase;
+}
+
+/** Intents. C++ ignores one that means nothing in the current phase and pushes
+ *  a fresh `updateChanged`, so a stale page corrects itself. */
+export type UpdateCommand =
+  /** Check now, ignoring the daily throttle. */
+  | { type: "checkNow" }
+  /** Install the version the user was shown. Ignored if the offer moved on. */
+  | { type: "install"; version: UpdateVersion }
+  /** Stop a download. No effect once `installing` has begun. */
+  | { type: "cancel" }
+  | { type: "setAutoCheck"; enabled: boolean }
+  | { type: "markAnnounced"; version: UpdateVersion }
+  | { type: "markDisclosed" }
+  /** The GitHub release page (notes and installers) in the system browser.
+   *  C++ builds the URL; nothing URL-shaped crosses the bridge. */
+  | { type: "openReleasePage" };
+
+/** Before hydration, and for a C++ build without an updater: no update UI. */
+export const UPDATE_OFF: UpdateView = {
+  running: "",
+  hostName: "",
+  autoCheck: false,
+  disclose: false,
+  systemCopy: false,
+  phase: { kind: "off" },
+};
+
+/** Compile-time exhaustiveness: a new phase or command fails typecheck at
+ *  every `switch` that ends in this call. */
+export function unreachable(value: never): never {
+  throw new Error(`Unhandled case: ${JSON.stringify(value)}`);
 }
 
 export interface T3kModel {
@@ -976,6 +1072,10 @@ export interface BridgeEventMap {
   editorSizeChanged: EditorSizeLimits;
   /** An embed mounted, unmounted, was refused, or reported a new size. */
   fxEmbedChanged: FxEmbedState;
+  /** The whole update snapshot on every change, download progress included (at
+   *  most ten a second). An event dropped while the page is hidden costs
+   *  nothing: the next one is whole. */
+  updateChanged: UpdateView;
 }
 
 export type BridgeEventName = keyof BridgeEventMap;
@@ -1158,4 +1258,8 @@ export interface Bridge {
    * `0, 0` releases the floor.
    */
   fxSetEmbedMinWindow(width: number, height: number): Promise<void>;
+
+  /** Resolves `{}` when the command was understood (whether or not it applied
+   *  in the current phase), `{error}` when it could not be parsed. Never rejects. */
+  updateCommand(command: UpdateCommand): Promise<ErrorResult>;
 }

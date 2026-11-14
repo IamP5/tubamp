@@ -59,12 +59,30 @@ export function Header({ onOpenSettings }: HeaderProps) {
 
       <AbControl />
       <T3kButton />
-      <Tooltip label="Settings" placement="bottom">
-        <IconButton aria-label="Settings" onClick={onOpenSettings}>
-          <GearIcon />
-        </IconButton>
-      </Tooltip>
+      <SettingsButton onOpenSettings={onOpenSettings} />
     </div>
+  );
+}
+
+/**
+ * A dot while a newer version waits for a decision the user has not yet seen
+ * in Settings: it changes what they do next (open Settings). It goes once the
+ * offer has been seen, and never marks a pending restart, which Settings
+ * cannot act on.
+ */
+function SettingsButton({ onOpenSettings }: HeaderProps) {
+  const pending = useStore((st) => {
+    const { phase } = st.update;
+    const offered = phase.kind === "available" || phase.kind === "manual";
+    return offered && st.updateSeen !== phase.version ? phase.version : null;
+  });
+  return (
+    <Tooltip label={pending ? `Settings · ${pending} available` : "Settings"} placement="bottom">
+      <IconButton aria-label="Settings" className={s.settings} onClick={onOpenSettings}>
+        <GearIcon />
+        {pending && <span className={s.settingsDot} aria-hidden />}
+      </IconButton>
+    </Tooltip>
   );
 }
 

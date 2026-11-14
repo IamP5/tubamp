@@ -298,6 +298,15 @@ void setFloatParam (tubamp::TubampAudioProcessor& proc, const char* paramId, flo
         p->setValueNotifyingHost (p->convertTo0to1 (rawValue));
 }
 
+/** A factor of at least 1 for bounds measured in wall-clock time. Shared CI runners deliver
+    timers late (a 20 ms tick arrived after 150 ms there), so the release workflow sets
+    TUBAMP_TEST_WALLCLOCK_SLACK. Unset, the bounds are the real ones. */
+double wallClockSlack()
+{
+    const double slack = juce::SystemStats::getEnvironmentVariable ("TUBAMP_TEST_WALLCLOCK_SLACK", "1").getDoubleValue();
+    return slack >= 1.0 ? slack : 1.0;
+}
+
 /** Runs the message loop for at least `ms` and until a 20 ms timer of its own has fired often
     enough for the processor's timer to have had the same turns: on a loaded machine a fixed wait
     passes with too few timer callbacks, and the latency read after it is stale. */
@@ -6282,9 +6291,10 @@ bool runLatencyThreadTests (double sampleRate, int blockSize)
 
             setFloatParam (fresh, params::driveType, (float) tubamp::DriveFx::Type::boost);
             const auto changedAt = juce::Time::getMillisecondCounterHiRes();
+            const double bound = 100.0 * wallClockSlack();
             double reportedAfter = -1.0;
 
-            while (juce::Time::getMillisecondCounterHiRes() - changedAt < 300.0)
+            while (juce::Time::getMillisecondCounterHiRes() - changedAt < 3.0 * bound)
             {
                 pumpMessages (2);
 
@@ -6296,8 +6306,8 @@ bool runLatencyThreadTests (double sampleRate, int blockSize)
             }
 
             std::snprintf (what, sizeof (what), "audio stopped, then drive_type Distortion -> Boost: reported %.0f ms after the change "
-                           "(bound 100)", reportedAfter);
-            ok &= expect (reportedAfter >= 0.0 && reportedAfter <= 100.0, what);
+                           "(bound %.0f)", reportedAfter, bound);
+            ok &= expect (reportedAfter >= 0.0 && reportedAfter <= bound, what);
         }
 
         std::snprintf (what, sizeof (what), "no audio running, read after one timer tick (60 ms): Screamer %d, drive_type Boost %d, "

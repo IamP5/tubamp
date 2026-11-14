@@ -1,0 +1,130 @@
+@import "tailwindcss";
+
+/*
+  The palette and the five family hues come from the plugin's own
+  system (ui/src/theme/tokens.css) so the site and the editor read as one
+  product. See DESIGN.md before adding a colour, a font or an easing.
+*/
+@theme {
+  --color-ink: #0b0b0c;
+  --color-ink-1: #121214;
+  --color-ink-2: #18181b;
+  --color-ink-3: #222226;
+  --color-bone: #ededee;
+  --color-bone-2: #a3a3a9;
+  --color-bone-3: #86868d;
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-line-strong: rgb(255 255 255 / 0.16);
+
+  --color-signal: #f0a63a;
+  --color-on-signal: #1a1204;
+  --color-gain: #f0a63a;
+  --color-dynamics: #85bcf5;
+  --color-tone: #5ecbcb;
+  --color-mod: #eb9dbb;
+  --color-time: #bfaaef;
+
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --text-display: clamp(2.75rem, 5.6vw, 5.75rem);
+  --text-h2: clamp(2.25rem, 4.4vw, 4.25rem);
+  --text-h3: clamp(1.5rem, 2.6vw, 2.5rem);
+  --text-lead: clamp(1.125rem, 1.5vw, 1.5rem);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-ui: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  --spacing-gutter: clamp(1.25rem, 4vw, 4rem);
+}
+
+:root {
+  color-scheme: dark;
+  --accent: var(--color-signal);
+}
+
+[data-family="dynamics"] { --accent: var(--color-dynamics); }
+[data-family="tone"] { --accent: var(--color-tone); }
+[data-family="mod"] { --accent: var(--color-mod); }
+[data-family="time"] { --accent: var(--color-time); }
+[data-family="gain"] { --accent: var(--color-gain); }
+
+html {
+  background: var(--color-ink);
+  color: var(--color-bone);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-family: var(--font-sans);
+  overflow-x: clip;
+}
+
+::selection {
+  background: var(--color-signal);
+  color: var(--color-on-signal);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+html.lenis, html.lenis body { height: auto; }
+.lenis.lenis-smooth { scroll-behavior: auto !important; }
+.lenis.lenis-stopped { overflow: hidden; }
+
+/* The chain board as one row to drag: wide enough for nine tiles, and a mouse. ChainBoard.tsx asks the same question in script. */
+@custom-variant board {
+  @media (min-width: 64rem) and (hover: hover) and (pointer: fine) {
+    @slot;
+  }
+}
+
+@utility display {
+  font-weight: 560;
+  line-height: 0.98;
+  letter-spacing: -0.04em;
+}
+
+/* The half of a headline that sets up the other half. */
+@utility lead-in {
+  color: var(--color-bone-3);
+}
+
+@utility label {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--color-bone-3);
+  font-variant-numeric: tabular-nums;
+}
+
+@utility gutter {
+  padding-inline: var(--spacing-gutter);
+}
+
+/* The hero copy arrives once, on load, a line at a time. */
+@media (prefers-reduced-motion: no-preference) {
+  .hero-in {
+    animation: hero-in 0.9s var(--ease-out) both;
+    animation-delay: calc(var(--i) * 70ms + 80ms);
+  }
+}
+
+@keyframes hero-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 22px, 0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drum-caption {
+    animation: hero-in 0.5s var(--ease-out) both;
+  }
+}

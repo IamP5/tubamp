@@ -47,6 +47,9 @@ import type {
   ToggleProperties,
   UiState,
   Unsubscribe,
+  UpdateCommand,
+  UpdateFailure,
+  UpdateView,
 } from "./types";
 import {
   COMBO_SPECS,
@@ -56,7 +59,7 @@ import {
   skewFor,
   type SliderSpec,
 } from "./paramMeta";
-import { isBlockId } from "./types";
+import { isBlockId, unreachable } from "./types";
 import { sanitizeStructure } from "../chain/structure";
 import { GRAPHIC_BANDS, eqResponse } from "../features/panel/eqResponse";
 
@@ -1392,6 +1395,151 @@ const installed: T3kInstalledFile[] = [];
   });
 }
 
+/** `?update=<a>,<b>,…` (default: up to date, disclosure already shown):
+ *  `available`     0.4.0 is offered and announced (the toast shows once);
+ *  `found`         up to date until "Check now", which finds 0.4.0;
+ *  `checkfail`     "Check now" ends in "Couldn't check for updates";
+ *  `disclose`      first run: the "checks GitHub once a day" toast shows;
+ *  `fail-download` an install dies at ~40% (network);
+ *  `fail-verify`   an install downloads, then fails verification;
+ *  `fail-space`    / `fail-write`: fails while installing (disk full / read-only);
+ *  `manual`        0.4.0 exists, but this copy is in /Library and cannot update;
+ *  `restart`       0.4.0 is already installed, waiting for a host restart;
+ *  `systemcopy`    another copy also sits in /Library (with `available`, say);
+ *  `slow`          every step ~6× slower (watch the in-between states);
+ *  `off`           a development build: no update UI at all.
+ *  Flags combine: `?update=available,systemcopy,slow`. */
+const updateFlags = new Set(
+  (search.get("update") ?? "")
+    .split(",")
+    .map((f) => f.trim())
+    .filter(Boolean),
+);
+const UPDATE_NEXT = "0.4.0";
+const UPDATE_BYTES = 18_400_000;
+const updateDelay = (ms: number): number => (updateFlags.has("slow") ? ms * 6 : ms);
+const FAIL_FLAGS: Record<string, UpdateFailure> = {
+  "fail-download": "network",
+  "fail-verify": "verify",
+  "fail-space": "noSpace",
+  "fail-write": "notWritable",
+};
+const updateFailure: UpdateFailure | null =
+  Object.entries(FAIL_FLAGS).find(([flag]) => updateFlags.has(flag))?.[1] ?? null;
+
+function initialUpdate(): UpdateView {
+  const view: UpdateView = {
+    running: "0.3.7",
+    hostName: "Logic Pro",
+    autoCheck: true,
+    disclose: updateFlags.has("disclose"),
+    systemCopy: updateFlags.has("systemcopy"),
+    phase: { kind: "idle" },
+  };
+  if (updateFlags.has("off")) return { ...view, phase: { kind: "off" }, disclose: false };
+  if (updateFlags.has("restart"))
+    return { ...view, phase: { kind: "restartPending", version: UPDATE_NEXT } };
+  if (updateFlags.has("manual"))
+    return {
+      ...view,
+      announce: UPDATE_NEXT,
+      phase: { kind: "manual", version: UPDATE_NEXT, reason: "systemDomain" },
+    };
+  if (updateFlags.has("available") || updateFailure)
+    return { ...view, announce: UPDATE_NEXT, phase: { kind: "available", version: UPDATE_NEXT } };
+  return view;
+}
+
+state.update = initialUpdate();
+let updateTimer = 0;
+
+function setUpdate(next: UpdateView): void {
+  state.update = next;
+  emit("updateChanged", structuredClone(next));
+}
+
+function updatePhase(phase: UpdateView["phase"]): void {
+  setUpdate({ ...(state.update ?? initialUpdate()), phase });
+}
+
+function stopUpdateTimer(): void {
+  window.clearTimeout(updateTimer);
+  updateTimer = 0;
+}
+
+/** Mirrors the C++ sequence: download (progress ≤ 10 Hz) → install → restart. */
+function simulateInstall(version: string): void {
+  let received = 0;
+  const tick = (): void => {
+    received = Math.min(UPDATE_BYTES, received + UPDATE_BYTES * (0.03 + Math.random() * 0.04));
+    if (updateFailure === "network" && received > UPDATE_BYTES * 0.4) {
+      updatePhase({ kind: "failed", version, reason: "network" });
+      return;
+    }
+    if (received < UPDATE_BYTES) {
+      updatePhase({ kind: "downloading", version, received, total: UPDATE_BYTES });
+      updateTimer = window.setTimeout(tick, updateDelay(100));
+      return;
+    }
+    if (updateFailure === "verify") {
+      updatePhase({ kind: "failed", version, reason: "verify" });
+      return;
+    }
+    updatePhase({ kind: "installing", version });
+    updateTimer = window.setTimeout(() => {
+      if (updateFailure === "noSpace" || updateFailure === "notWritable")
+        updatePhase({ kind: "failed", version, reason: updateFailure });
+      else updatePhase({ kind: "restartPending", version });
+    }, updateDelay(700));
+  };
+  updatePhase({ kind: "downloading", version, received: 0, total: UPDATE_BYTES });
+  updateTimer = window.setTimeout(tick, updateDelay(100));
+}
+
+function performUpdate(command: UpdateCommand): void {
+  const view = state.update ?? initialUpdate();
+  const { phase } = view;
+  switch (command.type) {
+    case "checkNow":
+      if (phase.kind !== "idle") break;
+      updatePhase({ kind: "checking" });
+      updateTimer = window.setTimeout(() => {
+        if (updateFlags.has("checkfail")) updatePhase({ kind: "idle", problem: "unreachable" });
+        else if (updateFlags.has("found"))
+          setUpdate({
+            ...(state.update ?? view),
+            announce: UPDATE_NEXT,
+            phase: { kind: "available", version: UPDATE_NEXT },
+          });
+        else updatePhase({ kind: "idle" });
+      }, updateDelay(1200));
+      break;
+    case "install":
+      if ((phase.kind === "available" || phase.kind === "failed") && phase.version === command.version)
+        simulateInstall(command.version);
+      break;
+    case "cancel":
+      if (phase.kind !== "downloading") break;
+      stopUpdateTimer();
+      updatePhase({ kind: "available", version: phase.version });
+      break;
+    case "setAutoCheck":
+      setUpdate({ ...view, autoCheck: command.enabled });
+      break;
+    case "markAnnounced":
+      if (view.announce === command.version) setUpdate({ ...view, announce: undefined });
+      break;
+    case "markDisclosed":
+      setUpdate({ ...view, disclose: false });
+      break;
+    case "openReleasePage":
+      console.info("[mock] openReleasePage", UPDATE_NEXT);
+      break;
+    default:
+      unreachable(command);
+  }
+}
+
 function simulateDownload(model: T3kModel, tone?: T3kTone): void {
   if (downloads.has(model.id)) return;
   let progress = 0;
@@ -2021,5 +2169,12 @@ export const mockBridge: Bridge = {
   fxSetEmbedVisible: async (visible) => {
     embedReport.visible = visible;
     await delay(null, 0);
+  },
+
+  updateCommand: async (command) => {
+    // C++ answers on the message thread and reports the outcome as an event.
+    await delay(null, 30);
+    performUpdate(command);
+    return {} satisfies ErrorResult;
   },
 };

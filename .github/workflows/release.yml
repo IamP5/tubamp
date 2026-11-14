@@ -1,0 +1,166 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One release run at a time, never cancelled midway. A run that GitHub drops while it is
+# still pending loses nothing: the next run plans from the last tag and sees its commits.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Environment secrets reach only jobs that name the environment. This job runs no
+  # repository code and reports only whether the update signing key is there.
+  signing-key:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release
+    outputs:
+      present: ${{ steps.probe.outputs.present }}
+    steps:
+      - id: probe
+        env:
+          PRESENT: ${{ secrets.TUBAMP_UPDATE_SIGNING_KEYS != '' }}
+        run: echo "present=$PRESENT" >> "$GITHUB_OUTPUT"
+
+  plan:
+    needs: signing-key
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+      updates: ${{ steps.plan.outputs.updates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Test the release scripts
+        run: node --test 'scripts/release/test/*.test.mjs'
+
+      - name: Plan
+        id: plan
+        env:
+          SIGNING_KEY: ${{ needs.signing-key.outputs.present == 'true' && 'present' || 'absent' }}
+        run: node scripts/release/plan.mjs --signing-key "$SIGNING_KEY"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    uses: ./.github/workflows/installers.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      updates: ${{ needs.plan.outputs.updates }}
+      archive: ${{ needs.plan.outputs.updates == 'on' }}
+
+  # macOS, because the envelope is checked by tubamp_update_tool and signed with the
+  # deterministic nonce of OpenSSL 3.2 or later, which Ubuntu's OpenSSL 3.0 lacks.
+  publish:
+    needs: [plan, build]
+    runs-on: macos-15
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      UPDATES: ${{ needs.plan.outputs.updates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: installer-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.updates == 'on'
+        with:
+          name: update-archive
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.updates == 'on'
+        with:
+          pattern: component-*
+          path: components
+          merge-multiple: true
+
+      - name: Release notes and manifest
+        run: |
+          node scripts/release/notes.mjs --out dist/notes.md
+          node scripts/release/manifest.mjs --version "$VERSION" --dir dist --notes-file dist/notes.md
+
+      # A network install runs here, in a step that holds no secret, so nothing it
+      # downloads ever shares an environment with the signing key.
+      - name: Find OpenSSL 3.2 or later
+        if: needs.plan.outputs.updates == 'on'
+        run: |
+          openssl="$(brew --prefix openssl@3 2>/dev/null)/bin/openssl"
+          [ -x "$openssl" ] || { brew install openssl@3 && openssl="$(brew --prefix openssl@3)/bin/openssl"; }
+          "$openssl" version
+          echo "OPENSSL=$openssl" >> "$GITHUB_ENV"
+
+      - name: Sign the update envelope
+        if: needs.plan.outputs.updates == 'on'
+        env:
+          TUBAMP_UPDATE_SIGNING_KEYS: ${{ secrets.TUBAMP_UPDATE_SIGNING_KEYS }}
+        run: node scripts/release/envelope.mjs --version "$VERSION" --dir dist
+
+      # The trusted keys compiled into the tool are the ones the plugin in this release
+      # ships with, so a release its own client refuses never goes up. Every committed key
+      # file must be among them: a recovery key the plugin cannot parse stops the release.
+      - name: Check the envelope and the archive with the client's code
+        if: needs.plan.outputs.updates == 'on'
+        run: |
+          for arch in arm64 x86_64; do mkdir -p "components/$arch" && tar -C "components/$arch" -xf "components/component-$arch.tar"; done
+          chmod +x build/tool/tubamp_update_tool
+          keys="$(git ls-files 'src/update/keys/*.pub.pem' | wc -l | tr -d ' ')"
+          build/tool/tubamp_update_tool verify-envelope --envelope dist/update-v1.signed --running 0.0.0 --expect-keys "$keys" \
+            --archive "dist/tubamp-$VERSION-macos-universal.zip" \
+            --installed components/arm64/tubamp.component --installed components/x86_64/tubamp.component
+
+      - name: Publish
+        run: node scripts/release/publish.mjs --version "$VERSION" --sha "$SHA" --dir dist --notes-file dist/notes.md --updates "$UPDATES"
+
+      - name: Check what the site and the plugin read
+        run: |
+          latest="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          for _ in 1 2 3 4 5 6; do
+            served="$(curl -fsSL --max-time 30 "$latest/manifest.json" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).version)' || true)"
+            [ "$served" = "$VERSION" ] && break
+            echo "releases/latest serves manifest '$served', waiting for $VERSION"
+            sleep 10
+          done
+          [ "$served" = "$VERSION" ] || exit 1
+          echo "releases/latest serves manifest $served"
+          if [ "$UPDATES" = on ]; then
+            curl -fsSL --max-time 30 "$latest/update-v1.signed" -o served.signed
+            cmp served.signed dist/update-v1.signed
+            echo "releases/latest serves the update-v1.signed this run signed"
+          else
+            echo "Updates are off for $VERSION: no update-v1.signed and no update archive were published." >> "$GITHUB_STEP_SUMMARY"
+          fi

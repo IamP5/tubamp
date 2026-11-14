@@ -26,6 +26,10 @@
  #include "WebUiData.h"
 #endif
 
+#if TUBAMP_UPDATES
+ #include "update/Bridge.h"
+#endif
+
 namespace tubamp
 {
 namespace
@@ -185,6 +189,24 @@ constexpr int kMinEditorWidth = 1000, kMinEditorHeight = 600;
 // Ceiling only to stop a stray drag creating an absurd window; large enough for any
 // hosted plugin editor measured so far.
 constexpr int kMaxEditorWidth = 3200, kMaxEditorHeight = 2000;
+
+#if TUBAMP_UPDATES
+/** The host's name as the restart sentence says it: "Restart Logic Pro to use it." Empty
+    when unknown; the page then says "the host". */
+juce::String hostDisplayName()
+{
+    const juce::PluginHostType host;
+
+    if (host.isLogic())      return "Logic Pro";
+    if (host.isGarageBand()) return "GarageBand";
+    if (host.isMainStage())  return "MainStage";
+    if (juce::PluginHostType::getPluginLoadedAs() == juce::AudioProcessor::wrapperType_Standalone)
+        return "tubamp";
+
+    const auto description = juce::String (host.getHostDescription());
+    return description == "Unknown" ? juce::String() : description;
+}
+#endif
 
 //==============================================================================
 juce::var makeObject (std::initializer_list<std::pair<const char*, juce::var>> props)
@@ -485,6 +507,9 @@ bool SinglePageBrowser::pageAboutToLoad (const juce::String& newURL)
 //==============================================================================
 WebEditor::WebEditor (TubampAudioProcessor& p)
     : AudioProcessorEditor (&p), proc (p)
+   #if TUBAMP_UPDATES
+    , hostName (hostDisplayName())
+   #endif
 {
     for (auto* id : kSliderIds) sliderRelays.push_back (std::make_unique<juce::WebSliderRelay> (id));
     for (auto* id : kToggleIds) toggleRelays.push_back (std::make_unique<juce::WebToggleButtonRelay> (id));
@@ -572,10 +597,20 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
 
     proc.watchedEq.store (-1, std::memory_order_relaxed);
     startTimerHz (30);
+
+   #if TUBAMP_UPDATES
+    // Watching is what "the user opened the plugin" means to the updater: it reconciles
+    // the disk and runs the daily check when one is due.
+    updateWatch = proc.updater->watch ([this] (const update::View& view) { emit ("updateChanged", updateVar (view)); });
+   #endif
 }
 
 WebEditor::~WebEditor()
 {
+   #if TUBAMP_UPDATES
+    updateWatch = {};
+   #endif
+
     // A Timer firing emitEventIfBrowserIsVisible into a half-destroyed browser, or a
     // processor callback into a dead editor, are both real crashes. Kill them first.
     stopTimer();
@@ -989,24 +1024,37 @@ juce::var WebEditor::t3kVar() const
 
 juce::var WebEditor::uiStateVar() const
 {
-    return makeObject ({ { "chainOrder",        chainOrderVar() },
-                         { "chainRows",         chainRowsVar() },
-                         { "model",             modelVar() },
-                         { "modelB",            modelVarB() },
-                         { "ir",                irVar() },
-                         { "missingMedia",      missingMediaVar() },
-                         { "models",            modelsVar() },
-                         { "irs",               irsVar() },
-                         { "presets",           presetListVar() },
-                         { "currentPresetName", proc.presets.getCurrentPresetName() },
-                         { "ab",                abVar() },
-                         { "t3k",               t3kVar() },
-                         { "fxSlots",           fxSlotsVar() },
-                         { "fxSupported",       FxCatalog::isSupported() },
-                         { "editorSize",        editorSizeVar() },
-                         { "eqAnalyser",        eqAnalyserVar() },
-                         { "fxEmbed",           embedVar ({}) } });
+    auto state = makeObject ({ { "chainOrder",        chainOrderVar() },
+                               { "chainRows",         chainRowsVar() },
+                               { "model",             modelVar() },
+                               { "modelB",            modelVarB() },
+                               { "ir",                irVar() },
+                               { "missingMedia",      missingMediaVar() },
+                               { "models",            modelsVar() },
+                               { "irs",               irsVar() },
+                               { "presets",           presetListVar() },
+                               { "currentPresetName", proc.presets.getCurrentPresetName() },
+                               { "ab",                abVar() },
+                               { "t3k",               t3kVar() },
+                               { "fxSlots",           fxSlotsVar() },
+                               { "fxSupported",       FxCatalog::isSupported() },
+                               { "editorSize",        editorSizeVar() },
+                               { "eqAnalyser",        eqAnalyserVar() },
+                               { "fxEmbed",           embedVar ({}) } });
+
+   #if TUBAMP_UPDATES
+    state.getDynamicObject()->setProperty ("update", updateVar (proc.updater->view()));
+   #endif
+
+    return state;
 }
+
+#if TUBAMP_UPDATES
+juce::var WebEditor::updateVar (const update::View& view) const
+{
+    return juce::JSON::parse (juce::String::fromUTF8 (update::viewJson (view, hostName.toStdString()).c_str()));
+}
+#endif
 
 //==============================================================================
 juce::AudioProcessorParameter* WebEditor::fxParamFor (int slot, int index) const
@@ -2137,6 +2185,24 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                         safeThis->emitT3kError (error, modelId);
                 });
         });
+
+   #if TUBAMP_UPDATES
+    // "Open the release page" opens a URL built in C++ from the offered version, so
+    // openExternal stays tone3000-only.
+    options = options.withNativeFunction ("updateCommand", [this] (const juce::Array<juce::var>& args, auto complete)
+    {
+        const auto command = update::parseCommand (juce::JSON::toString (args[0], true).toStdString());
+
+        if (! command)
+        {
+            complete (resultVar ("The update command was not understood."));
+            return;
+        }
+
+        proc.updater->perform (*command);
+        complete (resultVar ({}));
+    });
+   #endif
 
     // -----------------------------------------------------------------------
     // Resource provider. The dev origin is only allowed in dev builds — the

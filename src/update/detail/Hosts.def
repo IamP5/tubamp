@@ -1,0 +1,6 @@
+// The only hosts the updater may contact, over https, matched exactly. Applied to the
+// envelope URL, the archive URL and every redirect hop. The release pipeline reads this
+// same file to check that live redirects stay inside it: one entry per line.
+TUBAMP_UPDATE_HOST("github.com")
+TUBAMP_UPDATE_HOST("objects.githubusercontent.com")
+TUBAMP_UPDATE_HOST("release-assets.githubusercontent.com")
