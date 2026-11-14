@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+/*
+  Tokens. The palette and the five family hues come from the plugin's own
+  system (ui/src/theme/tokens.css) so the site and the editor read as one
+  product. See DESIGN.md before adding a colour, a font or an easing.
+*/
+@theme {
+  --color-ink: #0b0b0c;
+  --color-ink-1: #121214;
+  --color-ink-2: #18181b;
+  --color-ink-3: #222226;
+  --color-bone: #ededee;
+  --color-bone-2: #a3a3a9;
+  --color-bone-3: #86868d;
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-line-strong: rgb(255 255 255 / 0.16);
+
+  --color-signal: #f0a63a;
+  --color-on-signal: #1a1204;
+  --color-gain: #f0a63a;
+  --color-dynamics: #85bcf5;
+  --color-tone: #5ecbcb;
+  --color-mod: #eb9dbb;
+  --color-time: #bfaaef;
+
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-serif: var(--font-instrument-serif), "Times New Roman", serif;
+
+  --text-mega: clamp(4.5rem, 17vw, 19rem);
+  --text-display: clamp(3rem, 9.5vw, 10.5rem);
+  --text-h2: clamp(2.5rem, 6.4vw, 6.5rem);
+  --text-h3: clamp(1.5rem, 2.6vw, 2.5rem);
+  --text-lead: clamp(1.125rem, 1.5vw, 1.5rem);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-ui: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  --spacing-gutter: clamp(1.25rem, 4vw, 4rem);
+}
+
+:root {
+  color-scheme: dark;
+  /* The accent a section paints with. A section sets data-family to re-point it. */
+  --accent: var(--color-signal);
+}
+
+[data-family="dynamics"] { --accent: var(--color-dynamics); }
+[data-family="tone"] { --accent: var(--color-tone); }
+[data-family="mod"] { --accent: var(--color-mod); }
+[data-family="time"] { --accent: var(--color-time); }
+[data-family="gain"] { --accent: var(--color-gain); }
+
+html {
+  background: var(--color-ink);
+  color: var(--color-bone);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-family: var(--font-sans);
+  overflow-x: clip;
+}
+
+::selection {
+  background: var(--color-signal);
+  color: var(--color-on-signal);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+/* Lenis */
+html.lenis, html.lenis body { height: auto; }
+.lenis.lenis-smooth { scroll-behavior: auto !important; }
+.lenis.lenis-stopped { overflow: hidden; }
+
+@utility display {
+  font-weight: 600;
+  line-height: 0.88;
+  letter-spacing: -0.045em;
+}
+
+@utility serif-accent {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+}
+
+@utility label {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--color-bone-3);
+  font-variant-numeric: tabular-nums;
+}
+
+@utility gutter {
+  padding-inline: var(--spacing-gutter);
+}
