@@ -1,0 +1,61 @@
+"use client";
+
+import { useRef } from "react";
+import { useGSAP } from "@gsap/react";
+import { gsap, MQ, setupGsap } from "@/lib/motion";
+import VideoLoop from "@/components/ui/VideoLoop";
+import Window from "@/components/ui/Window";
+import type { Clip } from "@/data/media";
+
+type From = "center" | "left" | "right";
+
+/** Where the window's clip starts, as an inset() box. The radius matches Window's rounded-xl. */
+const CLOSED: Record<From, string> = {
+  center: "inset(16% 12% 16% 12% round 12px)",
+  left: "inset(0% 100% 0% 0% round 12px)",
+  right: "inset(0% 0% 0% 100% round 12px)",
+};
+const OPEN = "inset(0% 0% 0% 0% round 12px)";
+
+/**
+ * A clip of the real editor in its window that opens as it scrolls in: the
+ * frame's clip-path widens from `from` while the video inside settles from a
+ * slight zoom, so the picture reads as arriving rather than fading up.
+ */
+export default function ArriveClip({
+  clip,
+  from = "center",
+  className = "",
+}: {
+  clip: Clip;
+  from?: From;
+  className?: string;
+}) {
+  const scope = useRef<HTMLDivElement>(null);
+
+  useGSAP(
+    () => {
+      setupGsap();
+      const mm = gsap.matchMedia();
+      mm.add(MQ.motion, () => {
+        const trigger = { trigger: scope.current, start: "top 92%", end: "top 40%", scrub: 0.6 };
+        gsap.fromTo(
+          scope.current,
+          { clipPath: CLOSED[from] },
+          { clipPath: OPEN, ease: "none", scrollTrigger: trigger },
+        );
+        gsap.fromTo("video", { scale: 1.14 }, { scale: 1, ease: "none", scrollTrigger: trigger });
+      });
+      return () => mm.revert();
+    },
+    { scope },
+  );
+
+  return (
+    <div ref={scope} className={className}>
+      <Window>
+        <VideoLoop clip={clip} className="block h-auto w-full" />
+      </Window>
+    </div>
+  );
+}

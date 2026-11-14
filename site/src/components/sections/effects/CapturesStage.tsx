@@ -1,0 +1,59 @@
+"use client";
+
+import { useRef } from "react";
+import { useGSAP } from "@gsap/react";
+import { gsap, MQ, setupGsap } from "@/lib/motion";
+import { CLIPS } from "@/data/media";
+import { CHAPTERS } from "@/data/site";
+import VideoLoop from "@/components/ui/VideoLoop";
+import Window from "@/components/ui/Window";
+import ArriveClip from "./ArriveClip";
+
+/** Scroll travel of each layer, in px, across the stage's time on screen. The nearer layer travels further. */
+const DEPTH = { back: [48, -48], front: [140, -120] } as const;
+
+/**
+ * The amp editor behind, the TONE3000 browser in front, drifting against each
+ * other as the page scrolls. On narrow screens and under reduced motion the two
+ * clips simply stack.
+ */
+export default function CapturesStage() {
+  const scope = useRef<HTMLDivElement>(null);
+
+  useGSAP(
+    () => {
+      setupGsap();
+      const mm = gsap.matchMedia();
+      mm.add(`${MQ.motion} and ${MQ.desktop}`, () => {
+        const scrollTrigger = { trigger: scope.current, start: "top bottom", end: "bottom top", scrub: true };
+        for (const layer of ["back", "front"] as const) {
+          const [from, to] = DEPTH[layer];
+          gsap.fromTo(`[data-depth="${layer}"]`, { y: from }, { y: to, ease: "none", scrollTrigger });
+        }
+      });
+      return () => mm.revert();
+    },
+    { scope },
+  );
+
+  return (
+    <div ref={scope} className="relative">
+      <div data-depth="back" className="md:w-[88%]">
+        <ArriveClip clip={CLIPS.amp} from="center" />
+      </div>
+      <figure data-depth="front" className="relative mt-6 md:ml-auto md:-mt-[40%] md:w-[36%]">
+        <Window className="shadow-[0_0_0_10px_var(--color-ink)]">
+          {/* The browser is the panel on the right of the plugin window; on wide screens show only that panel. */}
+          <VideoLoop
+            clip={CLIPS.t3k}
+            className="block h-auto w-full md:aspect-[1/2]! md:object-cover md:object-right"
+          />
+        </Window>
+        <figcaption className="mt-4 flex items-center gap-3 text-sm text-bone-2">
+          <span className="h-px w-6 bg-[var(--accent)]" aria-hidden />
+          {CHAPTERS.captures.attribution}
+        </figcaption>
+      </figure>
+    </div>
+  );
+}
