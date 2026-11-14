@@ -25,7 +25,6 @@
   position: relative;
 }
 
-/* A newer version is offered: 6px, accent, on the gear's upper right. */
 .settingsDot {
   position: absolute;
   top: 5px;

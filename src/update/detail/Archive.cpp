@@ -59,9 +59,6 @@ Result<VerifiedArchive, Failure> ArchiveSink::finish() &&
     return VerifiedArchive (std::exchange (fd, -1));
 }
 
-// ---------------------------------------------------------------------------------
-// The zip reader.
-// ---------------------------------------------------------------------------------
 namespace
 {
     constexpr std::uint32_t endOfCentralSignature = 0x06054b50, centralSignature = 0x02014b50,

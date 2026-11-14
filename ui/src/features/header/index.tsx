@@ -64,8 +64,6 @@ export function Header({ onOpenSettings }: HeaderProps) {
   );
 }
 
-/* ───────────────────────────── Settings button ─────────────────────────── */
-
 /**
  * A dot while a newer version waits for a decision the user has not yet seen
  * in Settings: it changes what they do next (open Settings). It goes once the

@@ -1,9 +1,7 @@
 #pragma once
 
 // PRIVATE to src/update. The disk boundary for the bundle: where this copy lives, the
-// staging protocol, the swap, cleanup. Implemented in Site.cpp (detect, readDisk),
-// Archive.cpp (ArchiveSink, unpack), Inspect.cpp (inspect) and Swap.cpp (Staging,
-// commit, reconcile).
+// staging protocol, the swap, cleanup.
 //
 // Layout (all under the user's home, all owned by the user):
 //
@@ -113,10 +111,8 @@ inline Site siteOf (const InstallSite& s)
     return site::Writable {};
 }
 
-// ---------------------------------------------------------------------------------
 // The attempt: a chain of move-only values with private constructors. The function
 // named as friend is each one's only producer.
-// ---------------------------------------------------------------------------------
 
 /** One attempt's directory under privateDir, plus an exclusive flock on <dir>/lock. The
     lock says whether the directory is in use: the kernel drops it when the owner dies.

@@ -75,7 +75,6 @@ namespace
         }, phase);
     }
 
-    /** The object has exactly these keys. */
     bool keysAre (const Json& j, std::initializer_list<std::string_view> keys)
     {
         if (j.size() != keys.size())

@@ -51,10 +51,6 @@ inline bool isCheckDue (const Prefs& prefs, std::chrono::sys_seconds now)
         && (! prefs.lastCheckAt || *prefs.lastCheckAt > now || now - *prefs.lastCheckAt >= 24h);
 }
 
-// ---------------------------------------------------------------------------------
-// The store (Prefs.cpp).
-// ---------------------------------------------------------------------------------
-
 /** <home>/Library/Application Support/tubamp/update: prefs.json, latest.signed, lock.
     `lock` is the support lock: one flock serializes prefs, the envelope cache, staging
     creation, commit and reconcile across every process on the account. */

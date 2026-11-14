@@ -91,8 +91,6 @@ bool refusedWith (const Result<T, Refusal>& r, E expected)
     return e != nullptr && *e == expected;
 }
 
-// ---------------------------------------------------------------------------------
-
 void versions()
 {
     group ("version");

@@ -157,7 +157,6 @@ export function updateStatus(view: UpdateView): UpdateStatus {
   }
 }
 
-/** The newer version this snapshot is about, if any. */
 export function newerVersion(view: UpdateView): string | null {
   const { phase } = view;
   switch (phase.kind) {

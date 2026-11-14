@@ -1395,8 +1395,6 @@ const installed: T3kInstalledFile[] = [];
   });
 }
 
-/* ───────────────────────────── in-plugin update ────────────────────────── */
-
 /** `?update=<a>,<b>,…` (default: up to date, disclosure already shown):
  *  `available`     0.4.0 is offered and announced (the toast shows once);
  *  `found`         up to date until "Check now", which finds 0.4.0;

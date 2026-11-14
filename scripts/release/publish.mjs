@@ -87,7 +87,6 @@ const installers = ARCHS.map((arch) => installerName(version, arch));
 const archive = archiveName(version);
 const manifestName = 'manifest.json';
 const updateAssets = [archive, ENVELOPE_NAME];
-// Each group is uploaded after the one before it has finished.
 const uploadGroups = updates === 'on'
   ? [[...installers, archive, 'SHA256SUMS'], [ENVELOPE_NAME], [manifestName]]
   : [[...installers, 'SHA256SUMS'], [manifestName]];

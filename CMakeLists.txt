@@ -161,7 +161,6 @@ juce_add_plugin(tubamp
 file(GLOB_RECURSE tubamp_sources CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
-# The update core joins the plugin only with TUBAMP_UPDATES=ON (src/update/update.cmake).
 list(FILTER tubamp_sources EXCLUDE REGEX "/src/update/")
 
 # DSP + state + library only: everything the headless console targets can compile.

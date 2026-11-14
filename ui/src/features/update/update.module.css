@@ -83,7 +83,6 @@
   color: var(--ds-text-3);
 }
 
-/* Progress: 2px, accent, along the row's bottom edge. */
 .track {
   position: absolute;
   right: 0;

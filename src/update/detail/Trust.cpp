@@ -130,8 +130,6 @@ Result<VerifiedPayload, SignatureError> TrustRoot::verify (const SignedEnvelope&
     return VerifiedPayload (Bytes (payload.begin(), payload.end()));
 }
 
-// ---------------------------------------------------------------------------------
-
 static_assert (sizeof (CC_SHA256_CTX) <= 128);
 
 Sha256Stream::Sha256Stream() noexcept

@@ -172,7 +172,6 @@ export interface AppState {
   editorSize: EditorSizeLimits;
   /** Which slot's plugin is drawn inside our window, and how big it turned out. */
   fxEmbed: FxEmbedState;
-  /** The updater's snapshot, replaced whole by every `updateChanged`. */
   update: UpdateView;
   /**
    * Which fx panel asked for the current embed. UI-local, and deliberately not
@@ -305,7 +304,6 @@ export interface AppActions {
   t3kRefreshInstalled(): Promise<void>;
   t3kOpenExternal(url: string): Promise<void>;
 
-  /* in-plugin update */
   updateCommand(command: UpdateCommand): Promise<void>;
   markUpdateSeen(version: string): void;
 
@@ -1058,8 +1056,6 @@ export const useStore = create<Store>()((set, get) => {
       const res = await bridge.openExternal(url);
       reportError(res.error);
     },
-
-    /* ───────────────────────── in-plugin update ──────────────────────── */
 
     async updateCommand(command) {
       const res = await bridge.updateCommand(command);

@@ -4,7 +4,6 @@ namespace tubamp::update
 {
 namespace
 {
-    // One dot-separated part: 1 to 5 digits, no leading zero unless it is "0".
     std::optional<std::uint32_t> parsePart (std::string_view s) noexcept
     {
         if (s.empty() || s.size() > 5 || (s.size() > 1 && s.front() == '0'))

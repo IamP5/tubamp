@@ -146,16 +146,13 @@ bool mayAct (const Model& m, const Event& e)
         return job != nullptr && job->stage == Stage::download;
     if (std::holds_alternative<event::InstallFinished> (e))
         return job != nullptr;
-    return true;   // WatchOpened, Reconciled, PrefsSaved
+    return true;
 }
-
-// ---------------------------------------------------------------------------------
 
 void transitions()
 {
     group ("machine.transitions");
 
-    // T1
     {
         const auto s = step (base(), event::WatchOpened {});
         check (s.effects == std::vector<Effect> { effect::Reconcile {}, effect::Check { false } }, "T1 idle: Reconcile and an automatic Check");
@@ -164,7 +161,6 @@ void transitions()
         check (busy.effects == std::vector<Effect> { effect::Reconcile {} } && busy.next == installing (Stage::download),
                "T1 during a job: Reconcile only");
     }
-    // T2
     {
         const auto fresh = Model::start (R, site::Writable {});
         const auto s = step (fresh, event::Reconciled { DiskState { R, false }, Prefs {}, offerN() });
@@ -186,7 +182,6 @@ void transitions()
                    == Phase { phase::Manual { N, ManualReason::systemDomain } },
                "T2 a copy that cannot update shows Manual");
     }
-    // T3
     {
         auto withProblem = base();
         withProblem.lastCheckProblem = CheckProblem::unreachable;
@@ -197,7 +192,6 @@ void transitions()
         check (unchanged (installing (Stage::download), cmd (command::CheckNow {})), "T3 CheckNow during a job: ignored");
         check (unchanged (withActivity (base(), activity::Checking { true }), cmd (command::CheckNow {})), "T3 CheckNow during a manual check: ignored");
     }
-    // T4, T5, T6
     {
         const auto autoAvailable = withActivity (withOffer (base(), offerN()), activity::Checking { false });
         const auto manualIdle = withActivity (base(), activity::Checking { true });
@@ -225,7 +219,6 @@ void transitions()
         claimed.lastCheckAt = std::chrono::sys_seconds { std::chrono::seconds (1) };
         check (step (autoAvailable, event::CheckFinished { check::NotDue {}, claimed }).next.prefs == claimed, "T4-6 the job's prefs replace the model's");
     }
-    // T7
     {
         const auto s = step (withOffer (base(), offerN()), cmd (command::Install { N }));
         check (s.effects == std::vector<Effect> { effect::Install { offerN() } }, "T7 Install of the offered version: one Install effect");
@@ -242,7 +235,6 @@ void transitions()
         installed.disk.installed = N;
         check (unchanged (installed, cmd (command::Install { N })), "T7 guard: already installed on disk");
     }
-    // T19
     {
         const auto autoCheck = withActivity (withOffer (base(), offerN()), activity::Checking { false });
         const auto clicked = step (autoCheck, cmd (command::Install { N }));
@@ -278,7 +270,6 @@ void transitions()
                           cmd (command::Install { N })),
                "T19 Update on a copy that cannot replace itself is not queued");
     }
-    // T8, T9
     {
         const auto progressed = step (installing (Stage::download), event::Progress { 1000 });
         check (phaseOf (progressed.next) == Phase { phase::Downloading { N, 1000, offerN().archive().size } }, "T8 Progress updates received");
@@ -287,7 +278,6 @@ void transitions()
                "T9 Unpack moves Downloading to Installing");
         check (unchanged (installing (Stage::commit), event::StageEntered { Stage::unpack }), "T9 an earlier stage arriving late: ignored");
     }
-    // T10
     for (auto stage : { Stage::download, Stage::unpack, Stage::inspect })
     {
         const auto s = step (installing (stage), cmd (command::Cancel {}));
@@ -296,7 +286,6 @@ void transitions()
     }
     for (auto stage : { Stage::commit, Stage::settle })
         check (unchanged (installing (stage), cmd (command::Cancel {})), "T10 Cancel after the swap started: ignored");
-    // T11, T12, T13
     {
         check (phaseOf (step (installing (Stage::settle), event::InstallFinished { Installed {}, DiskState { N, false } }).next)
                    == Phase { phase::RestartPending { N } },
@@ -307,7 +296,6 @@ void transitions()
         const auto f = step (installing (Stage::inspect), event::InstallFinished { Failure::wrongBundle, DiskState { R, false } });
         check (phaseOf (f.next) == Phase { phase::Failed { N, Failure::wrongBundle } } && f.effects.empty(), "T13 Failure: Failed, nothing else requested");
     }
-    // T14, T15, T16, T17
     {
         const auto off = step (base(), cmd (command::SetAutoCheck { false }));
         check (off.effects == std::vector<Effect> { effect::SavePrefs { PrefsPatch { false, true, {} } } }, "T14 SetAutoCheck saves autoCheck and disclosed");
@@ -326,7 +314,6 @@ void transitions()
         const auto unloaded = step (Model::start (R, site::Writable {}), cmd (command::MarkDisclosed {}));
         check (! unloaded.next.prefs && unloaded.effects.size() == 1, "T16 before prefs are read: the save is still requested");
     }
-    // T18
     {
         const auto withO = step (withOffer (base(), offerN()), cmd (command::OpenReleasePage {}));
         check (withO.effects == std::vector<Effect> { effect::OpenInBrowser { releasePageUrl (N) } }, "T18 OpenReleasePage opens the offered version's page");

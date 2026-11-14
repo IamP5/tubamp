@@ -73,7 +73,6 @@ private:
 
 Sha256 sha256 (ByteView) noexcept;
 
-/** Why an envelope gave no Manifest. Each stage reports its own error type. */
 using Refusal = std::variant<EnvelopeError, SignatureError, ManifestError>;
 
 /** split, then verify, then parse: the one path from bytes to a Manifest, shared by a

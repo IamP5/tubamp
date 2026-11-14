@@ -2187,9 +2187,8 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
         });
 
    #if TUBAMP_UPDATES
-    // Every update intent. The command is parsed here, at the boundary; outcomes arrive
-    // as updateChanged. "Open the release page" opens a URL built in C++ from the
-    // offered version, so openExternal stays tone3000-only.
+    // "Open the release page" opens a URL built in C++ from the offered version, so
+    // openExternal stays tone3000-only.
     options = options.withNativeFunction ("updateCommand", [this] (const juce::Array<juce::var>& args, auto complete)
     {
         const auto command = update::parseCommand (juce::JSON::toString (args[0], true).toStdString());

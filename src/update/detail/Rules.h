@@ -2,12 +2,6 @@
 
 // PRIVATE to src/update. Pure rules: no network, no filesystem, no clock. Everything is a
 // function of its arguments, so tubamp_update_tool tests it with tables.
-//
-// This file owns four pieces of knowledge:
-//   1. the wire format of update-v1.signed and of its payload,
-//   2. the policy that turns a verified payload into an offer or a refusal,
-//   3. every URL the updater may request, and the redirect host allowlist,
-//   4. which archive entries may be extracted, and with which modes.
 
 #include "../UpdateTypes.h"
 
@@ -55,8 +49,7 @@ struct OsVersion
     auto operator<=> (const OsVersion&) const = default;
 };
 
-// ---------------------------------------------------------------------------------
-// 1. update-v1.signed
+// update-v1.signed wire format:
 //
 //   tubamp-update-v1\n
 //   sig <16 lowercase hex key id> <base64 DER ECDSA-P256-SHA256 signature>\n   (1..4)
@@ -67,7 +60,6 @@ struct OsVersion
 // key made for anything else is not an update. The header is ASCII lines split without a
 // JSON parser: no structured parsing of attacker bytes happens before a signature holds.
 // The format version lives in the file name; a v2 ships beside v1, never inside it.
-// ---------------------------------------------------------------------------------
 
 inline constexpr std::string_view envelopeMagic = "tubamp-update-v1";
 inline constexpr std::size_t maxEnvelopeBytes = 16 * 1024;
@@ -88,7 +80,7 @@ enum class EnvelopeError
     noSignature,
     tooManySignatures,
     malformedLine,      // a header line that is not exactly "sig <kid> <base64>", or a CR
-    noTerminator,       // no "." line
+    noTerminator,
 };
 
 /** The file split into signature lines and payload. Nothing in it is trusted yet. */
@@ -123,14 +115,12 @@ private:
     Bytes data;
 };
 
-// ---------------------------------------------------------------------------------
 // The payload, as the client reads it:
 //
 //   { "product": "com.t0audio.tubamp", "version": "0.4.0", "minimumMacOS": "11.0",
 //     "archive": { "sha256": "<64 lowercase hex>", "size": 17345678 } }
 //
 // Unknown fields are ignored, so fields can be added inside v1. No URL is read.
-// ---------------------------------------------------------------------------------
 
 struct ArchiveSpec
 {
@@ -169,10 +159,6 @@ private:
     ArchiveSpec spec;
 };
 
-// ---------------------------------------------------------------------------------
-// 2. Offer policy
-// ---------------------------------------------------------------------------------
-
 inline constexpr std::string_view pinnedBundleId = "com.t0audio.tubamp";
 
 struct OfferContext
@@ -184,10 +170,10 @@ struct OfferContext
 
 enum class NoOffer
 {
-    wrongProduct,      // product is not the pinned bundle id
-    oversized,         // signed size above ArchiveSpec::maxBytes
+    wrongProduct,
+    oversized,
     replayed,          // version below highestSeen: an older signed file served again
-    upToDate,          // version not above running
+    upToDate,
     needsNewerMacOS,   // minimumMacOS above this Mac. Not an error: nothing to offer
 };
 
@@ -218,10 +204,8 @@ private:
     cached one, which keeps the replay floor monotonic. */
 bool supersedes (const Manifest& incoming, const std::optional<Version>& cached) noexcept;
 
-// ---------------------------------------------------------------------------------
-// 3. URLs. Built only here, from compiled-in constants and a Version. Nothing that was
+// URLs. Built only here, from compiled-in constants and a Version. Nothing that was
 // downloaded supplies a URL, and a Url cannot be made from a string elsewhere.
-// ---------------------------------------------------------------------------------
 
 class Url
 {
@@ -257,9 +241,7 @@ std::optional<Url> repositoryUrl (std::string_view path);
     user info and no port. Applied to the first URL and to every redirect hop. */
 bool hostAllowed (std::string_view url) noexcept;
 
-// ---------------------------------------------------------------------------------
-// 4. Archive entry policy. The unpacker obeys the plan; it decides nothing.
-// ---------------------------------------------------------------------------------
+// Archive entry policy. The unpacker obeys the plan; it decides nothing.
 
 inline constexpr std::string_view bundleRoot = "tubamp.component";
 inline constexpr std::size_t maxArchiveEntries = 512;
@@ -289,12 +271,12 @@ enum class ArchiveViolation
     tooManyEntries,
     tooLarge,
     absolutePath,
-    dotSegment,          // "." or ".."
+    dotSegment,
     emptyComponent,
     badCharacter,        // backslash, control character or non-ASCII byte
     outsideBundle,       // first component is not tubamp.component, or the root is a file
     symlink,             // none at all: the bundle has none
-    specialFile,         // anything that is not a regular file or a directory
+    specialFile,
     duplicate,           // two entries name one path, also case-insensitively
     conflict,            // an entry lies under a path that is a file
     missingExecutable,   // no tubamp.component/Contents/MacOS/tubamp file

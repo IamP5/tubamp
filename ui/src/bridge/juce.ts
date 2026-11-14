@@ -344,8 +344,6 @@ export const juceBridge: Bridge = {
     await native("fxSetEmbedVisible")(visible);
   },
 
-  /* --- in-plugin update ---------------------------------------------------- */
-
   updateCommand: (command: UpdateCommand) =>
     call<ErrorResult>("updateCommand", { error: "The update command was not understood." }, command),
 };

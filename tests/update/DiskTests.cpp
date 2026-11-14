@@ -123,8 +123,6 @@ struct World
     }
 };
 
-// ---------------------------------------------------------------------------------
-
 void prefsStore()
 {
     group ("disk.prefs");
@@ -862,10 +860,8 @@ void killSweeps()
     }
 }
 
-// ---------------------------------------------------------------------------------
 // The child side. Exit codes: 0 Committed, 3 AlreadyInstalled, 10 + Failure, 42 at the
 // fault point (by _exit: no destructor runs, like a crash).
-// ---------------------------------------------------------------------------------
 
 int childInstall (const Home& home, const fs::path& zipPath, std::string_view version, std::string_view running,
                   std::string_view fault, std::uint64_t fileSizeLimit)

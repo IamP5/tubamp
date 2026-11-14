@@ -66,7 +66,7 @@ struct Model
 {
     Version running;                    // constant for the life of the process
     Site site;                          // constant for the life of the process
-    DiskState disk;                     // as last reported by the disk
+    DiskState disk;
     std::optional<Prefs> prefs;         // empty until the disk has been read once
     std::optional<Offer> offer;         // from the last evaluate (network or cache)
     Activity activity;
@@ -79,7 +79,7 @@ struct Model
 
 namespace event
 {
-    struct WatchOpened { bool operator== (const WatchOpened&) const = default; };   // an editor subscribed
+    struct WatchOpened { bool operator== (const WatchOpened&) const = default; };
     struct Commanded
     {
         Command command;

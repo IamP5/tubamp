@@ -64,7 +64,6 @@ std::string archiveUrlFor (std::string_view version)
     return "https://github.com/IamP5/tubamp/releases/download/v" + s + "/tubamp-" + s + "-macos-universal.zip";
 }
 
-/** The test's message thread. */
 class Loop
 {
 public:
@@ -88,7 +87,6 @@ public:
         return true;
     }
 
-    /** Runs whatever arrives for `span`. */
     void runFor (milliseconds span)
     {
         std::deque<std::function<void()>> ready;
@@ -110,7 +108,7 @@ private:
 struct Script
 {
     Bytes body;
-    std::optional<FetchError> fail;     // returned instead of completing
+    std::optional<FetchError> fail;
     std::size_t failAfter = 0;          // bytes delivered before `fail`
     std::size_t chunk = 64 * 1024;
     milliseconds perChunk { 0 };

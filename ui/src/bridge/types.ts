@@ -811,8 +811,6 @@ export interface EqAnalyserPrefs {
   speed: EqAnalyserStep;
 }
 
-/* ─────────────────────────────── in-plugin update ──────────────────────── */
-
 /** "X.Y.Z". The page only compares versions for equality; ordering is C++'s. */
 export type UpdateVersion = string;
 
@@ -845,9 +843,7 @@ export type UpdateCheckProblem = "unreachable" | "unverified";
 export type UpdatePhase =
   /** Development build: updates are compiled out. The UI shows no update row. */
   | { kind: "off" }
-  /** Nothing newer is known. */
   | { kind: "idle"; problem?: UpdateCheckProblem }
-  /** A manual check is running. */
   | { kind: "checking" }
   /** A verified newer release exists and this copy can install it. */
   | { kind: "available"; version: UpdateVersion }
@@ -857,17 +853,13 @@ export type UpdatePhase =
   | { kind: "installing"; version: UpdateVersion }
   /** `version` is on disk; this host still runs `UpdateView.running`. */
   | { kind: "restartPending"; version: UpdateVersion }
-  /** The last attempt failed and nothing changed. */
   | { kind: "failed"; version: UpdateVersion; reason: UpdateFailure }
-  /** A newer release exists but this copy cannot install it. */
   | { kind: "manual"; version: UpdateVersion; reason: UpdateManualReason };
 
 export interface UpdateView {
-  /** The version of the code running in this host. */
   running: UpdateVersion;
   /** "Logic Pro", for "Restart Logic Pro to use it." */
   hostName: string;
-  /** The "Check for updates automatically" setting. */
   autoCheck: boolean;
   /** Present when the page should announce this version once. After the toast
    *  the page sends `markAnnounced`; the field is then absent in every editor,
@@ -1266,12 +1258,6 @@ export interface Bridge {
    * `0, 0` releases the floor.
    */
   fxSetEmbedMinWindow(width: number, height: number): Promise<void>;
-
-  /* --- in-plugin update ----------------------------------------------------
-   *
-   * The page never sequences an update: it renders `UpdateView` and sends
-   * intents. Outcomes arrive as `updateChanged`.
-   */
 
   /** Resolves `{}` when the command was understood (whether or not it applied
    *  in the current phase), `{error}` when it could not be parsed. Never rejects. */

@@ -108,10 +108,6 @@ tubamp_write_text_table("${tubamp_update_gen_dir}/tubamp_update_release_keys.inc
     "struct ReleaseKeyFile { std::string_view name, pem; };\ninline constexpr auto releaseKeyFiles = std::array<ReleaseKeyFile, "
     "${tubamp_update_release_keys}")
 
-# ---------------------------------------------------------------------------
-# tubamp_update_tool: `test` runs the tables, `verify-envelope` is the release gate.
-# Plain C++ and Security.framework; no JUCE module code.
-# ---------------------------------------------------------------------------
 # The golden bridge contract is shared with the page: ui/src/bridge/update-contract.json.
 file(GLOB tubamp_update_fixture_files CONFIGURE_DEPENDS
     "${tubamp_update_tests_dir}/fixtures/*.pub.pem"
