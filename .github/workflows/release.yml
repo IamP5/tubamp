@@ -1,0 +1,91 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One release run at a time, never cancelled midway. A run that GitHub drops while it is
+# still pending loses nothing: the next run plans from the last tag and sees its commits.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Test the release scripts
+        run: node --test 'scripts/release/test/*.test.mjs'
+
+      - name: Plan
+        id: plan
+        run: node scripts/release/plan.mjs
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    uses: ./.github/workflows/installers.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      SHA: ${{ needs.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: installer-*
+          path: dist
+          merge-multiple: true
+
+      - name: Release notes and manifest
+        run: |
+          node scripts/release/notes.mjs --out dist/notes.md
+          node scripts/release/manifest.mjs --version "$VERSION" --dir dist --notes-file dist/notes.md
+
+      - name: Publish
+        run: node scripts/release/publish.mjs --version "$VERSION" --sha "$SHA" --dir dist --notes-file dist/notes.md
+
+      - name: Check the manifest the site reads
+        run: |
+          url="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/manifest.json"
+          for _ in 1 2 3 4 5 6; do
+            served="$(curl -fsSL "$url" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).version)' || true)"
+            [ "$served" = "$VERSION" ] && { echo "releases/latest serves manifest $served"; exit 0; }
+            echo "releases/latest serves '$served', waiting for $VERSION"
+            sleep 10
+          done
+          exit 1
