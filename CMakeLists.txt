@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
 
+# Must come before project(): project() creates an empty cache entry for it, after which
+# this line would be a no-op and the binaries would require the build machine's macOS.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+
 project(tubamp VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
 include(FetchContent)
 
