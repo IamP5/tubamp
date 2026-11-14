@@ -13,6 +13,7 @@
 #include "dsp/Drive.h"
 #include "dsp/Eq.h"
 #include "dsp/Gate.h"
+#include "dsp/SpectrumTap.h"
 #include "dsp/FxHost.h"
 #include "dsp/FxCatalog.h"
 #include "library/ModelLibrary.h"
@@ -269,6 +270,25 @@ public:
     std::atomic<float> gateGrDb { 0.0f }, gateLevelDb { kDynMeterFloorDb };
     std::atomic<int> gateState { -1 };
     std::array<std::atomic<float>, params::maxInstances> compGrDb {};
+
+    /** EQ spectrum analyser feed (docs/FX-ENGINES.md §2.8.1). The editor sets watchedEq to
+        the EQ instance on screen (0..2) or -1; while it names an instance, that block's
+        input and output (after its bypass fader) are copied into spectrumTap on the audio
+        thread. With nothing watched the cost is one relaxed load per EQ block. */
+    std::atomic<int> watchedEq { -1 };
+    SpectrumTap spectrumTap;
+
+    /** The analyser's settings (docs/FX-ENGINES.md §2.8.1), saved with the plugin's state
+        like the editor's size: they are how this instance is looked at, not part of its
+        sound, so presets do not carry them. Resolution is SpectrumAnalyser::Resolution;
+        speed (0 slow, 1 medium, 2 fast) and on/off are the UI's, kept here so they
+        outlive the editor. */
+    std::atomic<bool> eqAnalyserOn { true };
+    std::atomic<int> eqAnalyserResolution { 1 };
+    std::atomic<int> eqAnalyserSpeed { 1 };
+
+    /** The rate the blocks were last prepared at (any thread). */
+    double getPreparedSampleRate() const noexcept { return preparedSampleRate.load (std::memory_order_relaxed); }
 
 private:
     /** Any thread: the chain, the state or a model changed. The timer reports the new figure at

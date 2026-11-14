@@ -41,6 +41,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   Knob,
+  MoreIcon,
   Menu,
   Segmented,
   Toggle,
@@ -276,6 +277,87 @@ export function SwitchField({
       <span className={cx(s.fieldLabel, s.fieldLabelKeep)}>{label}</span>
       <Toggle checked={param.value} onChange={param.setValue} disabled={disabled} aria-label={label} />
     </div>
+  );
+}
+
+/** A switch for a view preference (not a plugin parameter), with SwitchField's
+ *  look: nothing reaches the host, so there is no parameter index. */
+export function ViewSwitch({
+  label,
+  checked,
+  onChange,
+  title,
+}: {
+  label: string;
+  checked: boolean;
+  onChange(next: boolean): void;
+  title?: string;
+}) {
+  return (
+    <div className={s.field} title={title}>
+      <span className={cx(s.fieldLabel, s.fieldLabelKeep)}>{label}</span>
+      <Toggle checked={checked} onChange={onChange} aria-label={label} />
+    </div>
+  );
+}
+
+/** A view state that latches (Freeze): a short word on a button that reads as
+ *  pressed, in the accent, while it is on. */
+export function LatchButton({
+  label,
+  pressed,
+  onChange,
+  title,
+}: {
+  label: string;
+  pressed: boolean;
+  onChange(next: boolean): void;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={cx(s.latch, pressed && s.latchOn)}
+      aria-pressed={pressed}
+      aria-label={label}
+      title={title}
+      onClick={() => onChange(!pressed)}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Header controls that belong together on one plate, split by hairlines
+ *  (the stepper's look): Freeze and its settings read as the analyser's. */
+export function ControlPlate({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className={s.plate} role="group" aria-label={label}>
+      {children}
+    </div>
+  );
+}
+
+/** Settings that are rarely changed, behind a "More" button (DESIGN.md §Less).
+ *  `label` is its accessible name and its tooltip. */
+export function MoreMenu({ label, entries, width = 160 }: { label: string; entries: MenuEntry[]; width?: number }) {
+  const { ref, anchor, open, toggle, close } = useMenu();
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        className={s.more}
+        aria-label={label}
+        title={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={toggle}
+      >
+        <MoreIcon />
+      </button>
+      <Menu anchor={anchor} open={open} onClose={close} entries={entries} align="end" minWidth={width} />
+    </>
   );
 }
 

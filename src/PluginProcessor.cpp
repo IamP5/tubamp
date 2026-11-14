@@ -1998,7 +1998,17 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
                 eq[k].setParameters (ep);
             }
 
+            // Loaded once, so a block is tapped on both sides or on neither.
+            const bool tapped = watchedEq.load (std::memory_order_relaxed) == (int) k;
+
+            if (tapped)
+                spectrumTap.writePre (block);
+
             eqFader[k].process (block, runs, 0, [this, k] (juce::dsp::AudioBlock<float> sub) { eq[k].process (sub); });
+
+            if (tapped)
+                spectrumTap.writePost (block);
+
             break;
         }
 
@@ -3088,6 +3098,10 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         root.setProperty ("editorHeight", size.y, nullptr);
     }
 
+    root.setProperty ("eqAnalyserOn", eqAnalyserOn.load (std::memory_order_relaxed), nullptr);
+    root.setProperty ("eqAnalyserResolution", eqAnalyserResolution.load (std::memory_order_relaxed), nullptr);
+    root.setProperty ("eqAnalyserSpeed", eqAnalyserSpeed.load (std::memory_order_relaxed), nullptr);
+
     root.appendChild (apvts.copyState(), nullptr);
     root.appendChild (fxSlotsTree(), nullptr);
 
@@ -3148,6 +3162,13 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
 
     setEditorSize ({ (int) root.getProperty ("editorWidth", 0),
                      (int) root.getProperty ("editorHeight", 0) });
+
+    // Absent in sessions saved before the analyser had settings: the defaults.
+    eqAnalyserOn.store ((bool) root.getProperty ("eqAnalyserOn", true), std::memory_order_relaxed);
+    eqAnalyserResolution.store (juce::jlimit (0, 2, (int) root.getProperty ("eqAnalyserResolution", 1)),
+                                std::memory_order_relaxed);
+    eqAnalyserSpeed.store (juce::jlimit (0, 2, (int) root.getProperty ("eqAnalyserSpeed", 1)),
+                           std::memory_order_relaxed);
 
     const juce::String modelPath = root.getProperty ("modelPath", juce::String()).toString();
     const juce::String modelPathB = root.getProperty ("modelPathB", juce::String()).toString();

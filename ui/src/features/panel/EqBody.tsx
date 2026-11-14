@@ -9,23 +9,101 @@
  * only. Graphic: the seven bands are handles on the plot and nowhere else —
  * except at narrow widths, where the toolkit drops the display and the bands
  * become a row of small knobs.
+ *
+ * The header's Analyzer switch shows or hides the spectrum behind the curve.
+ * While it is on, Freeze holds the spectrum at its maximum, and a "More" menu
+ * beside it keeps the two settings that are set once and left: Resolution (the
+ * engine's FFT size) and Speed (how fast the spectrum falls). The preferences
+ * live in the store and are saved with the plugin's state; Freeze is not.
  */
-import type { BlockId, ComboParamId, SliderParamId } from "../../bridge";
-import { cx } from "../../components";
+import type { BlockId, ComboParamId, EqAnalyserStep, SliderParamId } from "../../bridge";
+import { cx, type MenuEntry } from "../../components";
+import { useContext } from "react";
 import { useComboParam } from "../../hooks";
+import { useStore } from "../../store";
 import { EqPlot, GRAPHIC, GRAPHIC_BANDS, PARAMETRIC, STACK } from "./eqDisplay";
-import { ChoiceMenu, Editor, Group, HeaderSlot, K, Row, TypeStepper } from "./ui";
+import {
+  ChoiceMenu,
+  ControlPlate,
+  Editor,
+  Group,
+  HeaderSlot,
+  K,
+  LatchButton,
+  MoreMenu,
+  NarrowContext,
+  Row,
+  TypeStepper,
+  ViewSwitch,
+} from "./ui";
 import s from "./eq.module.css";
+
+/** Names of the analyser's three steps, per setting. */
+const STEP_NAMES = {
+  resolution: ["Low", "Medium", "High"],
+  speed: ["Slow", "Medium", "Fast"],
+} as const;
+
+/** One setting as a labelled section of radio items, a check on the current one. */
+function steps(
+  key: keyof typeof STEP_NAMES,
+  label: string,
+  current: EqAnalyserStep,
+  pick: (step: EqAnalyserStep) => void,
+): MenuEntry[] {
+  return [
+    { kind: "section", id: `analyser:${key}`, label },
+    ...STEP_NAMES[key].map((name, i) => ({
+      id: `analyser:${key}:${i}`,
+      label: name,
+      radio: true,
+      selected: i === current,
+      onSelect: () => pick(i as EqAnalyserStep),
+    })),
+  ];
+}
 
 export function EqBody({ block = "eq" }: { block?: BlockId }) {
   const id = (key: string): SliderParamId => `${block}_${key}` as SliderParamId;
   const type = useComboParam(`${block}_type` as ComboParamId);
+  const analyser = useStore((st) => st.eqAnalyser);
+  const setAnalyser = useStore((st) => st.setEqAnalyser);
+  const freeze = useStore((st) => st.eqFreeze);
+  const setFreeze = useStore((st) => st.setEqFreeze);
+  /* Narrow bands drop the display, and with it anything to analyse into. */
+  const narrow = useContext(NarrowContext);
 
   return (
     <>
       <HeaderSlot>
         <TypeStepper id={`${block}_type` as ComboParamId} label="Type" />
         {type.index === STACK && <ChoiceMenu id={`${block}_voice` as ComboParamId} label="Voice" width={130} />}
+        {!narrow && (
+          <ViewSwitch
+            label="Analyzer"
+            checked={analyser.on}
+            onChange={(on) => setAnalyser({ on })}
+            title="The spectrum entering and leaving the EQ, behind the curve"
+          />
+        )}
+        {!narrow && analyser.on && (
+          <ControlPlate label="Analyzer">
+            <LatchButton
+              label="Freeze"
+              pressed={freeze}
+              onChange={setFreeze}
+              title="Freeze the spectrum at its maximum"
+            />
+            <MoreMenu
+              label="Analyzer settings"
+              entries={[
+                ...steps("resolution", "Resolution", analyser.resolution, (resolution) => setAnalyser({ resolution })),
+                { kind: "separator", id: "analyser:sep" },
+                ...steps("speed", "Speed", analyser.speed, (speed) => setAnalyser({ speed })),
+              ]}
+            />
+          </ControlPlate>
+        )}
       </HeaderSlot>
       <Editor display={<EqPlot block={block} type={type.index} />}>
         {type.index === GRAPHIC ? (

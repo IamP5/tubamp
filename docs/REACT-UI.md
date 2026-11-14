@@ -236,6 +236,13 @@ fxBeginGesture(slot: FxSlotIndex, index: number): void
 fxEndGesture(slot: FxSlotIndex, index: number): void
 fxWatchSlot(slot: FxSlotIndex | -1): void             // which slot gets fxParamValues; -1 = none
 
+// --- EQ spectrum analyser, see docs/FX-ENGINES.md §2.8.1
+eqWatch(instance: 0 | 1 | 2 | -1): void               // which EQ instance gets eqSpectrum; -1 = none
+eqAnalyserSet(prefs: { on?, resolution?, speed? }): void  // stores the analyser's settings (saved with
+                                                      // the plugin state); resolution 0|1|2 also sets
+                                                      // the FFT size (2048 / 4096 / 8192 at 48 kHz)
+                                                      // (the default when the editor opens)
+
 // --- window size + embedded hosted editor, see §Window size and embedding
 getEditorSize(): EditorSizeLimits
 setEditorSize(w: number, h: number): EditorSize            // clamped; returns what was applied
@@ -278,6 +285,9 @@ interface UiState {
   ab: { activeSlot: 0 | 1; aHasState: boolean; bHasState: boolean }
   t3k: { configured: boolean; authenticated: boolean; username: string | null }
   fxSlots: FxSlotState[]        // always 3 entries, indexed by slot
+  eqAnalyser: { on: boolean, resolution: 0|1|2, speed: 0|1|2 }  // the EQ analyser's saved settings
+                                                                 // (defaults: on, 1, 1); speed is the
+                                                                 // UI's fall rate, Freeze is not saved
   editorSize: EditorSizeLimits  // { width, height, minWidth, minHeight,
                                 //   maxWidth, maxHeight } — max = what fits the display
   fxEmbed: FxEmbedState         // { slot: FxSlotIndex | -1, width, height, error }
@@ -356,6 +366,17 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
                                                     // meter-rate; index-aligned with
                                                     // that slot's params; only for the
                                                     // slot set by fxWatchSlot()
+"eqSpectrum"     { instance: 0|1|2, pre: number[256], post: number[256] }
+                                                    // 30 Hz, only while eqWatch() names an
+                                                    // instance (docs/FX-ENGINES.md §2.8.1).
+                                                    // Point i at 20 * 1000^(i/255) Hz; value
+                                                    // round((dB + 120) * 2), 0..240, dBFS (a
+                                                    // full-scale sine reads 0 dB at its
+                                                    // point). pre = into the EQ block, post =
+                                                    // out of it after its bypass fader; mono.
+                                                    // No smoothing or tilt (UI's job). No new
+                                                    // samples since the last tick: one all-zero
+                                                    // frame, then nothing until audio resumes
 "editorSizeChanged" EditorSizeLimits                // the window changed size, INCLUDING when
                                                     // we changed it ourselves — one source of truth
 "fxEmbedChanged" FxEmbedState                       // an embed mounted, unmounted, was refused,

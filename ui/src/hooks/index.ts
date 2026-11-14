@@ -26,3 +26,13 @@ export {
   GATE_LEVEL_MAX_DB,
   type DynMeters,
 } from "./useDynMeters";
+export {
+  useEqSpectrum,
+  eqSpectrumHz,
+  EQ_SPECTRUM_POINTS,
+  EQ_SPECTRUM_FALL_DB_PER_SECOND,
+  EQ_SPECTRUM_FLOOR_DB,
+  type EqSpectrumFrame,
+  type EqSpectrumPaint,
+  type EqSpectrumBallistics,
+} from "./useEqSpectrum";

@@ -52,6 +52,106 @@
   background: var(--ds-surface-3);
 }
 
+/* A latching view state (Freeze): a secondary button at rest; on, it takes the
+   accent the way a switch that is on does, as a tint with an accent ring. */
+.latch {
+  flex: none;
+  height: var(--ds-h-md);
+  padding: 0 10px;
+  border-radius: var(--ds-r-2);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line);
+  font-size: var(--ds-fs-label);
+  font-weight: 500;
+  color: var(--ds-text-2);
+  white-space: nowrap;
+  transition:
+    background-color var(--ds-t-fast) var(--ds-ease),
+    color var(--ds-t-fast) var(--ds-ease),
+    box-shadow var(--ds-t-fast) var(--ds-ease);
+}
+
+.latch:hover {
+  background: var(--ds-surface-3);
+  color: var(--ds-text);
+}
+
+.latchOn,
+.latchOn:hover {
+  background: var(--ds-accent-soft);
+  color: var(--ds-accent);
+  box-shadow: var(--ds-ring);
+}
+
+/* The "More" trigger: an icon button, square, in the header's control height. */
+.more {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ds-h-md);
+  height: var(--ds-h-md);
+  border-radius: var(--ds-r-2);
+  color: var(--ds-text-3);
+  transition:
+    background-color var(--ds-t-fast) var(--ds-ease),
+    color var(--ds-t-fast) var(--ds-ease);
+}
+
+.more:hover,
+.more[aria-expanded="true"] {
+  background: var(--ds-surface-2);
+  color: var(--ds-text);
+}
+
+/* Controls joined on one plate, like the stepper: the plate carries the fill
+   and the hairline, the More button is split off by a line. */
+.plate {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: var(--ds-h-md);
+  border-radius: var(--ds-r-2);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line);
+}
+
+.plate > .latch,
+.plate > .more {
+  background: transparent;
+  box-shadow: none;
+}
+
+.plate > :first-child {
+  border-radius: var(--ds-r-2) 0 0 var(--ds-r-2);
+}
+
+.plate > :last-child {
+  border-radius: 0 var(--ds-r-2) var(--ds-r-2) 0;
+}
+
+.plate > .more {
+  width: var(--ds-h-sm);
+  color: var(--ds-text-3);
+  box-shadow: inset 1px 0 0 var(--ds-line);
+}
+
+.plate > .latch:hover,
+.plate > .more:hover,
+.plate > .more[aria-expanded="true"] {
+  background: var(--ds-surface-3);
+  color: var(--ds-text);
+}
+
+.plate > .latchOn,
+.plate > .latchOn:hover {
+  background: var(--ds-accent-soft);
+  color: var(--ds-accent);
+  box-shadow: inset 0 0 0 1px var(--ds-accent-line);
+}
+
+.latch:focus-visible,
+.more:focus-visible,
 .stepperArrow:focus-visible,
 .stepperName:focus-visible,
 .select:focus-visible {

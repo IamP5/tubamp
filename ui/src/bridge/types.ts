@@ -790,6 +790,22 @@ export interface UiState {
   /** False in builds compiled without plugin hosting; the FX panels then explain
    *  themselves instead of showing an empty picker. */
   fxSupported: boolean;
+  /** The EQ analyser's preferences, saved with the plugin's state (shared by
+   *  every EQ instance). Missing from a C++ build that predates them. */
+  eqAnalyser: EqAnalyserPrefs;
+}
+
+/** 0 = Low, 1 = Medium, 2 = High. */
+export type EqAnalyserStep = 0 | 1 | 2;
+
+export interface EqAnalyserPrefs {
+  /** The Analyzer switch: off means nothing is watched (`eqWatch(-1)`). */
+  on: boolean;
+  /** FFT size: 0 = 2048, 1 = 4096, 2 = 8192 points at 44.1/48 kHz (the
+   *  engine scales them at higher rates). The only field the engine acts on. */
+  resolution: EqAnalyserStep;
+  /** How fast the display falls (0 = Slow, 1 = Medium, 2 = Fast); UI-only. */
+  speed: EqAnalyserStep;
 }
 
 export interface T3kModel {
@@ -921,6 +937,13 @@ export interface BridgeEventMap {
     gate: { state: -1 | 0 | 1 | 2; gr: number; level: number };
     comp: [number, number, number];
   };
+  /** The EQ analyser, ~30 Hz while an instance is watched (`eqWatch`). 256
+   *  integers 0..240 per array: dB = v / 2 - 120 (dBFS; a full-scale sine reads
+   *  0 dB at its point). Point i sits at `20 * 1000 ** (i / 255)` Hz. `pre` is
+   *  what enters the EQ block, `post` what leaves it. Raw: no tilt, no smoothing
+   *  over time. When audio stops the engine sends one all-zero frame, then
+   *  nothing. */
+  eqSpectrum: { instance: number; pre: number[]; post: number[] };
   chainChanged: { chainOrder: string[]; chainRows: number[] };
   libraryChanged: { models: FileEntry[]; irs: FileEntry[] };
   presetChanged: {
@@ -956,6 +979,9 @@ export interface BridgeEventMap {
 }
 
 export type BridgeEventName = keyof BridgeEventMap;
+
+/** An EQ block's instance index: 0 = eq, 1 = eq2, 2 = eq3. */
+export type EqInstance = 0 | 1 | 2;
 
 /* ─────────────────────────── native function results ───────────────────── */
 
@@ -1083,6 +1109,15 @@ export interface Bridge {
   /** Which slot should receive `fxParamValues` pushes; -1 for none. Set as the
    *  selected block changes so we only meter what is on screen. */
   fxWatchSlot(slot: FxSlotIndex | -1): Promise<void>;
+
+  /** Which EQ instance the analyser measures (0 = eq, 1 = eq2, 2 = eq3) and
+   *  pushes as `eqSpectrum`; -1 stops it. The engine only analyses while an
+   *  instance is watched. */
+  eqWatch(instance: EqInstance | -1): Promise<void>;
+  /** Stores whichever analyser preferences are given (saved with the plugin's
+   *  state). The engine acts only on `resolution`; `on` and `speed` are kept
+   *  for the UI and come back in `getUiState().eqAnalyser`. */
+  eqAnalyserSet(prefs: Partial<EqAnalyserPrefs>): Promise<void>;
 
   /* --- window size ---------------------------------------------------------
    *

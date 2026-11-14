@@ -23,6 +23,9 @@ export interface MenuItem {
   hint?: string;
   /** The current item: gets a check. */
   selected?: boolean;
+  /** One of a set where exactly one is chosen (a section of options): read as
+   *  a radio item, `selected` being its checked state. */
+  radio?: boolean;
   disabled?: boolean;
   destructive?: boolean;
   onSelect?(): void;
@@ -125,8 +128,9 @@ export function Menu({
                 <button
                   key={entry.id}
                   type="button"
-                  role="menuitem"
-                  aria-current={entry.selected || undefined}
+                  role={entry.radio ? "menuitemradio" : "menuitem"}
+                  aria-checked={entry.radio ? Boolean(entry.selected) : undefined}
+                  aria-current={(!entry.radio && entry.selected) || undefined}
                   disabled={entry.disabled}
                   className={cx(
                     s.menuItem,

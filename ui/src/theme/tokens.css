@@ -64,6 +64,11 @@
   --ds-plot-axis: rgba(255, 255, 255, 0.14);
   --ds-plot-ghost: rgba(255, 255, 255, 0.22);
   --ds-plot-fill: rgba(240, 166, 58, 0.1);
+  /* Measured audio behind a curve (the EQ's spectrum): neutral, so the curve
+     stays the one coloured thing in the display. */
+  --ds-plot-signal: rgba(255, 255, 255, 0.34);
+  --ds-plot-signal-dim: rgba(255, 255, 255, 0.16);
+  --ds-plot-signal-fill: rgba(255, 255, 255, 0.07);
 
   /* ── Type ── */
   --ds-font: "Geist Sans", system-ui, -apple-system, sans-serif;

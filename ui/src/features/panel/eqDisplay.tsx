@@ -1,138 +1,66 @@
 /**
  * The EQ editor's display (docs/FX-ENGINES.md §4.4): the summed response of
- * everything the current type reads, as one curve on a log-frequency grid,
- * filled to the 0 dB line, with handles on the bands.
+ * everything the current type reads (the laws in ./eqResponse), as one curve on
+ * a log-frequency grid, filled to the 0 dB line, with handles on the bands.
  *
- *   Classic     bass shelf 150 Hz (4 dB/unit), mid bell 425 Hz (3 dB/unit,
- *               Q 1.5 cutting / 0.7 boosting), treble shelf 1800 Hz (2 dB/unit)
- *   Parametric  low cut, the same shelves, a mid bell at Mid freq / Mid Q,
- *               tilt (first order, pivot 700 Hz), high cut, level
- *   Stack       the Yeh–Smith passive tone stack with the voice's parts and
- *               make-up, then level
- *   Graphic     seven octave bells, Q √2, then level
+ * Behind the curve, while the Analyzer switch is on and audio plays, the
+ * spectrum (useEqSpectrum): what leaves the block as a neutral area, what
+ * enters it as a dimmer line, shown only where the two differ. Its scale is
+ * its own and unlabelled (FabFilter Pro-Q's analyser): +4.5 dB per octave of
+ * tilt about 1 kHz, 0 dB at the top, -90 dB at the bottom, smoothed over about
+ * 1/12 octave.
  *
  * The analog prototypes the engine matches (Vicanek bells, TPT shelves and
  * cuts, the Stack's own circuit), evaluated per pixel: these are the real laws.
  */
-import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { BlockId, ComboParamId, SliderParamId } from "../../bridge";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import type { BlockId, ComboParamId, EqInstance, SliderParamId } from "../../bridge";
 import { cx } from "../../components";
-import { useComboParam, useSliderParam, type SliderParam } from "../../hooks";
+import {
+  EQ_SPECTRUM_POINTS,
+  eqSpectrumHz,
+  useComboParam,
+  useEqSpectrum,
+  useSliderParam,
+  type EqSpectrumFrame,
+  type SliderParam,
+} from "../../hooks";
+import { useStore } from "../../store";
 import {
   FreqGrid,
   HRules,
   Plot,
   PlotHandle,
   areaPath,
-  bellDb,
   clamp,
   curve,
   dbY,
   freqX,
-  highCutDb,
-  highShelfDb,
   linePath,
-  lowCutDb,
-  lowShelfDb,
   xFreq,
   plot as p,
   useEase,
 } from "./display";
 import { padFreq } from "./driveDisplay";
+import {
+  BASS,
+  GRAPHIC,
+  GRAPHIC_BANDS,
+  MID,
+  PARAMETRIC,
+  STACK,
+  TREBLE,
+  CLASSIC,
+  VOICES,
+  classicResponse,
+  graphicResponse,
+  knobDb,
+  parametricResponse,
+  stackResponse,
+} from "./eqResponse";
 import eqInk from "./eq.module.css";
 
-export const CLASSIC = 0;
-export const PARAMETRIC = 1;
-export const STACK = 2;
-export const GRAPHIC = 3;
-
-/** Band id suffix, centre frequency and its tick, low to high. */
-export const GRAPHIC_BANDS = [
-  ["g100", 100, "100"],
-  ["g200", 200, "200"],
-  ["g400", 400, "400"],
-  ["g800", 800, "800"],
-  ["g1k6", 1600, "1.6k"],
-  ["g3k2", 3200, "3.2k"],
-  ["g6k4", 6400, "6.4k"],
-] as const;
-
-/* ─────────────────────────────── responses ─────────────────────────────── */
-
-/** dB per knob unit away from 5, and the band frequency (Classic, Parametric). */
-const BASS = { db: 4, hz: 150 };
-const MID = { db: 3, hz: 425 };
-const TREBLE = { db: 2, hz: 1800 };
-
-/** First-order tilt about 700 Hz: −tilt dB at DC, +tilt dB at the top. */
-function tiltDb(f: number, tilt: number): number {
-  const t = Math.pow(10, tilt / 20);
-  const s = f / 700;
-  return 10 * Math.log10((t * t * s * s + 1) / (s * s + t * t));
-}
-
-/** Stack parts per voice (Tweed, Blackface, British, Top Boost):
- *  R1 treble, R2 bass, R3 mid, R4 slope, C1, C2, C3, make-up dB. */
-const VOICES: readonly (readonly number[])[] = [
-  [250e3, 1e6, 25e3, 56e3, 250e-12, 20e-9, 20e-9, 8.9],
-  [250e3, 250e3, 10e3, 100e3, 250e-12, 100e-9, 47e-9, 15.1],
-  [220e3, 1e6, 22e3, 33e3, 470e-12, 22e-9, 22e-9, 6.4],
-  [1e6, 1e6, 10e3, 100e3, 50e-12, 22e-9, 22e-9, 13.6],
-];
-
-/** The stack's audio-taper pot law through (0.5, 0.3). */
-const STACK_B = (1 / 0.3 - 1) ** 2;
-const stackTaper = (x: number): number => (Math.pow(STACK_B, x) - 1) / (STACK_B - 1);
-
-/** Yeh & Smith (DAFx-06) closed form, transcribed from the study's design.py
- *  `yeh_coeffs`; knobs 0..10 as the engine reads them. Returns dB at f. */
-function stackResponse(voice: number, bass: number, mid: number, treble: number): (f: number) => number {
-  const [R1, R2, R3, R4, C1, C2, C3, makeup] = (VOICES[voice] ?? VOICES[2]!) as [
-    number, number, number, number, number, number, number, number,
-  ];
-  const t = treble / 10;
-  const m = stackTaper(mid / 10);
-  const l = stackTaper(bass / 10);
-  const b1 = t * C1 * R1 + m * C3 * R3 + l * (C1 * R2 + C2 * R2) + (C1 * R3 + C2 * R3);
-  const b2 =
-    t * (C1 * C2 * R1 * R4 + C1 * C3 * R1 * R4) -
-    m * m * (C1 * C3 * R3 * R3 + C2 * C3 * R3 * R3) +
-    m * (C1 * C3 * R1 * R3 + C1 * C3 * R3 * R3 + C2 * C3 * R3 * R3) +
-    l * (C1 * C2 * R1 * R2 + C1 * C2 * R2 * R4 + C1 * C3 * R2 * R4) +
-    l * m * (C1 * C3 * R2 * R3 + C2 * C3 * R2 * R3) +
-    (C1 * C2 * R1 * R3 + C1 * C2 * R3 * R4 + C1 * C3 * R3 * R4);
-  const c123 = C1 * C2 * C3;
-  const b3 =
-    l * m * (c123 * R1 * R2 * R3 + c123 * R2 * R3 * R4) -
-    m * m * (c123 * R1 * R3 * R3 + c123 * R3 * R3 * R4) +
-    m * (c123 * R1 * R3 * R3 + c123 * R3 * R3 * R4) +
-    t * c123 * R1 * R3 * R4 -
-    t * m * c123 * R1 * R3 * R4 +
-    t * l * c123 * R1 * R2 * R4;
-  const a1 = C1 * R1 + C1 * R3 + C2 * R3 + C2 * R4 + C3 * R4 + m * C3 * R3 + l * (C1 * R2 + C2 * R2);
-  const a2 =
-    m * (C1 * C3 * R1 * R3 - C2 * C3 * R3 * R4 + C1 * C3 * R3 * R3 + C2 * C3 * R3 * R3) +
-    l * m * (C1 * C3 * R2 * R3 + C2 * C3 * R2 * R3) -
-    m * m * (C1 * C3 * R3 * R3 + C2 * C3 * R3 * R3) +
-    l * (C1 * C2 * R2 * R4 + C1 * C2 * R1 * R2 + C1 * C3 * R2 * R4 + C2 * C3 * R2 * R4) +
-    (C1 * C2 * R1 * R4 + C1 * C3 * R1 * R4 + C1 * C2 * R3 * R4 + C1 * C2 * R1 * R3 + C1 * C3 * R3 * R4 + C2 * C3 * R3 * R4);
-  const a3 =
-    l * m * (c123 * R1 * R2 * R3 + c123 * R2 * R3 * R4) -
-    m * m * (c123 * R1 * R3 * R3 + c123 * R3 * R3 * R4) +
-    m * (c123 * R3 * R3 * R4 + c123 * R1 * R3 * R3 - c123 * R1 * R3 * R4) +
-    l * c123 * R1 * R2 * R4 +
-    c123 * R1 * R3 * R4;
-  return (f) => {
-    const w = 2 * Math.PI * f;
-    const w2 = w * w;
-    /* s = jw: numerator b1 s + b2 s² + b3 s³, denominator 1 + a1 s + a2 s² + a3 s³. */
-    const nr = -b2 * w2;
-    const ni = b1 * w - b3 * w2 * w;
-    const dr = 1 - a2 * w2;
-    const di = a1 * w - a3 * w2 * w;
-    return 10 * Math.log10((nr * nr + ni * ni) / (dr * dr + di * di)) + makeup;
-  };
-}
+export { CLASSIC, GRAPHIC, GRAPHIC_BANDS, PARAMETRIC, STACK } from "./eqResponse";
 
 /** The noon dip of a voice, where its mid handle sits (150 Hz – 2.5 kHz). */
 function stackDipHz(voice: number): number {
@@ -154,7 +82,11 @@ const PAD = 12;
 
 const slider = (block: BlockId, key: string): SliderParamId => `${block}_${key}` as SliderParamId;
 
+/** The EQ instance a block token edits (eq, eq2, eq3). */
+const instanceOf = (block: BlockId): EqInstance => (block === "eq3" ? 2 : block === "eq2" ? 1 : 0);
+
 export function EqPlot({ block, type }: { block: BlockId; type: number }) {
+  const analyzer = useStore((st) => st.eqAnalyser.on);
   const bass = useSliderParam(slider(block, "bass"));
   const mid = useSliderParam(slider(block, "mid"));
   const treble = useSliderParam(slider(block, "treble"));
@@ -215,7 +147,6 @@ export function EqPlot({ block, type }: { block: BlockId; type: number }) {
   /* ±12 dB bands get ±15; the knob bands reach ±20 dB, so ±24. */
   const RANGE = useEase(type === GRAPHIC ? 15 : 24);
 
-  const knobDb = (value: number, perUnit: number): number => perUnit * (value - 5);
   const fromDb = (knob: SliderParam, db: number, perUnit: number): void =>
     knob.setScaled(clamp(5 + db / perUnit, knob.properties.start, knob.properties.end));
 
@@ -223,24 +154,11 @@ export function EqPlot({ block, type }: { block: BlockId; type: number }) {
   const stackShown = weighted(
     voiceW.map((wv, v) => [wv, stackResponse(v, e.bass, e.mid, e.treble)] as const),
   );
-  const lowOn = e.lowCut > 20.5; /* the engine skips a cut parked at its end */
-  const highOn = e.highCut < 19999;
-  const classicMid = knobDb(e.mid, MID.db);
   const byType: readonly ((f: number) => number)[] = [
-    (f) =>
-      lowShelfDb(f, BASS.hz, knobDb(e.bass, BASS.db)) +
-      bellDb(f, MID.hz, classicMid, classicMid < 0 ? 1.5 : 0.7) +
-      highShelfDb(f, TREBLE.hz, knobDb(e.treble, TREBLE.db)),
-    (f) =>
-      (lowOn ? lowCutDb(f, e.lowCut) : 0) +
-      lowShelfDb(f, BASS.hz, knobDb(e.bass, BASS.db)) +
-      bellDb(f, e.midFreq, knobDb(e.mid, MID.db), e.midQ) +
-      highShelfDb(f, TREBLE.hz, knobDb(e.treble, TREBLE.db)) +
-      tiltDb(f, e.tilt) +
-      (highOn ? highCutDb(f, e.highCut) : 0) +
-      e.level,
+    classicResponse(e),
+    parametricResponse(e),
     (f) => stackShown(f) + e.level,
-    (f) => e.bands.reduce((sum, g, i) => sum + bellDb(f, GRAPHIC_BANDS[i]![1], g, Math.SQRT2), e.level),
+    graphicResponse(e),
   ];
   const response = weighted(typeW.map((wt, t) => [wt, byType[t]!] as const));
   /* The stack's mid handle sits at its voice's dip, travelling with the voice. */
@@ -339,6 +257,7 @@ export function EqPlot({ block, type }: { block: BlockId; type: number }) {
                 { y: y(-12), label: "-12" },
               ]}
             />
+            {analyzer && <EqSpectrum instance={instanceOf(block)} w={w} h={h} />}
             <path className={p.fill} d={areaPath(points, zero)} />
             <path className={p.live} d={linePath(points)} />
 
@@ -408,6 +327,113 @@ export function EqPlot({ block, type }: { block: BlockId; type: number }) {
         );
       }}
     </Plot>
+  );
+}
+
+/* ───────────────────────────────── spectrum ────────────────────────────── */
+
+/** Display tilt, dB per octave about `SPECTRUM_PIVOT_HZ` (Pro-Q's default), so
+ *  a guitar's falling spectrum reads level rather than as a slope. */
+const SPECTRUM_TILT_DB_PER_OCTAVE = 4.5;
+const SPECTRUM_PIVOT_HZ = 1000;
+/** The spectrum's own scale: 0 dB (after tilt) at the plot's top, this many dB
+ *  below at its bottom, whatever the curve's gain range. */
+const SPECTRUM_RANGE_DB = 90;
+/** Smoothing across frequency: a binomial kernel over ±2 points (the points are
+ *  ~0.04 octave apart, so about 1/12 octave wide at half height). */
+const SPECTRUM_KERNEL = [1 / 16, 4 / 16, 6 / 16, 4 / 16, 1 / 16] as const;
+/** The pre line is drawn only once it is this far from post somewhere: a flat
+ *  or bypassed EQ shows one shape, not two on top of each other. */
+const SPECTRUM_SAME_DB = 0.5;
+
+const SPECTRUM_TILT = Float32Array.from({ length: EQ_SPECTRUM_POINTS }, (_, i) =>
+  SPECTRUM_TILT_DB_PER_OCTAVE * Math.log2(eqSpectrumHz(i) / SPECTRUM_PIVOT_HZ),
+);
+
+/** `src` smoothed across frequency and tilted, into `out` (display dB). */
+function present(src: Float32Array, out: Float32Array): void {
+  const last = EQ_SPECTRUM_POINTS - 1;
+  for (let i = 0; i <= last; i += 1) {
+    let sum = 0;
+    for (let k = 0; k < SPECTRUM_KERNEL.length; k += 1) {
+      sum += SPECTRUM_KERNEL[k]! * src[clamp(i + k - 2, 0, last)]!;
+    }
+    out[i] = sum + SPECTRUM_TILT[i]!;
+  }
+}
+
+/**
+ * The analyser behind the curve: post as `p.spectrum` with `p.spectrumLine` on
+ * its edge, pre as `p.spectrumPre`. The paths are written per frame through
+ * refs (useEqSpectrum), never through React state; nothing is drawn in silence.
+ */
+function EqSpectrum({ instance, w, h }: { instance: EqInstance; w: number; h: number }) {
+  const area = useRef<SVGPathElement>(null);
+  const line = useRef<SVGPathElement>(null);
+  const preLine = useRef<SVGPathElement>(null);
+  const scratch = useRef({
+    pre: new Float32Array(EQ_SPECTRUM_POINTS),
+    post: new Float32Array(EQ_SPECTRUM_POINTS),
+  });
+
+  /* x per point, on the curve's own padded axis; changes only with the size. */
+  const xs = useRef<Float32Array>(new Float32Array(EQ_SPECTRUM_POINTS));
+
+  const paint = (frame: EqSpectrumFrame | null): void => {
+    const nodes = [area.current, line.current, preLine.current];
+    if (!frame) {
+      for (const node of nodes) node?.setAttribute("d", "");
+      return;
+    }
+    const { pre, post } = scratch.current;
+    present(frame.pre, pre);
+    present(frame.post, post);
+    const y = (db: number): number => clamp((-db / SPECTRUM_RANGE_DB) * h, 0, h);
+    const x = xs.current;
+
+    let visible = false;
+    let differ = false;
+    for (let i = 0; i < EQ_SPECTRUM_POINTS; i += 1) {
+      const a = post[i]!;
+      const b = pre[i]!;
+      if (a > -SPECTRUM_RANGE_DB || b > -SPECTRUM_RANGE_DB) {
+        visible = true;
+        /* Only where it would show: below the bottom both are just floor. */
+        if (Math.abs(a - b) > SPECTRUM_SAME_DB) differ = true;
+      }
+    }
+    if (!visible) {
+      for (const node of nodes) node?.setAttribute("d", "");
+      return;
+    }
+
+    /* The first and last points are held out to the plot's edges, like the curve. */
+    const trace = (db: Float32Array): string => {
+      let d = `M0 ${y(db[0]!).toFixed(1)}`;
+      for (let i = 0; i < EQ_SPECTRUM_POINTS; i += 1) d += `L${x[i]!.toFixed(1)} ${y(db[i]!).toFixed(1)}`;
+      return `${d}L${w} ${y(db[EQ_SPECTRUM_POINTS - 1]!).toFixed(1)}`;
+    };
+    const postD = trace(post);
+    area.current?.setAttribute("d", `${postD}L${w} ${h}L0 ${h}Z`);
+    line.current?.setAttribute("d", postD);
+    preLine.current?.setAttribute("d", differ ? trace(pre) : "");
+  };
+
+  const speed = useStore((st) => st.eqAnalyser.speed);
+  const freeze = useStore((st) => st.eqFreeze);
+  const resolution = useStore((st) => st.eqAnalyser.resolution);
+  const repaint = useEqSpectrum(instance, paint, { speed, freeze, resolution });
+  useEffect(() => {
+    for (let i = 0; i < EQ_SPECTRUM_POINTS; i += 1) xs.current[i] = PAD + freqX(eqSpectrumHz(i), w - 2 * PAD);
+    repaint();
+  }, [w, h, repaint]);
+
+  return (
+    <g aria-hidden data-spectrum="">
+      <path ref={area} className={p.spectrum} d="" />
+      <path ref={preLine} className={p.spectrumPre} d="" />
+      <path ref={line} className={p.spectrumLine} d="" />
+    </g>
   );
 }
 

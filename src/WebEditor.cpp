@@ -570,6 +570,7 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
     setSize (saved.x > 0 ? juce::jlimit (kMinEditorWidth, kMaxEditorWidth, saved.x) : kDefaultEditorWidth,
              saved.y > 0 ? juce::jlimit (kMinEditorHeight, kMaxEditorHeight, saved.y) : kDefaultEditorHeight);
 
+    proc.watchedEq.store (-1, std::memory_order_relaxed);
     startTimerHz (30);
 }
 
@@ -578,6 +579,7 @@ WebEditor::~WebEditor()
     // A Timer firing emitEventIfBrowserIsVisible into a half-destroyed browser, or a
     // processor callback into a dead editor, are both real crashes. Kill them first.
     stopTimer();
+    proc.watchedEq.store (-1, std::memory_order_relaxed);
     proc.onChainChanged = nullptr;
     proc.library.onChanged = nullptr;
     proc.presets.onPresetChanged = nullptr;
@@ -1002,6 +1004,7 @@ juce::var WebEditor::uiStateVar() const
                          { "fxSlots",           fxSlotsVar() },
                          { "fxSupported",       FxCatalog::isSupported() },
                          { "editorSize",        editorSizeVar() },
+                         { "eqAnalyser",        eqAnalyserVar() },
                          { "fxEmbed",           embedVar ({}) } });
 }
 
@@ -1230,6 +1233,9 @@ void WebEditor::timerCallback()
                                                                TubampAudioProcessor::kDynMeterFloorDb) } }) },
                         { "comp", compGr } }));
 
+    if (watchedEq >= 0)
+        emitEqSpectrum();
+
     // Model / IR / latency have no push notification; poll at 5 Hz (every 6th tick).
     if (++pollDivider >= 6)
     {
@@ -1284,6 +1290,68 @@ void WebEditor::timerCallback()
             }
         }
     }
+}
+
+juce::var WebEditor::eqAnalyserVar() const
+{
+    return makeObject ({ { "on",         proc.eqAnalyserOn.load (std::memory_order_relaxed) },
+                         { "resolution", proc.eqAnalyserResolution.load (std::memory_order_relaxed) },
+                         { "speed",      proc.eqAnalyserSpeed.load (std::memory_order_relaxed) } });
+}
+
+void WebEditor::emitEqSpectrum()
+{
+    // Spectrum of the watched EQ's input and output (docs/FX-ENGINES.md §2.8.1). The FFT
+    // follows the rate the blocks were prepared at, so a bin stays about 11.7 Hz wide.
+    const double rate = proc.getPreparedSampleRate();
+    const int resolution = proc.eqAnalyserResolution.load (std::memory_order_relaxed);
+
+    // A new rate or a new Resolution rebuilds the FFT and its window; the tap is left
+    // alone, so the next frame is simply the newest samples at the new size.
+    if (spectrumAnalyser.getFftSize() == 0 || std::abs (rate - spectrumAnalyser.getSampleRate()) > 0.5
+        || resolution != spectrumAnalyser.getResolution())
+    {
+        spectrumAnalyser.prepare (rate, resolution);
+        spectrumPre.assign ((size_t) spectrumAnalyser.getFftSize(), 0.0f);
+        spectrumPost.assign ((size_t) spectrumAnalyser.getFftSize(), 0.0f);
+    }
+
+    const bool fresh = proc.spectrumTap.readLatest (spectrumPre.data(), spectrumPost.data(),
+                                                    spectrumAnalyser.getFftSize());
+    juce::Array<juce::var> pre, post;
+    pre.ensureStorageAllocated (SpectrumAnalyser::kNumPoints);
+    post.ensureStorageAllocated (SpectrumAnalyser::kNumPoints);
+
+    if (fresh)
+    {
+        spectrumZeroSent = false;
+        spectrumAnalyser.analyse (spectrumPre.data(), spectrumPreDb);
+        spectrumAnalyser.analyse (spectrumPost.data(), spectrumPostDb);
+
+        for (int i = 0; i < SpectrumAnalyser::kNumPoints; ++i)
+        {
+            pre .add (SpectrumAnalyser::encode (spectrumPreDb [(size_t) i]));
+            post.add (SpectrumAnalyser::encode (spectrumPostDb[(size_t) i]));
+        }
+    }
+    else
+    {
+        // Nothing new: the EQ is not in the chain or the host is not processing.
+        if (spectrumZeroSent)
+            return;
+
+        spectrumZeroSent = true;
+
+        for (int i = 0; i < SpectrumAnalyser::kNumPoints; ++i)
+        {
+            pre.add (0);
+            post.add (0);
+        }
+    }
+
+    emit ("eqSpectrum", makeObject ({ { "instance", watchedEq },
+                                      { "pre",      pre },
+                                      { "post",     post } }));
 }
 
 //==============================================================================
@@ -1889,6 +1957,48 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
         {
             if ((int) args[0] == gestureSlot && (int) args[1] == gestureParam)
                 endOutstandingFxGesture();
+
+            complete ({});
+        })
+        .withNativeFunction ("eqWatch", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            // 0..2 = eq / eq2 / eq3, -1 (or anything else) stops. A new instance starts
+            // from an empty window: the ring still holds the previous block's signal.
+            const int instance = args.isEmpty() ? -1 : (int) args[0];
+            const int next = (instance >= 0 && instance < params::maxInstances) ? instance : -1;
+
+            if (next != watchedEq)
+            {
+                watchedEq = next;
+                proc.watchedEq.store (next, std::memory_order_relaxed);
+                proc.spectrumTap.discardOlder();
+                spectrumZeroSent = false;
+            }
+
+            complete ({});
+        })
+        .withNativeFunction ("eqAnalyserSet", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            // { on?, resolution?, speed? }: whichever fields are present are stored. Only
+            // resolution changes what the engine does (the FFT size, picked up on the next
+            // tick); on and speed are the UI's and live here so they are saved with the state.
+            if (! args.isEmpty())
+            {
+                if (const auto* prefs = args[0].getDynamicObject())
+                {
+                    if (prefs->hasProperty ("on"))
+                        proc.eqAnalyserOn.store ((bool) prefs->getProperty ("on"), std::memory_order_relaxed);
+
+                    if (prefs->hasProperty ("resolution"))
+                        proc.eqAnalyserResolution.store (
+                            juce::jlimit (0, SpectrumAnalyser::kNumResolutions - 1, (int) prefs->getProperty ("resolution")),
+                            std::memory_order_relaxed);
+
+                    if (prefs->hasProperty ("speed"))
+                        proc.eqAnalyserSpeed.store (juce::jlimit (0, 2, (int) prefs->getProperty ("speed")),
+                                                    std::memory_order_relaxed);
+                }
+            }
 
             complete ({});
         })

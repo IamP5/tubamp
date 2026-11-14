@@ -147,6 +147,31 @@
   pointer-events: none;
 }
 
+/* A spectrum behind a curve: what is leaving the block as an area with a line
+   on top, what is entering it as a dimmer line. Neutral ink; their paths are
+   written per frame (hooks/useEqSpectrum). */
+.spectrum {
+  fill: var(--ds-plot-signal-fill);
+  stroke: none;
+  pointer-events: none;
+}
+
+.spectrumLine {
+  fill: none;
+  stroke: var(--ds-plot-signal);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.spectrumPre {
+  fill: none;
+  stroke: var(--ds-plot-signal-dim);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
 /* ── handle ── */
 
 .handle {

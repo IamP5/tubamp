@@ -9,6 +9,8 @@
  * `juce://juce.backend`, where persistence is C++'s job).
  */
 import type {
+  EqAnalyserPrefs,
+  EqAnalyserStep,
   AbSlot,
   Bridge,
   BridgeEventMap,
@@ -56,6 +58,7 @@ import {
 } from "./paramMeta";
 import { isBlockId } from "./types";
 import { sanitizeStructure } from "../chain/structure";
+import { GRAPHIC_BANDS, eqResponse } from "../features/panel/eqResponse";
 
 /* ───────────────────────────── event dispatcher ────────────────────────── */
 
@@ -841,7 +844,26 @@ const state: UiState = {
   editorSize: initialEditorSize(),
   fxEmbed: { slot: -1, width: 0, height: 0, error: "" },
   fxSupported: true,
+  eqAnalyser: { on: true, resolution: 1, speed: 1 },
 };
+
+/* `?eqkeep`: the analyser preferences survive a reload of the page (kept in
+   sessionStorage), as the real ones survive closing the editor. Without it
+   every load starts from the engine's defaults. */
+const EQ_KEEP_KEY = "tubamp.mock.eqAnalyser";
+const eqKeep = new URLSearchParams(window.location.search).has("eqkeep");
+if (eqKeep) {
+  try {
+    const kept = JSON.parse(sessionStorage.getItem(EQ_KEEP_KEY) ?? "null") as Partial<EqAnalyserPrefs> | null;
+    if (kept) state.eqAnalyser = { ...state.eqAnalyser, ...kept };
+  } catch {
+    /* a malformed entry is the defaults */
+  }
+}
+const clampStep = (v: number): EqAnalyserStep => (v <= 0 ? 0 : v >= 2 ? 2 : 1);
+/** Every `eqAnalyserSet` call in order, on `window.__tubampEqAnalyserSet`. */
+const eqAnalyserReport = { calls: [] as Partial<EqAnalyserPrefs>[] };
+(window as unknown as { __tubampEqAnalyserSet: typeof eqAnalyserReport }).__tubampEqAnalyserSet = eqAnalyserReport;
 
 function snapshot(): UiState {
   return structuredClone(state);
@@ -860,6 +882,9 @@ let lastMeterEmit = 0;
 let noteStart = 0;
 let notePeak = 0.6;
 let nextNoteIn = 400;
+/** The note's fundamental, Hz: a guitar's range from low E (82 Hz) up two
+ *  octaves, picked afresh at each attack. */
+let noteHz = 110;
 
 function meterTick(now: number): void {
   meterRaf = requestAnimationFrame(meterTick);
@@ -870,6 +895,7 @@ function meterTick(now: number): void {
     noteStart = now;
     nextNoteIn = 420 + Math.random() * 620;
     notePeak = 0.35 + Math.random() * 0.6;
+    noteHz = 82.4 * Math.pow(2, Math.floor(Math.random() * 25) / 12);
   }
 
   const age = (now - noteStart) / 1000;
@@ -882,6 +908,83 @@ function meterTick(now: number): void {
 
   emit("meters", { in: input, out: output });
   emitDynMeters(now, input);
+  emitEqSpectrum(body, age);
+}
+
+/* ───────────────────────────── fake eqSpectrum ─────────────────────────── */
+
+/**
+ * `eqSpectrum` for the watched EQ instance, from the same 30 Hz tick and the
+ * same note: the harmonic series of the current note (each harmonic -9 dB per
+ * octave of harmonic number, the upper ones decaying faster than the note, all
+ * rolled off at 24 dB per octave above 4 kHz like a cab) spread over the
+ * analyser's log points, over a noise floor near -80 dB. `post` is `pre` plus the EQ's
+ * own response (eqResponse, the law the display draws) when the block is in the
+ * chain and on; otherwise `post` is `pre`.
+ */
+let eqWatched: -1 | 0 | 1 | 2 = -1;
+/** Every `eqWatch` call in order, on `window.__tubampEqWatch`: how a dev check
+ *  sees that the page starts and stops the analyser when it should. */
+const eqWatchReport = { calls: [] as number[] };
+(window as unknown as { __tubampEqWatch: typeof eqWatchReport }).__tubampEqWatch = eqWatchReport;
+const EQ_TOKENS = ["eq", "eq2", "eq3"] as const;
+const SPECTRUM_POINTS = 256;
+const SPECTRUM_HZ = Array.from({ length: SPECTRUM_POINTS }, (_, i) => 20 * Math.pow(1000, i / (SPECTRUM_POINTS - 1)));
+const spectrumCode = (db: number): number => Math.round(Math.min(240, Math.max(0, (db + 120) * 2)));
+
+function emitEqSpectrum(body: number, age: number): void {
+  const instance = eqWatched;
+  if (instance === -1) return;
+  const token = EQ_TOKENS[instance];
+
+  const bodyDb = 20 * Math.log10(Math.max(body, 1e-6)) - 6;
+  /* The smear of one harmonic, Hz: 20 / 10 / 5 for 2048 / 4096 / 8192 points. */
+  const binHz = 20 / Math.pow(2, state.eqAnalyser.resolution);
+  const power = new Float64Array(SPECTRUM_POINTS);
+  for (let i = 0; i < SPECTRUM_POINTS; i += 1) power[i] = Math.pow(10, (-80 + (Math.random() - 0.5) * 6) / 10);
+  for (let k = 1; noteHz * k < 20000; k += 1) {
+    const fk = noteHz * k;
+    const rolloff = fk > 4000 ? -24 * Math.log2(fk / 4000) : 0;
+    const db = bodyDb - 9 * Math.log2(k) - 2 * k * age + rolloff;
+    if (db < -100) continue;
+    const peak = Math.pow(10, db / 10);
+    /* An FFT's bins are a fixed width in Hz, so a low harmonic smears over more
+       of the log axis than a high one; the width halves with each step of
+       Resolution (twice the points), so Low blunts the bass and High sharpens it. */
+    const sigma = Math.max(0.04, binHz / (fk * Math.LN2));
+    for (let i = 0; i < SPECTRUM_POINTS; i += 1) {
+      const oct = Math.log2(SPECTRUM_HZ[i]! / fk) / sigma;
+      if (Math.abs(oct) < 4) power[i]! += peak * Math.exp(-0.5 * oct * oct);
+    }
+  }
+  const preDb = Array.from(power, (pw) => 10 * Math.log10(pw));
+
+  let shape = (_f: number): number => 0;
+  if (state.chainOrder.includes(token) && toggles.get(`${token}_on` as ToggleParamId)?.getValue() !== false) {
+    const v = (key: string, fallback: number): number => scaledOf(`${token}_${key}` as SliderParamId, fallback);
+    shape = eqResponse(
+      combos.get(`${token}_type` as ComboParamId)?.getChoiceIndex() ?? 0,
+      combos.get(`${token}_voice` as ComboParamId)?.getChoiceIndex() ?? 2,
+      {
+        bass: v("bass", 5),
+        mid: v("mid", 5),
+        treble: v("treble", 5),
+        lowCut: v("lowcut", 20),
+        highCut: v("highcut", 20000),
+        midFreq: v("mid_freq", 425),
+        midQ: v("mid_q", 0.7),
+        tilt: v("tilt", 0),
+        level: v("level", 0),
+        bands: GRAPHIC_BANDS.map(([key]) => v(key, 0)),
+      },
+    );
+  }
+
+  emit("eqSpectrum", {
+    instance,
+    pre: preDb.map(spectrumCode),
+    post: preDb.map((db, i) => spectrumCode(db + shape(SPECTRUM_HZ[i]!))),
+  });
 }
 
 /* ───────────────────────────── fake dynMeters ──────────────────────────── */
@@ -1811,6 +1914,24 @@ export const mockBridge: Bridge = {
     fxWatched = slot;
     if (slot < 0) stopFxMeter();
     else startFxMeter();
+    await delay(null, 0);
+  },
+
+  /* The spectrum rides the meter tick. */
+  eqWatch: async (instance) => {
+    eqWatched = instance;
+    eqWatchReport.calls.push(instance);
+    if (instance !== -1) startMeters();
+    await delay(null, 0);
+  },
+  eqAnalyserSet: async (prefs) => {
+    eqAnalyserReport.calls.push({ ...prefs });
+    const next = { ...state.eqAnalyser };
+    if (prefs.on !== undefined) next.on = Boolean(prefs.on);
+    if (prefs.resolution !== undefined) next.resolution = clampStep(prefs.resolution);
+    if (prefs.speed !== undefined) next.speed = clampStep(prefs.speed);
+    state.eqAnalyser = next;
+    if (eqKeep) sessionStorage.setItem(EQ_KEEP_KEY, JSON.stringify(next));
     await delay(null, 0);
   },
 

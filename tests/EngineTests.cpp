@@ -5,8 +5,12 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "../src/PluginProcessor.h"
 #include "../src/library/ToneSidecar.h"
+#include "../src/dsp/SpectrumAnalyser.h"
+#include "../src/dsp/SpectrumTap.h"
 
 #include <algorithm>
+#include <array>
+#include <memory>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1355,6 +1359,225 @@ bool runMediaEdgeTests (const juce::File& modelFile, const juce::File& dir, doub
     model.deleteFile();
     return ok;
 }
+
+// --- EQ spectrum analyser (docs/FX-ENGINES.md §2.8.1): the 256-point analysis, the
+// audio-to-UI tap, and the tap wired around a watched EQ block.
+int nearestSpectrumPoint (double hz)
+{
+    const double i = (tubamp::SpectrumAnalyser::kNumPoints - 1) * std::log (hz / 20.0) / std::log (1000.0);
+    return juce::jlimit (0, tubamp::SpectrumAnalyser::kNumPoints - 1, (int) std::lround (i));
+}
+
+std::array<float, tubamp::SpectrumAnalyser::kNumPoints> analyseSine (double sampleRate, double hz, float amplitude,
+                                                                     int resolution = tubamp::SpectrumAnalyser::kDefaultResolution)
+{
+    tubamp::SpectrumAnalyser analyser;
+    analyser.prepare (sampleRate, resolution);
+    std::vector<float> x ((size_t) analyser.getFftSize());
+
+    for (size_t n = 0; n < x.size(); ++n)
+        x[n] = amplitude * (float) std::sin (2.0 * kPi * hz * (double) n / sampleRate + 0.3);
+
+    std::array<float, tubamp::SpectrumAnalyser::kNumPoints> db {};
+    analyser.analyse (x.data(), db);
+    return db;
+}
+
+bool runSpectrumTests (double sampleRate, int blockSize)
+{
+    using tubamp::SpectrumAnalyser;
+    std::printf ("\n[eq spectrum]\n");
+    bool ok = true;
+
+    ok &= expect (SpectrumAnalyser::orderFor (44100.0) == 12 && SpectrumAnalyser::orderFor (96000.0) == 13
+                      && SpectrumAnalyser::orderFor (192000.0) == 14,
+                  "the FFT is 4096 / 8192 / 16384 points at 44.1 / 96 / 192 kHz");
+    ok &= expect (SpectrumAnalyser::orderFor (48000.0, 0) == 11 && SpectrumAnalyser::orderFor (48000.0, 1) == 12
+                      && SpectrumAnalyser::orderFor (48000.0, 2) == 13 && SpectrumAnalyser::orderFor (96000.0, 2) == 14
+                      && SpectrumAnalyser::orderFor (192000.0, 2) == 15 && SpectrumAnalyser::orderFor (48000.0, 9) == 13
+                      && SpectrumAnalyser::orderFor (48000.0, -1) == 11,
+                  "Resolution low / medium / high is 2048 / 4096 / 8192 points at 48 kHz, scaled with the rate, clamped");
+
+    // The peak belongs to the point whose band holds the loudest BIN, which at Low
+    // resolution (23 Hz bins) can be the neighbour of the point nearest the sine.
+    for (int resolution = 0; resolution < SpectrumAnalyser::kNumResolutions; ++resolution)
+    {
+        const auto db = analyseSine (48000.0, 1000.0, 1.0f, resolution);
+        const int at = nearestSpectrumPoint (1000.0);
+        const float peak = std::max ({ db[(size_t) at - 1], db[(size_t) at], db[(size_t) at + 1] });
+        std::printf ("    resolution %d: peak within a point of 1 kHz %.2f dB, 250 Hz %.1f dB\n", resolution,
+                     (double) peak, (double) db[(size_t) nearestSpectrumPoint (250.0)]);
+        ok &= expect (std::abs (peak) <= 0.5f && db[(size_t) nearestSpectrumPoint (250.0)] < -40.0f,
+                      ("a full-scale 1 kHz sine reads 0 dB (+-0.5) within a point of 1 kHz at resolution "
+                       + juce::String (resolution)).toRawUTF8());
+    }
+
+    ok &= expect (std::abs (SpectrumAnalyser::pointFrequency (0) - 20.0) < 1.0e-9
+                      && std::abs (SpectrumAnalyser::pointFrequency (SpectrumAnalyser::kNumPoints - 1) - 20000.0) < 1.0e-6,
+                  "points run from 20 Hz to 20 kHz");
+    ok &= expect (SpectrumAnalyser::encode (-120.0f) == 0 && SpectrumAnalyser::encode (0.0f) == 240
+                      && SpectrumAnalyser::encode (-200.0f) == 0 && SpectrumAnalyser::encode (6.0f) == 240
+                      && SpectrumAnalyser::encode (-60.2f) == 120,
+                  "the wire encoding is round((dB + 120) * 2) clamped to 0..240");
+
+    const int at1k = nearestSpectrumPoint (1000.0);
+    const int at1kLow = nearestSpectrumPoint (250.0), at1kHigh = nearestSpectrumPoint (4000.0);
+
+    for (const double rate : { sampleRate, 44100.0, 96000.0, 192000.0 })
+    {
+        const auto db = analyseSine (rate, 1000.0, 1.0f);
+        const auto rateText = juce::String (rate / 1000.0, 1) + " kHz";
+        std::printf ("    %s: 1 kHz point %.2f dB, 250 Hz %.1f dB, 4 kHz %.1f dB\n", rateText.toRawUTF8(),
+                     (double) db[(size_t) at1k], (double) db[(size_t) at1kLow], (double) db[(size_t) at1kHigh]);
+        ok &= expect (std::abs (db[(size_t) at1k]) < 0.5f,
+                      ("a full-scale 1 kHz sine reads 0 dB (+-0.5) at its point, " + rateText).toRawUTF8());
+        ok &= expect (db[(size_t) at1kLow] < db[(size_t) at1k] - 40.0f && db[(size_t) at1kHigh] < db[(size_t) at1k] - 40.0f,
+                      ("...and at least 40 dB lower two octaves either side, " + rateText).toRawUTF8());
+    }
+
+    {
+        // Below the band-per-bin crossover the points interpolate between bins.
+        const auto db = analyseSine (sampleRate, 82.4, 1.0f);
+        const int nearest = nearestSpectrumPoint (82.4);
+        const auto loudest = (int) (std::max_element (db.begin(), db.end()) - db.begin());
+        std::printf ("    82.4 Hz: point %d reads %.2f dB, loudest point %d\n", nearest,
+                     (double) db[(size_t) nearest], loudest);
+        ok &= expect (loudest == nearest && std::abs (db[(size_t) nearest]) < 1.0f,
+                      "a full-scale 82.4 Hz sine peaks at its nearest point, within 1 dB of 0");
+    }
+
+    {
+        const auto db = analyseSine (sampleRate, 1000.0, 0.0f);
+        ok &= expect (std::all_of (db.begin(), db.end(), [] (float v) { return v == SpectrumAnalyser::kFloorDb; }),
+                      "silence reads the floor (-120 dB) everywhere");
+    }
+
+    {
+        // 32 kHz: the points above 16 kHz have no bins.
+        const auto db = analyseSine (32000.0, 1000.0, 1.0f);
+        const int above = nearestSpectrumPoint (17000.0);
+        ok &= expect (db[(size_t) above] == SpectrumAnalyser::kFloorDb && db[(size_t) SpectrumAnalyser::kNumPoints - 1] == SpectrumAnalyser::kFloorDb,
+                      "points above Nyquist read the floor");
+    }
+
+    // --- the tap: exact samples, in order, across a wrap of the ring
+    {
+        auto tap = std::make_unique<tubamp::SpectrumTap>();
+        constexpr int cap = tubamp::SpectrumTap::kCapacity;
+        constexpr int chunk = 1000;
+        juce::AudioBuffer<float> in (2, chunk), out (1, chunk);
+        int written = 0;
+
+        // Pre carries the sample index (both channels: the average is exact), post its negation.
+        while (written < cap + cap / 2 + 37)
+        {
+            for (int i = 0; i < chunk; ++i)
+            {
+                in.setSample (0, i, (float) (written + i));
+                in.setSample (1, i, (float) (written + i));
+                out.setSample (0, i, -(float) (written + i));
+            }
+
+            juce::dsp::AudioBlock<float> inBlock (in), outBlock (out);
+            tap->writePre (inBlock);
+            tap->writePost (outBlock);
+            written += chunk;
+        }
+
+        const int n = 16384;
+        std::vector<float> pre ((size_t) n), post ((size_t) n);
+        const bool fresh = tap->readLatest (pre.data(), post.data(), n);
+        bool exact = true;
+
+        for (int i = 0; i < n; ++i)
+        {
+            const float want = (float) (written - n + i);
+            exact = exact && pre[(size_t) i] == want && post[(size_t) i] == -want;
+        }
+
+        ok &= expect (fresh && exact, "the tap returns exactly the newest samples written, in order, across a wrap");
+        ok &= expect (! tap->readLatest (pre.data(), post.data(), n),
+                      "...and reports no new samples on a second read");
+
+        tap->discardOlder();
+        tap->readLatest (pre.data(), post.data(), n);
+        ok &= expect (std::all_of (pre.begin(), pre.end(), [] (float v) { return v == 0.0f; }),
+                      "after discardOlder the old samples read as zero");
+
+        auto empty = std::make_unique<tubamp::SpectrumTap>();
+        ok &= expect (! empty->readLatest (pre.data(), post.data(), n), "a tap nothing wrote into reports nothing new");
+    }
+
+    // --- the analyser's settings are saved with the state
+    {
+        Proc a;
+        a.prepareToPlay (sampleRate, blockSize);
+        a.eqAnalyserOn.store (false);
+        a.eqAnalyserResolution.store (2);
+        a.eqAnalyserSpeed.store (0);
+        juce::MemoryBlock state;
+        a.getStateInformation (state);
+
+        Proc b;
+        b.prepareToPlay (sampleRate, blockSize);
+        const bool defaults = b.eqAnalyserOn.load() && b.eqAnalyserResolution.load() == 1 && b.eqAnalyserSpeed.load() == 1;
+        b.setStateInformation (state.getData(), (int) state.getSize());
+        ok &= expect (defaults && ! b.eqAnalyserOn.load() && b.eqAnalyserResolution.load() == 2 && b.eqAnalyserSpeed.load() == 0,
+                      "analyser on / resolution / speed default to on, medium, medium and survive a state round trip");
+    }
+
+    // --- wired into the processor: a watched Classic EQ with the treble up
+    {
+        Proc proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        proc.setChainOrder ({ BlockId::eq }, {});
+        setBool (proc, params::eqOn, true);
+        setFloat (proc, params::eqType, 0.0f);       // Classic
+        setFloat (proc, params::eqTreble, 10.0f);    // high shelf, +10 dB
+
+        tubamp::SpectrumAnalyser analyser;
+        analyser.prepare (sampleRate);
+        const int n = analyser.getFftSize();
+        std::vector<float> pre ((size_t) n), post ((size_t) n);
+
+        SineRun quiet (proc, sampleRate, blockSize, 0.1f, 5000.0);
+        quiet.runFor (0.3);
+        ok &= expect (! proc.spectrumTap.readLatest (pre.data(), post.data(), n),
+                      "an EQ nobody watches writes nothing into the tap");
+
+        proc.watchedEq.store (1);
+        quiet.runFor (0.3);
+        ok &= expect (! proc.spectrumTap.readLatest (pre.data(), post.data(), n),
+                      "watching an instance that is not in the chain writes nothing");
+
+        proc.watchedEq.store (0);
+        quiet.runFor (0.5);
+        const bool fresh = proc.spectrumTap.readLatest (pre.data(), post.data(), n);
+
+        std::array<float, SpectrumAnalyser::kNumPoints> preDb {}, postDb {};
+        analyser.analyse (pre.data(), preDb);
+        analyser.analyse (post.data(), postDb);
+
+        const auto point = (size_t) nearestSpectrumPoint (5000.0);
+        const float lift = postDb[point] - preDb[point];
+        std::printf ("    5 kHz through treble 10: pre %.1f dB, post %.1f dB\n",
+                     (double) preDb[point], (double) postDb[point]);
+        ok &= expect (fresh && std::abs (preDb[point] - (float) toDb (0.1)) < 1.0f,
+                      "a watched EQ feeds its input to the tap (a -20 dB sine reads -20 dB)");
+        ok &= expect (lift > 6.0f, "...and its output, louder where the treble shelf lifts it");
+
+        setBool (proc, params::eqOn, false);
+        quiet.runFor (0.3);
+        proc.spectrumTap.readLatest (pre.data(), post.data(), n);
+        analyser.analyse (pre.data(), preDb);
+        analyser.analyse (post.data(), postDb);
+        ok &= expect (std::abs (postDb[point] - preDb[point]) < 0.01f, "a bypassed EQ gives post == pre");
+
+        proc.watchedEq.store (-1);
+    }
+
+    return ok;
+}
 } // namespace
 
 bool runEngineTests (const juce::File& modelFile, double sampleRate, int blockSize)
@@ -1375,6 +1598,7 @@ bool runEngineTests (const juce::File& modelFile, double sampleRate, int blockSi
     ok &= runSessionMediaTests (modelFile, dir, sampleRate, blockSize);
     ok &= runTransitionEdgeTests (modelFile, dir, sampleRate);
     ok &= runMediaEdgeTests (modelFile, dir, sampleRate, blockSize);
+    ok &= runSpectrumTests (sampleRate, blockSize);
 
     dir.deleteRecursively();
     return ok;

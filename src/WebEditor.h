@@ -4,6 +4,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
 #include "PluginProcessor.h"
+#include "dsp/SpectrumAnalyser.h"
 
 #include <array>
 #include <memory>
@@ -222,6 +223,23 @@ private:
     int gestureSlot = -1, gestureParam = -1;
 
     int fxPollDivider = 0;
+
+    // --- EQ spectrum (docs/FX-ENGINES.md §2.8.1)
+    //
+    /** EQ instance whose spectrum is pushed on the timer (mirrors proc.watchedEq), or -1. */
+    int watchedEq = -1;
+
+    /** The stale rule: after a tick with no new samples one all-zero frame goes out, then
+        nothing until samples arrive again. */
+    bool spectrumZeroSent = false;
+
+    void emitEqSpectrum();
+    /** The analyser's saved settings, for getUiState: { on, resolution, speed }. */
+    juce::var eqAnalyserVar() const;
+
+    SpectrumAnalyser spectrumAnalyser;
+    std::vector<float> spectrumPre, spectrumPost;   // sized by prepare, never per tick
+    std::array<float, SpectrumAnalyser::kNumPoints> spectrumPreDb {}, spectrumPostDb {};
 
     /** The hosted editor currently drawn inside our window, and which slot it belongs
         to (-1 when none). Not owned via the slot's FxEditorWindow — a plugin has one

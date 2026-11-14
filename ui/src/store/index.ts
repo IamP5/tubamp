@@ -22,6 +22,8 @@ import {
   type BaseBlockId,
   type BlockId,
   type EditorSizeLimits,
+  type EqAnalyserPrefs,
+  type EqAnalyserStep,
   type FileEntry,
   type FxEmbedState,
   type FxSlotIndex,
@@ -177,6 +179,15 @@ export interface AppState {
 
   /* UI-local state */
   selected: BlockId | null;
+  /** The EQ analyser's preferences (Analyzer switch, Resolution, Speed):
+   *  hydrated from `getUiState().eqAnalyser` and written back through
+   *  `eqAnalyserSet`, so they are saved with the plugin's state. Shared by every
+   *  EQ instance. */
+  eqAnalyser: EqAnalyserPrefs;
+  /** Freeze: the displayed spectrum holds its maximum. A momentary state of the
+   *  display, never sent to C++ and never saved; released when the analyser
+   *  goes off. */
+  eqFreeze: boolean;
   tone: T3kToneResult | null;
   /** modelId → progress in [0,1] while a TONE3000 download is in flight. */
   downloads: Record<number, number>;
@@ -215,6 +226,10 @@ export interface AppActions {
   /** Removes exactly that instance token — never its siblings. */
   removeBlock(id: BlockId): void;
   selectBlock(id: BlockId | null): void;
+  /** Updates whichever analyser preferences are given and sends them to C++.
+   *  Turning the analyser off also releases Freeze. */
+  setEqAnalyser(prefs: Partial<EqAnalyserPrefs>): void;
+  setEqFreeze(on: boolean): void;
 
   /* library / presets — thin wrappers that surface errors as toasts */
   loadModel(path: string): Promise<void>;
@@ -288,6 +303,18 @@ export interface AppActions {
 }
 
 export type Store = AppState & AppActions;
+
+const eqStep = (v: unknown, fallback: EqAnalyserStep): EqAnalyserStep =>
+  v === 0 || v === 1 || v === 2 ? v : fallback;
+
+/** The analyser's preferences with every field present and in range. */
+function normaliseEqAnalyser(prefs: Partial<EqAnalyserPrefs> | undefined): EqAnalyserPrefs {
+  return {
+    on: prefs?.on ?? true,
+    resolution: eqStep(prefs?.resolution, 1),
+    speed: eqStep(prefs?.speed, 1),
+  };
+}
 
 /**
  * Nothing is ever auto-selected: the panel is a click-summoned overlay, so a
@@ -455,6 +482,8 @@ const initialState: AppState = {
   fxEmbed: { slot: -1, width: 0, height: 0, error: "" },
   fxEmbedRequestedBy: -1,
   selected: null,
+  eqAnalyser: { on: true, resolution: 1, speed: 1 },
+  eqFreeze: false,
   tone: null,
   downloads: {},
   t3kPending: {},
@@ -520,6 +549,8 @@ export const useStore = create<Store>()((set, get) => {
         // two fields must hydrate the rest of the snapshot, not crash the grip.
         editorSize: state.editorSize ?? initialState.editorSize,
         fxEmbed: state.fxEmbed ?? initialState.fxEmbed,
+        // A C++ build that predates the analyser's preferences hydrates the defaults.
+        eqAnalyser: normaliseEqAnalyser(state.eqAnalyser),
         selected: keepSelection(order, get().selected),
       });
     },
@@ -606,6 +637,16 @@ export const useStore = create<Store>()((set, get) => {
     selectBlock(id) {
       if (id !== null && !get().chainOrder.includes(id)) return;
       set({ selected: id });
+    },
+
+    setEqAnalyser(prefs) {
+      const next = normaliseEqAnalyser({ ...get().eqAnalyser, ...prefs });
+      set({ eqAnalyser: next, ...(next.on ? {} : { eqFreeze: false }) });
+      void bridge.eqAnalyserSet(prefs);
+    },
+
+    setEqFreeze(on) {
+      set({ eqFreeze: on && get().eqAnalyser.on });
     },
 
     /* ──────────────────────── library / presets ──────────────────────── */

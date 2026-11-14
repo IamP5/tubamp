@@ -495,6 +495,67 @@ emitted by `WebEditor::timerCallback`, `src/WebEditor.cpp:1018-1024`, 30 Hz):
 - **UI ballistics** (§7): instant rise, fall 20 dB/s `[choice]`; comp scale 0–20 dB,
   gate GR scale 0–60 dB.
 
+#### 2.8.1 EQ spectrum analyser
+
+The EQ block's live spectrum, before and after the block, for the one EQ instance on
+screen. The audio thread only copies samples; the FFT runs on the message thread.
+
+- **Tap** (`src/dsp/SpectrumTap.h`): a single-producer, single-consumer ring of the
+  latest samples of two aligned mono streams (pre and post), 65536 samples each,
+  allocated at construction. The audio thread writes the block's channel average with
+  `writePre` before `eqFader[k].process` and `writePost` after it, so post is the
+  block's output after its bypass fader (a bypassed EQ gives post == pre). One
+  `std::atomic<uint64_t>` write position is published with a release store after both
+  streams hold the block. Samples are relaxed `std::atomic<float>`, so a read never
+  tears; the writer can overwrite what the reader is copying only after writing
+  `capacity − N` (at least 49152) more samples during the copy, and the worst outcome is
+  one frame mixing samples a ring length apart.
+- **Processor**: `std::atomic<int> watchedEq { -1 }` and one `SpectrumTap spectrumTap`.
+  The EQ case loads `watchedEq` once per block and writes both streams only when it
+  names that instance. With nothing watched the cost is that one relaxed load.
+- **Analyser** (`src/dsp/SpectrumAnalyser.h/.cpp`, message thread): the FFT is 4096
+  points up to 50 kHz, 8192 up to 100 kHz and 16384 above, about 11.7 Hz per bin. Hann
+  window scaled by 2 / Σw, so a full-scale sine on a bin centre reads 0 dBFS. 256
+  points at `20 · 1000^(i/255)` Hz. A point whose band (half a point spacing either
+  side, in log frequency) holds bin centres reads the loudest of them; when that bin is
+  a local peak it is corrected by quadratic interpolation in dB over its neighbours,
+  capped at Hann's 1.42 dB scalloping loss, so a full-scale sine reads 0 dB at its
+  point wherever it falls between bins. Below the crossover (about 430 Hz) a point
+  interpolates in dB between the two bins around its frequency, uncorrected (a sine
+  half-way between bins reads up to 1.42 dB low there). Points above Nyquist read the
+  floor, −120 dB. No smoothing over time and no tilt: the UI does both.
+- **Resolution**: `SpectrumAnalyser::prepare (rate, resolution)` takes Low / Medium /
+  High = 2048 / 4096 (the default, the sizes quoted above) / 8192 points at 44.1 and
+  48 kHz, scaled with the rate the same way; the largest is 32768 at 192 kHz, half the
+  tap. A change is picked up on the next tick, which rebuilds the FFT and its window
+  and analyses the newest samples at the new size; the UI clears what it shows, so the
+  picture rebuilds from the floor (Logic's Channel EQ does the same). At Low the band
+  crossover rises to about 860 Hz and a sine's peak can land on the neighbour of its
+  nearest point (the bin that holds it is up to half a 23 Hz bin away).
+- **Settings**: `eqAnalyserSet({ on?, resolution?, speed? })` stores whichever fields
+  are given in `proc.eqAnalyserOn / eqAnalyserResolution / eqAnalyserSpeed` (atomics,
+  clamped). They are saved in the plugin state next to the editor's size
+  (`eqAnalyserOn`, `eqAnalyserResolution`, `eqAnalyserSpeed`; absent = on, 1, 1), not
+  in presets, and returned by `getUiState` as `eqAnalyser`. Only resolution changes
+  what the engine does. Speed is the UI's fall rate (Slow 10, Medium 20, Fast 40 dB/s;
+  attack is always instant) and Freeze (hold each point's maximum) is a momentary
+  state of the display that the engine never sees.
+- **Editor**: `eqWatch(instance)` (0..2, −1 stops; −1 at editor construction and
+  destruction) sets `watchedEq` and empties the tap's window, so a new instance never
+  shows the previous one's signal. While an instance is watched, each 30 Hz tick reads
+  the newest FFT-size samples, analyses both streams and emits:
+  ```
+  "eqSpectrum" { instance: 0|1|2, pre: int[256], post: int[256] }  // round((dB + 120) * 2), 0..240
+  ```
+  When no samples arrived since the previous tick (the EQ is not in the chain, or the
+  host is not processing), one all-zero frame goes out, then nothing until samples
+  arrive again. The analyser is re-prepared when the processor's prepared sample rate
+  changes.
+- **Tests** (`tests/EngineTests.cpp`, "eq spectrum"): the FFT size and a 1 kHz sine at
+  each resolution, the settings' state round trip, sine levels at 44.1/48/96/192
+  kHz, the low-frequency interpolation, silence, Nyquist, the ring across a wrap, and a
+  watched Classic EQ with the treble up lifting post over pre.
+
 ### 2.9 Latency
 
 Zero for every engine except `DriveFx`, whose oversampling types report

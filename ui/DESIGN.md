@@ -179,6 +179,21 @@ The UI moves for two reasons only, and both are information.
   the picture travels to its new shape instead of cutting. While a pointer is
   down everything follows it exactly: no easing, no lag.
 
+The EQ's display also carries a spectrum analyser, the one place a measured
+signal is drawn as a shape: `useEqSpectrum` (the engine's `eqSpectrum` event,
+256 log-spaced points, pre and post the block) painted in the neutral
+`p.spectrum` / `p.spectrumLine` / `p.spectrumPre` ink behind the curve, never in
+the accent. Presentation follows the references in
+`docs/research/eq-analyser.md`: instant attack and a constant fall, +4.5 dB per
+octave of tilt around 1 kHz, a 90 dB range on its own unlabelled scale. It runs
+only while an EQ editor is open and its Analyzer switch is on. Beside the
+switch, Freeze holds every point at its maximum until released (display only,
+never saved), and a More menu keeps Resolution (the engine's FFT size, Low /
+Medium / High = 2048 / 4096 / 8192 points) and Speed (the fall: Slow 10, Medium
+20, the rate of every other meter here, Fast 40 dB/s); both are saved with the
+plugin's state. A Resolution change clears the display, which rebuilds from the
+floor.
+
 Rules: nothing moves in silence with idle hands. Live marks use the neutral
 (`p.dot`), the accent as an area (`p.energy`) or meter ink; never a glow, a
 trail or a particle. The one gradient in the system is the fade under a
@@ -272,7 +287,7 @@ Per editor (display → large knobs → small knobs):
 | Gate | mode stepper | level trace over time with the threshold as a draggable line; gain reduction as a meter-ink bar | Threshold, Range | Hold, Release, Sidechain HPF |
 | Compressor | type stepper, Auto makeup switch | transfer curve (in vs out) from threshold / ratio / knee with the unity line as ghost and a handle on the threshold; gain reduction as a meter-ink bar | Threshold, Ratio, Makeup | Attack, Release, Knee, Mix, Sidechain HPF |
 | Drive | type stepper | waveshaper transfer curve (shape follows type and gain) beside the tone response | Gain, Tone, Level (named per type) | — |
-| EQ | type stepper, voice menu | the response curve; parametric: handles for the mid bell, the two shelves and the cuts; graphic: seven faders with the response line through them | Bass, Mid, Treble | Mid freq, Mid Q, Low cut, High cut, Tilt, Level |
+| EQ | type stepper, voice menu, Analyzer switch; while it is on, a Freeze latch and a More menu (Resolution, Speed) joined on one plate | the response curve over the live spectrum (what leaves the block as a neutral area, what enters it as a dimmer line where the two differ); parametric: handles for the mid bell, the two shelves and the cuts; graphic: seven faders with the response line through them | Bass, Mid, Treble | Mid freq, Mid Q, Low cut, High cut, Tilt, Level |
 | Modulation | type stepper, voicing menu, sync menu, colour switch | the LFO: wave and shape drawn over two cycles, depth as amplitude, a phase marker moving at the rate | Rate, Depth, Mix | Width, Tone, Shape, Wave |
 | Delay | type stepper, mode segment, sync menu | the taps on a time axis (spacing = time, heights fall by feedback, left above the axis and right below in the stereo modes) beside the low/high cut response | Time, Feedback, Mix | Duck, Color, Mod, Ratio, Width, Low cut, High cut |
 | Reverb | type stepper | the tail over time with pre-delay and damping, beside the low/high cut response | Decay, Pre-delay, Mix | Size, Damping, Mod, Width, Low cut, High cut |

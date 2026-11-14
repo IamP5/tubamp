@@ -159,6 +159,7 @@ const emptyUiState: UiState = {
   editorSize: fallbackEditorSize,
   fxEmbed: { slot: -1, width: 0, height: 0, error: "" },
   fxSupported: false,
+  eqAnalyser: { on: true, resolution: 1, speed: 1 },
 };
 
 export const juceBridge: Bridge = {
@@ -306,6 +307,15 @@ export const juceBridge: Bridge = {
   },
   fxWatchSlot: async (slot) => {
     await native("fxWatchSlot")(slot);
+  },
+
+  /* --- EQ analyser (the `eqSpectrum` event needs no wiring, see below) ----- */
+
+  eqWatch: async (instance) => {
+    await native("eqWatch")(instance);
+  },
+  eqAnalyserSet: async (prefs) => {
+    await native("eqAnalyserSet")(prefs);
   },
 
   /* --- window size --------------------------------------------------------- */
