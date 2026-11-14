@@ -1,6 +1,8 @@
 # In-plugin update (docs/UPDATES.md). Included from the top-level CMakeLists.txt after the
 # plugin target exists. Defines:
-#   tubamp_update_sources        the update core, compiled into the plugin only when ON
+#   tubamp_update_sources        the update core and the fetcher, compiled into the plugin
+#                                only when ON, and always into tubamp_update_tool
+#   tubamp_update_plugin_sources the JUCE-side production environment (plugin/), plugin only
 #   tubamp_update_include_dirs   what those sources need on the include path
 #   tubamp_update_tool           the console test runner and release gate
 #
@@ -13,7 +15,15 @@ set(tubamp_update_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/update_generated")
 
 file(GLOB tubamp_update_sources CONFIGURE_DEPENDS
     "${tubamp_update_dir}/*.cpp" "${tubamp_update_dir}/*.h"
-    "${tubamp_update_dir}/detail/*.cpp" "${tubamp_update_dir}/detail/*.h")
+    "${tubamp_update_dir}/detail/*.cpp" "${tubamp_update_dir}/detail/*.mm" "${tubamp_update_dir}/detail/*.h")
+file(GLOB tubamp_update_plugin_sources CONFIGURE_DEPENDS "${tubamp_update_dir}/plugin/*.cpp")
+
+# The fetcher's delegate is an Objective-C class, and class names are process-wide: the
+# version in the name keeps two tubamp builds loaded in one host from colliding.
+string(MAKE_C_IDENTIFIER "${PROJECT_VERSION}" tubamp_update_objc_version)
+set_source_files_properties("${tubamp_update_dir}/detail/Fetch.mm" PROPERTIES
+    COMPILE_OPTIONS "-fobjc-arc"
+    COMPILE_DEFINITIONS "TUBAMP_FETCH_DELEGATE=TubampUpdateFetchDelegate_${tubamp_update_objc_version}")
 set(tubamp_update_include_dirs
     "${tubamp_update_dir}"
     "${tubamp_update_gen_dir}"
@@ -102,9 +112,13 @@ tubamp_write_text_table("${tubamp_update_gen_dir}/tubamp_update_release_keys.inc
 # tubamp_update_tool: `test` runs the tables, `verify-envelope` is the release gate.
 # Plain C++ and Security.framework; no JUCE module code.
 # ---------------------------------------------------------------------------
+# The golden bridge contract is shared with the page: ui/src/bridge/update-contract.json.
 file(GLOB tubamp_update_fixture_files CONFIGURE_DEPENDS
     "${tubamp_update_tests_dir}/fixtures/*.pub.pem"
-    "${tubamp_update_tests_dir}/fixtures/*.signed")
+    "${tubamp_update_tests_dir}/fixtures/*.signed"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui/src/bridge/update-contract.json")
+# Read at configure time, so an edit to any of them must re-run CMake.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${tubamp_update_fixture_files})
 tubamp_write_text_table("${tubamp_update_gen_dir}/tubamp_update_fixtures.inc"
     "struct FixtureFile { std::string_view name, text; };\ninline constexpr auto fixtureFiles = std::array<FixtureFile, "
     "${tubamp_update_fixture_files}")
@@ -126,6 +140,7 @@ add_dependencies(tubamp_update_tool tubamp_update_fixture_component)
 target_link_libraries(tubamp_update_tool PRIVATE
     "-framework Security"
     "-framework CoreFoundation"
+    "-framework Foundation"
     z
     juce::juce_recommended_warning_flags)
 

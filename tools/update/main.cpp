@@ -12,10 +12,21 @@
 //       Opens the envelope exactly as the plugin does and prints the offer or the refusal.
 //       Without --trust it uses the release keys compiled into this build. Exit 0 only
 //       when there is an offer.
+//
+//   tubamp_update_tool fetch-check [--path <path under the repository>] [--cancel-after <ms>]
+//       One real GET through the system fetcher, of https://github.com/IamP5/tubamp/<path>
+//       (default releases/latest). Prints every hop with the policy's verdict and the
+//       outcome; --cancel-after cancels it and prints how long get() took to return after
+//       the cancel. Uses the network; never part of `test`.
 
 #include "UpdateTests.h"
+#include "detail/Fetch.h"
 #include "detail/Trust.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -85,7 +96,8 @@ int usage()
     std::fprintf (stderr,
                   "usage: tubamp_update_tool test\n"
                   "       tubamp_update_tool verify-envelope --envelope <file> --running <X.Y.Z>\n"
-                  "                          [--highest-seen <X.Y.Z>] [--macos <X.Y>] [--trust <pub.pem>]...\n");
+                  "                          [--highest-seen <X.Y.Z>] [--macos <X.Y>] [--trust <pub.pem>]...\n"
+                  "       tubamp_update_tool fetch-check [--path <path under the repository>]\n");
     return 2;
 }
 
@@ -175,6 +187,77 @@ int verifyEnvelope (int argc, char** argv)
                  (unsigned long long) offer.archive().size, hash.c_str(), archiveUrl (offer).text().c_str());
     return 0;
 }
+const char* name (FetchError e)
+{
+    switch (e)
+    {
+        case FetchError::cancelled: return "cancelled";
+        case FetchError::unreachable: return "unreachable (DNS, connect, TLS or timeout)";
+        case FetchError::httpStatus: return "final status is not 200";
+        case FetchError::redirectRefused: return "redirect refused by the host policy";
+        case FetchError::tooLarge: return "more bytes than the cap";
+        case FetchError::sinkRefused: return "the sink refused the bytes";
+    }
+    return "?";
+}
+
+int fetchCheck (int argc, char** argv)
+{
+    std::string path = "releases/latest";
+    std::optional<int> cancelAfter;
+    for (int i = 2; i < argc; i += 2)
+    {
+        const std::string flag = argv[i];
+        if (i + 1 >= argc)
+            return usage();
+        if (flag == "--path")
+            path = argv[i + 1];
+        else if (flag == "--cancel-after")
+            cancelAfter = std::atoi (argv[i + 1]);
+        else
+            return usage();
+    }
+
+    const auto url = repositoryUrl (path);
+    if (! url)
+    {
+        std::fprintf (stderr, "refused: '%s' is not a plain path under the repository\n", path.c_str());
+        return 2;
+    }
+
+    int hop = 0;
+    auto fetcher = makeSystemFetcher (Version { 0, 0, 0 }, [&hop] (std::string_view u, bool admitted)
+    {
+        std::printf ("hop %d  %s  %.*s\n", ++hop, admitted ? "admitted" : "REFUSED ", (int) u.size(), u.data());
+    });
+    FetchLimits limits;
+    limits.maxBytes = 4u << 20;
+    std::uint64_t bytes = 0;
+    CancelToken cancel;
+    std::atomic<std::int64_t> cancelledAt { 0 };
+    std::thread canceller;
+    if (cancelAfter)
+        canceller = std::thread ([&]
+        {
+            std::this_thread::sleep_for (std::chrono::milliseconds (*cancelAfter));
+            cancelledAt = std::chrono::steady_clock::now().time_since_epoch().count();
+            cancel.request();
+        });
+    const auto start = std::chrono::steady_clock::now();
+    const auto result = fetcher->get (*url, limits, [&] (ByteView chunk) { bytes += chunk.size(); return true; }, cancel);
+    const auto end = std::chrono::steady_clock::now();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds> (end - start).count();
+    if (canceller.joinable())
+        canceller.join();
+    if (cancelAfter && ! result && result.error() == FetchError::cancelled)
+        std::printf ("cancel   get() returned %.1f ms after the cancel\n",
+                     double (end.time_since_epoch().count() - cancelledAt.load()) / 1e6);
+    if (result)
+        std::printf ("outcome  200, %llu bytes in %lld ms\n", (unsigned long long) bytes, (long long) ms);
+    else
+        std::printf ("outcome  %s, %llu bytes in %lld ms\n", name (result.error()), (unsigned long long) bytes, (long long) ms);
+    return result ? 0 : 1;
+}
 } // namespace
 
 int main (int argc, char** argv)
@@ -183,6 +266,8 @@ int main (int argc, char** argv)
         return tubamp::update::test::runUpdateTests() == 0 ? 0 : 1;
     if (argc >= 2 && std::string (argv[1]) == "verify-envelope")
         return verifyEnvelope (argc, argv);
+    if (argc >= 2 && std::string (argv[1]) == "fetch-check")
+        return fetchCheck (argc, argv);
     if (argc >= 3 && std::string (argv[1]) == "child")
         return tubamp::update::test::runDiskChild (argc, argv);
     return usage();

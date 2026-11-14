@@ -117,6 +117,10 @@ endif()
 # In-plugin update (docs/UPDATES.md). Off by default, so a development build never checks
 # and is never replaced by a release. ON needs the release keys in src/update/keys.
 option(TUBAMP_UPDATES "Compile the in-plugin updater into the plugin" OFF)
+# Development only: the updater reads its home and system Components folder from
+# TUBAMP_UPDATE_HOME / TUBAMP_UPDATE_SYSTEM_COMPONENTS and stays off without them. A
+# build without this option contains no getenv for either.
+option(TUBAMP_UPDATE_DEV_ROOTS "Take the updater's folders from the environment (development)" OFF)
 
 set(webui_dir "${CMAKE_CURRENT_SOURCE_DIR}/ui")
 
@@ -263,10 +267,11 @@ target_link_libraries(tubamp
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/src/update/update.cmake")
 if(TUBAMP_UPDATES)
-    target_sources(tubamp PRIVATE ${tubamp_update_sources})
+    target_sources(tubamp PRIVATE ${tubamp_update_sources} ${tubamp_update_plugin_sources})
     target_include_directories(tubamp PRIVATE ${tubamp_update_include_dirs})
-    target_compile_definitions(tubamp PUBLIC TUBAMP_UPDATES=1)
-    target_link_libraries(tubamp PRIVATE "-framework Security" "-framework CoreFoundation" z)
+    target_compile_definitions(tubamp PUBLIC TUBAMP_UPDATES=1
+        TUBAMP_UPDATE_DEV_ROOTS=$<BOOL:${TUBAMP_UPDATE_DEV_ROOTS}>)
+    target_link_libraries(tubamp PRIVATE "-framework Security" "-framework CoreFoundation" "-framework Foundation" z)
 endif()
 
 # ---------------------------------------------------------------------------

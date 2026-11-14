@@ -203,6 +203,15 @@ private:
     int lastIrImage = -1;
     juce::String lastMissingMedia;
 
+   #if TUBAMP_UPDATES
+    /** "Restart <hostName> to use it." Fixed for the life of the editor. */
+    const juce::String hostName;
+    /** Declared after `web`, and reset first in the destructor: no update listener can
+        run into a half-destroyed editor. */
+    update::Updater::Watch updateWatch;
+    juce::var updateVar (const update::View&) const;
+   #endif
+
     // What the last t3kStatus said about being signed in (see timerCallback).
     bool lastT3kAuthenticated = false;
     int pollDivider = 0;

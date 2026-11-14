@@ -13,6 +13,12 @@ void runMachineTests (int& passed, int& failed);
 /** The disk tables (DiskTests.cpp): prefs, cache, site, install chain, reconcile, crashes. */
 void runDiskTests (int& passed, int& failed);
 
+/** The bridge against the golden contract, and the redirect policy (BridgeTests.cpp). */
+void runBridgeTests (int& passed, int& failed);
+
+/** The Updater service end to end with a fake fetcher and temporary roots (ServiceTests.cpp). */
+void runServiceTests (int& passed, int& failed);
+
 /** `tubamp_update_tool child <command> ...`: the processes the disk tests race and kill. */
 int runDiskChild (int argc, char** argv);
 

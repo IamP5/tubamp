@@ -20,6 +20,14 @@
 #include "library/PresetManager.h"
 #include "library/Tone3000Client.h"
 
+#ifndef TUBAMP_UPDATES
+ #define TUBAMP_UPDATES 0
+#endif
+
+#if TUBAMP_UPDATES
+ #include "update/Updater.h"
+#endif
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -256,6 +264,12 @@ public:
     ModelLibrary library;
     PresetManager presets;
     Tone3000Client tone3000;
+
+   #if TUBAMP_UPDATES
+    /** One per process, shared by every instance (docs/UPDATES.md). Held here, not by
+        the editor, so a download survives closing the editor. */
+    juce::SharedResourcePointer<update::Updater> updater;
+   #endif
 
     /** UI level metering (linear peak, decayed by UI). */
     std::atomic<float> inputPeak { 0.0f }, outputPeak { 0.0f };

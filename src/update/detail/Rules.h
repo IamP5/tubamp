@@ -233,6 +233,7 @@ private:
     friend Url envelopeUrl();
     friend Url archiveUrl (const Offer&);
     friend Url releasePageUrl (Version);
+    friend std::optional<Url> repositoryUrl (std::string_view);
     explicit Url (std::string s) : value (std::move (s)) {}
     std::string value;
 };
@@ -246,6 +247,11 @@ Url archiveUrl (const Offer&);
 
 /** https://github.com/IamP5/tubamp/releases/tag/v{V} */
 Url releasePageUrl (Version);
+
+/** https://github.com/IamP5/tubamp/{path}, for `tubamp_update_tool fetch-check` only. The
+    path is letters, digits, '.', '_', '-' and '/' with no empty or dot-dot segment, so the
+    host and repository stay the compiled-in ones. The plugin never calls it. */
+std::optional<Url> repositoryUrl (std::string_view path);
 
 /** True only for an https URL whose host is exactly one entry of Hosts.def, with no
     user info and no port. Applied to the first URL and to every redirect hop. */

@@ -450,6 +450,8 @@ int runUpdateTests()
     prefs();
     runMachineTests (passed, failed);
     runDiskTests (passed, failed);
+    runBridgeTests (passed, failed);
+    runServiceTests (passed, failed);
 
     std::printf ("\n%d passed, %d failed\n", passed, failed);
     return failed;

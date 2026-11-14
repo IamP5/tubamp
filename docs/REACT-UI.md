@@ -506,6 +506,17 @@ cleared C++-side for every editor, instance and host on the account. Both unions
 switched exhaustively in the UI (`features/update/words.ts`) and the mock, ending in
 `unreachable(x: never)`, so a new phase or command fails `npm run typecheck`.
 
+The C++ side lives in `src/update/Bridge.cpp` (`viewJson`, `parseCommand`), which
+produces and reads exactly these shapes; `WebEditor` only converts the JSON text to and
+from `juce::var`. `ui/src/bridge/update-contract.json` holds one sample of every phase,
+failure, manual reason, check problem and command, plus commands C++ must refuse. Both
+sides check it: `npm run typecheck` holds it to `types.ts`
+(`update-contract.check.ts`), and `tubamp_update_tool test` holds `viewJson` and
+`parseCommand` to it. Change a shape in `types.ts` and update the golden file with it, or
+one of the two fails. C++'s three ways a download can fail to match the release
+(integrity, archive, wrong bundle) all reach the page as `"verify"`. A build with
+`TUBAMP_UPDATES=OFF` sends no `update` field and registers no `updateCommand`.
+
 UI (`features/update/`): a toast "tubamp 0.4.0 is available" with **Update** (or
 **Get the installer** in `manual`), once per version; a one-shot toast "tubamp checks
 GitHub once a day for a new version." with **Turn off**. An install started from the

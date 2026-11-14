@@ -146,6 +146,34 @@ The machine is two pure functions in `src/update/detail/Machine.h`. `step(Model,
 
 Every other pair of state and event returns the same model with no effects. A build with updates off ignores every event.
 
+## The service
+
+`Updater` (`src/update/Updater.h`) is the shell around the machine. The plugin processor holds it through `juce::SharedResourcePointer`, so every instance and editor in a host shares one. Its surface is `view()`, `perform(command)`, and `watch(listener)`, which returns a handle that unsubscribes when it is destroyed. An editor opening a watch is event T1.
+
+The model lives on the message thread. One worker thread runs the effects in order (reconcile, check, install, save settings) and posts each result back as an event. Listeners run on the message thread, and the editor's handle is destroyed first in its destructor, so no listener runs into a dead editor. A result that arrives after the `Updater` is gone is dropped. Every command republishes the current view, even one the machine ignored, so a stale page corrects itself.
+
+The destructor cancels the running fetch and joins the worker. The tests measure about 3 ms mid-download. The system fetcher notices a cancel within its 20 ms poll; `fetch-check --cancel-after` measured 11 to 19 ms on a real GET.
+
+A click on **Update** or **Check now** while an automatic check is still running is ignored, because the machine allows one job at a time (T3, T7). The page receives the unchanged view and the user clicks again.
+
+## The network
+
+The only network code is `makeSystemFetcher` (`src/update/detail/Fetch.mm`). It makes a plain GET through `NSURLSession` with an ephemeral configuration that has no cookie store, no credential store and no cache. It sends `User-Agent: tubamp/<running version>`, a fixed `Accept-Language: en` and `Accept-Encoding: identity`, and nothing else from the account. It answers every authentication challenge except the TLS server-trust check with a refusal.
+
+Before the first request and before every redirect, it asks `HopPolicy`: https, a host listed exactly in `Hosts.def`, and at most four redirects. A refused hop ends the transfer. It also checks the host of the final response, requires status 200, and refuses a `Content-Length` above the cap. The cap counts bytes as they arrive: 16 KiB for the envelope, the signed size for the archive. The idle timeout, which covers connecting, is 15 s for the envelope and 30 s for the archive. The total timeout is 30 s and 15 minutes.
+
+Body bytes reach the sink on the worker thread, never on the message or audio thread. When the sink refuses a byte, the install asks `ArchiveSink::finish()` for the reason. A drop, a refused redirect or a bad status is `network`; more bytes than signed is `integrity`.
+
+## The editor bridge
+
+`src/update/Bridge.cpp` writes the view as the JSON of `UpdateView` in `ui/src/bridge/types.ts` and parses `updateCommand`'s argument. It refuses any shape that is not exactly a documented command. `WebEditor` adds the `update` field to `getUiState`, emits `updateChanged`, registers `updateCommand`, and supplies the host name ("Logic Pro", "GarageBand", "MainStage", "tubamp", or the host's own description). "Open the release page" opens a URL that C++ builds from the offered version. `openExternal` still accepts only tone3000.com.
+
+`ui/src/bridge/update-contract.json` is the contract as data. `tubamp_update_tool test` checks the C++ against it, and `npm run typecheck` checks the TypeScript against it, so a shape that changes on one side fails a check.
+
+With `TUBAMP_UPDATES=OFF`, none of this is compiled. `UiState` has no `update` field and no `updateCommand` exists. The page then shows no update row.
+
+For development, `-DTUBAMP_UPDATE_DEV_ROOTS=ON` takes the home and the system Components folder from `TUBAMP_UPDATE_HOME` and `TUBAMP_UPDATE_SYSTEM_COMPONENTS`. Without `TUBAMP_UPDATE_HOME`, the updater stays off. A build without the option contains no such `getenv` call.
+
 ## Tradeoffs
 
 - Each macOS account installs its own copy. That is the price of updates with no password and no installer.
@@ -169,4 +197,4 @@ It changes the base in five ways. It has no validation step after the swap, no a
 
 ## Where the code is
 
-`src/update/README.md` maps the modules and explains the disk tests. `tubamp_update_tool test` runs every table. `tubamp_update_tool verify-envelope` opens a signed file exactly as the plugin does, so the release pipeline can prove the shipped client accepts what it publishes.
+`src/update/README.md` maps the modules and explains the disk and service tests. `tubamp_update_tool test` runs every table without the network. `tubamp_update_tool fetch-check` makes one real GET through the system fetcher and prints each hop. `tubamp_update_tool verify-envelope` opens a signed file exactly as the plugin does, so the release pipeline can prove the shipped client accepts what it publishes.

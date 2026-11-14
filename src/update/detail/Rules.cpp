@@ -9,6 +9,7 @@ namespace tubamp::update::detail
 {
 namespace
 {
+    constexpr std::string_view repoRoot = "https://github.com/IamP5/tubamp/";
     constexpr std::string_view repoBase = "https://github.com/IamP5/tubamp/releases/";
 
     constexpr std::string_view allowedHosts[] = {
@@ -286,6 +287,24 @@ Url archiveUrl (const Offer& offer)
 Url releasePageUrl (Version version)
 {
     return Url (std::string (repoBase) + "tag/v" + version.toString());
+}
+
+std::optional<Url> repositoryUrl (std::string_view path)
+{
+    if (path.empty() || path.front() == '/' || path.back() == '/' || path.find ("//") != std::string_view::npos)
+        return std::nullopt;
+    for (const char c : path)
+        if (! ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' || c == '/'))
+            return std::nullopt;
+    for (std::size_t start = 0; start <= path.size();)
+    {
+        const auto end = std::min (path.find ('/', start), path.size());
+        const auto segment = path.substr (start, end - start);
+        if (segment == "." || segment == "..")
+            return std::nullopt;
+        start = end + 1;
+    }
+    return Url (std::string (repoRoot) + std::string (path));
 }
 
 bool hostAllowed (std::string_view url) noexcept
