@@ -1,8 +1,8 @@
 # tubamp site
 
 The landing page for the tubamp plugin. Next.js 16 (App Router, Cache
-Components), React 19, Tailwind 4, GSAP with ScrollTrigger, Lenis, Motion, and
-three with `@react-three/fiber`. Vercel hosts it.
+Components), React 19, Tailwind 4, GSAP with ScrollTrigger, Lenis, and Motion.
+Vercel hosts it.
 
 `DESIGN.md` is the design contract: concept, voice, type, colour, motion rules.
 Read it before you change how the page looks or moves.

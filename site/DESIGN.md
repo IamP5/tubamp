@@ -88,8 +88,8 @@ the five family names. Use them through Tailwind classes (`bg-ink-1`,
 Libraries: GSAP 3 with ScrollTrigger (`@/lib/motion` registers it and sets
 defaults), `@gsap/react` (`useGSAP` with a `scope`), Lenis (already wired in
 `SmoothScroll`), Motion (`motion/react`) for component-level and
-scroll-linked transforms, three with `@react-three/fiber` only where a chapter
-needs real 3D or a shader.
+scroll-linked transforms. Depth comes from CSS 3D transforms and canvas; there
+is no WebGL dependency.
 
 - Import `gsap` and `ScrollTrigger` from `@/lib/motion`, never from the
   package directly, and call `setupGsap()` before first use in a component.
@@ -156,8 +156,8 @@ are in `src/data/media.ts`. Read both before writing a string.
   content, text alternatives for video, colour contrast at least 4.5:1 for
   body text. The page must be usable with the keyboard alone and with
   JavaScript animations disabled by reduced motion.
-- Performance: nothing heavy above the fold blocks first paint; three.js and
-  any chapter that needs it load with `next/dynamic` and only on the client;
+- Performance: nothing heavy above the fold blocks first paint; a heavy
+  chapter loads with `next/dynamic`;
   images through `next/image`; no layout shift when media loads (set
   dimensions or aspect ratio).
 - Comments only for a non-obvious why. No narration.
