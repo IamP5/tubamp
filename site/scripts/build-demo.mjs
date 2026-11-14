@@ -5,7 +5,7 @@
  *
  *   npm run build:demo [-- --ui <dir>] [-- --skip-install]
  *
- * Steps: `npm ci` in the repo's ui/ folder, `vite build` into a temporary folder
+ * Steps: `npm ci --include=dev` in the repo's ui/ folder, `vite build` into a temporary folder
  * (ui/dist is left alone: the plugin build embeds it), then copy to public/demo/.
  * Vite's config uses relative asset paths, so the bundle works from a subfolder.
  *
@@ -41,7 +41,9 @@ const run = (cmd, cmdArgs) => {
   }
 };
 
-if (!skipInstall) run("npm", ["ci"]);
+// Vite is a devDependency of ui/, and hosts such as Vercel build with NODE_ENV=production,
+// under which a plain `npm ci` leaves it out.
+if (!skipInstall) run("npm", ["ci", "--include=dev"]);
 const tmp = mkdtempSync(join(tmpdir(), "tubamp-demo-"));
 try {
   run("npx", ["vite", "build", "--outDir", tmp, "--emptyOutDir"]);
