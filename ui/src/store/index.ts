@@ -42,6 +42,9 @@ import {
   type T3kTarget,
   type T3kTone,
   type UiState,
+  type UpdateCommand,
+  type UpdateView,
+  UPDATE_OFF,
 } from "../bridge";
 import {
   MAX_CHAIN_LENGTH,
@@ -169,6 +172,8 @@ export interface AppState {
   editorSize: EditorSizeLimits;
   /** Which slot's plugin is drawn inside our window, and how big it turned out. */
   fxEmbed: FxEmbedState;
+  /** The updater's snapshot, replaced whole by every `updateChanged`. */
+  update: UpdateView;
   /**
    * Which fx panel asked for the current embed. UI-local, and deliberately not
    * derived from `fxEmbed.slot`: a mount request is in flight for a while before
@@ -211,6 +216,9 @@ export interface AppState {
   t3kInstalled: T3kInstalledFile[];
   /** toneId → one-click load state. */
   t3kLoads: Record<number, T3kRowLoad>;
+  /** The newer version the user has already seen in Settings this session, so
+   *  the header's dot stops asking once it has been answered. */
+  updateSeen: string | null;
   toasts: Toast[];
 }
 
@@ -296,6 +304,10 @@ export interface AppActions {
   t3kLoadTone(tone: T3kTone, model?: T3kModel): Promise<void>;
   t3kRefreshInstalled(): Promise<void>;
   t3kOpenExternal(url: string): Promise<void>;
+
+  /* in-plugin update */
+  updateCommand(command: UpdateCommand): Promise<void>;
+  markUpdateSeen(version: string): void;
 
   /* toasts */
   toast(message: string, kind?: ToastKind, duration?: number, action?: ToastAction): number;
@@ -481,6 +493,7 @@ const initialState: AppState = {
   },
   fxEmbed: { slot: -1, width: 0, height: 0, error: "" },
   fxEmbedRequestedBy: -1,
+  update: UPDATE_OFF,
   selected: null,
   eqAnalyser: { on: true, resolution: 1, speed: 1 },
   eqFreeze: false,
@@ -505,6 +518,7 @@ const initialState: AppState = {
   t3kFiles: {},
   t3kInstalled: [],
   t3kLoads: {},
+  updateSeen: null,
   toasts: [],
 };
 
@@ -551,6 +565,7 @@ export const useStore = create<Store>()((set, get) => {
         fxEmbed: state.fxEmbed ?? initialState.fxEmbed,
         // A C++ build that predates the analyser's preferences hydrates the defaults.
         eqAnalyser: normaliseEqAnalyser(state.eqAnalyser),
+        update: state.update ?? UPDATE_OFF,
         selected: keepSelection(order, get().selected),
       });
     },
@@ -1044,6 +1059,17 @@ export const useStore = create<Store>()((set, get) => {
       reportError(res.error);
     },
 
+    /* ───────────────────────── in-plugin update ──────────────────────── */
+
+    async updateCommand(command) {
+      const res = await bridge.updateCommand(command);
+      reportError(res.error);
+    },
+
+    markUpdateSeen(version) {
+      if (get().updateSeen !== version) set({ updateSeen: version });
+    },
+
     /* ───────────────────────────── toasts ────────────────────────────── */
 
     toast(message, kind = "info", duration = 4000, action) {
@@ -1435,6 +1461,8 @@ export function connectStore(): () => void {
     bridge.on("editorSizeChanged", (editorSize) => set({ editorSize })),
 
     bridge.on("fxEmbedChanged", (fxEmbed) => set({ fxEmbed })),
+
+    bridge.on("updateChanged", (update) => set({ update })),
 
     // `fxParamValues` is deliberately NOT wired here. It arrives at meter rate
     // for up to a hundred parameters at once, and a store write would re-render

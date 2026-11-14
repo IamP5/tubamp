@@ -48,6 +48,7 @@ ui/                         # the SPA (npm workspace root for the frontend)
       header/               # brand, preset pill, A/B, t3k status, settings
       footer/               # status bar: I/O meters, trim/level fields, engine status
       settings/             # settings sheet (t3k key via native prompt, sign out)
+      update/               # in-plugin update: Settings rows, toasts, words
     App.tsx  main.tsx
 src/WebEditor.h/.cpp        # new editor: WebBrowserComponent + relays + native fns + events
 src/PluginEditor.h/.cpp     # DELETED (with all of src/ui/*)
@@ -251,6 +252,11 @@ fxSetEmbedRect(x, y, w, h): void                           // the hole, in CSS p
 fxSetEmbedVisible(visible: boolean): void                  // hide without unmounting
 fxSetEmbedMinWindow(w: number, h: number): void            // resize floor while embedded; grows
                                                            // the window once if smaller; 0,0 releases
+
+// --- in-plugin update, see §In-plugin update
+updateCommand(command: UpdateCommand): { error?: string }  // {} = understood (applied or not);
+                                                           // {error} = unparseable. Outcomes
+                                                           // arrive as updateChanged
 ```
 
 ```ts
@@ -293,6 +299,8 @@ interface UiState {
   fxEmbed: FxEmbedState         // { slot: FxSlotIndex | -1, width, height, error }
   fxSupported: boolean          // false in builds without JUCE_PLUGINHOST_AU;
                                 // the FX panels then explain themselves
+  update?: UpdateView           // same shape as updateChanged; absent from a build
+                                // without the updater (read as { phase: { kind: "off" } })
 }
 type FxSlotIndex = 0 | 1 | 2
 interface FxPluginEntry { identifier; name; manufacturer; version }  // identifier ==
@@ -381,6 +389,8 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
                                                     // we changed it ourselves — one source of truth
 "fxEmbedChanged" FxEmbedState                       // an embed mounted, unmounted, was refused,
                                                     // or reported a new size (can arrive twice)
+"updateChanged"  UpdateView                         // the whole update snapshot on every change,
+                                                    // progress included (<= 10 Hz); never a delta
 ```
 
 C++ side notes (see juce-webview.md for exact API):
@@ -439,6 +449,80 @@ Slot rendering follows `FxSlotState`, in this order: `!fxSupported` → explain,
 picker; `!occupied` → picker (`fxListPlugins()`, cheap, call it on demand); `loading` →
 spinner; `missing` → name + `error`, and say the settings are kept; `live` → params +
 "Open editor" when `hasEditor`. `latencySamples` belongs on screen whenever non-zero.
+
+### In-plugin update
+
+Design and the C++ side: `docs/UPDATES.md`. The page never sequences an update: it
+renders the snapshot and sends intents. Hydration (`UiState.update`) plus
+`updateChanged` is the whole contract; nothing assumes a re-read on visibility, and a
+dropped event costs nothing because the next one is whole. No URL, path, hash or HTTP
+detail crosses the bridge in either direction: the release page is opened by C++
+(`openReleasePage`), never built in the page, and `openExternal` keeps its
+tone3000-only rule.
+
+```ts
+type UpdateVersion = string                 // "X.Y.Z"; the page only compares for equality
+type UpdateFailure = "network" | "verify" | "noSpace" | "notWritable"
+type UpdateManualReason = "systemDomain" | "unexpectedPath" | "readOnly"
+                        | "noAtomicSwap" | "notAnAudioUnit"
+type UpdateCheckProblem = "unreachable" | "unverified"   // only after a manual check
+
+type UpdatePhase =
+  | { kind: "off" }                                       // development build: no update UI
+  | { kind: "idle"; problem?: UpdateCheckProblem }        // nothing newer known
+  | { kind: "checking" }                                  // manual check running
+  | { kind: "available"; version }
+  | { kind: "downloading"; version; received: number; total: number }  // bytes
+  | { kind: "installing"; version }                       // unpack, inspect, swap; not cancellable
+  | { kind: "restartPending"; version }                   // on disk; the host still runs `running`
+  | { kind: "failed"; version; reason: UpdateFailure }    // nothing changed; install retries
+  | { kind: "manual"; version; reason: UpdateManualReason }  // newer exists, this copy can't
+                                                          // replace itself
+
+interface UpdateView {
+  running: UpdateVersion        // the code running in this host
+  hostName: string              // "Logic Pro", for "Restart Logic Pro to use it."
+  autoCheck: boolean            // "Check for updates automatically"
+  announce?: UpdateVersion      // toast this version once, then markAnnounced
+  disclose: boolean             // first run: toast the daily-check disclosure, then markDisclosed
+  systemCopy: boolean           // another tubamp is in /Library/Audio/Plug-Ins/Components
+  phase: UpdatePhase
+}
+
+type UpdateCommand =
+  | { type: "checkNow" }                                  // ignores the daily throttle
+  | { type: "install"; version }                          // the version the user saw; ignored
+                                                          // if the offer moved on
+  | { type: "cancel" }                                    // downloading only
+  | { type: "setAutoCheck"; enabled: boolean }
+  | { type: "markAnnounced"; version }
+  | { type: "markDisclosed" }
+  | { type: "openReleasePage" }                           // C++ builds the URL
+```
+
+C++ ignores a command that means nothing in the current phase and pushes a fresh
+`updateChanged`, so a stale page corrects itself. `announce` and `disclose` are
+cleared C++-side for every editor, instance and host on the account. Both unions are
+switched exhaustively in the UI (`features/update/words.ts`) and the mock, ending in
+`unreachable(x: never)`, so a new phase or command fails `npm run typecheck`.
+
+UI (`features/update/`): a toast "tubamp 0.4.0 is available" with **Update** (or
+**Get the installer** in `manual`), once per version; a one-shot toast "tubamp checks
+GitHub once a day for a new version." with **Turn off**. An install started from the
+toast reports through a toast (progress, then installed or failed with its one action),
+because whoever clicked it is not looking at Settings. The Settings sheet carries a
+Version row (running version, the state in words, the one action the phase allows:
+Update, Cancel, Try again, Get the installer or Check now; a 2px accent progress bar
+while downloading; "What's new" → `openReleasePage`; the manual reason and the
+system-copy warning as quiet lines) and the "Check for updates automatically" switch.
+The Settings button carries a 6px accent dot while `available` or `manual` is offered
+and the sheet has not yet shown that version this session.
+
+Mock flags, combinable as `?update=a,b`: `available` (0.4.0 offered and announced),
+`found` (Check now finds 0.4.0), `checkfail`, `disclose` (first run), `fail-download`,
+`fail-verify`, `fail-space`, `fail-write`, `manual` (a /Library copy), `restart`,
+`systemcopy`, `slow` (6× every step), `off`. Default: up to date. Update walks
+downloading (progress) → installing → restartPending; Cancel works mid-download.
 
 ### Mock bridge (`ui/src/bridge/mock.ts`)
 
