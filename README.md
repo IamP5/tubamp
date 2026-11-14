@@ -55,7 +55,8 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
 cmake --build build --target tubamp_AU -j 8
 ```
 
-The AU is auto-copied to `~/Library/Audio/Plug-Ins/Components/tubamp.component`.
+The AU is auto-copied to `~/Library/Audio/Plug-Ins/Components/tubamp.component`
+unless you configure with `-DTUBAMP_COPY_AFTER_BUILD=OFF`.
 Then:
 
 ```sh
@@ -99,6 +100,14 @@ runs and the bundle is baked in; `TUBAMP_WEBUI_DEV` controls where the editor
 loads its HTML from and defaults to the complement of the former. Setting both
 off (`-DTUBAMP_BUNDLED_UI=OFF -DTUBAMP_WEBUI_DEV=OFF`) builds without Node and
 shows the "UI bundle missing" page instead of pointing at an absent dev server.
+
+## Releasing
+
+A push to `main` that contains a `feat`, `fix`, `perf`, or breaking Conventional
+Commit publishes a GitHub Release with an Apple Silicon and an Intel `.pkg`
+installer. The version comes from the commit messages and git tags. See
+`docs/RELEASING.md` for the commit convention, reruns, and how to build an
+installer locally (`scripts/release/build-installer.sh`).
 
 ## Library layout
 
