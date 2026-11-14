@@ -4,7 +4,7 @@ tubamp tells you when a newer release exists and, after one click, installs it w
 
 ## What you see
 
-**First install.** The installer offers "Install for me only" and asks for no password. The component goes to `~/Library/Audio/Plug-Ins/Components/tubamp.component`, where tubamp can later replace itself without privileges.
+**First install.** Both release installers, Apple Silicon and Intel, install for the current user only. Installer offers "Install for me only" and asks for no password. The component goes to `~/Library/Audio/Plug-Ins/Components/tubamp.component`, where tubamp can later replace itself without privileges. Each macOS account that uses tubamp runs the installer once.
 
 **The first time you open the plugin**, a toast says that tubamp checks GitHub once a day for a new version. It has a **Turn off** action, and it does not come back. The same switch lives in Settings.
 
@@ -99,7 +99,9 @@ sig <16 hex key id> <base64 DER ECDSA P-256 signature>    (1 to 4 lines)
 
 Each signature covers `tubamp-update-v1`, a newline, and the payload, so a signature this key made for anything else is not an update. The key id is the first 8 bytes of SHA-256 over the 65-byte public point. The file is at most 16 KiB and the payload at most 8 KiB. The format version is in the file name, so a breaking change ships as `update-v2.signed` beside v1. Inside v1, fields can only be added, and the client ignores fields it does not read. It never reads a URL from the payload.
 
-The trusted keys are the `*.pub.pem` files in `src/update/keys`, compiled into the plugin. The release key is held in a GitHub Actions environment secret that only `main` can use. The recovery key is kept offline. Security.framework verifies the signature.
+The trusted keys are the `*.pub.pem` files in `src/update/keys`, compiled into the plugin. The release key is held in the `TUBAMP_UPDATE_SIGNING_KEYS` secret of the GitHub Actions environment `release`, which only `main` can use. The recovery key is kept offline. Security.framework verifies the signature.
+
+The release workflow signs the envelope in its `publish` job with `scripts/release/envelope.mjs`, then runs `tubamp_update_tool verify-envelope --archive` on the signed file and the archive before it uploads either. A release is published with updates on only when two keys are committed and the secret exists, and then the plugin, the archive and the envelope all ship together. `docs/RELEASING.md` gives the pipeline, the one-time key setup, rotation, and what a lost key means.
 
 ## The chain of types
 
@@ -127,11 +129,11 @@ The machine is two pure functions in `src/update/detail/Machine.h`. `step(Model,
 | --- | --- | --- | --- |
 | T1 | An editor opens | | Reconcile, plus an automatic check if no job runs |
 | T2 | `Reconciled` | | Disk, settings, and the cached offer replace the model's |
-| T3 | **Check now** | no job | A manual check, phase `checking` |
+| T3 | **Check now** | no job | A manual check, phase `checking`. During an automatic check, T19 |
 | T4 | Check: not due | | The cached offer stays |
 | T5 | Check: verified | | `available`, `manual`, or `idle` |
 | T6 | Check: problem | | Reported only if the check was manual. A cached offer stays. |
-| T7 | **Update** for version v | no job, copy can update, v is the offer, v not installed | Install, phase `downloading` |
+| T7 | **Update** for version v | no job, copy can update, v is the offer, v not installed | Install, phase `downloading`. During a check, T19 |
 | T8 | Progress | downloading | Bytes received |
 | T9 | Stage entered | a later stage | `downloading` becomes `installing` |
 | T10 | **Cancel** | before the swap | Cancel the job |
@@ -143,6 +145,7 @@ The machine is two pure functions in `src/update/detail/Machine.h`. `step(Model,
 | T16 | Disclosure toast shown | | Save |
 | T17 | Settings saved | | The saved settings replace the model's |
 | T18 | Open release page | | Open the page for the offered, or else the running, version |
+| T19 | **Check now** during an automatic check, or **Update** during any check that T7's other guards allow | | The click is kept, phase `checking`. A later click replaces it. When the check finishes, the kept click runs against the model the check produced |
 
 Every other pair of state and event returns the same model with no effects. A build with updates off ignores every event.
 
@@ -154,7 +157,7 @@ The model lives on the message thread. One worker thread runs the effects in ord
 
 The destructor cancels the running fetch and joins the worker. The tests measure about 3 ms mid-download. The system fetcher notices a cancel within its 20 ms poll; `fetch-check --cancel-after` measured 11 to 19 ms on a real GET.
 
-A click on **Update** or **Check now** while an automatic check is still running is ignored, because the machine allows one job at a time (T3, T7). The page receives the unchanged view and the user clicks again.
+A click on **Update** or **Check now** while a check is still running is not dropped. The machine allows one job at a time, so it keeps the latest click and shows `checking` until the check finishes (T19). Then the click runs as if it had just arrived. A kept **Check now** runs a manual check, which skips the daily claim, so it fetches even when the automatic check was not due. A kept **Update** installs only if the check left the same version on offer. If the check found a newer version, the page shows that offer and installs nothing the user did not see.
 
 ## The network
 
@@ -197,4 +200,4 @@ It changes the base in five ways. It has no validation step after the swap, no a
 
 ## Where the code is
 
-`src/update/README.md` maps the modules and explains the disk and service tests. `tubamp_update_tool test` runs every table without the network. `tubamp_update_tool fetch-check` makes one real GET through the system fetcher and prints each hop. `tubamp_update_tool verify-envelope` opens a signed file exactly as the plugin does, so the release pipeline can prove the shipped client accepts what it publishes.
+`src/update/README.md` maps the modules and explains the disk and service tests. `tubamp_update_tool test` runs every table without the network. `tubamp_update_tool fetch-check` makes one real GET through the system fetcher and prints each hop. `tubamp_update_tool verify-envelope` opens a signed file exactly as the plugin does. With `--archive` and `--installed`, it also runs the plugin's download, unpack and inspect stages on the zip in a temporary home, so the release pipeline can prove the shipped client accepts what it publishes.

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeRepo, plan, runScript, tempDir } from './helpers.mjs';
 
@@ -314,4 +314,52 @@ test('the squash plan is written to GITHUB_OUTPUT under squash_ keys', () => {
   assert.match(lines, /^squash_release=true$/m);
   assert.match(lines, /^squash_build_version=0\.2\.0$/m);
   assert.doesNotMatch(lines, /^release=/m);
+});
+
+const KEY_FILES = ['src/update/keys/release.pub.pem', 'src/update/keys/recovery.pub.pem'];
+
+test('updates stay off while fewer than two public keys are committed, whatever the secret', () => {
+  const repo = makeRepo();
+  repo.commit('feat: plate', ['Source/Reverb.cpp', 'src/update/keys/README.md']);
+  for (const key of ['present', 'absent', 'throwaway']) {
+    const p = plan(repo, ['--signing-key', key]);
+    assert.equal(p.updates, 'off', key);
+    assert.match(p.updatesReason, /holds 0 public key\(s\)/);
+  }
+  repo.commit('chore: release key', [KEY_FILES[0]]);
+  assert.match(plan(repo, ['--signing-key', 'present']).updatesReason, /holds 1 public key\(s\)/);
+});
+
+test('two committed keys turn updates on only with the signing secret or a dry run', () => {
+  const repo = makeRepo();
+  repo.commit('feat: plate', ['Source/Reverb.cpp', ...KEY_FILES]);
+  const absent = plan(repo, ['--signing-key', 'absent']);
+  assert.equal(absent.updates, 'off');
+  assert.match(absent.updatesReason, /no TUBAMP_UPDATE_SIGNING_KEYS secret/);
+  assert.equal(plan(repo).updates, 'off', 'no flag means no secret');
+  assert.equal(plan(repo, ['--signing-key', 'present']).updates, 'on');
+  assert.equal(plan(repo, ['--signing-key', 'throwaway']).updates, 'on');
+  assert.match(plan(repo, ['--signing-key', 'maybe']).error, /--signing-key must be one of/);
+});
+
+test('keys that are only in the working tree do not arm a release', () => {
+  const repo = makeRepo();
+  repo.commit('feat: plate', ['Source/Reverb.cpp']);
+  mkdirSync(join(repo.dir, 'src/update/keys'), { recursive: true });
+  for (const file of KEY_FILES) writeFileSync(join(repo.dir, file), 'untracked');
+  assert.equal(plan(repo, ['--signing-key', 'present']).updates, 'off');
+});
+
+test('the updates decision reaches GITHUB_OUTPUT and the job summary', () => {
+  const repo = makeRepo();
+  repo.commit('feat: plate', ['Source/Reverb.cpp']);
+  const dir = tempDir();
+  const result = runScript('plan.mjs', {
+    cwd: repo.dir,
+    args: ['--signing-key', 'present'],
+    env: { GITHUB_OUTPUT: join(dir, 'output'), GITHUB_STEP_SUMMARY: join(dir, 'summary') },
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(readFileSync(join(dir, 'output'), 'utf8'), /^updates=off$/m);
+  assert.match(readFileSync(join(dir, 'summary'), 'utf8'), /Updates \*\*off\*\*: src\/update\/keys holds 0 public key\(s\)/);
 });

@@ -1,12 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { assembleEnvelope, payloadFor } from '../envelope.mjs';
 import { fakeInstallers, runScript, scriptsDir, tempDir } from './helpers.mjs';
 
 const SHA = 'a'.repeat(40);
 const OTHER = 'b'.repeat(40);
 const ALL = ['tubamp-0.2.0-macos-arm64.pkg', 'tubamp-0.2.0-macos-x86_64.pkg', 'SHA256SUMS', 'manifest.json'];
+const ZIP = 'tubamp-0.2.0-macos-universal.zip';
+const ENVELOPE = 'update-v1.signed';
+const ARMED = [...ALL, ZIP, ENVELOPE];
 
 function github(initial = {}) {
   const dir = tempDir('tubamp-release-gh-');
@@ -28,18 +33,30 @@ function github(initial = {}) {
   };
 }
 
-function releaseAssets() {
-  const { dir } = fakeInstallers('0.2.0');
+function writeArchiveAndEnvelope(dir, { archiveBytes = Buffer.from('universal zip'), envelopeFor = archiveBytes, version = '0.2.0' } = {}) {
+  writeFileSync(join(dir, ZIP), archiveBytes);
+  const payload = payloadFor({
+    version,
+    minimumMacOS: '11.0',
+    sha256: createHash('sha256').update(envelopeFor).digest('hex'),
+    size: envelopeFor.length,
+  });
+  writeFileSync(join(dir, ENVELOPE), assembleEnvelope(payload, [{ keyId: '0123456789abcdef', der: Buffer.from('not a real signature') }]));
+}
+
+function releaseAssets({ updates = false } = {}) {
+  const { dir } = fakeInstallers('0.2.0', { updates });
   const result = runScript('manifest.mjs', {
     args: ['--version', '0.2.0', '--dir', dir, '--notes-file', join(dir, 'notes.md')],
   });
   assert.equal(result.code, 0, result.stderr);
+  if (updates) writeArchiveAndEnvelope(dir);
   return dir;
 }
 
-function publish(gh, dir, { extra = [], env = {} } = {}) {
+function publish(gh, dir, { extra = [], env = {}, updates = 'off' } = {}) {
   return runScript('publish.mjs', {
-    args: ['--version', '0.2.0', '--sha', SHA, '--dir', dir, '--notes-file', join(dir, 'notes.md'), '--repo', 'o/r', ...extra],
+    args: ['--version', '0.2.0', '--sha', SHA, '--dir', dir, '--notes-file', join(dir, 'notes.md'), '--repo', 'o/r', '--updates', updates, ...extra],
     env: gh.env(env),
   });
 }
@@ -168,4 +185,92 @@ test('a published release on another commit still stops the run', () => {
   assert.equal(result.code, 1);
   assert.deepEqual(gh.mutations(), []);
   assert.equal(gh.state().releases.length, 1);
+});
+
+test('an armed release uploads the archive before the envelope, the envelope before the manifest', () => {
+  const gh = github();
+  const dir = releaseAssets({ updates: true });
+  const result = publish(gh, dir, { updates: 'on' });
+  assert.equal(result.code, 0, result.stderr);
+  const [release] = gh.state().releases;
+  assert.equal(release.draft, false);
+  assert.deepEqual(assetNames(release), [...ARMED].sort());
+
+  const uploads = gh.mutations().filter((c) => c[1] === 'upload').map((c) => c.filter((a) => a.startsWith(dir)).map((a) => a.split('/').pop()));
+  assert.deepEqual(uploads, [[ALL[0], ALL[1], ZIP, 'SHA256SUMS'], [ENVELOPE], ['manifest.json']]);
+  assert.deepEqual(gh.mutations().at(-1).slice(0, 2), ['release', 'edit'], 'published only after the last upload');
+});
+
+test('an armed release that crashes on the envelope stays a draft, and the rerun completes it', () => {
+  const gh = github();
+  const dir = releaseAssets({ updates: true });
+  assert.equal(publish(gh, dir, { updates: 'on', env: { FAKE_GH_CRASH_ON: ENVELOPE } }).code, 1);
+  assert.equal(gh.state().releases[0].draft, true);
+  assert.equal(gh.state().latest, undefined, 'nothing is latest before every asset is up');
+  assert.ok(!assetNames(gh.state().releases[0]).includes('manifest.json'));
+
+  assert.equal(publish(gh, dir, { updates: 'on' }).code, 0);
+  assert.equal(gh.state().releases.length, 1);
+  assert.deepEqual(assetNames(gh.state().releases[0]), [...ARMED].sort());
+  assert.equal(gh.state().latest, 'v0.2.0');
+
+  gh.resetCalls();
+  const again = publish(gh, dir, { updates: 'on' });
+  assert.equal(again.code, 0, again.stderr);
+  assert.deepEqual(gh.mutations(), [], 'a third run changes nothing');
+});
+
+test('half-armed inputs stop the publish before any call to GitHub', async (t) => {
+  const cases = [
+    ['updates on without the update assets', () => releaseAssets({ updates: true }), (dir) => rmSync(join(dir, ENVELOPE)), 'on', /missing asset .*update-v1\.signed/],
+    ['updates on with installers built without the updater', () => releaseAssets(), (dir) => writeArchiveAndEnvelope(dir), 'on', /built with updates off but this release has --updates on/],
+    ['updates off with installers built with the updater', () => releaseAssets({ updates: true }), (dir) => { rmSync(join(dir, ZIP)); rmSync(join(dir, ENVELOPE)); }, 'off', /built with updates on but this release has --updates off/],
+    ['updates off with an envelope in the directory', () => releaseAssets(), (dir) => writeArchiveAndEnvelope(dir), 'off', /update-v1\.signed in .* --updates off/],
+    ['an envelope that names another archive', () => releaseAssets({ updates: true }), (dir) => writeArchiveAndEnvelope(dir, { envelopeFor: Buffer.from('another zip') }), 'on', /names an archive of/],
+    ['an envelope for another version', () => releaseAssets({ updates: true }), (dir) => writeArchiveAndEnvelope(dir, { version: '0.1.9' }), 'on', /is for com\.t0audio\.tubamp 0\.1\.9/],
+    ['no --updates at all', () => releaseAssets(), () => {}, '', /--updates must be on or off/],
+  ];
+  for (const [name, make, spoil, updates, message] of cases) {
+    await t.test(name, () => {
+      const gh = github();
+      const dir = make();
+      spoil(dir);
+      const result = publish(gh, dir, { updates });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, message);
+      assert.deepEqual(gh.state().calls, []);
+    });
+  }
+});
+
+test('a published release that carries update assets is never republished with updates off', () => {
+  const gh = github({
+    tags: { 'v0.2.0': SHA },
+    releases: [{ id: 1, tag_name: 'v0.2.0', draft: false, target: SHA, assets: ARMED.map((name) => ({ name, state: 'uploaded' })) }],
+  });
+  const result = publish(gh, releaseAssets());
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /is published with .*update-v1\.signed.*half-armed/);
+  assert.deepEqual(gh.mutations(), []);
+});
+
+test('a draft an armed run left is replaced when the rerun has updates off', () => {
+  const gh = github({
+    releases: [{ id: 1, tag_name: 'v0.2.0', draft: true, target: SHA, assets: [ZIP, ENVELOPE, ALL[0]].map((name) => ({ name, state: 'uploaded' })) }],
+  });
+  const result = publish(gh, releaseAssets());
+  assert.equal(result.code, 0, result.stderr);
+  const [release, ...rest] = gh.state().releases;
+  assert.deepEqual(rest, []);
+  assert.equal(release.draft, false);
+  assert.deepEqual(assetNames(release), [...ALL].sort(), 'exactly the four assets of an off release');
+});
+
+test('the dry run lists exactly four assets with updates off and six with updates on', () => {
+  const off = publish(github(), releaseAssets(), { extra: ['--dry-run'] });
+  assert.equal(off.code, 0, off.stderr);
+  assert.match(off.stdout, /would publish v0\.2\.0 at a{40} with updates off: tubamp-0\.2\.0-macos-arm64\.pkg, tubamp-0\.2\.0-macos-x86_64\.pkg, SHA256SUMS, manifest\.json$/m);
+  const on = publish(github(), releaseAssets({ updates: true }), { updates: 'on', extra: ['--dry-run'] });
+  assert.equal(on.code, 0, on.stderr);
+  assert.match(on.stdout, /with updates on: .*universal\.zip, SHA256SUMS, update-v1\.signed, manifest\.json$/m);
 });

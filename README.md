@@ -105,9 +105,12 @@ shows the "UI bundle missing" page instead of pointing at an absent dev server.
 
 A push to `main` that contains a `feat`, `fix`, `perf`, or breaking Conventional
 Commit publishes a GitHub Release with an Apple Silicon and an Intel `.pkg`
-installer. The version comes from the commit messages and git tags. See
-`docs/RELEASING.md` for the commit convention, reruns, and how to build an
-installer locally (`scripts/release/build-installer.sh`).
+installer. Each installer installs for the current user only: it puts
+`tubamp.component` in `~/Library/Audio/Plug-Ins/Components` and asks for no
+password. The version comes from the commit messages and git tags. See
+`docs/RELEASING.md` for the commit convention, reruns, the in-plugin update
+keys, and how to build an installer locally
+(`scripts/release/build-installer.sh`).
 
 ## Library layout
 

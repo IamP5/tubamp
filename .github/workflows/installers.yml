@@ -7,6 +7,14 @@ on:
         description: Version baked into the plugin and the installers, X.Y.Z
         required: true
         type: string
+      updates:
+        description: The plan's decision, on or off. On compiles the in-plugin updater in
+        required: true
+        type: string
+      archive:
+        description: Also build the universal update archive and check it with the client's code
+        required: true
+        type: boolean
 
 permissions:
   contents: read
@@ -25,6 +33,7 @@ jobs:
       VERSION: ${{ inputs.version }}
       # Hosted runners deliver timers late; the smoke test widens its wall-clock bounds by this.
       TUBAMP_TEST_WALLCLOCK_SLACK: 8
+      UPDATES: ${{ inputs.updates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,13 +50,28 @@ jobs:
         run: arch -x86_64 /usr/bin/true 2>/dev/null || sudo softwareupdate --install-rosetta --agree-to-license
 
       - name: Build, test and package
-        run: scripts/release/build-installer.sh "$ARCH" "$VERSION"
+        run: |
+          case "$UPDATES" in
+            on) flag=-DTUBAMP_UPDATES=ON ;;
+            off) flag=-DTUBAMP_UPDATES=OFF ;;
+            *) echo "updates must be on or off, got '$UPDATES'" >&2; exit 1 ;;
+          esac
+          scripts/release/build-installer.sh "$ARCH" "$VERSION" "$flag"
 
-      - name: Install the package and validate the AU
+      # The package installs for the current user, so no sudo: with sudo, the "current
+      # user" would be root and the component would land in root's home.
+      - name: Install the package for the runner's user and validate the AU
         if: matrix.arch == 'arm64'
         run: |
-          sudo installer -pkg "dist/tubamp-$VERSION-macos-arm64.pkg" -target /
-          test -f /Library/Audio/Plug-Ins/Components/tubamp.component/Contents/MacOS/tubamp
+          system=/Library/Audio/Plug-Ins/Components
+          before="$(ls -A "$system" 2>/dev/null || true)"
+          installer -pkg "dist/tubamp-$VERSION-macos-arm64.pkg" -target CurrentUserHomeDirectory
+          component="$HOME/Library/Audio/Plug-Ins/Components/tubamp.component"
+          test -f "$component/Contents/MacOS/tubamp"
+          installed="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$component/Contents/Info.plist")"
+          [ "$installed" = "$VERSION" ] || { echo "installed version is '$installed', expected $VERSION" >&2; exit 1; }
+          test ! -e "$system/tubamp.component"
+          [ "$(ls -A "$system" 2>/dev/null || true)" = "$before" ] || { echo "the install wrote to $system" >&2; exit 1; }
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           auval -v aufx Tamp Tuba
 
@@ -57,4 +81,90 @@ jobs:
           path: |
             dist/tubamp-${{ inputs.version }}-macos-${{ matrix.arch }}.pkg
             dist/tubamp-${{ inputs.version }}-macos-${{ matrix.arch }}.build.json
+          if-no-files-found: error
+
+      # A tar keeps the file modes that an artifact upload would drop.
+      - name: Hand the signed component to the update archive job
+        if: inputs.archive
+        run: tar -C "build/rel-$ARCH/tubamp_artefacts/Release/AU" -cf "component-$ARCH.tar" tubamp.component
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.archive
+        with:
+          name: component-${{ matrix.arch }}
+          path: component-${{ matrix.arch }}.tar
+          if-no-files-found: error
+
+  update-archive:
+    needs: installer
+    if: inputs.archive
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # The client's own code, with the release keys committed in src/update/keys.
+      - name: Build tubamp_update_tool
+        run: |
+          cmake -S . -B build/tool -DCMAKE_BUILD_TYPE=Release -DTUBAMP_COPY_AFTER_BUILD=OFF \
+            -DTUBAMP_BUNDLED_UI=OFF -DTUBAMP_WEBUI_DEV=OFF
+          cmake --build build/tool --target tubamp_update_tool -j "$(sysctl -n hw.ncpu)"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: installer-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: component-*
+          path: components
+          merge-multiple: true
+
+      - name: Merge, sign and zip the universal bundle
+        run: |
+          for arch in arm64 x86_64; do mkdir -p "components/$arch" && tar -C "components/$arch" -xf "components/component-$arch.tar"; done
+          scripts/release/build-update-archive.sh "$VERSION" components/arm64/tubamp.component components/x86_64/tubamp.component dist
+
+      # A throwaway key signs a test envelope so the shipped client's unpack and inspect
+      # stages run on the archive, as an update from either installer. The key never
+      # leaves this job.
+      - name: Check the archive with the client's code
+        run: |
+          openssl="$(brew --prefix openssl@3 2>/dev/null)/bin/openssl"
+          [ -x "$openssl" ] || { brew install openssl@3 && openssl="$(brew --prefix openssl@3)/bin/openssl"; }
+          scratch="$(mktemp -d)"
+          (umask 077 && "$openssl" ecparam -name prime256v1 -genkey -noout -out "$scratch/key.pem")
+          "$openssl" ec -in "$scratch/key.pem" -pubout -out "$scratch/key.pub.pem" 2>/dev/null
+          mkdir "$scratch/out" && cp dist/*.build.json "dist/tubamp-$VERSION-macos-universal.zip" "$scratch/out/"
+          TUBAMP_UPDATE_SIGNING_KEYS="$(cat "$scratch/key.pem")" OPENSSL="$openssl" \
+            node scripts/release/envelope.mjs --version "$VERSION" --dir "$scratch/out"
+          rm "$scratch/key.pem"
+          gate() {
+            build/tool/tubamp_update_tool verify-envelope --envelope "$1" --running 0.0.0 --trust "$scratch/key.pub.pem" \
+              --archive "$2" --installed components/arm64/tubamp.component --installed components/x86_64/tubamp.component
+          }
+          gate "$scratch/out/update-v1.signed" "dist/tubamp-$VERSION-macos-universal.zip"
+          cp "dist/tubamp-$VERSION-macos-universal.zip" "$scratch/tampered.zip"
+          printf 'X' | dd of="$scratch/tampered.zip" bs=1 seek=100 conv=notrunc 2>/dev/null
+          if gate "$scratch/out/update-v1.signed" "$scratch/tampered.zip"; then
+            echo "the client accepted a tampered archive" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: update-archive
+          path: |
+            dist/tubamp-${{ inputs.version }}-macos-universal.zip
+            build/tool/tubamp_update_tool
           if-no-files-found: error

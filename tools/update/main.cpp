@@ -9,9 +9,13 @@
 //
 //   tubamp_update_tool verify-envelope --envelope <file> --running <X.Y.Z>
 //                      [--highest-seen <X.Y.Z>] [--macos <X.Y>] [--trust <pub.pem>]...
+//                      [--archive <zip> --installed <tubamp.component>...]
 //       Opens the envelope exactly as the plugin does and prints the offer or the refusal.
-//       Without --trust it uses the release keys compiled into this build. Exit 0 only
-//       when there is an offer.
+//       Without --trust it uses the release keys compiled into this build. With --archive
+//       it then runs the plugin's own download, unpack and inspect stages on the zip, once
+//       for each --installed bundle, in a temporary home where that bundle is the live
+//       copy. Nothing is swapped. Exit 0 only when there is an offer and every archive
+//       check accepts it.
 //
 //   tubamp_update_tool fetch-check [--path <path under the repository>] [--cancel-after <ms>]
 //       One real GET through the system fetcher, of https://github.com/IamP5/tubamp/<path>
@@ -20,10 +24,14 @@
 //       the cancel. Uses the network; never part of `test`.
 
 #include "UpdateTests.h"
+#include "detail/Bundle.h"
 #include "detail/Fetch.h"
 #include "detail/Trust.h"
 
 #include <atomic>
+#include <filesystem>
+#include <unistd.h>
+#include <vector>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -83,6 +91,106 @@ const char* name (NoOffer n)
     return "?";
 }
 
+const char* name (Failure f)
+{
+    switch (f)
+    {
+        case Failure::network: return "network";
+        case Failure::integrity: return "size or SHA-256 differs from the signed payload";
+        case Failure::archive: return "an entry breaks the extraction rules";
+        case Failure::wrongBundle: return "Info.plist, CPU slices or code seal do not match the offer";
+        case Failure::noSpace: return "no space";
+        case Failure::notWritable: return "not writable";
+    }
+    return "?";
+}
+
+const char* name (ManualReason r)
+{
+    switch (r)
+    {
+        case ManualReason::systemDomain: return "system domain";
+        case ManualReason::unexpectedPath: return "unexpected path";
+        case ManualReason::readOnly: return "read-only";
+        case ManualReason::noAtomicSwap: return "no atomic swap";
+        case ManualReason::notAnAudioUnit: return "not an Audio Unit";
+    }
+    return "?";
+}
+
+/** The stages the plugin runs between the download and the swap, on a copy of
+    `installed` in a temporary home. The temporary home is deleted before returning. */
+bool archiveAccepted (const Offer& offer, const std::string& archivePath, const std::string& installedPath)
+{
+    namespace fs = std::filesystem;
+    const char* tmp = std::getenv ("TMPDIR");
+    std::string pattern = (fs::path (tmp != nullptr && *tmp != 0 ? tmp : "/tmp") / "tubamp-archive-gate.XXXXXX").string();
+    if (::mkdtemp (pattern.data()) == nullptr)
+    {
+        std::printf ("refused: cannot create a temporary home\n");
+        return false;
+    }
+    const fs::path root (pattern);
+    const auto home = root / "home";
+    const auto live = home / "Library" / "Audio" / "Plug-Ins" / "Components" / bundleRoot;
+
+    const auto run = [&]() -> std::optional<Failure>
+    {
+        std::error_code ec;
+        fs::create_directories (live.parent_path(), ec);
+        fs::copy (installedPath, live, fs::copy_options::recursive, ec);
+        if (ec)
+        {
+            std::printf ("refused: cannot copy %s: %s\n", installedPath.c_str(), ec.message().c_str());
+            return Failure::notWritable;
+        }
+        const auto site = InstallSite::detect (live / "Contents" / "MacOS" / "tubamp", home, true, false, root / "System");
+        const auto* writable = std::get_if<SelfUpdatable> (&site.kind);
+        if (writable == nullptr)
+        {
+            const auto* manual = std::get_if<InstallSite::NotSelfUpdatable> (&site.kind);
+            std::printf ("refused: the temporary copy cannot replace itself (%s)\n", manual != nullptr ? name (manual->why) : "off");
+            return Failure::notWritable;
+        }
+
+        auto staging = Staging::create (*writable);
+        if (! staging)
+            return staging.error();
+        auto sink = ArchiveSink::open (staging.value(), offer);
+        if (! sink)
+            return sink.error();
+        std::ifstream in (archivePath, std::ios::binary);
+        if (! in)
+        {
+            std::printf ("refused: cannot read %s\n", archivePath.c_str());
+            return Failure::integrity;
+        }
+        std::vector<char> chunk (1 << 16);
+        while (in.read (chunk.data(), std::streamsize (chunk.size())) || in.gcount() > 0)
+            if (! sink.value().write (ByteView (reinterpret_cast<const std::uint8_t*> (chunk.data()), std::size_t (in.gcount()))))
+                break;
+        auto archive = std::move (sink.value()).finish();
+        if (! archive)
+            return archive.error();
+        auto unpacked = unpack (std::move (archive).value(), staging.value());
+        if (! unpacked)
+            return unpacked.error();
+        auto inspected = inspect (std::move (unpacked).value(), staging.value(), offer, *writable);
+        if (! inspected)
+            return inspected.error();
+        return std::nullopt;
+    };
+
+    const auto failure = run();
+    std::error_code ignored;
+    fs::remove_all (root, ignored);
+    if (failure)
+        std::printf ("archive refused for installed %s: %s\n", installedPath.c_str(), name (*failure));
+    else
+        std::printf ("archive accepted for installed %s\n", installedPath.c_str());
+    return ! failure;
+}
+
 std::optional<std::string> readFile (const std::string& path)
 {
     std::ifstream in (path, std::ios::binary);
@@ -97,6 +205,7 @@ int usage()
                   "usage: tubamp_update_tool test\n"
                   "       tubamp_update_tool verify-envelope --envelope <file> --running <X.Y.Z>\n"
                   "                          [--highest-seen <X.Y.Z>] [--macos <X.Y>] [--trust <pub.pem>]...\n"
+                  "                          [--archive <zip> --installed <tubamp.component>...]\n"
                   "       tubamp_update_tool fetch-check [--path <path under the repository>]\n");
     return 2;
 }
@@ -108,6 +217,8 @@ int verifyEnvelope (int argc, char** argv)
     OsVersion os { 999, 0 };   // unconstrained unless asked: the gate checks everything else
     std::vector<TrustedKey> trusted;
     bool customTrust = false;
+    std::string archivePath;
+    std::vector<std::string> installed;
 
     for (int i = 2; i + 1 < argc; i += 2)
     {
@@ -128,6 +239,10 @@ int verifyEnvelope (int argc, char** argv)
                 return usage();
             os = *parsed;
         }
+        else if (flag == "--archive")
+            archivePath = value;
+        else if (flag == "--installed")
+            installed.push_back (value);
         else if (flag == "--trust")
         {
             const auto pem = readFile (value);
@@ -143,7 +258,7 @@ int verifyEnvelope (int argc, char** argv)
         else
             return usage();
     }
-    if (envelopePath.empty() || ! running || (argc % 2) != 0)
+    if (envelopePath.empty() || ! running || (argc % 2) != 0 || archivePath.empty() != installed.empty())
         return usage();
 
     const auto file = readFile (envelopePath);
@@ -185,7 +300,11 @@ int verifyEnvelope (int argc, char** argv)
     std::printf ("offer %s\n  minimumMacOS %d.%d\n  size %llu\n  sha256 %s\n  archive %s\n",
                  offer.version().toString().c_str(), m.minimumMacOS().major, m.minimumMacOS().minor,
                  (unsigned long long) offer.archive().size, hash.c_str(), archiveUrl (offer).text().c_str());
-    return 0;
+
+    bool accepted = true;
+    for (const auto& bundle : installed)
+        accepted = archiveAccepted (offer, archivePath, bundle) && accepted;
+    return accepted ? 0 : 1;
 }
 const char* name (FetchError e)
 {
