@@ -9,7 +9,6 @@ type Tile = { kind: "block"; name: string } | { kind: "slot"; n: number };
 
 const name = (id: string) => CHAIN.find((b) => b.id === id)?.name ?? id;
 
-/** A chain with the three plugin slots sitting where a player might put them. */
 const TILES: readonly Tile[] = [
   { kind: "block", name: name("gate") },
   { kind: "slot", n: 1 },
@@ -30,7 +29,6 @@ const chunk = <T,>(list: readonly T[], size: number) =>
 const ROW = 52;
 const GAP = 44;
 
-/** The board's snake: out of the right end of one row, back under it, into the left end of the next. */
 function wrapPath(rows: number) {
   const height = rows * ROW + (rows - 1) * GAP;
   const y = (r: number) => ((r * (ROW + GAP) + ROW / 2) / height) * 100;
@@ -87,10 +85,6 @@ function Board({ perRow, className }: { perRow: number; className: string }) {
   );
 }
 
-/**
- * A diagram of the chain in the board's own tile language, with the three
- * Audio Unit slots dropping into it as it scrolls into view.
- */
 export default function ChainSlots() {
   const scope = useRef<HTMLDivElement>(null);
 

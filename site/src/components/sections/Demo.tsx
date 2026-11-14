@@ -87,7 +87,6 @@ function Stage() {
     return () => ro.disconnect();
   }, []);
 
-  // Find out whether the demo bundle is deployed before offering to start it.
   useEffect(() => {
     const box = boxRef.current;
     if (!box) return;
@@ -105,7 +104,6 @@ function Stage() {
     return () => io.disconnect();
   }, []);
 
-  // While live, Escape (inside the editor or out) and any press outside the window give the page back.
   useEffect(() => {
     if (stage !== "live") return;
     const release = () => setStage("idle");

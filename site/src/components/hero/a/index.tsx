@@ -20,7 +20,6 @@ function Words({ words, className = "" }: { words: string[]; className?: string 
   ));
 }
 
-/** Chapter 01, Input: the wordmark as a window onto glowing tubes. */
 export default function HeroA({ version }: { version: string | null }) {
   return (
     <section aria-labelledby="hero-title">

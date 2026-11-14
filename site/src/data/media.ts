@@ -1,6 +1,6 @@
 /**
- * Every clip on the page. Each has `<name>.mp4`, `<name>.webm` and
- * `<name>.jpg` (poster) under public/media/<dir>/.
+ * Each clip has `<name>.mp4`, `<name>.webm` and `<name>.jpg` (poster) under
+ * public/media/<dir>/.
  *
  * `ui`: the real editor, recorded by `npm run capture` (scripts/capture.mjs).
  * `film`: generated atmosphere footage, never shown as the product.

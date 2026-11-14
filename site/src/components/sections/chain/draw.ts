@@ -16,11 +16,7 @@ function signal(chain: readonly Stage[], start: number, length: number) {
   return x;
 }
 
-/**
- * The signal after the blocks in so far, in amber, over the signal before the
- * last one arrived, in grey, so each block's change reads as a difference.
- * `span` is how much signal time fits across the canvas.
- */
+/** `span` is how much signal time fits across the canvas. */
 export function drawWave(canvas: HTMLCanvasElement, scene: Scene, ink: Ink, span: number) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;

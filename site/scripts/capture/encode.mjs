@@ -20,7 +20,7 @@ export function encode(frames, seconds, { name, outDir, crop, outWidth }) {
   rmSync(work, { recursive: true, force: true });
   mkdirSync(work, { recursive: true });
   // The screencast only delivers frames when the page changes: hold each one until the next.
-  const t0 = frames[0].t; // first frame is held from the clip start
+  const t0 = frames[0].t;
   let list = "ffconcat version 1.0\n";
   frames.forEach((f, i) => {
     writeFileSync(join(work, `f${i}.jpg`), f.data);
@@ -30,7 +30,6 @@ export function encode(frames, seconds, { name, outDir, crop, outWidth }) {
   list += `file f${frames.length - 1}.jpg\n`;
   writeFileSync(join(work, "list.txt"), list);
 
-  // Frames are 2560x1600 (2x). Crop the editor band at full size, or scale the board.
   const vf = [
     "fps=30",
     crop ? `crop=2560:${crop.h * 2}:0:${crop.y * 2}` : null,

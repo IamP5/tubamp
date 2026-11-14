@@ -7,9 +7,9 @@ export type ArchHints = {
 };
 
 /**
- * Which installer to offer first. Browsers on Apple Silicon still report an
- * Intel user agent, so this reads the client-hint architecture where it exists
- * and the GPU name otherwise. Null means "a Mac we cannot tell apart" or "not a Mac".
+ * Browsers on Apple Silicon still report an Intel user agent, so this reads the
+ * client-hint architecture where it exists and the GPU name otherwise. Null means
+ * "a Mac we cannot tell apart" or "not a Mac".
  */
 export function archFromHints({ platform, uaArchitecture, glRenderer }: ArchHints): Arch | null {
   if (!/mac/i.test(platform)) return null;

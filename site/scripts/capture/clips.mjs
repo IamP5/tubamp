@@ -6,7 +6,6 @@
 
 const pause = (s, ms) => s.sleep(ms);
 
-/** Step the preset selector forward n times, un-recorded. */
 async function gotoPreset(s, n) {
   for (let i = 0; i < n; i++) {
     await s.page.click('button[aria-label="Next preset"]');
@@ -14,7 +13,7 @@ async function gotoPreset(s, n) {
   }
 }
 const tile = (token) => `[role=group][data-block="${token}"]`;
-const CLEAN_CHORUS = 2; // Next-preset clicks from the first preset
+const CLEAN_CHORUS = 2;
 
 async function pickFromAddMenu(s, label) {
   await s.click('button[aria-label="Add a block to the chain"]', { ms: 550 });
@@ -23,7 +22,6 @@ async function pickFromAddMenu(s, label) {
   await pause(s, 450);
 }
 
-/** Editor-band clip: pre-select the block, wiggle two controls, step the type and back. */
 const fx = (name, token, { step = "type", knobs, dy = -64 }) => ({
   name: `fx-${name}`,
   kind: "editor",
@@ -61,7 +59,6 @@ export const CLIPS = [
       await pickFromAddMenu(s, "Gate");
       await pickFromAddMenu(s, "Delay");
       await pause(s, 400);
-      // Drag the last block to the front of the chain.
       const from = await s.box(tile("delay"));
       const to = await s.box(tile("gate"));
       await s.dragBetween(from.x, from.y, to.x - 40, to.y, 800);

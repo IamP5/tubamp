@@ -13,11 +13,6 @@ import ArriveClip from "./ArriveClip";
 /** Scroll travel of each layer, in px, across the stage's time on screen. The nearer layer travels further. */
 const DEPTH = { back: [40, -40], front: [160, -140] } as const;
 
-/**
- * The amp editor behind, the TONE3000 browser in front, drifting against each
- * other as the page scrolls. On narrow screens and under reduced motion the two
- * clips simply stack.
- */
 export default function CapturesStage() {
   const scope = useRef<HTMLDivElement>(null);
 

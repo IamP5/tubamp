@@ -1,4 +1,3 @@
-/** The small mark each block carries on the board, drawn after the plugin's own. */
 const PATHS: Record<string, string> = {
   gate: "M8 5v14M16 5v14M8 12h8",
   comp: "M12 3v5.5M9 5.5 12 8.5l3-3M12 21v-5.5M9 18.5l3-3 3 3M5 12h14",

@@ -10,11 +10,6 @@ const FULL = `${MQ.motion} and ${MQ.desktop}`;
 /** `glow` is how far down the frame the row of filaments burns (0 = top, 1 = bottom). */
 const FILM = { src: "/media/film/tubes", width: 1920, height: 1080, glow: 0.53 };
 
-/**
- * Where to put the footage so its row of filaments lands at `target` (a y in
- * the window, in px) when the frame is scaled by at least `minScale`: an
- * offset, and the scale that keeps the shifted frame covering the window.
- */
 function filmFit(video: HTMLVideoElement, target: number, minScale = 1) {
   const w = video.offsetWidth;
   const h = video.offsetHeight;
@@ -26,18 +21,12 @@ function filmFit(video: HTMLVideoElement, target: number, minScale = 1) {
   return f;
 }
 
-/** A point `at` of the way down the wordmark, in the coordinates of the film's window. */
 function wordmarkY(video: HTMLVideoElement, wordmark: HTMLElement, at = 0.5) {
   const word = wordmark.getBoundingClientRect();
   return word.top + word.height * at - video.parentElement!.getBoundingClientRect().top;
 }
 
 /**
- * The hero's moving part. On desktop with motion allowed the stage pins for one
- * and a half screens while the camera flies into the wordmark and out the other
- * side into the footage, where the headline lands. Everywhere else the
- * wordmark is a still window onto the footage with the copy below it.
- *
  * `md:motion-safe:` classes belong to the pinned layout and `md:motion-reduce:`
  * to the still desktop one, so the server render already matches whichever
  * version the visitor will get.
@@ -82,7 +71,6 @@ export default function HeroStage({
         };
       };
 
-      /** Paints the mask once fonts are in, and again whenever the stage changes size. */
       const startMask = (zoom: boolean, onMeasure: (paint: (t: number) => void) => void) => {
         const mask = createMask(canvas, wordmark, colours, zoom);
         let live = true;

@@ -10,7 +10,7 @@ import type { Clip } from "@/data/media";
 
 type From = "center" | "left" | "right";
 
-/** Where the window's clip starts, as an inset() box. The radius matches Window's rounded-xl. */
+/** Where the window's clip starts. The radius matches Window's rounded-xl. */
 const CLOSED: Record<From, string> = {
   center: "inset(16% 12% 16% 12% round 12px)",
   left: "inset(0% 100% 0% 0% round 12px)",
@@ -19,11 +19,6 @@ const CLOSED: Record<From, string> = {
 // Open past the frame so a tilted window keeps its corners.
 const OPEN = "inset(-4% -4% -4% -4% round 12px)";
 
-/**
- * A clip of the real editor in its window that opens as it scrolls in: the
- * frame's clip-path widens from `from` while the video inside settles from a
- * slight zoom, so the picture reads as arriving rather than fading up.
- */
 export default function ArriveClip({
   clip,
   from = "center",

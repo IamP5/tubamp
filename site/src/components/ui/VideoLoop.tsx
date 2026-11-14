@@ -3,11 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { clipSrc, type Clip } from "@/data/media";
 
-/**
- * A muted loop. Sources are attached only when the element nears the viewport
- * and playback stops when it leaves, so a page full of clips costs nothing
- * until each one is looked at. With `play` off it is the poster alone.
- */
 export default function VideoLoop({
   clip,
   className,

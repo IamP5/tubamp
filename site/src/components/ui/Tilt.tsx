@@ -23,11 +23,6 @@ function insideActivePin(el: Element) {
   return ScrollTrigger.getAll().some((st) => st.isActive && st.pin instanceof Element && st.pin.contains(el));
 }
 
-/**
- * Leans its child a few degrees toward the pointer, damped by a spring, so a
- * framed window of the real editor reads as an object with depth. Only with a
- * fine pointer and motion allowed; otherwise the child stays flat.
- */
 export default function Tilt({ children, className = "" }: { children: ReactNode; className?: string }) {
   const reduced = useReducedMotion();
   const fine = useFinePointer();

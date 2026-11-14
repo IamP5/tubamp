@@ -4,7 +4,6 @@ import EffectsStack from "./effects/EffectsStack";
 import Reveal, { Line } from "./effects/Reveal";
 
 const copy = CHAPTERS.effects;
-/** The last word of the headline carries the turn and takes the serif. */
 const cut = copy.headline[1].lastIndexOf(" ");
 const lead = copy.headline[1].slice(0, cut);
 const turn = copy.headline[1].slice(cut + 1);

@@ -23,7 +23,6 @@ export function macOS(version: string): string {
   return `macOS ${version.replace(/\.0$/, "")}`;
 }
 
-/** The detected Mac first; Apple Silicon first when the Mac cannot be told apart. */
 export function archOrder(detected: Arch | null): readonly [Arch, Arch] {
   return detected === "x86_64" ? ["x86_64", "arm64"] : ["arm64", "x86_64"];
 }

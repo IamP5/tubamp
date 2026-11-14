@@ -4,12 +4,6 @@ import { useRef } from "react";
 import { useGSAP } from "@gsap/react";
 import { gsap, MQ, setupGsap } from "@/lib/motion";
 
-/**
- * Reveals every `[data-line]` inside it, in order, once it scrolls into view.
- * A line is a mask (`overflow-hidden`) around one inner element that rises
- * into it, so the text arrives already moving and lands without a fade tail.
- * Under reduced motion nothing is touched and the text sits in place.
- */
 export default function Reveal({
   children,
   className,

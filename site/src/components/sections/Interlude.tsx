@@ -7,19 +7,14 @@ import VideoLoop from "@/components/ui/VideoLoop";
 import type { Clip } from "@/data/media";
 import { gsap, MQ, ScrollTrigger, setupGsap } from "@/lib/motion";
 
-/** How the footage opens: horizontal blinds, or a grid that opens column by column. */
 export type Opening = "blinds" | "grid";
 
-/**
- * One ink shutter over the footage, as fractions of the frame. It collapses
- * toward `origin` when its turn comes (`at`, 0..1), uncovering what is under it.
- */
+/** Fractions of the frame. It collapses toward `origin` when its turn comes (`at`, 0..1). */
 type Shutter = { x: number; y: number; w: number; h: number; at: number; origin: string };
 
 // Shutters overlap by this much so no hairline of footage shows while the frame is closed.
 const SEAM = 0.004;
 
-/** Each blind is two shutters that part from its centre line; the middle blinds open first. */
 function blinds(count: number): Shutter[] {
   const mid = (count - 1) / 2;
   return Array.from({ length: count }, (_, i) => {
@@ -32,7 +27,6 @@ function blinds(count: number): Shutter[] {
   }).flat();
 }
 
-/** Columns open left to right; inside a column the cells open in a random order. */
 function grid(cols: number, aspect: number): Shutter[] {
   const rows = Math.max(2, Math.round(cols / aspect));
   const cells: Shutter[] = [];
@@ -51,12 +45,7 @@ function shuttersFor(opening: Opening, width: number, height: number): Shutter[]
 }
 
 /**
- * A full-screen scene change between chapters: generated footage that opens
- * through a scrubbed grid of ink shutters as it scrolls in, with one line of display type that
- * lands as the footage opens. The frame holds for a moment once it fills the
- * screen. Whatever is passed as `children` rises over the held frame, which
- * drifts up more slowly and darkens underneath it.
- *
+ * Whatever is passed as `children` rises over the held frame.
  * Under reduced motion it is the poster and the line, laid out in place.
  */
 export default function Interlude({

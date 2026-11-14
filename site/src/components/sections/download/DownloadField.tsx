@@ -7,7 +7,6 @@ import { ArrowOut, fieldButton } from "./parts";
 
 const copy = CHAPTERS.download;
 
-/** The page's output: the amber field with the installers, or the way to GitHub when there is no release. */
 export default function DownloadField({ release, id = "download" }: { release: Release | null; id?: string }) {
   const requirements = [
     release ? SITE.platforms.replace(/^macOS [\d.]+/, macOS(release.minimumMacOS)) : SITE.platforms,

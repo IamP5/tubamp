@@ -4,11 +4,6 @@ import { useRef } from "react";
 import { useGSAP } from "@gsap/react";
 import { gsap, MQ, setupGsap } from "@/lib/motion";
 
-/**
- * The amber field arriving. It is full-bleed from its first pixel and rises
- * over the frame before it with the scroll, while anything marked `data-rise`
- * travels up into place a little behind it. Reduced motion gets the field at rest.
- */
 export default function Curtain({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
 

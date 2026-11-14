@@ -21,11 +21,6 @@ const expoOut = (t: number) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t));
 
 type Layout = { rects: Rect[]; wire: Wire; total: number; ink: Ink; span: number };
 
-/**
- * The pinned part of the chain chapter: the signal, the board the blocks land
- * on, and the caption. One scrubbed tween drives `u`; everything on screen is
- * drawn from `sceneAt(u)`.
- */
 export default function ChainStage({ header, after }: { header: ReactNode; after: ReactNode }) {
   const root = useRef<HTMLDivElement>(null);
   const pin = useRef<HTMLDivElement>(null);

@@ -1,9 +1,3 @@
-/**
- * The wire that runs from In, through every slot, to Out, drawn the way the
- * plugin's board draws it: rows left to right, and out of the end of one row,
- * down, back under it and into the start of the next.
- */
-
 export type Rect = { x: number; y: number; w: number; h: number };
 type Point = { x: number; y: number };
 
@@ -15,7 +9,6 @@ export type Wire = {
 
 /** Gap left between a slot's right edge and the wire's end while that slot waits. */
 const LEAD = 6;
-/** How far the finished wire runs past the last block to Out. */
 const TAIL = 28;
 /** Corner radius of the wrap; no longer than the short run out of a row's last slot. */
 const r = 8;

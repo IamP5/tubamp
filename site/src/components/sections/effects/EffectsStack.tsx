@@ -13,16 +13,6 @@ const HOLD_SVH = 30;
 const pad = (n: number) => String(n).padStart(2, "0");
 const TOTAL = pad(EFFECT_PANELS.length);
 
-/**
- * Eight editor strips as a stack of full-screen panels. Each panel is a
- * sticky sibling of the others, so a later panel rises over an earlier one
- * that stays pinned; the covered panel sinks and darkens as it goes under.
- * Every panel re-points `--accent` to its block's family, so the giant name
- * behind the strip and the index below change hue with the block.
- *
- * Narrow screens and reduced motion get the same markup unpinned: a plain
- * vertical sequence of name, line and strip.
- */
 export default function EffectsStack() {
   const scope = useRef<HTMLDivElement>(null);
   const marks = useRef<(HTMLDivElement | null)[]>([]);

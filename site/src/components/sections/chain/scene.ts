@@ -11,10 +11,8 @@ import type { Stage } from "./signal";
 export const ACTS = { enter: 0.8, draw: 0.45, block: 0.36, swap: 0.75, hold: 0.35 } as const;
 
 export const BLOCKS = 9;
-/** The two blocks that trade places at the end: Drive and Reverb. */
 export const SWAP = [2, 8] as const;
 
-/** How much of the scroll is pinned. */
 export const PINNED = ACTS.draw + BLOCKS * ACTS.block + ACTS.swap + ACTS.hold;
 export const TOTAL = ACTS.enter + PINNED;
 
@@ -96,7 +94,6 @@ export function sceneAt(u: number, order: readonly Stage[]): Scene {
   };
 }
 
-/** The finished chain, laid out still: what reduced motion and the server render show. */
 export function finalScene(order: readonly Stage[]): Scene {
   return {
     header: 1,

@@ -19,9 +19,8 @@ export function useReducedMotion(): boolean {
 }
 
 /**
- * One frame loop for the whole site: GSAP's ticker drives Lenis, Lenis drives
- * ScrollTrigger. ReactLenis creates its instance in an effect of its own, so
- * the hookup lives in a child that re-runs once `useLenis` has the instance.
+ * ReactLenis creates its instance in an effect of its own, so the hookup lives
+ * in a child that re-runs once `useLenis` has the instance.
  */
 function TickerBridge() {
   const lenis = useLenis();

@@ -41,10 +41,6 @@ function useBar(): Bar {
   return bar;
 }
 
-/**
- * True while the bar sits over a light field (anything marked `data-nav-tone="signal"`),
- * so the bar can take that field's colours instead of laying an ink strip across it.
- */
 function useOverSignal(): boolean {
   const [over, setOver] = useState(false);
 

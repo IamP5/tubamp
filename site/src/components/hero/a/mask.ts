@@ -1,9 +1,7 @@
 /**
- * The ink sheet the wordmark is cut out of, painted on a canvas that lies over
- * the footage. Glyph positions are read from the DOM wordmark so CSS owns the
- * layout (size, kerning, tracking, line breaks) and the canvas only repaints
- * it: an ink fill with the letters erased, at whatever camera scale the scroll
- * asks for. Vector text repainted per frame stays sharp at any zoom.
+ * Glyph positions are read from the DOM wordmark so CSS owns the layout (size, kerning,
+ * tracking, line breaks) and the canvas only repaints it. Vector text repainted per
+ * frame stays sharp at any zoom.
  */
 
 type Glyph = { ch: string; x: number; y: number };
@@ -46,9 +44,8 @@ function fillGlyphs(ctx: CanvasRenderingContext2D, word: Wordmark, stroke = fals
 }
 
 /**
- * Finds the letter stem to fly through: the tallest solid vertical run in the
- * wordmark, weighted toward the middle of the word, so the camera ends inside
- * a straight stroke (the b's stem in Geist) instead of grazing a curve.
+ * Weighted toward the middle of the word, so the camera ends inside a straight
+ * stroke (the b's stem in Geist) instead of grazing a curve.
  */
 function findFocus(word: Wordmark, width: number, height: number): Focus {
   const xs = word.glyphs.map((g) => g.x);
@@ -110,7 +107,6 @@ function findFocus(word: Wordmark, width: number, height: number): Focus {
 const easeOutCubic = (t: number) => 1 - (1 - t) ** 3;
 
 export type Mask = {
-  /** Re-reads layout and size; call after resize or font load. */
   measure(): void;
   /** Paints the camera at t in 0..1 (0 = the wordmark as laid out, 1 = inside the stem). */
   paint(t: number): void;

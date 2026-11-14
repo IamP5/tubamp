@@ -5,8 +5,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 export const VIEW = { width: 1280, height: 800 };
-export const STATUS_BAR = 36; // px, bottom of the window
-export const EDITOR_BAND = 296; // px, editor panel above the status bar
+export const STATUS_BAR = 36;
+export const EDITOR_BAND = 296;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export { sleep };
@@ -16,7 +16,6 @@ function die(msg) {
   process.exit(1);
 }
 
-/** Resolve playwright-core and a Chromium binary from env vars or common caches. */
 export function loadPlaywright() {
   let dir = process.env.PLAYWRIGHT_CORE;
   if (!dir) {
@@ -57,10 +56,6 @@ export function loadPlaywright() {
 }
 function require_fs() { return createRequire(import.meta.url)("node:fs"); }
 
-/**
- * Open the UI at 2x device scale and return a session with pointer helpers and
- * a screencast recorder. `record(fn)` returns the frames captured while fn ran.
- */
 export async function openSession(url) {
   const { chromium, exe } = loadPlaywright();
   const browser = await chromium.launch({ headless: true, executablePath: exe });
@@ -81,7 +76,6 @@ export async function openSession(url) {
       };
       hide();
       setInterval(hide, 100);
-      // Pointer overlay, since headless video has no cursor.
       const c = document.createElement("div");
       c.id = "__cap_cursor";
       c.style.cssText =
@@ -105,7 +99,6 @@ export async function openSession(url) {
     sleep,
     async close() { await ctx.close(); await browser.close(); },
 
-    /** Reload the page to a clean mock bridge state. */
     async fresh() {
       await page.reload({ waitUntil: "networkidle" });
       await prepare();
@@ -114,7 +107,6 @@ export async function openSession(url) {
       await sleep(400);
     },
 
-    /** Centre of an element, optionally restricted to the editor band. */
     async box(sel, { band = false, nth = 0, knob = false } = {}) {
       const loc = page.locator(sel);
       const n = await loc.count();
@@ -131,7 +123,6 @@ export async function openSession(url) {
       return { x: b.x + b.width / 2, y: b.y + b.height / 2, w: b.width, h: b.height };
     },
 
-    /** Ease the pointer to (x, y) over `ms`. */
     async moveTo(x, y, ms = 650) {
       const x0 = mouse.x, y0 = mouse.y;
       const t0 = Date.now();
@@ -155,7 +146,6 @@ export async function openSession(url) {
       await page.mouse.down(); await sleep(70); await page.mouse.up();
       return b;
     },
-    /** Press on `from`, ease to `to`, release. */
     async dragBetween(fx, fy, tx, ty, ms = 900) {
       await s.moveTo(fx, fy, 600);
       await sleep(100);
@@ -164,7 +154,7 @@ export async function openSession(url) {
       await sleep(150);
       await page.mouse.up();
     },
-    /** Vertical drag on a knob (negative dy turns it up). With `back`, returns to the start in the same press. */
+    /** Negative dy turns the knob up. With `back`, returns to the start in the same press. */
     async knob(label, dy, { ms = 550, back = true } = {}) {
       const b = await s.hover(`[aria-label="${label}"]`, { band: true, knob: true, ms: 450 });
       await sleep(80);
@@ -182,8 +172,8 @@ export async function openSession(url) {
     async clickLabel(label, opts = {}) { return s.click(`button[aria-label="${label}"]`, opts); },
 
     /**
-     * Record while `fn` runs by grabbing 2x screenshots back to back (about 30 per
-     * second). The CDP screencast only delivers CSS-pixel frames, so it is not used.
+     * Grabs 2x screenshots back to back (about 30 per second). The CDP screencast
+     * only delivers CSS-pixel frames, so it is not used.
      * Returns { frames: [{data: Buffer, t: seconds}], seconds }.
      */
     async record(fn) {
@@ -207,7 +197,6 @@ export async function openSession(url) {
         running = false;
         await loop.catch(() => {});
       }
-      // Drop the lead-in so the clip starts when fn starts.
       const start = t0 / 1000 - 0.0;
       const kept = frames.filter((f, i) => (frames[i + 1]?.t ?? Infinity) > start);
       return { frames: kept, seconds };

@@ -3,7 +3,6 @@ import { ScrollTrigger } from "gsap/ScrollTrigger";
 
 let registered = false;
 
-/** Register GSAP plugins and the site's defaults once. Call from client code only. */
 export function setupGsap() {
   if (registered || typeof window === "undefined") return;
   registered = true;
@@ -11,7 +10,6 @@ export function setupGsap() {
   gsap.defaults({ ease: "expo.out", duration: 0.9 });
 }
 
-/** matchMedia conditions every animated component gates on. */
 export const MQ = {
   motion: "(prefers-reduced-motion: no-preference)",
   reduced: "(prefers-reduced-motion: reduce)",

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /*
-  Tokens. The palette and the five family hues come from the plugin's own
+  The palette and the five family hues come from the plugin's own
   system (ui/src/theme/tokens.css) so the site and the editor read as one
   product. See DESIGN.md before adding a colour, a font or an easing.
 */
@@ -43,7 +43,6 @@
 
 :root {
   color-scheme: dark;
-  /* The accent a section paints with. A section sets data-family to re-point it. */
   --accent: var(--color-signal);
 }
 
@@ -76,7 +75,6 @@ body {
   border-radius: 4px;
 }
 
-/* Lenis */
 html.lenis, html.lenis body { height: auto; }
 .lenis.lenis-smooth { scroll-behavior: auto !important; }
 .lenis.lenis-stopped { overflow: hidden; }

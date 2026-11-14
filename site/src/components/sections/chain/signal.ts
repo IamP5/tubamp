@@ -1,16 +1,13 @@
 /**
- * A diagram of a guitar signal and what each block does to it. Not audio: a
- * picture drawn from a few honest rules (a gate zeroes the quiet, a drive
- * clips, a cab low-passes) so the waveform on the page changes the way the
- * sound would. Pure and deterministic, so the page can redraw it from scroll
- * position alone.
+ * Not audio: a picture drawn from a few honest rules (a gate zeroes the quiet, a drive
+ * clips, a cab low-passes) so the waveform changes the way the sound would. Pure and
+ * deterministic, so the page can redraw it from scroll position alone.
  */
 
 export type Stage = "gate" | "comp" | "drive" | "amp" | "cab" | "eq" | "mod" | "delay" | "reverb";
 
 /** Samples per unit of signal time. One unit holds four plucked notes. */
 export const RATE = 720;
-/** Drive output never exceeds this, whatever goes in. */
 export const DRIVE_CLIP = 0.5;
 
 const NOISE = 0.07;
@@ -63,7 +60,6 @@ function drySample(n: number): number {
 export type Span = {
   /** First sample index shown. Whole samples, so the noise never shimmers as it scrolls. */
   start: number;
-  /** Number of samples shown. */
   length: number;
 };
 
@@ -128,7 +124,6 @@ const drive: Process = (x) => {
   return y;
 };
 
-/** Asymmetric saturation (even harmonics) and more level: the amp's weight. */
 const amp: Process = (x) => {
   const y = new Float32Array(x.length);
   for (let i = 0; i < x.length; i++) {
@@ -140,7 +135,6 @@ const amp: Process = (x) => {
   return y;
 };
 
-/** A speaker is a low-pass: the fizz and the sharp corners go. */
 const cab: Process = (x) => {
   const lp = lowpass(lowpass(lowpass(x, 0.5), 0.5), 0.6);
   const dc = lowpass(lp, 0.01);
@@ -149,7 +143,6 @@ const cab: Process = (x) => {
   return y;
 };
 
-/** A tilt toward the top end: presence comes back, the body steps down a little. */
 const eq: Process = (x) => {
   const lp = lowpass(x, 0.75);
   const y = new Float32Array(x.length);
@@ -207,9 +200,8 @@ const STAGES: Record<Stage, Process> = { gate, comp, drive, amp, cab, eq, mod, d
 export const isStage = (id: string): id is Stage => Object.hasOwn(STAGES, id);
 
 /**
- * The signal as heard at the end of `chain`, in that order, over `win`. An empty
- * chain is the dry guitar. Blocks with memory (compressor, delay, reverb) are
- * run over a unit of signal before the window so their state has settled.
+ * Blocks with memory (compressor, delay, reverb) are run over a unit of signal
+ * before the window so their state has settled.
  */
 export function renderSignal(chain: readonly Stage[], win: Span): Float32Array {
   if (chain.length === 0) return drySignal(win);

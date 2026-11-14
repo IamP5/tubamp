@@ -1,7 +1,7 @@
 import { CHAIN, type Block } from "@/data/site";
 import { CLIPS, type Clip } from "@/data/media";
 
-/** The blocks that have an editor strip, in chain order. The amp has its own chapter. */
+/** In chain order. The amp is not here: it has its own chapter. */
 const EDITOR_IDS = ["gate", "comp", "drive", "cab", "eq", "mod", "delay", "reverb"] as const satisfies readonly (keyof typeof CLIPS)[];
 
 export type EffectPanel = { block: Block; clip: Clip };

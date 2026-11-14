@@ -20,11 +20,6 @@ function Row() {
   );
 }
 
-/**
- * The block names on a tilted amber band. It drifts on its own and the scroll
- * takes over its speed and direction: flick the page and it races, scroll back
- * up and it runs the other way.
- */
 export default function Marquee() {
   const scope = useRef<HTMLDivElement>(null);
 

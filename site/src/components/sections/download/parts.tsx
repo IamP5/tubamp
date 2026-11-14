@@ -1,4 +1,3 @@
-/** The download buttons on the amber field: the primary is ink on amber, the other an outline. */
 export function fieldButton(primary: boolean) {
   const base =
     "group inline-flex h-16 w-full items-center justify-between gap-4 rounded-full px-7 text-lg font-medium transition-[background-color,color,border-color,transform] duration-200 ease-ui active:scale-[0.98]";
@@ -27,7 +26,6 @@ export function ArrowDown() {
   );
 }
 
-/** For links that leave the page rather than start a download. */
 export function ArrowOut() {
   return (
     <svg {...arrow} className="transition-transform duration-200 ease-ui group-hover:translate-x-0.5 group-hover:-translate-y-0.5">
