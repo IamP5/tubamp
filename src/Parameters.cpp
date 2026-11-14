@@ -387,6 +387,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
         addFloat (layout, reverbModAmtIds[k],   name + " Mod",       { 0.0f, 1.0f, 0.001f },             0.35f,  {},   kVersionHint3);
     }
 
+    // --- cab dry/wet. A cabinet IR wants 100 % (the default, and what every session
+    // saved before this existed gets); a room or reverb IR is meant to be blended in.
+    addFloat (layout, cabMix, "Cab Mix", { 0.0f, 100.0f, 0.1f }, 100.0f, "%", kVersionHint3);
+
+
     // --- gate, compressor, drive, EQ and mod engines (docs/FX-ENGINES.md §2.7.1), hint 4:
     // the gate, then comp, drive, EQ and mod instances 1-3, each in the spec's
     // per-instance order. Defaults come from the engine headers (kGateStart etc. above).

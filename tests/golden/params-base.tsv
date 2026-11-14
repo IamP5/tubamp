@@ -165,3 +165,4 @@
 163	reverb3_lowcut	Reverb 3 Low Cut	float	20	1000	1	0.331921577	120	3	
 164	reverb3_highcut	Reverb 3 High Cut	float	1000	20000	1	0.407813013	8000	3	
 165	reverb3_mod	Reverb 3 Mod	float	0	1	0.00100000005	1	0.350000024	3	
+166	cab_mix	Cab Mix	float	0	100	0.100000001	1	100	3	

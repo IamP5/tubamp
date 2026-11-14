@@ -12,12 +12,14 @@ import { useRigCab, useToggleParam } from "../../hooks";
 import { useStore } from "../../store";
 import { FileRow } from "./FileRow";
 import { KnobRow } from "./KnobRow";
+import { Attribution, IrStatus, MissingNotice } from "./MediaMeta";
 import { KNOB_SPECS } from "./knobSpecs";
 import { rigLabel } from "./library";
 import s from "./panel.module.css";
 
 export function CabBody() {
   const ir = useStore((st) => st.ir);
+  const missing = useStore((st) => st.missingMedia.ir);
   const irs = useStore((st) => st.irs);
   const model = useStore((st) => st.model);
   const loadIr = useStore((st) => st.loadIr);
@@ -34,8 +36,11 @@ export function CabBody() {
     <div className={s.stackBody}>
       <section className={s.section}>
         <div className={s.captionRow}>
-          <span className={s.caption}>Impulse response</span>
-          <span className={s.attribution}>Powered by TONE3000</span>
+          <span className={s.captionGroup}>
+            <span className={s.caption}>Impulse response</span>
+            {ir && <IrStatus ir={ir} />}
+          </span>
+          <Attribution tone={ir?.tone} />
         </div>
         <FileRow
           entries={irs}
@@ -74,6 +79,8 @@ export function CabBody() {
           >
             Browse TONE3000 IRs
           </Button>
+
+          {!ir && missing && <MissingNotice path={missing} what="impulse response" />}
 
           {/* Rides the action row rather than a row of its own: the dock is a
               fixed 248px and the cab body already fills it. */}

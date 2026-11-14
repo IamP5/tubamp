@@ -43,6 +43,9 @@ export interface KnobProps {
   valueText?: string;
   disabled?: boolean;
   className?: string;
+  /** Custom readout text (e.g. a pan's "C" / "40L"); defaults to JUCE's
+   *  formatting with the unit suffix. Keep it a stable function. */
+  format?: (scaled: number) => string;
 }
 
 /**
@@ -65,6 +68,7 @@ export function Knob({
   valueText,
   disabled,
   className,
+  format,
 }: KnobProps) {
   const state = useMemo(() => bridge.sliderState(id), [id]);
   const [properties, setProperties] = useState<SliderProperties>(() => ({
@@ -77,13 +81,17 @@ export function Knob({
   const dragStart = useRef({ y: 0, value: 0 });
 
   const paintReadout = useCallback(() => {
-    const text = valueText ?? formatParamValue(state.getScaledValue(), state.properties);
+    const text =
+      valueText ??
+      (format
+        ? format(state.getScaledValue())
+        : formatParamValue(state.getScaledValue(), state.properties));
     if (readoutRef.current) readoutRef.current.textContent = text;
     if (dialRef.current) {
       dialRef.current.setAttribute("aria-valuenow", String(state.getScaledValue()));
       dialRef.current.setAttribute("aria-valuetext", text);
     }
-  }, [state, valueText]);
+  }, [format, state, valueText]);
 
   /* Keep the motion value + readout in sync with the backend (automation,
      preset loads, our own writes) without re-rendering. */
@@ -161,6 +169,10 @@ export function Knob({
     const el = dialRef.current;
     if (!el || disabled) return;
     const onWheel = (e: WheelEvent): void => {
+      // A sideways swipe is not a nudge: it is the user scrolling whatever the
+      // knob sits in (the amp panel scrolls horizontally when the TONE3000
+      // drawer narrows it). Left alone it would also read as "up" — deltaY is 0.
+      if (e.deltaY === 0 || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
       e.preventDefault();
       e.stopPropagation();
       const steps = Math.max(properties.numSteps - 1, 1);

@@ -1,19 +1,26 @@
 /**
  * TONE3000 browser — a 380px inspector drawer on the right edge, header bottom
  * to app bottom, no backdrop (docs/REACT-UI.md §TONE3000 browser). The board
- * stays visible and clickable while browsing, which is the point of a drawer
- * rather than a modal.
+ * stays visible and clickable while browsing, and the block panel insets its
+ * right edge by the drawer's width (App.tsx `data-t3k-open`).
  *
  * Two levels with push navigation: the catalog list, and one tone's detail.
- * Level state is per-opening — the drawer unmounts when closed, so the request
- * always starts from the kind the entry point asked for.
+ * Everything that describes where the user is — request, pages, scroll, the
+ * open detail tone — lives in the store, so closing and reopening the drawer is
+ * instant and lands where they left it. Opening it from another panel only
+ * retargets kind/target (store `openT3kBrowser`).
  */
-import { useCallback, useEffect, useState } from "react";
+import { useEffect } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cx, useBlockingOverlay } from "../../components";
 import { duration, ease, noMotion, spring } from "../../theme/motion";
-import { useStore } from "../../store";
-import type { T3kBrowseRequest, T3kTone } from "../../bridge";
+import {
+  decorateTone,
+  loadedPathOf,
+  selectT3kTarget,
+  T3K_TARGET_LABELS,
+  useStore,
+} from "../../store";
 import { BrowseLevel } from "./BrowseLevel";
 import { ToneDetail } from "./ToneDetail";
 import { SignInSplash } from "./SignInSplash";
@@ -26,19 +33,6 @@ export function T3kBrowser() {
   return <AnimatePresence>{open && <Drawer />}</AnimatePresence>;
 }
 
-/** Two requests are the same list when every field matches — a patch that
- *  changes nothing must not re-run the query. */
-function sameRequest(a: T3kBrowseRequest, b: T3kBrowseRequest): boolean {
-  return (
-    a.kind === b.kind &&
-    a.shelf === b.shelf &&
-    a.sort === b.sort &&
-    a.query === b.query &&
-    a.gear === b.gear &&
-    a.page === b.page
-  );
-}
-
 function Drawer() {
   const reduced = useReducedMotion() ?? false;
 
@@ -47,55 +41,34 @@ function Drawer() {
      straight over the drawer. Declaring it makes features/embed stand aside. */
   useBlockingOverlay(true);
 
-  const kind = useStore((st) => st.browser.kind);
   const close = useStore((st) => st.closeT3kBrowser);
   const authenticated = useStore((st) => st.t3k.authenticated);
-  const model = useStore((st) => st.model);
-  const ir = useStore((st) => st.ir);
-
-  const [request, setRequest] = useState<T3kBrowseRequest>(() => ({
-    kind,
-    shelf: "all",
-    sort: "trending",
-    query: "",
-    gear: null,
-    page: 1,
-  }));
-  const [detail, setDetail] = useState<T3kTone | null>(null);
-
-  /* Any patch but an explicit page bump starts the list again at page 1. */
-  const patch = useCallback((next: Partial<T3kBrowseRequest>) => {
-    setRequest((current) => {
-      const merged = { ...current, ...next, page: next.page ?? 1 };
-      return sameRequest(current, merged) ? current : merged;
-    });
-  }, []);
-
-  const retry = useCallback(() => setRequest((current) => ({ ...current })), []);
-
-  /* Reopening from the other entry point retargets an already-open drawer.
-     Adjusted during render, not in an effect: an effect would render the old
-     list once more before switching. */
-  const [entryKind, setEntryKind] = useState(kind);
-  if (entryKind !== kind) {
-    setEntryKind(kind);
-    setRequest((current) => ({ ...current, kind, gear: null, page: 1 }));
-    setDetail(null);
-  }
+  const detail = useStore((st) => st.browser.detail);
+  const setDetail = useStore((st) => st.setT3kDetail);
+  const overrides = useStore((st) => st.t3kFavOverrides);
+  const target = useStore(selectT3kTarget);
+  const loadedName = useStore((st) => {
+    const path = loadedPathOf(st, target);
+    if (path === null) return null;
+    if (target === "cab") return st.ir?.name ?? null;
+    return (target === "amp2" ? st.modelB?.name : st.model?.name) ?? null;
+  });
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== "Escape") return;
-      if (detail) setDetail(null);
+      // An open menu (sort) takes this Escape for itself.
+      if (document.querySelector('[role="menu"]')) return;
+      if (useStore.getState().browser.detail) setDetail(null);
       else close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [detail, close]);
+  }, [setDetail, close]);
 
-  const list = useBrowse(request);
-  const detailTone = detail ? list.decorate(detail) : null;
-  const loaded = request.kind === "irs" ? ir : model;
+  const list = useBrowse();
+  const detailTone = detail ? decorateTone(detail, overrides) : null;
+  const showDetail = authenticated && detailTone !== null;
 
   return (
     <motion.aside
@@ -110,22 +83,15 @@ function Drawer() {
         {authenticated ? (
           <motion.div
             className={s.level}
-            animate={{ x: detail ? -76 : 0, opacity: detail ? 0.35 : 1 }}
+            initial={false}
+            animate={{ x: showDetail ? -76 : 0, opacity: showDetail ? 0.35 : 1 }}
             transition={reduced ? noMotion : spring.ui}
             /* `inert`, not aria-hidden: the pushed-away level may still hold
                focus, which aria-hidden is not allowed to cover. */
-            inert={detail !== null}
-            style={{ pointerEvents: detail ? "none" : "auto" }}
+            inert={showDetail}
+            style={{ pointerEvents: showDetail ? "none" : "auto" }}
           >
-            <BrowseLevel
-              request={request}
-              list={list}
-              reduced={reduced}
-              onPatch={patch}
-              onRetry={retry}
-              onOpen={setDetail}
-              onClose={close}
-            />
+            <BrowseLevel list={list} reduced={reduced} onClose={close} />
           </motion.div>
         ) : (
           <div className={s.level}>
@@ -133,9 +99,10 @@ function Drawer() {
           </div>
         )}
 
-        <AnimatePresence>
-          {detailTone && (
+        <AnimatePresence initial={false}>
+          {showDetail && (
             <motion.div
+              key={detailTone.id}
               className={cx(s.level, s.levelTop)}
               initial={reduced ? { opacity: 0 } : { x: "100%" }}
               animate={reduced ? { opacity: 1 } : { x: 0 }}
@@ -146,7 +113,6 @@ function Drawer() {
                 tone={detailTone}
                 onBack={() => setDetail(null)}
                 onClose={close}
-                onToggleFavorite={list.toggleFavorite}
               />
             </motion.div>
           )}
@@ -156,12 +122,12 @@ function Drawer() {
       <footer className={s.dockbar}>
         <div className={s.statusLine}>
           <span
-            className={cx(s.statusDot, loaded && s.statusDotOn)}
+            className={cx(s.statusDot, loadedName !== null && s.statusDotOn)}
             aria-hidden="true"
           />
           <AnimatePresence mode="wait" initial={false}>
             <motion.span
-              key={loaded?.path ?? "none"}
+              key={`${target}:${loadedName ?? "none"}`}
               className={s.statusText}
               initial={reduced ? false : { opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
@@ -170,15 +136,10 @@ function Drawer() {
                 reduced ? noMotion : { duration: duration.fast, ease: ease.out }
               }
             >
-              {loaded?.name ??
-                (request.kind === "irs" ? "No IR loaded" : "No capture loaded")}
+              {loadedName ?? (target === "cab" ? "No IR loaded" : "No capture loaded")}
             </motion.span>
           </AnimatePresence>
-          {loaded && (
-            <span className={s.statusKind}>
-              {request.kind === "irs" ? "IR" : "AMP"}
-            </span>
-          )}
+          <span className={s.statusKind}>{T3K_TARGET_LABELS[target].toUpperCase()}</span>
         </div>
         <T3kMark />
       </footer>

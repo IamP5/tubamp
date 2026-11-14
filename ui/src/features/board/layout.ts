@@ -23,20 +23,33 @@
  * and OUT after its last card.
  *
  * THE SPLIT CONTAINER (docs/SPLIT.md §5). When the order carries a valid
- * structure, the whole region `split … mix` is regrouped into exactly ONE row
- * (`laneRows`) — one row-equivalent for the outer wrap math — and that row is
- * laid out as a container: SPLIT on the row's centre line at column 0, lane A's
- * cards on an upper track and lane B's on a lower track (both on the same column
- * grid, each track half the container's height), MIX on the centre line after
- * the longer lane. The container is LANE_ROW_H tall instead of CARD_H, which is
- * all the stage's fit/pan box needs to know — it measures slots, and the lane
- * cards' own extents are the container's extents.
+ * structure, the whole region `split … mix` is kept inside exactly ONE row
+ * (`laneRows`) — it never straddles a wrap — but it SHARES that row with any
+ * serial blocks around it, so a short chain like IN → AMP → [split] → OUT reads
+ * left to right on one line. Inside its row the region is laid out on the same
+ * column grid as everything else: SPLIT on the row's centre line, lane A's cards
+ * on an upper track and lane B's on a lower track (each track half the row's
+ * height), each lane closed by its own small [+] slot, MIX on the centre line
+ * after the longer lane, then the row's serial blocks carry on. A row holding
+ * the region is LANE_ROW_H tall instead of CARD_H, which is all the stage's
+ * fit/pan box needs to know — it measures slots.
+ *
+ * Auto rows (`autoRows`) wrap a structured chain by COLUMNS rather than tokens:
+ * the region counts as its real width and is never split, every other block is
+ * one column, ROW_WRAP columns to a row. A structureless chain wraps exactly as
+ * the store's `rowsFor` always has.
  *
  * `lane2` has no slot: which lane a block is in is its POSITION relative to that
  * token in the flat order, so the token is furniture and never renders.
  */
 import type { BlockId } from "../../bridge/types";
-import { findStructure, laneSpans, type LaneSide } from "../../chain/structure";
+import {
+  findStructure,
+  laneSpans,
+  type LaneSide,
+  type LaneSpans,
+} from "../../chain/structure";
+import { ROW_WRAP, rowsFor } from "../../store";
 
 export type { LaneSide };
 
@@ -80,8 +93,20 @@ export const LANE_OFFSET = (CARD_H + LANE_TRACK_GAP) / 2;
 /** Height of a split container: two card-tall tracks and the air between them. */
 export const LANE_ROW_H = CARD_H * 2 + LANE_TRACK_GAP;
 
-/** First column a lane card can occupy — column 0 is the SPLIT tile. */
+/** First lane column, counted from the SPLIT tile's own column. */
 export const LANE_FIRST_COLUMN = 1;
+
+/** The lane-scoped [+] slot that closes each lane: small, dashed, centred in
+ *  the column after the lane's last card. */
+export const LANE_ADD_W = 36;
+export const LANE_ADD_H = 36;
+
+/** Air between the split container's frame and the cards inside it. The lane
+ *  badges sit ON the frame's top and bottom edges, so the board needs these
+ *  too, not only the connector layer that draws the frame. */
+export const REGION_PAD_X = 20;
+export const REGION_PAD_Y = 14;
+export const REGION_R = 18;
 
 /**
  * Height of the band the param panel covers while a block is selected — the JS
@@ -118,7 +143,12 @@ const CONNECTOR_PAD_Y = 160;
  */
 export const FLOW_ARROW_PATH_D = "M-1.82 -2.38L1.82 0L-1.82 2.38";
 
-export type NodeId = "in" | "out" | "add" | BlockId;
+/** "lane-a" / "lane-b" are the two lane [+] slots. */
+export type NodeId = "in" | "out" | "add" | "lane-a" | "lane-b" | BlockId;
+
+export function laneAddId(side: LaneSide): "lane-a" | "lane-b" {
+  return side === "a" ? "lane-a" : "lane-b";
+}
 
 /** An axis-aligned box in lane units. `y` is the TOP edge, not a centre line. */
 export interface Box {
@@ -157,8 +187,13 @@ export interface RowGeom {
   /** Tokens in the row — `lane2` included, because `rows` partitions the ORDER
    *  and not the set of rendered cards. */
   count: number;
-  /** This row is the split container: it holds exactly `split … mix`. */
+  /** This row holds the split region (`split … mix`, whole). */
   lanes: boolean;
+  /** Column of the SPLIT tile within the row; -1 when `lanes` is false. */
+  regionColumn: number;
+  /** Lane columns between SPLIT and MIX (each lane's cards plus its [+] slot,
+   *  whichever lane is longer); 0 when `lanes` is false. */
+  laneColumns: number;
 }
 
 /**
@@ -180,6 +215,8 @@ export interface Link {
   index: number;
   /** Row an insert here grows. */
   row: number;
+  /** The lane this wire belongs to, for its tint. */
+  lane?: LaneSide;
 }
 
 /**
@@ -198,6 +235,10 @@ export interface LaneRegion {
   /** Centre lines of the two lane tracks. */
   trackA: number;
   trackB: number;
+  /** Left edge of the first lane column — where the lane badges sit. */
+  laneX: number;
+  /** Row the region lives in (lane inserts grow it). */
+  row: number;
 }
 
 export interface BoardGeometry {
@@ -224,17 +265,17 @@ export function rowStart(rows: readonly number[], row: number): number {
 }
 
 /**
- * The partition with the split region regrouped into exactly one row.
+ * The partition with the split region kept inside exactly one row.
  *
- * `rows` is layout-only and tolerant, and neither the store's auto-wrap nor a
- * partition restored from C++ knows anything about structure — so a region can
- * arrive straddling two rows. The container is one row-equivalent, so the board
- * puts it back together here, keeping every other row break the user made.
- * Idempotent, and the identity function on a structureless order.
+ * `rows` is layout-only and tolerant, and a partition restored from C++ (or
+ * written by an older build) knows nothing about structure — so a region can
+ * arrive straddling two rows. The board drops every row break that falls INSIDE
+ * the region and keeps every other break the user made; the region may share
+ * its row with serial blocks on either side. Idempotent, and the identity
+ * function on a structureless order.
  *
  * Everything that needs to know where a block sits — geometry, drag, connectors,
- * the commit — reads the partition THROUGH this, exactly as it reads it through
- * the store's `rowsFor`.
+ * the commit — reads the partition THROUGH this (see `displayRows`).
  */
 export function laneRows(
   order: readonly BlockId[],
@@ -244,38 +285,95 @@ export function laneRows(
   if (!structure.valid || structure.splitAt < 0 || rows.length === 0)
     return [...rows];
 
-  const first = structure.splitAt;
-  const last = structure.mixAt + 1;
-
-  const cuts = new Set<number>();
+  const next: number[] = [];
+  let prev = 0;
   let at = 0;
   for (const length of rows) {
     at += length;
-    if (at <= first || at >= last) cuts.add(at);
-  }
-  cuts.add(first);
-  cuts.add(last);
-
-  const next: number[] = [];
-  let prev = 0;
-  for (const cut of [...cuts].sort((a, b) => a - b)) {
-    if (cut > prev && cut <= order.length) next.push(cut - prev);
-    if (cut > prev) prev = cut;
+    // A break after token `at - 1`: inside the region when split <= at-1 < mix.
+    if (at > structure.splitAt && at <= structure.mixAt) continue;
+    if (at > prev && at <= order.length) next.push(at - prev);
+    prev = Math.max(prev, at);
   }
   if (prev < order.length) next.push(order.length - prev);
   return next;
 }
 
+/** Lane columns a region needs: the longer lane's cards, plus its [+] slot when
+ *  the board shows one — and never fewer than one, or an empty fork would
+ *  collapse into the gap between its two tiles. */
+export function laneColumnsFor(spans: LaneSpans, laneAdd: boolean): number {
+  const plus = laneAdd ? 1 : 0;
+  return Math.max(spans.a.count + plus, spans.b.count + plus, 1);
+}
+
 /**
- * Per-row vertical geometry. A row is a split container only when it holds the
- * whole region — a caller that skipped `laneRows` gets plain rows rather than a
- * half-drawn container.
+ * The automatic partition — what the board draws while the store holds `[]`.
+ *
+ * Structureless: exactly the store's `rowsFor` (ROW_WRAP blocks a row), so an
+ * ordinary chain lays out precisely as it always has. Structured: a greedy wrap
+ * by COLUMNS, where the region is one unbreakable unit as wide as it really is
+ * (SPLIT + lane columns + MIX) and every other block is one column — so a short
+ * chain stays on one row and only wraps when the row would outgrow ROW_WRAP.
+ */
+export function autoRows(
+  order: readonly BlockId[],
+  laneAdd: boolean,
+): number[] {
+  const structure = findStructure(order);
+  const spans = laneSpans(structure);
+  if (!spans) return rowsFor(order, []);
+
+  const regionTokens = structure.mixAt - structure.splitAt + 1;
+  const regionCols = 2 + laneColumnsFor(spans, laneAdd);
+  const rows: number[] = [];
+  let tokens = 0;
+  let cols = 0;
+  let i = 0;
+  while (i < order.length) {
+    const region = i === structure.splitAt;
+    const width = region ? regionCols : 1;
+    const count = region ? regionTokens : 1;
+    if (cols > 0 && cols + width > ROW_WRAP) {
+      rows.push(tokens);
+      tokens = 0;
+      cols = 0;
+    }
+    tokens += count;
+    cols += width;
+    i += count;
+  }
+  if (tokens > 0) rows.push(tokens);
+  return rows;
+}
+
+/**
+ * The rows the board draws: the published partition (made region-safe) when
+ * there is one, the automatic wrap when the store holds `[]`. The single source
+ * of the partition — board, drag and commit all read it from here.
+ */
+export function displayRows(
+  order: readonly BlockId[],
+  chainRows: readonly number[],
+  laneAdd: boolean,
+): number[] {
+  return chainRows.length > 0
+    ? laneRows(order, chainRows)
+    : autoRows(order, laneAdd);
+}
+
+/**
+ * Per-row vertical geometry. A row carries the split container only when it
+ * holds the whole region — a caller that skipped `laneRows` gets plain rows
+ * rather than a half-drawn container.
  */
 export function rowGeometry(
   order: readonly BlockId[],
   rows: readonly number[],
+  laneAdd = false,
 ): RowGeom[] {
   const structure = findStructure(order);
+  const spans = laneSpans(structure);
   const geom: RowGeom[] = [];
   const rowCount = Math.max(rows.length, 1);
   let start = 0;
@@ -283,16 +381,26 @@ export function rowGeometry(
   for (let row = 0; row < rowCount; row += 1) {
     const count = rows[row] ?? 0;
     const lanes =
-      structure.valid &&
-      structure.splitAt === start &&
-      structure.mixAt === start + count - 1;
+      spans !== null &&
+      structure.splitAt >= start &&
+      structure.mixAt <= start + count - 1;
     const h = lanes ? LANE_ROW_H : CARD_H;
     const previous = geom[row - 1];
     const y =
       previous === undefined
         ? 0
         : previous.y + previous.h / 2 + ROW_GAP + h / 2;
-    geom.push({ y, h, start, count, lanes });
+    geom.push({
+      y,
+      h,
+      start,
+      count,
+      lanes,
+      // Every token before SPLIT in its row is a serial block — the region is
+      // the only multi-token thing on the board — so its column is its offset.
+      regionColumn: lanes ? structure.splitAt - start : -1,
+      laneColumns: lanes && spans ? laneColumnsFor(spans, laneAdd) : 0,
+    });
     start += count;
   }
   return geom;
@@ -320,7 +428,7 @@ export function boardGeometry(
   rows: readonly number[],
   showAdd: boolean,
 ): BoardGeometry {
-  const geom = rowGeometry(order, rows);
+  const geom = rowGeometry(order, rows, showAdd);
   const structure = findStructure(order);
   const spans = laneSpans(structure);
   const slots: Slot[] = [];
@@ -332,75 +440,81 @@ export function boardGeometry(
     if (row === 0)
       slots.push({ id: "in", x: 0, y, w: TERMINAL_W, h: TERMINAL_H, row });
 
-    let columns = 0;
+    let column = 0;
+    const end = g.start + g.count;
+    let i = g.start;
 
-    if (g.lanes && spans) {
-      slots.push({ id: "split", x: cardSlotX(0), y, w: CARD_W, h: CARD_H, row });
+    while (i < end) {
+      const id = order[i];
+      if (id === undefined) break;
 
-      const trackA = y - LANE_OFFSET;
-      const trackB = y + LANE_OFFSET;
-      const lane = (span: typeof spans.a, at: number, side: LaneSide): void => {
-        for (let i = 0; i < span.count; i += 1) {
-          const id = order[span.start + i];
-          if (id === undefined) break;
-          slots.push({
-            id,
-            x: cardSlotX(LANE_FIRST_COLUMN + i),
-            y: at,
-            w: CARD_W,
-            h: CARD_H,
-            row,
-            lane: side,
-          });
-        }
-      };
-      lane(spans.a, trackA, "a");
-      lane(spans.b, trackB, "b");
+      if (g.lanes && spans && i === structure.splitAt) {
+        const head = column;
+        slots.push({ id: "split", x: cardSlotX(head), y, w: CARD_W, h: CARD_H, row });
 
-      // The longer lane decides where MIX sits — but an empty lane still gets a
-      // column's worth of track, or a passthrough fork would collapse into the
-      // 44px gap between the two tiles with no room for its wire or its [+].
-      const mixColumn =
-        LANE_FIRST_COLUMN + Math.max(spans.a.count, spans.b.count, 1);
-      slots.push({
-        id: "mix",
-        x: cardSlotX(mixColumn),
-        y,
-        w: CARD_W,
-        h: CARD_H,
-        row,
-      });
-      columns = mixColumn + 1;
-      region = {
-        head: "split",
-        tail: "mix",
-        tailW: CARD_W,
-        y: rowTop(g),
-        h: g.h,
-        trackA,
-        trackB,
-      };
-    } else {
-      for (let i = 0; i < g.count; i += 1) {
-        const id = order[g.start + i];
-        if (id === undefined) break;
-        // Never a card: a lane2 outside a container is a structure the board
-        // could not draw, and it is about to be flattened by the sanitizer.
-        if (id === "lane2") continue;
-        slots.push({
-          id,
-          x: cardSlotX(columns),
-          y,
-          w: CARD_W,
-          h: CARD_H,
+        const trackA = y - LANE_OFFSET;
+        const trackB = y + LANE_OFFSET;
+        const lane = (span: LaneSpans["a"], at: number, side: LaneSide): void => {
+          for (let k = 0; k < span.count; k += 1) {
+            const card = order[span.start + k];
+            if (card === undefined) break;
+            slots.push({
+              id: card,
+              x: cardSlotX(head + LANE_FIRST_COLUMN + k),
+              y: at,
+              w: CARD_W,
+              h: CARD_H,
+              row,
+              lane: side,
+            });
+          }
+          // The lane's own [+]: centred in the column after its last card, so
+          // an empty lane reads as an intentional slot, not a bare wire.
+          if (showAdd)
+            slots.push({
+              id: laneAddId(side),
+              x:
+                cardSlotX(head + LANE_FIRST_COLUMN + span.count) +
+                (CARD_W - LANE_ADD_W) / 2,
+              y: at,
+              w: LANE_ADD_W,
+              h: LANE_ADD_H,
+              row,
+              lane: side,
+            });
+        };
+        lane(spans.a, trackA, "a");
+        lane(spans.b, trackB, "b");
+
+        const mixColumn = head + LANE_FIRST_COLUMN + g.laneColumns;
+        slots.push({ id: "mix", x: cardSlotX(mixColumn), y, w: CARD_W, h: CARD_H, row });
+        region = {
+          head: "split",
+          tail: "mix",
+          tailW: CARD_W,
+          y: rowTop(g),
+          h: g.h,
+          trackA,
+          trackB,
+          laneX: cardSlotX(head + LANE_FIRST_COLUMN),
           row,
-        });
-        columns += 1;
+        };
+        column = mixColumn + 1;
+        i = structure.mixAt + 1;
+        continue;
       }
+
+      // Never a card: a lane2 outside a container is a structure the board
+      // could not draw, and it is about to be flattened by the sanitizer.
+      if (id !== "lane2") {
+        slots.push({ id, x: cardSlotX(column), y, w: CARD_W, h: CARD_H, row });
+        column += 1;
+      }
+      i += 1;
     }
 
     if (row === geom.length - 1) {
-      let x = cardSlotX(columns);
+      let x = cardSlotX(column);
       if (showAdd) {
         slots.push({ id: "add", x, y, w: ADD_W, h: ADD_H, row });
         x += ADD_W + GAP;
@@ -424,9 +538,11 @@ export function computeSlots(
 /**
  * The connector graph: the spine (everything on a row's centre line, in visual
  * order) minus the SPLIT→MIX gap, which fans out into the two lane tracks and
- * converges again. An empty lane still gets its own wire, bowed through the
- * track it stands for — that wire IS the empty lane, and its insert [+] is how
- * the first block gets into it.
+ * converges again. Each lane runs SPLIT → its cards → its [+] slot → MIX; the
+ * gaps into and out of that slot belong to the slot (index -1, no insert dot),
+ * exactly like the gaps into the tail [+] and OUT on the main path. With no
+ * [+] slots (nothing left to add) an empty lane still gets its own wire, bowed
+ * through the track it stands for.
  */
 function connectorLinks(
   order: readonly BlockId[],
@@ -442,11 +558,15 @@ function connectorLinks(
   const spans = laneSpans(structure);
   const links: Link[] = [];
 
+  const isAppend = (slot: Slot): boolean =>
+    slot.id === "add" ||
+    slot.id === "out" ||
+    slot.id === "lane-a" ||
+    slot.id === "lane-b";
+
   /** Where a block dropped in the gap before `slot` lands. */
   const indexOf = (slot: Slot): number =>
-    slot.id === "add" || slot.id === "out"
-      ? -1
-      : order.indexOf(slot.id as BlockId);
+    isAppend(slot) ? -1 : order.indexOf(slot.id as BlockId);
 
   const gutter = (from: Slot, to: Slot): number => {
     const above = geom[from.row];
@@ -465,10 +585,10 @@ function connectorLinks(
         b: from.y + LANE_OFFSET,
       };
       for (const side of ["a", "b"] as const) {
-        const cards = lanes[side];
+        const nodes = lanes[side];
         const span = spans[side];
-        const head = cards[0];
-        const tail = cards[cards.length - 1];
+        const head = nodes[0];
+        const tail = nodes[nodes.length - 1];
 
         if (!head || !tail) {
           links.push({
@@ -479,6 +599,7 @@ function connectorLinks(
             via: track[side],
             index: span.start,
             row: from.row,
+            lane: side,
           });
           continue;
         }
@@ -488,19 +609,21 @@ function connectorLinks(
           from,
           to: head,
           wrap: false,
-          index: span.start,
+          index: isAppend(head) ? -1 : span.start,
           row: from.row,
+          lane: side,
         });
-        for (let c = 0; c < cards.length - 1; c += 1) {
-          const a = cards[c]!;
-          const b = cards[c + 1]!;
+        for (let c = 0; c < nodes.length - 1; c += 1) {
+          const a = nodes[c]!;
+          const b = nodes[c + 1]!;
           links.push({
             key: `${a.id}->${b.id}`,
             from: a,
             to: b,
             wrap: false,
-            index: span.start + c + 1,
+            index: isAppend(b) ? -1 : span.start + c + 1,
             row: from.row,
+            lane: side,
           });
         }
         links.push({
@@ -508,8 +631,11 @@ function connectorLinks(
           from: tail,
           to,
           wrap: false,
-          index: span.end,
+          // Appending to a lane is its [+] slot's job; without one (nothing
+          // left to add) there is nothing to insert either.
+          index: -1,
           row: from.row,
+          lane: side,
         });
       }
       continue;
@@ -658,10 +784,12 @@ export interface DropTarget {
 /**
  * Resolve a pointer position to a drop target against frozen geometry.
  *
- * The split container's band is entirely lane: its upper half is lane A, its
- * lower half lane B (there is no serial section on that row — the row holds the
- * region and nothing else). A lane column is measured from column 1, since
- * column 0 is the SPLIT tile.
+ * `x` is the dragged card's LEFT edge (what the column grid measures). In a
+ * row that holds the split region the column decides the segment: at or left
+ * of SPLIT's column it is the serial run before the region, inside the lane
+ * columns (the [+] slots included) it is a lane — the upper half of the row is
+ * lane A, the lower half lane B — and from MIX's column on it is the serial run
+ * after the region. Every answer is a flat index inside one legal segment.
  */
 export function dropTargetAt(
   order: readonly BlockId[],
@@ -674,16 +802,35 @@ export function dropTargetAt(
   if (!g) return { row, lane: null, column: 0, index: order.length };
 
   const spans = g.lanes ? laneSpans(findStructure(order)) : null;
-  if (g.lanes && spans) {
-    const lane: LaneSide = y < g.y ? "a" : "b";
-    const span = spans[lane];
-    const raw = (x - cardSlotX(LANE_FIRST_COLUMN)) / SLOT_STRIDE;
-    const column = clamp(Math.round(raw), 0, span.count);
-    return { row, lane, column, index: span.start + column };
+  if (!g.lanes || !spans) {
+    const column = columnForX(x, g.count);
+    return { row, lane: null, column, index: g.start + column };
   }
 
-  const column = columnForX(x, g.count);
-  return { row, lane: null, column, index: g.start + column };
+  const structure = findStructure(order);
+  const head = g.regionColumn;
+  const mixColumn = head + LANE_FIRST_COLUMN + g.laneColumns;
+  const end = g.start + g.count;
+  const after = end - (structure.mixAt + 1);
+  const raw = Math.round((x - FIRST_CARD_X) / SLOT_STRIDE);
+
+  if (raw <= head) {
+    const column = clamp(raw, 0, head);
+    return { row, lane: null, column, index: g.start + column };
+  }
+  if (raw < mixColumn) {
+    const lane: LaneSide = y < g.y ? "a" : "b";
+    const span = spans[lane];
+    const column = clamp(raw - head - LANE_FIRST_COLUMN, 0, span.count);
+    return { row, lane, column, index: span.start + column };
+  }
+  const offset = clamp(raw - mixColumn - 1, 0, after);
+  return {
+    row,
+    lane: null,
+    column: mixColumn + 1 + offset,
+    index: structure.mixAt + 1 + offset,
+  };
 }
 
 export function clamp(value: number, min: number, max: number): number {

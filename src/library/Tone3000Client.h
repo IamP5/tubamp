@@ -2,6 +2,9 @@
 
 #include <juce_core/juce_core.h>
 #include <functional>
+#include <optional>
+
+#include "ToneSidecar.h"
 
 namespace tubamp
 {
@@ -66,6 +69,8 @@ public:
         bool favorited = false;     // from the cached favorited-ids set
         juce::StringArray makes, tags, sizes;
         int modelsCount = 0;        // a2_models_count (nam) / irs_count (ir)
+        juce::String license;       // raw License enum (t3k | cc-by | ...), empty when absent
+        juce::String url;           // tone page on tone3000.com, empty when absent
     };
 
     struct TonePage
@@ -78,12 +83,30 @@ public:
     struct BrowseRequest
     {
         juce::String kind;   // "models" -> format=nam&architecture=2 | "irs" -> format=ir
-        juce::String shelf;  // "all" -> /tones/search | "favorites" -> /tones/favorited
-        juce::String sort;   // "trending" | "newest" | "downloads" (downloads-all-time)
+        /** "all" -> /tones/search; the profile shelves read the user's own bounded
+            lists: "favorites" -> /tones/favorited, "downloaded" -> /tones/downloaded,
+            "created" -> /tones/created (filtered and sorted client-side). */
+        juce::String shelf;
+        /** empty = the API's own default (best-match with a query, else trending) |
+            "best-match" | "trending" | "newest" | "oldest" | "downloads" (downloads-all-time). */
+        juce::String sort;
         juce::String query;
-        juce::String gear;   // empty = all
+        juce::String gear;   // raw Gear enum value (amp, amp-cab, pedal, outboard, experimental, cab, space); empty = all
+        bool calibrated = false;  // nam search only: tones with >= 1 calibrated model
         int page = 1;        // 1-based; page_size fixed at 25
     };
+
+    /** The /tones/search URL a request maps to (pure; exposed for tests). Always
+        carries format, and architecture=2 for nam. */
+    static juce::URL searchUrl (const BrowseRequest&);
+
+    /** The sort wire value a request maps to (pure). */
+    static juce::String searchSort (const BrowseRequest&);
+
+    /** "TONE3000 is limiting requests - try again in N s" style message for an
+        HTTP status (0 = no response; `timedOut` when the connect ran out the
+        clock). Pure; exposed for tests. */
+    static juce::String describeFailure (int statusCode, bool timedOut, int retryAfterSeconds);
 
     /** Standard OAuth sign-in (system browser + loopback redirect, PKCE), no
         tone selection. On success fetches /user (username) and the favorited
@@ -130,6 +153,15 @@ public:
     /** Downloads one model file (with Bearer auth) into destDir, slugified name +
         proper extension. Progress in [0,1]. Completion delivers the saved file. */
     void downloadModel (const Model& model, const juce::File& destDir,
+                        std::function<void (float)> onProgress,
+                        std::function<void (juce::File)> onComplete,
+                        std::function<void (juce::String)> onError);
+
+    /** Same, and writes `sidecar` next to the saved file (ToneSidecar::write) on
+        the download thread, before onComplete is posted - so anything that reacts
+        to completion (libraryChanged, the panels) already sees it. */
+    void downloadModel (const Model& model, const juce::File& destDir,
+                        const ToneSidecar& sidecar,
                         std::function<void (float)> onProgress,
                         std::function<void (juce::File)> onComplete,
                         std::function<void (juce::String)> onError);

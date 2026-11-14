@@ -65,7 +65,7 @@ original id (`comp_threshold`), instances 2 and 3 get `<kind>2_<key>` /
 pre-existing id keeps its index. The amp's own tone stack (`amp_eq_*`) lives at
 the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`.
 
-- Sliders (183): the 29 v1 ids — input_trim, output_level, gate_threshold,
+- Sliders (184): the 29 v1 ids — input_trim, output_level, gate_threshold,
   comp_threshold, comp_ratio, comp_attack, comp_release, comp_makeup, drive_gain,
   drive_tone, drive_level, amp_input, amp_output, amp_cal_level, amp_slim,
   cab_lowcut, cab_highcut, eq_bass, eq_mid, eq_treble, mod_rate, mod_depth,
@@ -81,7 +81,8 @@ the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`
   (docs/SPLIT.md §2): `amp2_input`, `amp2_output`, `split_xover`, `mix_alevel`,
   `mix_blevel`, `mix_apan`, `mix_bpan`, `mix_level`, and, appended for the
   reverb/delay engines (docs/REVERB-DELAY.md §1.4): `delay{,2,3}_lowcut|highcut|mod|
-  color|duck` (15), then `reverb{,2,3}_predelay|decay|lowcut|highcut|mod` (15), and,
+  color|duck` (15), then `reverb{,2,3}_predelay|decay|lowcut|highcut|mod` (15), then
+  `cab_mix` (docs/NAM-IR.md §3, version hint 3), and,
   appended for the gate/comp/drive/EQ/mod engines (docs/FX-ENGINES.md §2.7.1, hint 4):
   `gate_release|hold|range|sc_hpf` (4), `comp{,2,3}_knee|mix|sc_hpf` (9),
   `eq{,2,3}_lowcut|highcut|mid_freq|mid_q|tilt|level|g100|g200|g400|g800|g1k6|g3k2|g6k4`
@@ -112,7 +113,7 @@ call `sliderDragStarted/Ended` around gestures (host automation touch).
 
 **These lists are the whole relay surface.** A hosted plugin's parameters are NOT
 relays and never enter `SLIDER_PARAM_IDS` / `paramMeta` / `useSliderParam` — see
-§External AudioUnit slots below. 183/36/42 is the whole surface; a hosted plugin never
+§External AudioUnit slots below. 184/36/42 is the whole surface; a hosted plugin never
 grows it.
 
 ### Chain blocks
@@ -201,11 +202,25 @@ t3kConfigure(): { error?: string }          // native AlertWindow prompt for pub
                                             // configured out of the box; empty input restores it)
 t3kSignOut(): void
 t3kStartSelectFlow(): void                  // async; results arrive as events
-t3kDownloadModel(model: T3kModel): void     // async; progress/completion as events
+t3kDownloadModel(model: T3kModel, tone?: T3kTone): void
+                                            // async; progress/completion as events. With
+                                            // `tone`, C++ writes <file>.t3k.json (ToneSidecar:
+                                            // toneId, modelId, title, modelName, creator, RAW
+                                            // gear, format, size, architecture, license) on the
+                                            // download thread BEFORE libraryChanged/t3kComplete
 t3kSignIn(): void                           // standard OAuth flow; t3kStatus/t3kError follow
 t3kBrowse(req: T3kBrowseRequest): T3kBrowseResult      // one catalog page (or {error})
-t3kListModels(toneId: number): { models?: T3kModel[]; error?: string }
+                                            // req: { kind: "models"|"irs",
+                                            //   shelf: "all"|"favorites"|"downloaded"|"created",
+                                            //   sort: null|"best-match"|"trending"|"newest"
+                                            //         |"downloads"|"oldest",   // null = API default
+                                            //   query, gear: raw Gear|null, calibrated?, page }
+t3kListModels(toneId: number, format?: "nam"|"ir"): { models?: T3kModel[]; error?: string }
 t3kSetFavorite(toneId: number, favorite: boolean): { error?: string }
+t3kPromptSearch(initial: string): { text: string | null }   // native AlertWindow search prompt
+                                            // (keyboard-less hosts); null = cancelled
+t3kInstalled(): { files: { path, toneId, modelId, format }[] }   // library files with a sidecar
+openExternal(url: string): { error?: string }   // system browser; https://www.tone3000.com/ only
 
 // --- external AudioUnit slots (fx1..fx3), see §External AudioUnit slots
 fxListPlugins(): { plugins: FxPluginEntry[]; supported: boolean }
@@ -235,14 +250,23 @@ interface UiState {
                                  // the UI wraps for itself
   model: ModelInfo | null       // { path, name, sampleRateHz, loudnessDb?, inputLevelDbu?,
                                 //   outputLevelDbu?, gearType?, includesCab,
-                                //   isSlimmable, latencySamples }
+                                //   isSlimmable, latencySamples, tone? }
+                                //   `tone` = the file's TONE3000 sidecar: { toneId,
+                                //   title, creator, gear, size, license, url }
   modelB: ModelInfo | null      // engine B, managed from Amp2Body (docs/SPLIT.md §5),
                                 //   not an AmpBody STEREO section (removed). Same shape
                                 //   as `model`, null when no B model is loaded.
                                 //   `latencySamples` is the same combined scalar as
                                 //   `model`'s — reported host latency is serial-section
                                 //   latency + max(laneA, laneB) (docs/SPLIT.md §3)
-  ir: FileEntry | null          // { path, name }
+  ir: IrInfo | null             // FileEntry + what the cab made of it: { path, name,
+                                //   channels, sampleRateHz, seconds, reverbLike,
+                                //   gainDb, truncated, image, tone? } — `image` is
+                                //   "none" | "stereo" | "mono-file" | "mono-path"
+                                //   (docs/NAM-IR.md §3)
+  missingMedia: MissingMedia    // { model, modelB, ir }: the path a restored session
+                                //   or preset named and could not get, else null
+                                //   (docs/NAM-IR.md §4)
   models: FileEntry[]
   irs: FileEntry[]
   presets: PresetInfo[]         // { name, path, favorite, tags }
@@ -312,8 +336,10 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
                                                      // (docs/SPLIT.md §5); same "poll
                                                      // and emit on change" reasoning as
                                                      // modelChanged
-"irChanged"      { ir: FileEntry | null }
-"t3kStatus"      { configured, authenticated }
+"irChanged"      { ir: IrInfo | null }               // also when only `image` moved
+                                                     // (the chain changed around the cab)
+"missingMediaChanged" { missingMedia: MissingMedia }
+"t3kStatus"      { configured, authenticated, username }
 "t3kToneSelected"{ toneId: number, models: T3kModel[] }
 "t3kProgress"    { modelId: number, progress: number }   // [0,1]
 "t3kComplete"    { modelId: number, path: string }       // model already imported+loaded C++-side? NO:
@@ -542,25 +568,66 @@ face, because the board's own zoom is the density control.
   (fixed while the rest is fluid: the row layout is designed at that width, and a
   wider window should give the board the space, not the catalog)
   docked to the right edge, y=48 to the app bottom, spring slide-in, NO
-  backdrop — the board stays visible and interactive (validated by prototype
-  variant C, branch `prototype/t3k-browser`). Two stacked levels with push
-  navigation: level 1 browse (T3K mark + close; Models/IRs segmented; sort
-  menu; filter chips — favorites, gear; optional debounced search field;
-  compact 64px rows: 44px art, title, creator+gear+A2/IR badge, counts,
-  heart), level 2 tone detail (back chevron, art banner with "IN CHAIN" pill
-  when the loaded model belongs to the tone, creator/stats/heart, description,
-  make/tag chips, file rows with Get → progress → Loaded). Persistent footer:
-  "Powered by TONE3000" + loaded capture name. Opened from AmpBody (models
-  tab) and CabBody (IRs tab); unauthenticated state shows a TONE3000
-  partnership splash with Sign in (t3kSignIn) / key setup (t3kConfigure).
-  Tone art: `imageUrl` with a gradient placeholder fallback (remote images may
-  be blocked inside the WKWebView origin). Downloads auto-load on completion
-  (loadModel/loadIr by `model.kind`). Search is optional sugar — Logic gives
-  the WebView no keyboard; chips + sort must carry browsing alone.
-  Constraints from docs/research/tone3000-api.md: always `architecture=2` for
-  NAM (omitting excludes A2), `format=ir` for IRs, page_size 25, debounce +
-  per-session response cache C++-side only (no persistent catalog cache, ToS),
-  TONE3000 branding + creator attribution always visible.
+  backdrop — the board stays visible and interactive. While it is open App.tsx
+  stamps `data-t3k-open` on the root and the block panel (`.dock`) insets its
+  right edge by `--t3k-drawer-inset` (380px) instead of running under it; the
+  panel band's height and everything anchored to it are unchanged.
+  - **Target.** Opened from AmpBody (`openT3kBrowser("models")`), CabBody
+    (`"irs"`) or — for Amp 2 — `openT3kBrowser("models", "amp2")` (without a
+    target, models go to `amp2` when the amp2 block is the selected one). The
+    header always says where a load lands: "Loading into Amp | Amp 2 | Cab";
+    with `amp2` in the chain a segmented switch picks the NAM engine
+    (`loadModel` vs `loadModelB`; `selectT3kTarget` falls back to Amp once amp2
+    leaves the chain). IRs always load into the cab. "Loaded"/"in Amp 2"
+    markers compare the target slot's path with the tone's files (sidecars from
+    `t3kInstalled` + this session's downloads).
+  - **Level 1 (browse).** Models/IRs segmented + Sort menu (Best match — only
+    with a query, the default while searching —, Trending, Newest, Most
+    downloaded, Oldest; plus "Calibrated only" for models on All, shown as a
+    dot on the button); search field + keyboard button (native prompt
+    `t3kPromptSearch`, because Logic gives the WebView no keyboard); shelf tabs
+    All / Favorites / Recent (`/tones/downloaded`) / Mine (`/tones/created`)
+    with the official empty-state copy; gear chips per kind from the real Gear
+    enum (models: amp, amp-cab, pedal, outboard, experimental; IRs: cab,
+    space). Search: 300 ms debounce, ≥ 2 chars (or empty), Enter submits at
+    once, newer lists supersede older (list key = request minus page).
+    Rows (64px): art, title, creator · gear · A2/IR · downloads, heart, and a
+    one-click **Load** (`t3kLoadTone`): resolve files → default (NAM
+    `standard`, else first; IR first) → reuse the library copy (sidecar
+    modelId, else slugified name) or download → load into the target. States
+    idle → resolving → % → Loaded / Failed + Retry (error on the meta line);
+    one in flight per tone; the latest pick per target owns the slot (an older
+    download that finishes later only lands in the library, with a toast).
+    NAM tones with no A2 files show "No A2". Row body opens level 2.
+    Paging: IntersectionObserver 320px ahead of the end, one page request per
+    list at a time; a Load more / Retry row is the fallback.
+  - **Level 2 (detail).** Banner with gear/format and "In Amp/Amp 2/Cab"
+    pills, creator/stats/heart, primary "Load into …" (same default + states),
+    description, make/tag chips, license label (when the API sends one), "Open
+    on tone3000.com" (`openExternal`), files sorted default-first with
+    size/architecture badges, "default" and "in library" notes, Get/Load →
+    progress → Loaded per file.
+  - **Memory.** Request (kind, shelf, sort, query, gear, calibrated), loaded
+    pages (`t3kLists`, ≤ 12 lists), per-list scroll offset, the open detail
+    tone, file listings and favorite overrides all live in the store for the
+    editor's lifetime: reopening is instant and lands where the user was.
+    Opening from another panel retargets kind/target, resets gear on a kind
+    change and closes a detail of the other format. A sign-in/out clears it.
+  - Persistent footer: what the target slot holds + "Powered by TONE3000".
+    Unauthenticated: partnership splash with Sign in / key setup. Tone art:
+    `imageUrl` with a gradient fallback.
+  - Constraints from docs/research/tone3000-api.md: always `architecture=2`
+    for NAM (omitting excludes A2), `format=ir` for IRs, page_size 25,
+    in-memory session caches only (C++ 4-minute response cache keyed on the
+    full request; profile lists fetched whole once per window), downloads only
+    on an explicit click, branding + creator attribution always visible.
+    Transport (Tone3000Client): 429 honours `Retry-After` (fails fast until it
+    expires, "TONE3000 is limiting requests — try again in N s"), offline and
+    timeouts get their own messages, 5xx/429 on refresh keep the session, one
+    401 → refresh → retry.
+  - Mock flags: `?t3kfail` (downloads die), `?t3kfavfail`, `?t3kslow` (6×
+    latency), `?t3k429`, `?t3koffline`, `?t3kprompt=text` (scripted native
+    prompt; bare = cancel).
 
 Knob primitive: rotary 270°, vertical drag (shift = fine), double-click = reset
 to default, wheel nudge; Geist Mono tabular readout; gesture → begin/endGesture.

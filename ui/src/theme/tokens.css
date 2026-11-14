@@ -287,7 +287,8 @@
   --block-glow: rgba(249, 115, 22, 0.35);
   --block-dim: rgb(145, 73, 24);
 }
-[data-block="amp"] {
+[data-block="amp"],
+[data-block="amp2"] {
   --block-accent: var(--block-amp);
   --block-fill-8: rgba(244, 63, 94, 0.08);
   --block-fill-16: rgba(244, 63, 94, 0.16);
@@ -366,4 +367,15 @@
   --block-fill-25: rgba(232, 121, 249, 0.25);
   --block-glow: rgba(232, 121, 249, 0.35);
   --block-dim: rgb(136, 76, 149);
+}
+/* split / mix: the two ends of one bracket share a hue (theme/blocks.ts —
+   #38bdf8). Without this rule they fell through to the brand orange. */
+[data-block="split"],
+[data-block="mix"] {
+  --block-accent: #38bdf8;
+  --block-fill-8: rgba(56, 189, 248, 0.08);
+  --block-fill-16: rgba(56, 189, 248, 0.16);
+  --block-fill-25: rgba(56, 189, 248, 0.25);
+  --block-glow: rgba(56, 189, 248, 0.35);
+  --block-dim: rgb(39, 113, 149);
 }

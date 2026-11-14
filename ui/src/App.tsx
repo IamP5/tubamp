@@ -41,6 +41,7 @@ export function App() {
   const ready = useStore((st) => st.ready);
   const embedded = useStore((st) => st.fxEmbed.slot !== -1);
   const panelOpen = useStore((st) => st.selected !== null);
+  const t3kOpen = useStore((st) => st.browser.open);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -79,6 +80,7 @@ export function App() {
       ref={rootRef}
       className={cx(s.root, isMockBridge && s.rootMock)}
       data-panel-open={panelOpen || undefined}
+      data-t3k-open={t3kOpen || undefined}
       onMouseMove={(e) => paramIndexUpdater.handleMouseMove(e.nativeEvent)}
     >
       <motion.header

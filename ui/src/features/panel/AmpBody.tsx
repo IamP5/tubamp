@@ -26,6 +26,7 @@ import {
 import { useToggleParam } from "../../hooks";
 import { useStore } from "../../store";
 import { FileRow } from "./FileRow";
+import { Attribution, MissingNotice } from "./MediaMeta";
 import { ParamMenu } from "./ParamMenu";
 import { ParamSlider } from "./ParamSlider";
 import { formatSampleRate, isEngineLive, rigLabel } from "./library";
@@ -38,6 +39,7 @@ const RIG_TIP =
 
 export function AmpBody() {
   const model = useStore((st) => st.model);
+  const missing = useStore((st) => st.missingMedia.model);
   const models = useStore((st) => st.models);
   const configured = useStore((st) => st.t3k.configured);
   const downloads = useStore((st) => st.downloads);
@@ -65,16 +67,20 @@ export function AmpBody() {
       <section className={s.columnModel}>
         <div className={s.captionRow}>
           <span className={s.caption}>Model</span>
-          <span className={s.attribution}>Powered by TONE3000</span>
+          <Attribution tone={model?.tone} />
         </div>
 
         <div className={s.modelLine}>
-          <span
-            className={model ? s.modelName : s.modelNameEmpty}
-            title={model?.path ?? NO_MODEL}
-          >
-            {model ? model.name : NO_MODEL}
-          </span>
+          {!model && missing ? (
+            <MissingNotice path={missing} what="capture" />
+          ) : (
+            <span
+              className={model ? s.modelName : s.modelNameEmpty}
+              title={model?.path ?? NO_MODEL}
+            >
+              {model ? model.name : NO_MODEL}
+            </span>
+          )}
           {model && (
             <>
               <span className={live ? s.chipLive : s.chipDown}>

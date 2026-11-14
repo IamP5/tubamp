@@ -26,6 +26,7 @@ import {
 } from "../../components";
 import type { MenuEntry } from "../../components";
 import { BlockGlyph, PowerGlyph } from "../../components";
+import { powerLabel } from "./lanes";
 import { CARD_H, CARD_W } from "./layout";
 import type { NodeMotion } from "./nodes";
 import s from "./board.module.css";
@@ -45,7 +46,8 @@ export const CARD_VARIANTS_REDUCED: Variants = {
 /**
  * A standing remark about the card, shown as a pill under its name: the full-rig
  * pair (the amp card states that its capture carries a cab, the cab card warns
- * that it is stacking a second one) and, on an fx slot, the hosted plugin's name.
+ * that it is stacking a second one), on an fx slot the hosted plugin's name, and
+ * on SPLIT / MIX what the region is doing (the split mode, the lanes' mix).
  * Purely informational — a note never changes what the block does.
  */
 export interface CardNote {
@@ -68,9 +70,14 @@ export interface BlockCardProps {
   onPointerDown(event: ReactPointerEvent<HTMLElement>, id: BlockId): void;
   onToggle(): void;
   onRemove(): void;
-  /** Kebab wording for the destructive entry. SPLIT/MIX say what removing them
-   *  really does — it takes the whole region with it, not one tile. */
+  /** Kebab wording for the destructive entry. */
   removeLabel?: string;
+  /** Extra kebab rows between Bypass and the remove entry ("Make stereo",
+   *  "Swap lanes" …). */
+  extraEntries?: readonly MenuEntry[];
+  /** Replaces the single remove row — SPLIT / MIX offer the three explicit ways
+   *  out of a region instead (see splitActions.tsx). */
+  removeEntries?: readonly MenuEntry[];
 }
 
 /** Keeps a control's press from selecting the card or starting a reorder. */
@@ -91,6 +98,8 @@ export function BlockCard({
   onToggle,
   onRemove,
   removeLabel = "Remove from chain",
+  extraEntries,
+  removeEntries,
 }: BlockCardProps) {
   const info = BLOCK_INFO[id];
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
@@ -100,20 +109,32 @@ export function BlockCard({
       { kind: "section", id: "title", label: info.displayName },
       {
         id: "bypass",
-        label: enabled ? "Bypass" : "Enable",
+        label: powerLabel(id, enabled),
         icon: <PowerGlyph size={14} strokeWidth={1.6} />,
         onSelect: onToggle,
       },
+      ...(extraEntries ?? []),
       { kind: "separator", id: "sep" },
-      {
-        id: "remove",
-        label: removeLabel,
-        icon: <TrashIcon size={14} />,
-        destructive: true,
-        onSelect: onRemove,
-      },
+      ...(removeEntries ?? [
+        {
+          id: "remove",
+          label: removeLabel,
+          icon: <TrashIcon size={14} />,
+          destructive: true,
+          onSelect: onRemove,
+        },
+      ]),
     ],
-    [enabled, info.displayName, onRemove, onToggle, removeLabel],
+    [
+      enabled,
+      id,
+      extraEntries,
+      info.displayName,
+      onRemove,
+      onToggle,
+      removeEntries,
+      removeLabel,
+    ],
   );
 
   return (
@@ -165,7 +186,7 @@ export function BlockCard({
             transition={tween.instant}
           />
 
-          <div className={s.cardContent}>
+          <div className={cx(s.cardContent, note && s.cardContentNoted)}>
             <BlockGlyph block={id} size={30} className={s.cardIcon} />
             <span className={s.cardName}>{info.shortName}</span>
           </div>
@@ -190,7 +211,7 @@ export function BlockCard({
             </Tooltip>
           )}
 
-          <Tooltip label={enabled ? "Bypass" : "Enable"} placement="top">
+          <Tooltip label={powerLabel(id, enabled)} placement="top">
             <button
               type="button"
               className={s.led}
@@ -225,7 +246,7 @@ export function BlockCard({
         onClose={close}
         entries={entries}
         align="center"
-        minWidth={190}
+        minWidth={removeEntries ? 230 : 190}
       />
     </motion.div>
   );

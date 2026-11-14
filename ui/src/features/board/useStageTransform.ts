@@ -112,6 +112,15 @@ export interface StageTransform {
   fit(animated?: boolean): void;
   /** Pan the minimum needed to bring `box` (lane units) into the visible band. */
   ensureVisible(box: Box): void;
+  /**
+   * Bring the WHOLE of `box` into the visible band after the board changed
+   * shape — a no-op when it is already there. While the framing is still ours
+   * this is simply an animated fit; once the user has taken control it never
+   * zooms in, only out (as little as fits) and pans the minimum. False when
+   * the box cannot fit even at MIN_ZOOM — the caller then falls back to
+   * revealing just what matters (the selected card).
+   */
+  reveal(box: Box): boolean;
 }
 
 export function useStageTransform({
@@ -321,6 +330,56 @@ export function useStageTransform({
       animate(panY, clamp(y, -limitY, limitY), options);
     },
     [insetBottom, panLimit, panX, panY, reduced, zoom],
+  );
+
+  const reveal = useCallback(
+    (box: Box): boolean => {
+      const el = containerRef.current;
+      if (!el || box.w <= 0 || box.h <= 0) return false;
+      const halfW = el.clientWidth / 2;
+      const halfH = el.clientHeight / 2;
+      const left = -halfW + REVEAL_MARGIN;
+      const right = halfW - REVEAL_MARGIN;
+      const top = -halfH + REVEAL_MARGIN;
+      const bottom = halfH - insetBottom - REVEAL_MARGIN;
+
+      const z = zoom.get();
+      const px = panX.get();
+      const py = panY.get();
+      const inside =
+        px + z * box.x >= left &&
+        px + z * (box.x + box.w) <= right &&
+        py + z * box.y >= top &&
+        py + z * (box.y + box.h) <= bottom;
+      if (inside) return true;
+
+      const fitZoom = Math.min(
+        (el.clientWidth - FIT_PADDING) / box.w,
+        (viewHeight(el) - FIT_PADDING) / box.h,
+      );
+      if (fitZoom < MIN_ZOOM) return false;
+      if (!userAdjusted.current) {
+        fit(true);
+        return true;
+      }
+
+      // The user's zoom, or less — never more. Pan scales with the ratio so the
+      // point under the container centre holds still, then the minimal shift.
+      const target = clamp(Math.min(z, fitZoom), MIN_ZOOM, MAX_ZOOM);
+      let x = px * (target / z);
+      let y = py * (target / z);
+      if (x + target * (box.x + box.w) > right) x = right - target * (box.x + box.w);
+      if (x + target * box.x < left) x = left - target * box.x;
+      if (y + target * (box.y + box.h) > bottom) y = bottom - target * (box.y + box.h);
+      if (y + target * box.y < top) y = top - target * box.y;
+
+      const options = reduced ? INSTANT : spring.canvas;
+      if (target !== z) animate(zoom, target, options);
+      animate(panX, x, options);
+      animate(panY, y, options);
+      return true;
+    },
+    [fit, insetBottom, panX, panY, reduced, viewHeight, zoom],
   );
 
   /* Frame the content once, when the editor opens. */
@@ -583,5 +642,6 @@ export function useStageTransform({
     zoomTo,
     fit,
     ensureVisible,
+    reveal,
   };
 }

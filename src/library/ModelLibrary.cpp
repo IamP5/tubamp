@@ -85,8 +85,30 @@ ModelLibrary::ModelLibrary()
     ensureDirectories();
 }
 
+juce::File ModelLibrary::uniqueChildFile (const juce::File& dir, const juce::String& fileName)
+{
+    return declash (dir, fileName);
+}
+
+namespace
+{
+juce::File& rootDirOverride()
+{
+    static juce::File directory;
+    return directory;
+}
+} // namespace
+
+void ModelLibrary::setRootDirOverride (const juce::File& directory)
+{
+    rootDirOverride() = directory;
+}
+
 juce::File ModelLibrary::getRootDir()
 {
+    if (rootDirOverride() != juce::File())
+        return rootDirOverride();
+
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
         .getChildFile ("Application Support")
         .getChildFile ("tubamp");

@@ -26,6 +26,7 @@ import {
 import { useToggleParam } from "../../hooks";
 import { selectFxSlotFor, useStore } from "../../store";
 import { BLOCK_INFO } from "../../theme/blocks";
+import { powerTip } from "../board/lanes";
 import { duration, ease, spring } from "../../theme/motion";
 import {
   fxSlotIndexOf,
@@ -46,6 +47,7 @@ import { MixBody } from "./MixBody";
 import { ReverbBody } from "./ReverbBody";
 import { ModBody } from "./ModBody";
 import { SplitBody } from "./SplitBody";
+import { SplitRemoveButton } from "./SplitRemoveButton";
 import { KnobRow } from "./KnobRow";
 import { KNOB_SPECS } from "./knobSpecs";
 import { ToneModal } from "./ToneModal";
@@ -142,22 +144,26 @@ function PanelHeader({ block }: { block: BlockId }) {
       </div>
 
       <div className={s.headerActions} data-param-index={power.parameterIndex}>
-        <Tooltip label="Enable or bypass this block">
+        <Tooltip label={powerTip(block)}>
           <PowerPill on={power.value} onChange={power.setValue} />
         </Tooltip>
         {/* SPLIT and MIX have panels, so the trash can reach them — and removing
-            either removes the whole region (the store routes structural ids through
-            the flatten, docs/SPLIT.md §5). The label says so, exactly as the board's
-            structural card does. */}
-        <Tooltip label={removeLabel}>
-          <IconButton
-            aria-label={removeLabel}
-            destructive
-            onClick={() => removeBlock(block)}
-          >
-            <TrashIcon />
-          </IconButton>
-        </Tooltip>
+            either removes the whole region, which has three ways out (keep lane A,
+            keep lane B, chain A → B): their trash opens the same menu the board's
+            structural cards show (features/board/splitActions). */}
+        {isStructureBlockId(block) ? (
+          <SplitRemoveButton />
+        ) : (
+          <Tooltip label={removeLabel}>
+            <IconButton
+              aria-label={removeLabel}
+              destructive
+              onClick={() => removeBlock(block)}
+            >
+              <TrashIcon />
+            </IconButton>
+          </Tooltip>
+        )}
         {/* Explicit dismiss: outside-click closes the panel too, but it must
             not be the only way (critique — panning/fit share that gesture). */}
         <Tooltip label="Close">

@@ -6,6 +6,8 @@
 #include "Parameters.h"
 #include "dsp/ChainOrder.h"
 #include "dsp/NamEngine.h"
+#include "library/EmbeddedMedia.h"
+#include "dsp/CabSim.h"
 #include "dsp/FxBlocks.h"
 #include "dsp/Compressor.h"
 #include "dsp/Drive.h"
@@ -111,7 +113,9 @@ public:
     const juce::String getName() const override { return "tubamp"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
-    double getTailLengthSeconds() const override { return 4.0; }
+    /** The delays and reverbs ring for up to this long; a loaded IR can ring longer
+        (a 10 s room), and the host must not cut it off. */
+    double getTailLengthSeconds() const override { return juce::jmax (4.0, cab.getTailSeconds()); }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -141,6 +145,21 @@ public:
     juce::String loadIr (const juce::File& wavFile);
     void clearIr();
     juce::String getLoadedIrPath() const { return loadedIrPath; }
+
+    /** Frees the models and convolvers the audio thread has swapped out. They are
+        freed before the next load in any case; the editor calls this a few times a
+        second so a replaced model's weights (and a replaced IR's convolver threads)
+        do not sit in memory until then. Message thread. */
+    void collectRetiredEngines();
+
+    /** The three files a session carries. */
+    enum class Media { model, modelB, ir };
+
+    /** The file a restored session, preset or A/B slot named for this slot when it
+        could not be found, rebuilt from the session or loaded — empty otherwise. The
+        slot itself is empty then, but the reference is kept and saved again, so the
+        sound comes back as soon as the file does. Message thread. */
+    juce::String getMissingMediaPath (Media slot) const;
 
     /** State as var for A/B slots + presets (params + model + IR + chain order). */
     juce::var captureStateVar();
@@ -229,6 +248,9 @@ public:
     /** The amp2 block's engine. Idle (and costing nothing) until a model is loaded
         into it. */
     NamEngine namEngineB;
+
+    /** The cab block's impulse response (load through loadIr()/clearIr()). */
+    CabSim cab;
     FxHost fxHost;
     ModelLibrary library;
     PresetManager presets;
@@ -556,6 +578,7 @@ private:
 
         std::atomic<float>* cabLowCut = nullptr;
         std::atomic<float>* cabHighCut = nullptr;
+        std::atomic<float>* cabMix = nullptr;
 
         std::atomic<float>* eqOn[params::maxInstances] {};
         std::atomic<float>* eqBass[params::maxInstances] {};
@@ -673,7 +696,6 @@ private:
     GateFx gate;
     std::array<CompFx, params::maxInstances> comp;
     std::array<DriveFx, params::maxInstances> drive;
-    CabSim cab;
     std::array<EqFx, params::maxInstances> eq;
     /** The amp block's own tone stack, between the model's gated output and amp-out: a
         mono EqFx that always runs Classic. */
@@ -753,6 +775,11 @@ private:
     std::uint32_t seenCallbacks = 0, lastAudioMs = 0, idleGeneration = 0;
     bool audioSeen = false;
 
+    // Audio thread: whether the cab may run a stereo IR as true stereo this block
+    // (nothing downstream of it folds the path to mono). Decided once per block from
+    // the decoded order, read by the cab's case in the block dispatcher.
+    bool cabAllowStereo = true;
+
     /** What the previous block ran, for spotting a block re-entering the chain.
         Audio thread only. */
     std::array<bool, chain::numBlockTypes> prevPresent {};
@@ -788,6 +815,32 @@ private:
     // to read while another thread reassigns it, hence the lock (never touched by
     // the audio thread).
     mutable juce::CriticalSection pathLock;
+
+    // Per Media slot, under pathLock.
+    struct MediaState
+    {
+        juce::String missingPath;       // see getMissingMediaPath()
+        EmbeddedMedia packed;           // the loaded file, packed for the session state
+        juce::String packedFor;         // the path `packed` was read from
+    };
+
+    std::array<MediaState, 3> mediaState;
+
+    juce::String loadedPathLocked (Media slot) const;
+    void setMissingMedia (Media slot, const juce::String& path);
+
+    /** The path a save should write for the slot: the loaded file, or the one that
+        is missing. Any thread. */
+    juce::String mediaPathForState (Media slot) const;
+
+    /** The slot's loaded file packed for the session state, read and compressed on
+        first use and cached for as long as that file stays loaded. Any thread. */
+    EmbeddedMedia packedMedia (Media slot);
+
+    /** Loads `path` into the slot, looking for the file where a moved session would
+        have it and rebuilding it from `embedded` when it is gone. An empty path
+        clears the slot. Message thread. */
+    void restoreMedia (Media slot, const juce::String& path, const EmbeddedMedia& embedded);
     juce::String loadedModelPath, loadedModelPathB, loadedIrPath;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TubampAudioProcessor)

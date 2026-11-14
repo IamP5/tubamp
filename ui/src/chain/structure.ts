@@ -155,3 +155,98 @@ export function insertSplit(
   const at = Math.min(Math.max(index, 0), order.length);
   return [...order.slice(0, at), ...SPLIT_TRIPLE, ...order.slice(at)];
 }
+
+/* ───────────────────────── whole-region edits ──────────────────────────── *
+ * Every helper below takes a published order and hands back the COMPLETE next
+ * order, already valid by `sanitizeStructure` — the caller publishes it in one
+ * `setChainOrder`, so a gesture stays one write. None of them throws: an order
+ * without a valid structure comes back flattened (removals) or unchanged
+ * (swap), exactly what the sanitizer would have made of it.
+ */
+
+/** How a split region is taken out of the chain. */
+export type SplitRemoval = "keepA" | "keepB" | "series";
+
+/**
+ * The order with the region removed:
+ *   keepA  — lane A's blocks stay inline where the split stood, lane B's leave
+ *            the chain (their parameters are untouched, only the tokens go);
+ *   keepB  — the mirror image;
+ *   series — lane A then lane B, inline (= `flattenStructure`). Right for an fx
+ *            lane, wrong for a dual-amp rig, which is why it is not the only one.
+ */
+export function removeSplit(
+  order: readonly BlockId[],
+  how: SplitRemoval,
+): BlockId[] {
+  const spans = laneSpans(findStructure(order));
+  if (!spans || how === "series") return flattenStructure(order);
+  const drop = how === "keepA" ? spans.b : spans.a;
+  return flattenStructure(
+    order.filter((_, i) => i < drop.start || i >= drop.end),
+  );
+}
+
+/** The blocks `removeSplit(order, how)` takes out of the chain — what a menu
+ *  should name before the user commits to it. */
+export function blocksDroppedBy(
+  order: readonly BlockId[],
+  how: SplitRemoval,
+): BlockId[] {
+  const spans = laneSpans(findStructure(order));
+  if (!spans || how === "series") return [];
+  const drop = how === "keepA" ? spans.b : spans.a;
+  return order.slice(drop.start, drop.end);
+}
+
+/** The order with lane A's and lane B's contents exchanged (the `lane2` boundary
+ *  moves with them). Unchanged when there is no valid structure. */
+export function swapLanes(order: readonly BlockId[]): BlockId[] {
+  const structure = findStructure(order);
+  const spans = laneSpans(structure);
+  if (!spans) return [...order];
+  return [
+    ...order.slice(0, structure.splitAt + 1),
+    ...order.slice(spans.b.start, spans.b.end),
+    "lane2",
+    ...order.slice(spans.a.start, spans.a.end),
+    ...order.slice(structure.mixAt),
+  ];
+}
+
+/**
+ * The one-click dual-amp rig: `amp` in lane A, `amp2` in lane B.
+ *
+ *  - `amp` already in the (structureless) chain → it is wrapped where it is:
+ *    `[..., split, amp, lane2, amp2, mix, ...]` (four new tokens);
+ *  - no `amp` → the whole rig is inserted at `index` (five new tokens).
+ *
+ * Null whenever the rig cannot be built: a region already exists (one per
+ * chain), `amp2` is already placed somewhere, or the length cap has no room.
+ * `insertAt` reports where the region's first token landed, for row bookkeeping.
+ */
+export function dualAmpOrder(
+  order: readonly BlockId[],
+  index: number,
+): { order: BlockId[]; insertAt: number; added: number } | null {
+  const { splitAt, lane2At, mixAt } = findStructure(order);
+  if (splitAt >= 0 || lane2At >= 0 || mixAt >= 0) return null;
+  if (order.includes("amp2")) return null;
+  const rig: BlockId[] = ["split", "amp", "lane2", "amp2", "mix"];
+  const ampAt = order.indexOf("amp");
+  if (ampAt >= 0) {
+    if (order.length + rig.length - 1 > MAX_CHAIN_LENGTH) return null;
+    return {
+      order: [...order.slice(0, ampAt), ...rig, ...order.slice(ampAt + 1)],
+      insertAt: ampAt,
+      added: rig.length - 1,
+    };
+  }
+  if (order.length + rig.length > MAX_CHAIN_LENGTH) return null;
+  const at = Math.min(Math.max(index, 0), order.length);
+  return {
+    order: [...order.slice(0, at), ...rig, ...order.slice(at)],
+    insertAt: at,
+    added: rig.length,
+  };
+}

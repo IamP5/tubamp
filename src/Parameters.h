@@ -66,6 +66,7 @@ inline constexpr auto ampSlim     = "amp_slim";      // [0, 1] A2 slimmable size
 // Cab (IR convolution)
 inline constexpr auto cabLowCut  = "cab_lowcut";   // Hz [20, 500]  HPF after IR
 inline constexpr auto cabHighCut = "cab_highcut";  // Hz [2000, 20000] LPF after IR
+inline constexpr auto cabMix     = "cab_mix";      // % [0, 100] dry/wet, 100 = the IR alone
 
 // Tone stack (NAM knob units: 0-10, 5 is noon / flat)
 inline constexpr auto eqBass   = "eq_bass";    // [0, 10] low shelf 150 Hz,  4 dB per unit

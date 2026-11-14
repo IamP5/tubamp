@@ -3728,6 +3728,10 @@ The UI's relay arrays must match `WebEditor.cpp` exactly: 183 sliders, 36 toggle
 Relays after integration: 119 + 64 = 183 sliders, 30 + 6 = 36 toggles, 17 + 25 = 42 combos.
 Layout size: 166 + 95 = 261 parameters.
 
+Since the merge with the NAM/IR work (docs/NAM-IR.md §3) the base layout also holds
+`cab_mix` at hint 3, ahead of the hint-4 block: 184 sliders / 36 toggles / 42 combos and
+167 + 95 = 262 parameters. The other counts in this document predate that merge.
+
 ## Appendix B — sources opened while writing this spec
 
 - Study: `docs/research/fx/README.md`; `gate|comp|drive|eq|chorus|phaser|tremolo/report.md`

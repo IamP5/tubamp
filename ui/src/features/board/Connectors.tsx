@@ -18,15 +18,25 @@
  * is a dedicated route — out to the right of the row end, down through the row
  * gap, back in to the left of the next row's first card — because a mid-x bezier
  * between a large x1 and a small x2 sweeps backwards across every card in the row
- * it is leaving. An EMPTY lane's wire bows out of SPLIT, along its own track and
- * back into MIX: that bow is the only thing standing for the lane, so it has to
- * be visibly in it.
+ * it is leaving. Lane wires wear their lane's tint (features/board/lanes.ts) and
+ * normally end in the lane's own [+] slot; only when there is nothing left to add
+ * (no slot) does an EMPTY lane's wire bow out of SPLIT, along its own track and
+ * back into MIX — then that bow is the only thing standing for the lane.
  */
 import { useCallback, useLayoutEffect, useRef } from "react";
 import { cancelFrame, frame } from "motion/react";
 import { isBlockId, type BlockId } from "../../bridge/types";
 import { BLOCK_ACCENT } from "../../theme/blocks";
-import { FLOW_ARROW_PATH_D, type Box, type LaneRegion, type Link } from "./layout";
+import {
+  FLOW_ARROW_PATH_D,
+  REGION_PAD_X,
+  REGION_PAD_Y,
+  REGION_R,
+  type Box,
+  type LaneRegion,
+  type Link,
+} from "./layout";
+import { LANE_TINT } from "./lanes";
 import type { NodeMotionRegistry } from "./nodes";
 import s from "./board.module.css";
 
@@ -53,11 +63,6 @@ const WRAP_FLOW_LEN = WRAP_LEAD;
 
 /** How far an empty lane's bow runs out of SPLIT before it reaches its track. */
 const BOW_LEAD = 30;
-
-/** Air between the container frame and the cards inside it. */
-const REGION_PAD_X = 20;
-const REGION_PAD_Y = 14;
-const REGION_R = 18;
 
 function straightPath(x1: number, y1: number, x2: number, y2: number): string {
   if (Math.abs(y1 - y2) < 0.5) return `M${x1} ${y1}H${x2}`;
@@ -217,7 +222,7 @@ export function Connectors({
     const dimmed =
       (isBlockId(link.from.id) && bypassed.has(link.from.id)) ||
       (isBlockId(link.to.id) && bypassed.has(link.to.id));
-    return { key: link.key, i, feedsSelection, dimmed };
+    return { key: link.key, i, feedsSelection, dimmed, lane: link.lane };
   });
 
   return (
@@ -243,7 +248,7 @@ export function Connectors({
         />
       )}
 
-      {segments.map(({ key, i, feedsSelection, dimmed }) => (
+      {segments.map(({ key, i, feedsSelection, dimmed, lane }) => (
         <g key={key} opacity={dimmed ? 0.35 : 1} className={s.segment}>
           <path
             ref={(el) => {
@@ -253,7 +258,9 @@ export function Connectors({
             style={
               feedsSelection && selected
                 ? { stroke: BLOCK_ACCENT[selected], strokeOpacity: 0.85 }
-                : undefined
+                : lane
+                  ? { stroke: LANE_TINT[lane].wire }
+                  : undefined
             }
           />
           {!reduced && (

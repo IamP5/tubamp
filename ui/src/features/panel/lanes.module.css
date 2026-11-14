@@ -1,0 +1,230 @@
+/*
+  Splitter + Mixer panel bodies (SplitBody / MixBody). Tokens only, plus the
+  lane tints, which arrive inline from features/board/lanes.ts so the panels
+  and the board share one table. Safari 14 floor: no color-mix, no :has().
+*/
+
+.microLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+/* ─────────────────────────────── splitter ──────────────────────────────── */
+
+/* Centred while there is room, scrollable when there is not (the TONE3000
+   drawer takes 380px off the panel). Centring is done with auto margins on the
+   first and last child rather than `justify-content: center`: centred overflow
+   pushes the left end out of reach, auto margins simply collapse to zero. */
+.splitBody {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 28px;
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.splitBody > :first-child,
+.mixBody > :first-child {
+  margin-left: auto;
+}
+
+.splitBody > :last-child,
+.mixBody > :last-child {
+  margin-right: auto;
+}
+
+.diagram {
+  flex: none;
+  max-width: none;
+  overflow: visible;
+}
+
+.diagramWire {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.diagramIn {
+  fill: var(--bg-surface);
+  stroke: var(--text-secondary);
+  stroke-width: 1.5;
+}
+
+.diagramFilter {
+  fill: var(--bg-elevated);
+  stroke: var(--border-hover);
+  stroke-width: 1;
+}
+
+.diagramCurve {
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.diagramText {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  fill: var(--text-tertiary);
+  text-anchor: middle;
+}
+
+.diagramBadge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-anchor: middle;
+}
+
+.splitControls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  width: 300px;
+}
+
+.modeSegmented {
+  align-self: stretch;
+}
+
+.modeSegmented > button {
+  flex: 1;
+}
+
+.summary {
+  margin: 0;
+  min-height: 34px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* Width is animated by SplitBody (0 ↔ 112) so the row re-centres smoothly as
+   the knob arrives; overflow keeps the knob from painting outside meanwhile. */
+.xoverCell {
+  display: flex;
+  justify-content: center;
+  flex: none;
+  overflow: hidden;
+}
+
+/* ──────────────────────────────── mixer ────────────────────────────────── */
+
+.mixBody {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.mixBody > * {
+  flex: none;
+}
+
+.strip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: var(--ring-inset);
+}
+
+.stripHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 22px;
+}
+
+.stripKnobs {
+  display: flex;
+  justify-content: center;
+}
+
+.stripCell {
+  display: flex;
+  justify-content: center;
+  width: 84px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 7px 0 6px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+.badgeDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+}
+
+.masterTag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.phaseLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  width: 116px;
+}
+
+.action {
+  justify-content: flex-start;
+}
+
+/* A quick action the pans already match reads as "on". */
+.action[data-active],
+.action[data-active]:hover {
+  color: var(--block-accent);
+  background: var(--block-fill-8);
+  box-shadow: inset 0 0 0 1px var(--block-glow);
+}

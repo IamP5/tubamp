@@ -21,8 +21,11 @@ import type {
   SliderParamState,
   T3kBrowseRequest,
   T3kBrowseResult,
+  T3kInstalledResult,
   T3kModel,
   T3kModelsResult,
+  T3kPromptResult,
+  T3kTone,
   ToggleParamId,
   ToggleParamState,
   UiState,
@@ -145,6 +148,7 @@ const emptyUiState: UiState = {
   model: null,
   modelB: null,
   ir: null,
+  missingMedia: { model: null, modelB: null, ir: null },
   models: [],
   irs: [],
   presets: [],
@@ -237,8 +241,12 @@ export const juceBridge: Bridge = {
   t3kStartSelectFlow: async () => {
     await native("t3kStartSelectFlow")();
   },
-  t3kDownloadModel: async (model: T3kModel) => {
-    await native("t3kDownloadModel")(model);
+  // The tone travels along so C++ can write the file's sidecar; the
+  // model-only form (select flow) still works.
+  t3kDownloadModel: async (model: T3kModel, tone?: T3kTone) => {
+    await (tone
+      ? native("t3kDownloadModel")(model, tone)
+      : native("t3kDownloadModel")(model));
   },
   t3kSignIn: async () => {
     await native("t3kSignIn")();
@@ -251,11 +259,21 @@ export const juceBridge: Bridge = {
       { error: "TONE3000 is not reachable." },
       request,
     ),
-  t3kListModels: (toneId) =>
+  t3kListModels: (toneId, format) =>
     call<T3kModelsResult>(
       "t3kListModels",
       { error: "Could not list this tone's files." },
-      toneId,
+      ...(format ? [toneId, format] : [toneId]),
+    ),
+  t3kPromptSearch: (initial) =>
+    call<T3kPromptResult>("t3kPromptSearch", { text: null }, initial),
+  t3kInstalled: () =>
+    call<T3kInstalledResult>("t3kInstalled", { files: [] }),
+  openExternal: (url) =>
+    call<ErrorResult>(
+      "openExternal",
+      { error: "Could not open the link." },
+      url,
     ),
   t3kSetFavorite: (toneId, favorite) =>
     call<ErrorResult>("t3kSetFavorite", {}, toneId, favorite),

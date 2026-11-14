@@ -2084,7 +2084,7 @@ bool runEngineTypeStateTests (double sampleRate, int blockSize)
 
 /** Parameters in the layout before the gate/comp/drive/EQ/mod engines
     (tests/golden/params-base.tsv). Everything after them is a hint-4 addition. */
-constexpr int kBaseParamCount = 166;
+constexpr int kBaseParamCount = 167;
 
 /** One engine type id of docs/FX-ENGINES.md §2.7.5 and the block instance it belongs to. */
 struct EngineTypeId
@@ -2210,7 +2210,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
     const auto typeIds = engineTypeIds();
     ok &= expect (typeIds.size() == 19, "19 engine type ids: gate_mode + comp/drive/eq type x3 + three mod voicings x3");
 
-    // --- layout: 95 hint-4 parameters appended after the frozen 166
+    // --- layout: 95 hint-4 parameters appended after the frozen 167
     {
         tubamp::TubampAudioProcessor fresh;
         const auto& all = fresh.getParameters();
@@ -2220,7 +2220,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
             if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (all[i]))
                 hints &= (i < kBaseParamCount) == (p->getVersionHint() < 4);
 
-        ok &= expect (hints, "261 parameters: the base 166 at hints 1-3, then 95 at hint 4");
+        ok &= expect (hints, "262 parameters: the base 167 at hints 1-3, then 95 at hint 4");
 
         bool recommended = true;
 
@@ -2294,7 +2294,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
         proc.setStateInformation (blob.getData(), (int) blob.getSize());
 
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, total),
-                      "host state from this layout round-trips all 261 parameters exactly");
+                      "host state from this layout round-trips all 262 parameters exactly");
     }
 
     // --- (a) host state from the old layout: the blob with all 95 new PARAM children
@@ -2309,7 +2309,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
             paramTree.removeChild (paramTree.getChildWithProperty ("id", p->paramID), nullptr);
 
         ok &= expect (paramTree.isValid() && paramTree.getNumChildren() == kBaseParamCount,
-                      "old-layout host state carries exactly the base 166 PARAM children");
+                      "old-layout host state carries exactly the base 167 PARAM children");
 
         if (auto olderXml = root.createXml())
             juce::AudioProcessor::copyXmlToBinary (*olderXml, olderBlob);
@@ -2328,7 +2328,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
                       "(b) old-layout host state: blocks outside the chain keep the recommended type");
         ok &= expect (newParamsAtDefault (proc, typeIds), "old-layout host state: the other new parameters stay at their defaults");
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, (size_t) kBaseParamCount),
-                      "old-layout host state: all 166 existing parameters restore exactly");
+                      "old-layout host state: all 167 existing parameters restore exactly");
         ok &= expect (proc.getChainOrder() == order, "old-layout host state: the chain restores as saved");
 
         // (b) Adding a block that was not in the restored chain starts it on the new type.
@@ -2446,7 +2446,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
 
         proc.applyStateVar (modern);
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, total),
-                      "(d) a preset from this layout round-trips all 261 parameters exactly");
+                      "(d) a preset from this layout round-trips all 262 parameters exactly");
 
         // The processor still holds the source's non-default types: absent ids must not
         // leave them ringing, in or out of the chain.
@@ -2455,7 +2455,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
                       "(d) old-layout preset: in-chain type ids at Classic, the rest at the recommended type");
         ok &= expect (newParamsAtDefault (proc, typeIds), "(d) old-layout preset: the other new parameters reset to their defaults");
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, (size_t) kBaseParamCount),
-                      "(d) old-layout preset: all 166 existing parameters restore exactly");
+                      "(d) old-layout preset: all 167 existing parameters restore exactly");
 
         setFloatParam (proc, params::eqType, (float) tubamp::EqFx::Type::graphic);
         ValueRecorder recorder (*proc.apvts.getParameter (params::eqType));
@@ -2470,7 +2470,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
         setFloatParam (proc, params::compType, 0.0f);
         proc.presets.recallSlot (0);
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, total),
-                      "(d) an A/B slot round-trips all 261 parameters exactly");
+                      "(d) an A/B slot round-trips all 262 parameters exactly");
     }
 
     // A preset that predates the arrangeable chain loads as the classic nine and pins them.
@@ -6032,6 +6032,11 @@ bool runFreshInstallTests (double sampleRate, int blockSize)
     const std::string saved = previous != nullptr ? previous : "";
     setenv ("CFFIXED_USER_HOME", home.getFullPathName().toRawUTF8(), 1);
 
+    // main() points the library at a scratch folder for the whole suite; this test needs the
+    // library to follow the home it has just redirected.
+    const auto suiteLibrary = tubamp::ModelLibrary::getRootDir();
+    tubamp::ModelLibrary::setRootDirOverride ({});
+
     const auto presetsDir = tubamp::ModelLibrary::getPresetsDir();
     ok &= expect (presetsDir.isAChildOf (home) && ! presetsDir.exists(), "the presets folder is redirected into an empty home");
 
@@ -6097,6 +6102,7 @@ bool runFreshInstallTests (double sampleRate, int blockSize)
     else
         setenv ("CFFIXED_USER_HOME", saved.c_str(), 1);
 
+    tubamp::ModelLibrary::setRootDirOverride (suiteLibrary);
     home.deleteRecursively();
     return ok;
 }
@@ -7587,6 +7593,9 @@ bool runHeadroomTests (double sampleRate, int blockSize)
 
 } // namespace
 
+// tests/EngineTests.cpp
+bool runEngineTests (const juce::File& modelFile, double sampleRate, int blockSize);
+
 int main (int argc, char** argv)
 {
     if (argc < 2)
@@ -7597,6 +7606,19 @@ int main (int argc, char** argv)
 
     const juce::ScopedJuceInitialiser_GUI juceInit;
     const juce::File modelFile { juce::String { argv[1] } };
+
+    // Everything below creates presets, restores sessions and rebuilds files: none of
+    // it belongs in the library of whoever runs the suite.
+    const auto libraryDir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getChildFile ("tubamp-smoke-library-"
+                                               + juce::String::toHexString (juce::Random::getSystemRandom().nextInt64()));
+    tubamp::ModelLibrary::setRootDirOverride (libraryDir);
+
+    struct LibraryCleanup
+    {
+        juce::File dir;
+        ~LibraryCleanup() { dir.deleteRecursively(); }
+    } libraryCleanup { libraryDir };
     const double sampleRate = argc > 2 ? atof (argv[2]) : 48000.0;
     const int blockSize = 512;
 
@@ -7815,7 +7837,11 @@ int main (int argc, char** argv)
     std::printf (headroomPass ? "PASS: levels above full scale leave the plugin unclipped and finite\n"
                               : "FAIL: levels above full scale are clipped or not finite\n");
 
-    return modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
+    const bool enginePass = runEngineTests (modelFile, sampleRate, blockSize);
+    std::printf (enginePass ? "PASS: NAM and IR engines behave like the reference\n"
+                            : "FAIL: NAM / IR engine behaviour is wrong\n");
+
+    return enginePass && modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
                    && ampEqPass && factoryPass && concurrentPass && fxPass
                    && modelPathBPass && delayModePass
                    && splitPathPass && dualAmpLanePass && splitLatencyPass && splitStatePass
