@@ -109,15 +109,24 @@ tubamp_write_text_table("${tubamp_update_gen_dir}/tubamp_update_fixtures.inc"
     "struct FixtureFile { std::string_view name, text; };\ninline constexpr auto fixtureFiles = std::array<FixtureFile, "
     "${tubamp_update_fixture_files}")
 
+# The disk tests assemble tubamp.component fixtures around this universal module, sign
+# them ad hoc and zip them with ditto, so they need no JUCE build.
+add_library(tubamp_update_fixture_component MODULE "${tubamp_update_tests_dir}/fixture-component.c")
+set_target_properties(tubamp_update_fixture_component PROPERTIES OSX_ARCHITECTURES "arm64;x86_64")
+
 file(GLOB tubamp_update_test_sources CONFIGURE_DEPENDS "${tubamp_update_tests_dir}/*.cpp" "${tubamp_update_tests_dir}/*.h")
 add_executable(tubamp_update_tool
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/update/main.cpp"
     ${tubamp_update_test_sources}
     ${tubamp_update_sources})
 target_include_directories(tubamp_update_tool PRIVATE ${tubamp_update_include_dirs} "${tubamp_update_tests_dir}")
+target_compile_definitions(tubamp_update_tool PRIVATE
+    TUBAMP_UPDATE_FIXTURE_EXECUTABLE="$<TARGET_FILE:tubamp_update_fixture_component>")
+add_dependencies(tubamp_update_tool tubamp_update_fixture_component)
 target_link_libraries(tubamp_update_tool PRIVATE
     "-framework Security"
     "-framework CoreFoundation"
+    z
     juce::juce_recommended_warning_flags)
 
 # Each must-not-compile case is compiled twice: as written it must compile (the control),

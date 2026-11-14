@@ -50,6 +50,42 @@ No in-plugin design can close the last row. Keeping the previous bundle makes th
 
 There is no journal and no "restart pending" flag. Restart pending means that the version on disk differs from the version compiled into the running code. The offer after a restart comes from re-opening `latest.signed` through the same code as a fresh download. The replay floor is the version inside `latest.signed`. A crash therefore cannot leave two records that disagree.
 
+One `flock` on `Application Support/tubamp/update/lock` serializes every short write on the account: prefs, the cache, creating a staging directory, the swap, and `reconcile()`. `prefs.json` and `latest.signed` are written to a `.tmp` beside them and renamed, so each is always a complete old or a complete new file. Each staging directory also has its own `lock`, held for the life of the attempt. A directory whose lock anyone can take, or that has no lock file, belongs to a process that died.
+
+## How the bundle is replaced
+
+`InstallSite::detect` decides from the running image's own path whether this copy may replace itself. It must be `~/Library/Audio/Plug-Ins/Components/tubamp.component` and a real directory. `Components`, the bundle, `.tubamp` and the support folder must be writable. `.tubamp` must be on the same device as `Components`, and that volume must report `VOL_CAP_INT_RENAME_SWAP`. Anything else makes the copy one that cannot replace itself, with the reason. The tests attach a FAT image to prove the last two checks.
+
+The install then runs one step per type in the chain:
+
+1. `ArchiveSink` writes the download into a file in the staging directory that is unlinked as soon as it is opened. It hashes each chunk as it writes it and refuses the byte past the signed size. `finish` yields a `VerifiedArchive` only when the size and the SHA-256 equal the signed values.
+2. `unpack` reads the zip through that same descriptor. It reads the central directory, runs `planExtraction` over every entry before it writes one byte, then creates exactly the planned files with `openat(O_EXCL | O_NOFOLLOW)`. Each file is inflated to its declared size and must match its CRC-32. It accepts what `ditto -c -k` writes: stored or deflated entries, with no encryption, no zip64, and one disk.
+3. `inspect` checks the Info.plist pins, the offered version in `CFBundleShortVersionString` and in the `AudioComponents` integer, a CPU slice for every type the live bundle has and for the running one, and the code seal.
+4. `commit` takes the support lock, re-reads the installed version, and swaps the staged bundle with the live one in one `renamex_np(RENAME_SWAP)`. The old bundle is now in the staging directory.
+5. `reconcile()` moves the old bundle to `previous/` and deletes the staging directory.
+
+tubamp unpacks the zip itself, with the SDK's zlib, for two reasons. `ditto -x -k` would be a process spawned from inside the host, and it cannot be held to the entry policy before it writes. The SDK ships no libarchive headers. The ad-hoc seal survives the unpacker: the tests unpack a `ditto`-made zip and check the result with both `SecStaticCodeCheckValidity` and `codesign --verify --deep --strict`.
+
+The seal check uses Security.framework (`codeSealIntact` in `Trust.cpp`) rather than running `codesign`. It spawns no process, reads no output, and keeps every `Sec*` call in one file.
+
+The release archive must contain nothing but `tubamp.component/`. `planExtraction` refuses a `__MACOSX/` entry, and an AppleDouble `._` file inside the bundle breaks the seal. Zip the bundle with `ditto -c -k --norsrc --keepParent`.
+
+## What a crash leaves
+
+Every stage of the install ends in `reconcile()`, and so does every editor that opens. `reconcile()` reads the disk and nothing else, so it does not need to know what an earlier run was doing.
+
+| The process dies during | The disk afterwards | The next `reconcile()` |
+| --- | --- | --- |
+| A prefs or cache write | A `.tmp` beside the complete old file | Deletes the `.tmp` |
+| The download | A staging directory holding only `lock`. The archive has no name, so the kernel frees it | Deletes the staging directory |
+| The unpack | A staging directory with a partial bundle | Deletes it, because the bundle is not sealed |
+| The inspect, or before the swap | A staging directory with the complete new bundle | Deletes it, because the bundle is not below the installed version |
+| The swap | Either the row above or the row below. `renamex_np` is atomic | |
+| After the swap | The new bundle live, the old one in the staging directory | Moves the old bundle to `previous/`, replacing the older previous one, then deletes the staging directory |
+| `reconcile()` itself | Any mix of the rows above | Does the same steps again |
+
+`reconcile()` keeps in `previous/` the highest pinned, sealed bundle below the installed version. It never touches the live bundle. When the installed version cannot be read, it deletes the staging directories and leaves `previous/` alone. `tubamp_update_tool test` runs each row with a real child process that exits at that point, dies of `SIGXFSZ` inside a file, or gets `SIGKILL`, then reconciles twice and checks that the second run changes nothing.
+
 ## How a release is trusted
 
 Each release carries `update-v1.signed`, beside the site's `manifest.json`, which stays unsigned and unchanged:
@@ -133,4 +169,4 @@ It changes the base in five ways. It has no validation step after the swap, no a
 
 ## Where the code is
 
-`src/update/README.md` maps the modules. `tubamp_update_tool test` runs every table. `tubamp_update_tool verify-envelope` opens a signed file exactly as the plugin does, so the release pipeline can prove the shipped client accepts what it publishes.
+`src/update/README.md` maps the modules and explains the disk tests. `tubamp_update_tool test` runs every table. `tubamp_update_tool verify-envelope` opens a signed file exactly as the plugin does, so the release pipeline can prove the shipped client accepts what it publishes.

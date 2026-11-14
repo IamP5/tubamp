@@ -266,7 +266,7 @@ if(TUBAMP_UPDATES)
     target_sources(tubamp PRIVATE ${tubamp_update_sources})
     target_include_directories(tubamp PRIVATE ${tubamp_update_include_dirs})
     target_compile_definitions(tubamp PUBLIC TUBAMP_UPDATES=1)
-    target_link_libraries(tubamp PRIVATE "-framework Security")
+    target_link_libraries(tubamp PRIVATE "-framework Security" "-framework CoreFoundation" z)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,7 @@
 #pragma once
 
 // PRIVATE to src/update. latest.signed: the newest envelope this account accepted, byte
-// for byte. It is the offer cache and the replay floor. Declared for the install phase;
-// nothing here is implemented yet.
+// for byte. It is the offer cache and the replay floor. Implemented in EnvelopeCache.cpp.
 
 #include "Prefs.h"
 #include "Trust.h"

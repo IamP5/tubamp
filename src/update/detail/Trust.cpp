@@ -178,4 +178,17 @@ Result<Manifest, Refusal> openEnvelope (ByteView file, const TrustRoot& trust)
         return Refusal (manifest.error());
     return std::move (manifest).value();
 }
+
+bool codeSealIntact (const std::filesystem::path& bundle)
+{
+    const auto& text = bundle.native();
+    CFOwned<CFURLRef> url { CFURLCreateFromFileSystemRepresentation (
+        kCFAllocatorDefault, reinterpret_cast<const UInt8*> (text.data()), CFIndex (text.size()), true) };
+    SecStaticCodeRef code = nullptr;
+    if (url.ref == nullptr || SecStaticCodeCreateWithPath (url.ref, kSecCSDefaultFlags, &code) != errSecSuccess)
+        return false;
+    CFOwned<SecStaticCodeRef> owned { code };
+    return SecStaticCodeCheckValidity (code, kSecCSCheckAllArchitectures | kSecCSStrictValidate, nullptr)
+        == errSecSuccess;
+}
 } // namespace tubamp::update::detail

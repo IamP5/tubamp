@@ -449,6 +449,7 @@ int runUpdateTests()
     archives();
     prefs();
     runMachineTests (passed, failed);
+    runDiskTests (passed, failed);
 
     std::printf ("\n%d passed, %d failed\n", passed, failed);
     return failed;

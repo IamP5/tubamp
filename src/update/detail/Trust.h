@@ -6,6 +6,8 @@
 
 #include "Rules.h"
 
+#include <filesystem>
+
 namespace tubamp::update::detail
 {
 /** One ECDSA P-256 public key: the raw 65-byte X9.63 point (04 || X || Y). */
@@ -77,4 +79,9 @@ using Refusal = std::variant<EnvelopeError, SignatureError, ManifestError>;
 /** split, then verify, then parse: the one path from bytes to a Manifest, shared by a
     fresh download, the cached envelope and the release gate. */
 Result<Manifest, Refusal> openEnvelope (ByteView file, const TrustRoot&);
+
+/** The bundle is signed (ad hoc is enough) and every sealed file, every architecture
+    and Info.plist still match the signature: SecStaticCodeCheckValidity with
+    kSecCSCheckAllArchitectures | kSecCSStrictValidate. Reads the files; loads nothing. */
+bool codeSealIntact (const std::filesystem::path& bundle);
 } // namespace tubamp::update::detail

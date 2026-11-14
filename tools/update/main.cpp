@@ -1,7 +1,11 @@
 // tubamp_update_tool: the update core's test runner and the release gate.
 //
 //   tubamp_update_tool test
-//       Runs every table. Exit 1 on any failure.
+//       Runs every table. Exit 1 on any failure. TUBAMP_UPDATE_COMPONENT=<built
+//       tubamp.component> runs the disk tables on copies of that bundle.
+//
+//   tubamp_update_tool child <command> ...
+//       A process the disk tests spawn, race and kill. Not for people.
 //
 //   tubamp_update_tool verify-envelope --envelope <file> --running <X.Y.Z>
 //                      [--highest-seen <X.Y.Z>] [--macos <X.Y>] [--trust <pub.pem>]...
@@ -179,5 +183,7 @@ int main (int argc, char** argv)
         return tubamp::update::test::runUpdateTests() == 0 ? 0 : 1;
     if (argc >= 2 && std::string (argv[1]) == "verify-envelope")
         return verifyEnvelope (argc, argv);
+    if (argc >= 3 && std::string (argv[1]) == "child")
+        return tubamp::update::test::runDiskChild (argc, argv);
     return usage();
 }
