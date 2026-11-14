@@ -4,7 +4,9 @@ cmake_minimum_required(VERSION 3.24)
 # this line would be a no-op and the binaries would require the build machine's macOS.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
-project(tubamp VERSION 0.1.0 LANGUAGES C CXX)
+# Release builds pass the version computed from git tags (docs/RELEASING.md).
+set(TUBAMP_VERSION "0.1.0" CACHE STRING "Plugin version, X.Y.Z")
+project(tubamp VERSION ${TUBAMP_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -104,7 +106,9 @@ set(TUBAMP_T3K_CLIENT_ID "${tubamp_t3k_client_id_default}" CACHE STRING
 # A dev-server build is useless to a host and must never overwrite the installed
 # shipping component, so only release-shaped builds copy themselves into
 # ~/Library/Audio/Plug-Ins/Components. juce_add_plugin consumes this at call time.
-if(TUBAMP_WEBUI_DEV)
+# Installer builds turn the copy off too: they package the component instead.
+option(TUBAMP_COPY_AFTER_BUILD "Copy the AU into ~/Library/Audio/Plug-Ins/Components after a build" ON)
+if(TUBAMP_WEBUI_DEV OR NOT TUBAMP_COPY_AFTER_BUILD)
     set(tubamp_copy_after_build FALSE)
 else()
     set(tubamp_copy_after_build TRUE)
