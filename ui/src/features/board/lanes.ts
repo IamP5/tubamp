@@ -1,21 +1,18 @@
 /**
- * Lane identity — what the two lanes of a split region are CALLED and what
- * colour they wear, everywhere they are named: the board's lane badges, lane
- * wires and lane [+] slots, the SPLIT/MIX card notes, and the Splitter and
- * Mixer panels. One table, so a lane is never "A" on the board and "L" in a
- * panel.
+ * Lane identity — what the two lanes of a split region are CALLED everywhere
+ * they are named: the board's lane labels and lane add slots, the Split and
+ * Mixer tiles' second line, and the Splitter and Mixer panels. One table, so a
+ * lane is never "A" on the board and "L" in a panel.
  *
  * Names follow `split_mode` (docs/SPLIT.md §2, frozen choice order):
  *   Copy   → A / B      both lanes get the full signal
  *   L/R    → L / R      lane A takes the left input channel, lane B the right
- *   X-Over → LOW / HIGH lane A takes everything below the crossover, B above
+ *   X-Over → Low / High lane A takes everything below the crossover, B above
  * (src/PluginProcessor.cpp `splitLanes` is the authority for those meanings;
  * a mono host splits L/R like Copy.)
  *
- * Colours are deliberately quiet — a warm and a cool tint at low alpha, so the
- * lanes read as two tracks of one region rather than two more block hues. Low
- * is warm and high is cool, which is also the only colour convention any of
- * the three modes has. Literal rgba, never color-mix (Safari 14 floor).
+ * Lanes have no colour of their own (ui/DESIGN.md: no per-block colour, and a
+ * lane is no exception): a lane is its name.
  */
 import { useComboParam, useSliderParam } from "../../hooks";
 import type { BlockId } from "../../bridge/types";
@@ -28,39 +25,13 @@ export const SPLIT_COPY = 0;
 export const SPLIT_LR = 1;
 export const SPLIT_XOVER = 2;
 
-export interface LaneTint {
-  /** Badge text / icon colour. */
-  ink: string;
-  /** Badge fill. */
-  fill: string;
-  /** Badge ring and dashed slot border. */
-  ring: string;
-  /** Lane wire stroke. */
-  wire: string;
-}
-
-export const LANE_TINT: Record<LaneSide, LaneTint> = {
-  a: {
-    ink: "#f2c27b",
-    fill: "rgba(242, 194, 123, 0.12)",
-    ring: "rgba(242, 194, 123, 0.38)",
-    wire: "rgba(242, 194, 123, 0.5)",
-  },
-  b: {
-    ink: "#8fb8ff",
-    fill: "rgba(143, 184, 255, 0.12)",
-    ring: "rgba(143, 184, 255, 0.38)",
-    wire: "rgba(143, 184, 255, 0.5)",
-  },
-};
-
 const NAMES: readonly Record<LaneSide, string>[] = [
   { a: "A", b: "B" },
   { a: "L", b: "R" },
-  { a: "LOW", b: "HIGH" },
+  { a: "Low", b: "High" },
 ];
 
-/** Badge text for each lane in split mode `mode`. */
+/** Each lane's name in split mode `mode` (sentence case, ui/DESIGN.md). */
 export function laneNames(mode: number): Record<LaneSide, string> {
   return NAMES[mode] ?? NAMES[SPLIT_COPY]!;
 }
@@ -74,7 +45,7 @@ export function formatHz(hz: number): string {
   return `${Math.round(hz)} Hz`;
 }
 
-/** What lane `side` receives in `mode`, as a sentence (badge tooltip). */
+/** What lane `side` receives in `mode`, as a sentence (lane label tooltip). */
 export function laneHint(mode: number, side: LaneSide, xoverHz: number): string {
   const name = laneNames(mode)[side];
   if (mode === SPLIT_LR)
@@ -93,7 +64,7 @@ export function modeSummary(mode: number, xoverHz: number): string {
   if (mode === SPLIT_LR)
     return "Lane L gets the left input channel, lane R the right. On a mono track both get the same signal.";
   if (mode === SPLIT_XOVER)
-    return `Lane LOW gets everything below ${formatHz(xoverHz)}, lane HIGH everything above it.`;
+    return `Lane Low gets everything below ${formatHz(xoverHz)}, lane High everything above it.`;
   return "Both lanes get the full signal — two rigs, side by side.";
 }
 
@@ -104,12 +75,12 @@ export function formatPan(value: number): string {
   return `${pct}${value < 0 ? "L" : "R"}`;
 }
 
-/** Level for a compact read-out: "" at unity, otherwise "-6dB" / "+1.5dB". */
+/** Level for a compact read-out: "" at unity, otherwise "-6 dB" / "+1.5 dB". */
 export function formatLevelShort(db: number): string {
   const r = Math.round(db * 10) / 10;
   if (r === 0) return "";
   const text = Number.isInteger(r) ? r.toFixed(0) : r.toFixed(1);
-  return `${r > 0 ? "+" : ""}${text}dB`;
+  return `${r > 0 ? "+" : ""}${text} dB`;
 }
 
 /** The split's current mode, its lane names and the crossover — the board and

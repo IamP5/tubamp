@@ -1,20 +1,12 @@
 /**
- * Settings sheet — current-ui-inventory.md §SettingsPanel, docs/REACT-UI.md
- * §Settings sheet.
+ * Settings sheet — docs/REACT-UI.md §Settings sheet.
  *
- * TONE3000 publishable key is entered through the native AlertWindow prompt
- * (`t3kConfigure`) — never a web text field, per the bridge contract (Logic/AS
- * WebViews get no reliable keyboard). This sheet only ever shows *status* plus
- * the two action buttons.
- *
- * The native SettingsPanel also hosted amp calibration (`amp_cal_input` /
- * `amp_cal_level`). Those now live in the amp block's dock body, next to the
- * IN/OUT levels they calibrate (docs/REACT-UI.md §UX structure lists the
- * settings sheet as "t3k key via native prompt, sign out"). They are
- * deliberately NOT duplicated here — one owner per control.
+ * A plain modal: rows of label, value and action. The TONE3000 publishable key
+ * is entered through the native prompt (`t3kConfigure`), never a web text
+ * field: Logic's WebView gets no reliable keyboard. Amp calibration lives in
+ * the amp block's editor and is deliberately not repeated here.
  */
-import { useCallback, useState } from "react";
-import { Button, Modal, cx } from "../../components";
+import { Button, Modal } from "../../components";
 import { useStore } from "../../store";
 import s from "./settings.module.css";
 
@@ -27,51 +19,35 @@ export function SettingsSheet({ open, onClose }: SettingsSheetProps) {
   const t3k = useStore((st) => st.t3k);
   const t3kConfigure = useStore((st) => st.t3kConfigure);
   const t3kSignOut = useStore((st) => st.t3kSignOut);
-  const [status, setStatus] = useState("");
 
-  const handleConfigure = useCallback(async () => {
-    setStatus("");
-    await t3kConfigure();
-  }, [t3kConfigure]);
-
-  const handleSignOut = useCallback(async () => {
-    await t3kSignOut();
-    setStatus("Signed out.");
-  }, [t3kSignOut]);
+  const account = t3k.authenticated ? (t3k.username ?? "Signed in") : "Signed out";
 
   return (
-    <Modal open={open} onClose={onClose} title="Settings" width={380}>
-      <div className={s.section}>
-        <h3 className={s.sectionTitle}>TONE3000</h3>
-
+    <Modal open={open} onClose={onClose} title="Settings" width={400}>
+      <div className={s.rows}>
         <div className={s.row}>
-          <span className={s.label}>Publishable key</span>
-          <span className={cx(s.status, t3k.configured && s.statusOk)}>
-            {t3k.configured
-              ? t3k.authenticated
-                ? `Configured · ${t3k.username ?? "signed in"}`
-                : "Configured"
-              : "Not configured"}
-          </span>
+          <span className={s.label}>TONE3000 key</span>
+          <span className={s.value}>{t3k.configured ? "Configured" : "Not set"}</span>
+          <Button size="sm" onClick={() => void t3kConfigure()}>
+            {t3k.configured ? "Change key" : "Set key"}
+          </Button>
         </div>
 
-        <div className={s.buttonRow}>
-          <Button onClick={() => void handleConfigure()}>
-            {t3k.configured ? "Change key…" : "Set key…"}
-          </Button>
-          <Button variant="ghost" disabled={!t3k.configured} onClick={() => void handleSignOut()}>
+        <div className={s.row}>
+          <span className={s.label}>Account</span>
+          <span className={s.value}>{account}</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!t3k.configured}
+            onClick={() => void t3kSignOut()}
+          >
             Sign out
           </Button>
         </div>
-
-        <p className={s.statusLine}>{status}</p>
-        <p className={s.attribution}>Powered by TONE3000</p>
       </div>
 
-      <p className={s.footnote}>
-        Amp calibration (input calibration and level) lives in the AMP block’s
-        panel.
-      </p>
+      <p className={s.attribution}>Powered by TONE3000</p>
     </Modal>
   );
 }

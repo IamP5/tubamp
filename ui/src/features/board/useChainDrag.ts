@@ -169,7 +169,9 @@ export function useChainDrag({
       if (!slot) return;
       const node = nodes.get(id);
       nodes.freeze(id);
-      const options = reduced ? { duration: 0 } : spring.settle;
+      // The reflow spring (critically damped), not `settle`: a dropped tile
+      // lands with no visible bounce (ui/DESIGN.md §Motion).
+      const options = reduced ? { duration: 0 } : spring.reflow;
       animate(node.x, slot.x, options);
       animate(node.y, slot.y, options);
     },

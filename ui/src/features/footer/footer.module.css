@@ -1,49 +1,108 @@
 /*
-  Footer band (56px) — current-ui-inventory.md §PluginEditor footer controls.
-  IN TRIM knob + meter, centered info line, meter + OUT LEVEL knob.
+  Status bar (36px), ui/DESIGN.md §Layout. The band and its hairline are
+  App.module.css. The right padding leaves the window's resize grip its corner.
 */
 
 .bar {
   display: flex;
   align-items: center;
-  gap: 10px;
   height: 100%;
-  padding: 0 16px;
+  padding: 0 var(--ds-5) 0 var(--ds-4);
 }
 
-.meterSlot {
+.side {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  min-width: 0;
+}
+
+.sideEnd {
+  justify-content: flex-end;
+}
+
+.label {
+  font-size: var(--ds-fs-label);
+  color: var(--ds-text-2);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.meter {
   flex: none;
-  width: 8px;
-  height: 36px;
+  width: 120px;
+  height: 4px;
 }
 
-.info {
-  margin-inline: auto;
-  font-size: 11px;
-  color: var(--text-tertiary);
+.centre {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-3);
+  padding: 0 var(--ds-4);
+}
+
+.status {
+  font-size: var(--ds-fs-caption);
+  color: var(--ds-text-3);
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-/* ── transient value bubble (native `setPopupDisplayEnabled`) ── */
+/* ── Value field: − 0.0 dB + ── */
 
-.knobPopupAnchor {
-  position: relative;
-  display: inline-flex;
+.field {
+  display: flex;
+  align-items: center;
 }
 
-.knobPopup {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated-hi);
-  box-shadow: var(--shadow-tooltip);
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 10;
+.value {
+  min-width: 64px;
+  height: var(--ds-h-sm);
+  padding: 0 var(--ds-1);
+  border-radius: var(--ds-r-1);
+  font-family: var(--ds-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ds-fs-label);
+  line-height: var(--ds-h-sm);
+  text-align: center;
+  color: var(--ds-text);
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background-color var(--ds-t-fast) var(--ds-ease);
+}
+
+.field:hover .value {
+  background: var(--ds-surface-2);
+}
+
+.value:active {
+  color: var(--ds-accent);
+}
+
+/* Step buttons: a 24px hit area around a 12px mark, shown on hover of the field. */
+.step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ds-h-sm);
+  height: var(--ds-h-sm);
+  border-radius: var(--ds-r-1);
+  color: var(--ds-text-3);
+  opacity: 0;
+  transition:
+    opacity var(--ds-t-fast) var(--ds-ease),
+    color var(--ds-t-fast) var(--ds-ease);
+}
+
+.field:hover .step {
+  opacity: 1;
+}
+
+.step:hover {
+  color: var(--ds-text);
 }

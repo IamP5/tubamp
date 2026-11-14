@@ -2,45 +2,38 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { motion, useTransform } from "motion/react";
 import s from "./kit.module.css";
 import { cx } from "./cx";
-import {
-  METER_HIGH_DB,
-  METER_MAX_DB,
-  METER_MID_DB,
-  METER_MIN_DB,
-  METER_SEGMENTS,
-  type MeterChannel,
-} from "../hooks/useMeters";
+import { METER_MAX_DB, METER_MIN_DB, type MeterChannel } from "../hooks/useMeters";
 
-/** Segment colour comes from the segment's OWN centre dB, not the live level. */
-function segmentColour(index: number, segments: number): string {
-  const centreDb =
-    METER_MIN_DB +
-    (METER_MAX_DB - METER_MIN_DB) * ((index + 0.5) / segments);
-  if (centreDb >= METER_HIGH_DB) return "var(--meter-high)";
-  if (centreDb >= METER_MID_DB) return "var(--meter-mid)";
-  return "var(--meter-low)";
+/** Ladder positions (0..1) of the colour thresholds: hot above −6 dB, clip at 0 dBFS. */
+const HOT_POS = (-6 - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB);
+const CLIP_POS = (0 - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB);
+
+function meterColour(position: number): string {
+  if (position >= CLIP_POS) return "var(--ds-meter-clip)";
+  if (position >= HOT_POS) return "var(--ds-meter-hot)";
+  return "var(--ds-meter)";
 }
 
 export interface MeterProps {
   channel: MeterChannel;
+  /** Vertical (default) fills bottom-up; horizontal fills left-to-right. */
   orientation?: "vertical" | "horizontal";
+  /** Accepted for old call sites; the bar is continuous, not segmented. */
   segments?: number;
-  /** Show the peak-hold tick (footer meters do; inline indicators may not). */
+  /** Show the 1px peak-hold tick. */
   hold?: boolean;
   className?: string;
   "aria-label"?: string;
 }
 
 /**
- * Segmented peak meter driven entirely by MotionValues — no React re-render per
- * frame. Unlit segments show their own colour at 10% alpha over the track, lit
- * ones fade to full: one opacity transform per segment, all fed by the shared
- * rAF driver through `useMeters()`.
+ * A 4px peak bar: track `meter-track`, fill `meter`, `meter-hot` above −6 dB,
+ * `meter-clip` at clip, a 1px peak tick. Driven entirely by MotionValues (the
+ * fill is a scale transform), so a meter never re-renders React per frame.
  */
 export function Meter({
   channel,
   orientation = "vertical",
-  segments = METER_SEGMENTS,
   hold = true,
   className,
   ...rest
@@ -57,74 +50,47 @@ export function Meter({
       setExtent(vertical ? r.height : r.width);
     };
     measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [vertical]);
 
+  const fill = useTransform(channel.level, (v) => Math.min(1, Math.max(0, v)));
+  const fillColour = useTransform(channel.level, meterColour);
+
+  /* The tick sits at the top (vertical) / right (horizontal) edge of the held
+     level, 1px thick, coloured by the level it holds. */
   const holdOffset = useTransform(channel.hold, (h) =>
-    vertical ? (1 - h) * extent : h * extent,
+    vertical ? Math.round((1 - h) * (extent - 1)) : Math.round(h * (extent - 1)),
   );
-  const holdOpacity = useTransform(channel.hold, (h) => (h > 0.001 ? 0.9 : 0));
-  /* Unlike the ladder, the hold tick is coloured by the ACTUAL held level. */
-  const holdColour = useTransform(channel.hold, (h) => {
-    const db = METER_MIN_DB + (METER_MAX_DB - METER_MIN_DB) * h;
-    if (db >= METER_HIGH_DB) return "var(--meter-high)";
-    if (db >= METER_MID_DB) return "var(--meter-mid)";
-    return "var(--meter-low)";
-  });
+  const holdOpacity = useTransform(channel.hold, (h) => (h > 0.001 ? 1 : 0));
+  const holdColour = useTransform(channel.hold, meterColour);
 
   return (
     <div
       ref={ref}
-      className={cx(
-        s.meter,
-        vertical ? s.meterVertical : s.meterHorizontal,
-        className,
-      )}
+      className={cx(s.meter, vertical ? s.meterVertical : s.meterHorizontal, className)}
       role="meter"
       {...rest}
     >
-      {Array.from({ length: segments }, (_, i) => (
-        <MeterSegment
-          key={i}
-          index={i}
-          segments={segments}
-          channel={channel}
-        />
-      ))}
+      <motion.span
+        className={s.meterFill}
+        style={
+          vertical
+            ? { scaleY: fill, backgroundColor: fillColour }
+            : { scaleX: fill, backgroundColor: fillColour }
+        }
+      />
       {hold && (
         <motion.span
-          className={cx(s.meterHold, !vertical && s.meterHoldHorizontal)}
+          className={s.meterPeak}
           style={{
-            background: holdColour,
+            backgroundColor: holdColour,
             opacity: holdOpacity,
             ...(vertical ? { y: holdOffset } : { x: holdOffset }),
           }}
         />
       )}
     </div>
-  );
-}
-
-function MeterSegment({
-  index,
-  segments,
-  channel,
-}: {
-  index: number;
-  segments: number;
-  channel: MeterChannel;
-}) {
-  const colour = segmentColour(index, segments);
-  const opacity = useTransform(channel.level, (level) =>
-    level > index / segments ? 1 : 0.1,
-  );
-  return (
-    <span className={s.meterSegment}>
-      <motion.span
-        className={s.meterSegmentFill}
-        style={{ background: colour, opacity }}
-      />
-    </span>
   );
 }

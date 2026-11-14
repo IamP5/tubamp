@@ -135,13 +135,13 @@ export function ResizeGrip() {
       onPointerCancel={endDrag}
       onLostPointerCapture={endDrag}
     >
-      {/* Three rules stepping out of the corner — the shape every platform's
-          resizer uses, so it reads as one without a label. */}
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      {/* Three short rules stepping out of the corner: the shape every
+          platform's resizer uses, so it reads as one without a label. */}
+      <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
         <path
-          d="M14 6 L6 14 M14 10 L10 14 M14 2 L2 14"
+          d="M9 1 L1 9 M9 4 L4 9 M9 7 L7 9"
           stroke="currentColor"
-          strokeWidth={1.25}
+          strokeWidth={1}
           strokeLinecap="round"
         />
       </svg>

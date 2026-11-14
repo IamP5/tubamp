@@ -1,22 +1,22 @@
 /**
- * The drawer's small shared pieces: TONE3000 attribution, tone art, creator and
- * format chrome, the favorite heart.
+ * The drawer's small shared pieces: icons the kit does not have, the tone
+ * thumbnail, the favourite heart and the load-progress bar.
  *
- * The mark and the creator line are not decoration — the TONE3000 API terms
- * require branding plus creator attribution on every tone list and detail view
+ * Creator attribution is not decoration: the TONE3000 API terms require
+ * branding plus the creator on every tone list and detail view
  * (docs/research/tone3000-api.md §Design Requirements).
  */
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { motion } from "motion/react";
-import { cx } from "../../components";
-import { spring } from "../../theme/motion";
+import { AmpGlyph, CabGlyph, IconButton, cx } from "../../components";
+import { tween } from "../../theme/motion";
 import type { T3kTone } from "../../bridge";
-import { artHues, formatCount } from "./labels";
 import s from "./t3k.module.css";
 
-export function HeartIcon({ filled, size = 14 }: { filled?: boolean; size?: number }) {
+export function HeartIcon({ filled, size = 16 }: { filled?: boolean; size?: number }) {
   return (
     <svg
+      className={filled ? s.heartFilled : undefined}
       width={size}
       height={size}
       viewBox="0 0 16 16"
@@ -31,7 +31,7 @@ export function HeartIcon({ filled, size = 14 }: { filled?: boolean; size?: numb
   );
 }
 
-export function SearchIcon({ size = 13 }: { size?: number }) {
+export function SearchIcon({ size = 16 }: { size?: number }) {
   return (
     <svg
       width={size}
@@ -39,49 +39,12 @@ export function SearchIcon({ size = 13 }: { size?: number }) {
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.6}
+      strokeWidth={1.5}
       strokeLinecap="round"
       aria-hidden="true"
     >
       <circle cx="7" cy="7" r="4.2" />
       <path d="M10.3 10.3 13.5 13.5" />
-    </svg>
-  );
-}
-
-export function KeyboardIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.3}
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <rect x="1.75" y="4" width="12.5" height="8" rx="1.6" />
-      <path d="M4.5 6.6h.01M7 6.6h.01M9.5 6.6h.01M12 6.6h.01M5.5 9.4h5" />
-    </svg>
-  );
-}
-
-export function RetryIcon({ size = 11 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.7}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M2.8 8a5.2 5.2 0 1 0 1.6-3.8" />
-      <path d="M2.6 2.4v2.9h2.9" />
     </svg>
   );
 }
@@ -104,112 +67,70 @@ export function ExternalIcon({ size = 12 }: { size?: number }) {
   );
 }
 
-/** The persistent TONE3000 attribution mark. */
-export function T3kMark({ compact }: { compact?: boolean }) {
-  return (
-    <span className={cx(s.mark, compact && s.markCompact)}>
-      <span className={s.markGlyph} aria-hidden="true">
-        <i />
-        <i />
-        <i />
-      </span>
-      {compact ? "TONE3000" : "Powered by TONE3000"}
-    </span>
-  );
-}
-
 /**
- * Tone art. The hashed gradient always paints; the catalog image covers it once
- * it loads, and stays covered-up when there is none or the WebView blocks it.
+ * 40px thumbnail: the tone's catalog image when it has one and the WebView
+ * loads it, otherwise a neutral tile with the amp or cab glyph.
  */
-export function ToneArt({
-  tone,
-  className,
-  children,
-}: {
-  tone: T3kTone;
-  className?: string;
-  children?: ReactNode;
-}) {
+export function Thumb({ tone }: { tone: T3kTone }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const [from, to] = artHues(tone.id);
   const showImage = tone.imageUrl !== null && failedUrl !== tone.imageUrl;
+  const Glyph = tone.format === "ir" ? CabGlyph : AmpGlyph;
 
   return (
-    <span
-      className={cx(s.art, showImage && s.artPhoto, className)}
-      style={{
-        backgroundImage: `linear-gradient(135deg, hsl(${from} 48% 38%), hsl(${to} 42% 10%))`,
-      }}
-    >
-      {tone.imageUrl !== null && showImage && (
+    <span className={s.thumb} aria-hidden="true">
+      {showImage && tone.imageUrl !== null ? (
         <img
-          className={s.artImage}
+          className={s.thumbImage}
           src={tone.imageUrl}
           alt=""
           loading="lazy"
           onError={() => setFailedUrl(tone.imageUrl)}
         />
+      ) : (
+        <Glyph size={20} strokeWidth={1.5} />
       )}
-      {children}
     </span>
-  );
-}
-
-export function Avatar({ tone, size = 14 }: { tone: T3kTone; size?: number }) {
-  const [hue] = artHues(tone.creator.username.length * 31 + tone.id);
-  return (
-    <span
-      className={s.avatar}
-      style={{
-        width: size,
-        height: size,
-        background: tone.creator.avatarUrl
-          ? `center / cover url("${tone.creator.avatarUrl}")`
-          : `hsl(${hue} 40% 45%)`,
-        fontSize: Math.round(size * 0.58),
-      }}
-      aria-hidden="true"
-    >
-      {tone.creator.avatarUrl ? "" : tone.creator.username.slice(0, 1).toUpperCase()}
-    </span>
-  );
-}
-
-/** A2 for NAM captures, IR for impulse responses — the two formats this plugin loads. */
-export function FormatBadge({ tone }: { tone: T3kTone }) {
-  const ir = tone.format === "ir";
-  return (
-    <span className={cx(s.badge, ir && s.badgeIr)}>{ir ? "IR" : "A2"}</span>
   );
 }
 
 export function HeartButton({
   tone,
-  showCount,
+  className,
   onToggle,
 }: {
   tone: T3kTone;
-  showCount?: boolean;
+  className?: string;
   onToggle(tone: T3kTone): void;
 }) {
   return (
-    <motion.button
-      type="button"
-      className={cx(s.heart, tone.favorited && s.heartOn)}
+    <IconButton
+      className={className}
       aria-label={tone.favorited ? "Remove from favorites" : "Add to favorites"}
       aria-pressed={tone.favorited}
-      whileTap={{ scale: 0.86 }}
-      transition={spring.micro}
       onClick={(e) => {
         e.stopPropagation();
         onToggle(tone);
       }}
     >
       <HeartIcon filled={tone.favorited} />
-      {showCount && (
-        <span className={s.heartCount}>{formatCount(tone.favoritesCount)}</span>
-      )}
-    </motion.button>
+    </IconButton>
+  );
+}
+
+/**
+ * The 2px accent bar along a row's bottom edge while its file downloads.
+ * `value` null = the in-between phases with no percentage (resolving files,
+ * loading into the slot): the bar sits full but faint.
+ */
+export function RowProgress({ value }: { value: number | null }) {
+  return (
+    <span className={s.progress} aria-hidden="true">
+      <motion.span
+        className={cx(s.progressFill, value === null && s.progressIdle)}
+        initial={false}
+        animate={{ scaleX: value === null ? 1 : Math.max(0.02, value) }}
+        transition={tween.enter}
+      />
+    </span>
   );
 }

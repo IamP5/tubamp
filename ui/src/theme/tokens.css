@@ -1,184 +1,143 @@
 /*
-  tubamp design tokens — implements docs/research/vercel-design.md §6 (and the
-  §1.x tables it summarises) verbatim. Dark only; there is no light branch.
+  tubamp design tokens — docs/REACT-UI.md §Design system. Dark only.
 
-  Rule for every component in this app: consume these variables, never inline a
-  raw hex / radius / shadow.
+  One system: neutral greys, one accent whose hue follows the block's family
+  (see "Block families" below), status colours for state only. Every component consumes a `--ds-*` token and never inlines a raw
+  colour, radius, shadow, font or duration. `node tools/design-lint.mjs src`
+  enforces it.
+
+  The CSS floor is macOS 11 WKWebView (Safari 14): no color-mix(), no container
+  queries, no `inset` shorthand surprises — tints are spelled out as rgba().
 */
 
 :root {
   color-scheme: dark;
 
-  /* ── Geist raw scales (reference; build new semantic tokens from these) ── */
-  --geist-gray-100: #1a1a1a;
-  --geist-gray-200: #1f1f1f;
-  --geist-gray-300: #292929;
-  --geist-gray-400: #2e2e2e;
-  --geist-gray-500: #454545;
-  --geist-gray-600: #878787;
-  --geist-gray-700: #8f8f8f;
-  --geist-gray-800: #7d7d7d;
-  --geist-gray-900: #a1a1a1;
-  --geist-gray-1000: #ededed;
-  --geist-bg-100: #0a0a0a;
-  --geist-bg-200: #000000;
+  /* ── Surfaces: four steps, darkest is the window ── */
+  --ds-bg: #0b0b0c;
+  --ds-surface-1: #121214;
+  --ds-surface-2: #18181b;
+  --ds-surface-3: #222226;
+  --ds-scrim: rgba(0, 0, 0, 0.6);
 
-  --geist-blue-100: #0f1c2e;
-  --geist-blue-200: #10233d;
-  --geist-blue-300: #0f2f57;
-  --geist-blue-400: #0d3868;
-  --geist-blue-500: #0a4380;
-  --geist-blue-600: #0090ff;
-  --geist-blue-700: #0072f5;
-  --geist-blue-800: #0062d1;
-  --geist-blue-900: #52a8ff;
-  --geist-blue-1000: #ebf6ff;
-
-  --geist-red-600: #e5484d;
-  --geist-red-700: #e5484d;
-  --geist-red-800: #d93036;
-  --geist-amber-700: #ffb224;
-  --geist-amber-800: #ff990a;
-  --geist-green-700: #45a557;
-  --geist-green-800: #398e4a;
-  --geist-teal-700: #12a594;
-  --geist-purple-700: #8e4ec6;
-  --geist-pink-700: #ea3e83;
-
-  /* ── Backgrounds ── */
-  --bg-app: #0a0a0a;
-  --bg-surface: #12151b;
-  --bg-elevated: #161a21;
-  --bg-elevated-hi: #1c222b;
-  --bg-overlay: rgba(10, 10, 10, 0.72);
-
-  /* ── Borders ── */
-  --border: #262e39;
-  --border-hover: #333d4b;
-  --border-active: #454f5e;
+  /* ── Lines ── */
+  --ds-line: rgba(255, 255, 255, 0.08);
+  --ds-line-strong: rgba(255, 255, 255, 0.16);
+  --ds-line-heavy: rgba(255, 255, 255, 0.28);
 
   /* ── Text ── */
-  --text-primary: #e6eaf0;
-  --text-secondary: #8b95a6;
-  --text-tertiary: #5a6473;
-  --text-disabled: rgba(230, 234, 240, 0.35);
+  --ds-text: #ededee;
+  --ds-text-2: #a3a3a9;
+  --ds-text-3: #86868d;
+  --ds-text-disabled: #505056;
 
-  /*
-    ── Brand accent (warm tube glow) ──
-    The tints are literal rgba() rather than color-mix(): color-mix needs Safari
-    16.2, and the build baseline is safari14 / macOS 11, where the whole
-    declaration would be dropped at parse time (a `var()` fallback cannot rescue
-    it — var() always parses, so the invalid value becomes `unset`, not the
-    fallback). The cost is that the tints no longer track --accent
-    automatically: change the accent hex and you must recompute the four values
-    below with the same percentages.
-  */
-  --accent: #ff7a1a;
-  --accent-hover: #ff8f3d;
-  --accent-active: #e56a10;
-  --accent-fill-8: rgba(255, 122, 26, 0.08);
-  --accent-fill-16: rgba(255, 122, 26, 0.16);
-  --accent-fill-25: rgba(255, 122, 26, 0.25);
-  --accent-glow: rgba(255, 122, 26, 0.35);
+  /* ── The primary action of a view is an inverse (light) button ── */
+  --ds-inverse: #ededee;
+  --ds-inverse-hover: #ffffff;
+  --ds-on-inverse: #0b0b0c;
 
-  /* ── Interactive / link accent (kept distinct from the 9 block hues) ── */
-  --blue: #0072f5;
-  --blue-hover: #0090ff;
+  /* ── The accent: selection, a value, a switch that is on, the live curve.
+     This is the house amber; [data-family] swaps the hue per family ── */
+  --ds-accent: #f0a63a;
+  --ds-accent-hover: #f6b859;
+  --ds-accent-soft: rgba(240, 166, 58, 0.14);
+  --ds-accent-faint: rgba(240, 166, 58, 0.07);
+  --ds-accent-line: rgba(240, 166, 58, 0.55);
+  --ds-on-accent: #1a1204;
 
-  /* ── Status ── */
-  --success: #45a557;
-  --success-fill: rgba(69, 165, 87, 0.12);
-  --warning: #ffb224;
-  --warning-fill: rgba(255, 178, 36, 0.12);
-  --error: #e5484d;
-  --error-fill: rgba(229, 72, 77, 0.12);
+  /* ── Status: state only, never decoration ── */
+  --ds-ok: #46c28a;
+  --ds-ok-soft: rgba(70, 194, 138, 0.14);
+  --ds-warn: #f0a63a;
+  --ds-warn-soft: rgba(240, 166, 58, 0.14);
+  --ds-danger: #e5544f;
+  --ds-danger-soft: rgba(229, 84, 79, 0.14);
 
-  /* ── Focus ring: 2px solid ring with an offset gap, no blur ── */
-  --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--blue-hover);
+  /* ── Meters ── */
+  --ds-meter: #46c28a;
+  --ds-meter-hot: #f0a63a;
+  --ds-meter-clip: #e5544f;
+  --ds-meter-track: rgba(255, 255, 255, 0.08);
 
-  /* ── Radii ── */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  /* ── Displays (the visual editors in the panel): plot ink ── */
+  --ds-plot-grid: rgba(255, 255, 255, 0.06);
+  --ds-plot-axis: rgba(255, 255, 255, 0.14);
+  --ds-plot-ghost: rgba(255, 255, 255, 0.22);
+  --ds-plot-fill: rgba(240, 166, 58, 0.1);
 
-  /* ── Shadows (floating elements only; resting surfaces use inset rings) ── */
-  --shadow-menu:
-    0 0 0 1px var(--border), 0 4px 16px rgba(0, 0, 0, 0.5),
-    0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-tooltip: 0 0 0 1px var(--border), 0 4px 8px rgba(0, 0, 0, 0.4);
-  --shadow-drag:
-    0 0 0 1px var(--border-hover), 0 12px 32px rgba(0, 0, 0, 0.6),
-    0 2px 8px rgba(0, 0, 0, 0.4);
-  --shadow-modal: 0 0 0 1px var(--border), 0 24px 64px rgba(0, 0, 0, 0.7);
-  --shadow-toast: 0 0 0 1px var(--border), 0 8px 24px rgba(0, 0, 0, 0.5);
-  /* Param dock: a card floating over the board, lighter than a modal. */
-  --shadow-dock: 0 0 0 1px var(--border), 0 16px 40px rgba(0, 0, 0, 0.55);
-  --ring-inset: inset 0 0 0 1px var(--border);
-  --ring-inset-hover: inset 0 0 0 1px var(--border-hover);
-  --ring-inset-active: inset 0 0 0 1px var(--border-active);
+  /* ── Type ── */
+  --ds-font: "Geist Sans", system-ui, -apple-system, sans-serif;
+  --ds-mono: "Geist Mono", ui-monospace, "SF Mono", monospace;
+  --ds-fs-caption: 11px;
+  --ds-fs-label: 12px;
+  --ds-fs-body: 13px;
+  --ds-fs-title: 15px;
+  --ds-fs-heading: 20px;
+  --ds-fs-display: 28px;
 
-  /* ── Typography ── */
-  --font-sans:
-    "Geist Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* ── Shape ── */
+  --ds-r-1: 4px;
+  --ds-r-2: 6px;
+  --ds-r-3: 8px;
+  --ds-r-4: 12px;
+  --ds-r-full: 999px;
+
+  /* ── Space: a 4px grid ── */
+  --ds-1: 4px;
+  --ds-2: 8px;
+  --ds-3: 12px;
+  --ds-4: 16px;
+  --ds-5: 24px;
+  --ds-6: 32px;
+
+  /* ── Control heights ── */
+  --ds-h-sm: 24px;
+  --ds-h-md: 28px;
+  --ds-h-lg: 32px;
+
+  /* ── Elevation: floating layers only (menus, dialogs, toasts, a dragged item) ── */
+  --ds-shadow-float: 0 0 0 1px var(--ds-line-strong), 0 12px 32px rgba(0, 0, 0, 0.5);
+  --ds-ring: 0 0 0 1px var(--ds-accent-line);
+  --ds-ring-line: inset 0 0 0 1px var(--ds-line);
+  --ds-ring-line-strong: inset 0 0 0 1px var(--ds-line-strong);
+  --ds-focus: 0 0 0 2px var(--ds-bg), 0 0 0 4px var(--ds-accent-line);
+
+  /* ── Motion ── */
+  --ds-t-fast: 120ms;
+  --ds-t-base: 180ms;
+  --ds-t-slow: 240ms;
+  --ds-ease: cubic-bezier(0.2, 0, 0, 1);
 
   /*
     ── App metrics ──
 
-    The editor is fluid. Its size is whatever the user dragged the grip to
-    (features/resize), the WebView is exactly the window, so the page fills it:
+    The editor is fluid: the WebView is exactly the window, so the page fills
+    it. What grows is the board band (and the editor's width); the header, the
+    status bar, the editor's height and the TONE3000 drawer's width are fixed.
 
-      grows  — the board band, and with it the stage and the dock's *width*
-      fixed  — header, footer, dock height, block-card face, T3K drawer width
-
-    Card size stays fixed on purpose: the board's own zoom is the density
-    control, so a bigger window means *more board*, never bigger cards.
+    The editor ("dock") is a flush band on the board's bottom edge, present
+    while a block is selected ([data-panel-open] on the app root). It is an
+    overlay in layout terms — the board stays full-height underneath so its
+    pan/zoom survives — but everything that must not underlap it reads
+    --panel-band.
   */
   --app-w: 100%;
   --app-h: 100%;
-  --header-h: 48px;
-  --footer-h: 56px;
-  /* Param panel: an overlay card floating over the board's bottom edge, shown
-     only while a block is selected ([data-panel-open] below). Tall enough for
-     the amp body's caption + knob row + two field rows (Mode/Cal, Slim). */
-  --dock-h: 248px;
-  --dock-gap: 12px;
-  /*
-    What the panel overlay actually covers right now: nothing while closed
-    (the board owns the whole stage), the panel's own footprint while open.
-    Flips on `[data-panel-open]` on the app root (App.tsx, driven by
-    `selected !== null`). Anything that must never let its content underlap the
-    open panel reads this — the embed hole (features/embed) and, through
-    `--overlay-bottom` below, any bottom-anchored overlay (toaster).
-  */
+  --header-h: 44px;
+  --footer-h: 36px;
+  --dock-h: 296px;
+  --dock-gap: 0px;
+  --dock-header-h: 44px;
+  --t3k-w: 400px;
   --panel-band: 0px;
 
   /*
-    ── Smallest window the content actually fits in ──
-
-    Derived from the widest / tallest fixed content, not picked:
-
-    width  — the amp dock body is the widest thing in the app: THREE columns
-             (model, levels, tone), all of which must coexist.
-             dock gutters 2×12 + body padding 2×18            =  60
-             model column at its min-width                     = 260
-             levels group / tone group: 3 snug knob cells each = 276 + 276
-             two dividers + four 18px column gaps              =  74
-                                                          total ≈ 946
-             The header (≈454) and the footer (≈440) are well under it.
-             Rounded up to 1000 for slack around the ellipsised strings.
-
-    height — header 48 + footer 56                             = 104
-             dock inset (248 + 12)                             = 260
-             board band: the lane content box is CARD_H+56 = 136 tall and
-             zoom-to-fit keeps FIT_PADDING = 72 around it, so framing the lane
-             at 1:1 needs 208 (at MIN_ZOOM it would need only 140).
-                                                          total = 572
-             Rounded up to 600, which leaves the band a little air.
-
-    Same numbers as kMinEditorWidth / kMinEditorHeight in src/WebEditor.cpp;
-    the clamp that matters is C++'s (it owns the window), this one only keeps
-    the page from laying out below what it can render.
+    Smallest window the content fits in. Same numbers as kMinEditorWidth /
+    kMinEditorHeight in src/WebEditor.cpp (C++ owns the clamp; this only keeps
+    the page from laying out below what it can render).
+      height: header 44 + status bar 36 + editor 296 = 376, leaving the board
+              224 — one row of tiles with its fit padding.
+      width:  the amp editor's three groups (capture, levels, tone) side by side.
   */
   --min-app-w: 1000px;
   --min-app-h: 600px;
@@ -186,13 +145,10 @@
   /* The board's zoom bar, named so bottom-anchored overlays can clear it. */
   --zoom-bar-h: 28px;
   /*
-    Where anything anchored to the bottom of the window must stop. A fixed
-    element at `bottom: 0` in this app lands on the footer, then — while the
-    panel is open — the panel band, then the zoom bar — none of those bands is
-    a background. `--panel-band` is the part that flips with the panel; this
-    var must NEVER be deleted even if nothing currently reads it, because its
-    only consumer (the toaster, components/kit.module.css) would silently lose
-    its bottom anchor — a dangling `var()` computes to nothing, not a fallback.
+    Where anything anchored to the bottom of the window must stop: the status
+    bar, then — while the editor is open — its band, then the zoom bar. Never
+    delete: the toaster's bottom anchor reads it, and a dangling var() computes
+    to nothing rather than to a fallback.
   */
   --overlay-bottom: calc(
     var(--footer-h) + var(--panel-band) + var(--zoom-bar-h) + 20px
@@ -200,182 +156,79 @@
 
   /* Slim toolbar above an embedded hosted plugin editor (features/embed). */
   --embed-toolbar-h: 36px;
-
-  /* ── Meter stops (PeakMeter parity: −60…+6 dB, breaks at −12 and −3) ── */
-  --meter-low: #34d399;
-  --meter-mid: #fbbf24;
-  --meter-high: #f87171;
-
-  /* ── Per-block accents ── */
-  --block-gate: #a78bfa;
-  --block-comp: #fbbf24;
-  --block-drive: #f97316;
-  --block-amp: #f43f5e;
-  --block-cab: #2dd4bf;
-  --block-eq: #60a5fa;
-  --block-mod: #4ade80;
-  --block-delay: #818cf8;
-  --block-reverb: #22d3ee;
-  /* The three external-AU slots deliberately share one hue — see BLOCK_ACCENT. */
-  --block-fx1: #e879f9;
-  --block-fx2: #e879f9;
-  --block-fx3: #e879f9;
 }
 
 /*
-  The panel is open: App.tsx stamps `data-panel-open` on the app root exactly
-  when `selected !== null` (never on pointerdown alone — see useStageTransform's
-  onBackgroundTap). Reserve the panel's real footprint so nothing under it —
-  the embed hole, the toaster via --overlay-bottom — can underlap the card.
+  ── Block families ──
+
+  The accent has a hue per family of block: what a block does, not which block
+  it is. Five hues at one lightness and a matched chroma, so none shouts over
+  another; green and red are left out because they are status colours. Gain
+  (drive, amp) keeps the house amber, so it needs no override; plugins and
+  routing have no family and stay neutral.
+
+  `data-family` goes on a block's tile and on the editor band. Everything
+  inside reads the ordinary `--ds-accent*` tokens and gets the family's hue:
+  the glyph, the selection ring, the live curve, a knob's value arc, a switch.
+*/
+[data-family="dynamics"] {
+  --ds-accent: #85bcf5;
+  --ds-accent-hover: #9bccff;
+  --ds-accent-soft: rgba(133, 188, 245, 0.14);
+  --ds-accent-faint: rgba(133, 188, 245, 0.07);
+  --ds-accent-line: rgba(133, 188, 245, 0.55);
+  --ds-on-accent: #091725;
+  --ds-plot-fill: rgba(133, 188, 245, 0.1);
+}
+
+[data-family="tone"] {
+  --ds-accent: #5ecbcb;
+  --ds-accent-hover: #7bdad9;
+  --ds-accent-soft: rgba(94, 203, 203, 0.14);
+  --ds-accent-faint: rgba(94, 203, 203, 0.07);
+  --ds-accent-line: rgba(94, 203, 203, 0.55);
+  --ds-on-accent: #001b1b;
+  --ds-plot-fill: rgba(94, 203, 203, 0.1);
+}
+
+[data-family="mod"] {
+  --ds-accent: #eb9dbb;
+  --ds-accent-hover: #f7afca;
+  --ds-accent-soft: rgba(235, 157, 187, 0.14);
+  --ds-accent-faint: rgba(235, 157, 187, 0.07);
+  --ds-accent-line: rgba(235, 157, 187, 0.55);
+  --ds-on-accent: #220f17;
+  --ds-plot-fill: rgba(235, 157, 187, 0.1);
+}
+
+[data-family="time"] {
+  --ds-accent: #bfaaef;
+  --ds-accent-hover: #cebbfb;
+  --ds-accent-soft: rgba(191, 170, 239, 0.14);
+  --ds-accent-faint: rgba(191, 170, 239, 0.07);
+  --ds-accent-line: rgba(191, 170, 239, 0.55);
+  --ds-on-accent: #181224;
+  --ds-plot-fill: rgba(191, 170, 239, 0.1);
+}
+
+/* Re-declared, not inherited: these reference --ds-accent-line, and a custom
+   property that references another is resolved where it is declared. */
+[data-family] {
+  --ds-ring: 0 0 0 1px var(--ds-accent-line);
+  --ds-focus: 0 0 0 2px var(--ds-bg), 0 0 0 4px var(--ds-accent-line);
+}
+
+/*
+  The editor is open: App.tsx stamps `data-panel-open` on the app root exactly
+  when `selected !== null`. Reserve its footprint so nothing under it — the
+  embed hole, the toaster via --overlay-bottom, the zoom bar — underlaps it.
 */
 [data-panel-open] {
   --panel-band: calc(var(--dock-h) + var(--dock-gap));
-}
-
-/*
-  Per-block tint/glow variants. Any element carrying `data-block="<token>"`
-  (tile, panel root, knob group, connector segment) picks up the whole set;
-  components then reference --block-accent / --block-fill-*. `blockCssVars()` in
-  ./blocks.ts produces the identical set as inline styles for cases where the
-  attribute is inconvenient (portalled menus, SVG connectors).
-
-  These were once one color-mix() set on [data-block] deriving everything from
-  var(--block-accent). color-mix needs Safari 16.2 and the baseline is safari14,
-  so each block now spells its tints out. The values are mechanical: the four
-  fills are the accent's channels at 8/16/25/35% alpha, and --block-dim is
-  55% accent over --bg-surface (#12151b) flattened to an opaque rgb(). To change
-  a block's colour, recompute its six lines together — they are one unit.
-
-  Instance tokens (comp2, comp3, …) JOIN their kind's selector list rather than
-  repeating the values: an instance is the same block, and two copies of six
-  hand-flattened colours would drift the first time one of them is edited.
-*/
-[data-block] {
-  --block-accent: var(--accent);
-  --block-fill-8: rgba(255, 122, 26, 0.08);
-  --block-fill-16: rgba(255, 122, 26, 0.16);
-  --block-fill-25: rgba(255, 122, 26, 0.25);
-  --block-glow: rgba(255, 122, 26, 0.35);
-  --block-dim: rgb(148, 77, 26);
-}
-
-[data-block="gate"] {
-  --block-accent: var(--block-gate);
-  --block-fill-8: rgba(167, 139, 250, 0.08);
-  --block-fill-16: rgba(167, 139, 250, 0.16);
-  --block-fill-25: rgba(167, 139, 250, 0.25);
-  --block-glow: rgba(167, 139, 250, 0.35);
-  --block-dim: rgb(100, 86, 150);
-}
-[data-block="comp"],
-[data-block="comp2"],
-[data-block="comp3"] {
-  --block-accent: var(--block-comp);
-  --block-fill-8: rgba(251, 191, 36, 0.08);
-  --block-fill-16: rgba(251, 191, 36, 0.16);
-  --block-fill-25: rgba(251, 191, 36, 0.25);
-  --block-glow: rgba(251, 191, 36, 0.35);
-  --block-dim: rgb(146, 115, 32);
-}
-[data-block="drive"],
-[data-block="drive2"],
-[data-block="drive3"] {
-  --block-accent: var(--block-drive);
-  --block-fill-8: rgba(249, 115, 22, 0.08);
-  --block-fill-16: rgba(249, 115, 22, 0.16);
-  --block-fill-25: rgba(249, 115, 22, 0.25);
-  --block-glow: rgba(249, 115, 22, 0.35);
-  --block-dim: rgb(145, 73, 24);
-}
-[data-block="amp"],
-[data-block="amp2"] {
-  --block-accent: var(--block-amp);
-  --block-fill-8: rgba(244, 63, 94, 0.08);
-  --block-fill-16: rgba(244, 63, 94, 0.16);
-  --block-fill-25: rgba(244, 63, 94, 0.25);
-  --block-glow: rgba(244, 63, 94, 0.35);
-  --block-dim: rgb(142, 44, 64);
-}
-[data-block="cab"] {
-  --block-accent: var(--block-cab);
-  --block-fill-8: rgba(45, 212, 191, 0.08);
-  --block-fill-16: rgba(45, 212, 191, 0.16);
-  --block-fill-25: rgba(45, 212, 191, 0.25);
-  --block-glow: rgba(45, 212, 191, 0.35);
-  --block-dim: rgb(33, 126, 117);
-}
-[data-block="eq"],
-[data-block="eq2"],
-[data-block="eq3"] {
-  --block-accent: var(--block-eq);
-  --block-fill-8: rgba(96, 165, 250, 0.08);
-  --block-fill-16: rgba(96, 165, 250, 0.16);
-  --block-fill-25: rgba(96, 165, 250, 0.25);
-  --block-glow: rgba(96, 165, 250, 0.35);
-  --block-dim: rgb(61, 100, 150);
-}
-[data-block="mod"],
-[data-block="mod2"],
-[data-block="mod3"] {
-  --block-accent: var(--block-mod);
-  --block-fill-8: rgba(74, 222, 128, 0.08);
-  --block-fill-16: rgba(74, 222, 128, 0.16);
-  --block-fill-25: rgba(74, 222, 128, 0.25);
-  --block-glow: rgba(74, 222, 128, 0.35);
-  --block-dim: rgb(49, 132, 83);
-}
-[data-block="delay"],
-[data-block="delay2"],
-[data-block="delay3"] {
-  --block-accent: var(--block-delay);
-  --block-fill-8: rgba(129, 140, 248, 0.08);
-  --block-fill-16: rgba(129, 140, 248, 0.16);
-  --block-fill-25: rgba(129, 140, 248, 0.25);
-  --block-glow: rgba(129, 140, 248, 0.35);
-  --block-dim: rgb(79, 86, 149);
-}
-[data-block="reverb"],
-[data-block="reverb2"],
-[data-block="reverb3"] {
-  --block-accent: var(--block-reverb);
-  --block-fill-8: rgba(34, 211, 238, 0.08);
-  --block-fill-16: rgba(34, 211, 238, 0.16);
-  --block-fill-25: rgba(34, 211, 238, 0.25);
-  --block-glow: rgba(34, 211, 238, 0.35);
-  --block-dim: rgb(27, 126, 143);
-}
-[data-block="fx1"] {
-  --block-accent: var(--block-fx1);
-  --block-fill-8: rgba(232, 121, 249, 0.08);
-  --block-fill-16: rgba(232, 121, 249, 0.16);
-  --block-fill-25: rgba(232, 121, 249, 0.25);
-  --block-glow: rgba(232, 121, 249, 0.35);
-  --block-dim: rgb(136, 76, 149);
-}
-[data-block="fx2"] {
-  --block-accent: var(--block-fx2);
-  --block-fill-8: rgba(232, 121, 249, 0.08);
-  --block-fill-16: rgba(232, 121, 249, 0.16);
-  --block-fill-25: rgba(232, 121, 249, 0.25);
-  --block-glow: rgba(232, 121, 249, 0.35);
-  --block-dim: rgb(136, 76, 149);
-}
-[data-block="fx3"] {
-  --block-accent: var(--block-fx3);
-  --block-fill-8: rgba(232, 121, 249, 0.08);
-  --block-fill-16: rgba(232, 121, 249, 0.16);
-  --block-fill-25: rgba(232, 121, 249, 0.25);
-  --block-glow: rgba(232, 121, 249, 0.35);
-  --block-dim: rgb(136, 76, 149);
-}
-/* split / mix: the two ends of one bracket share a hue (theme/blocks.ts —
-   #38bdf8). Without this rule they fell through to the brand orange. */
-[data-block="split"],
-[data-block="mix"] {
-  --block-accent: #38bdf8;
-  --block-fill-8: rgba(56, 189, 248, 0.08);
-  --block-fill-16: rgba(56, 189, 248, 0.16);
-  --block-fill-25: rgba(56, 189, 248, 0.25);
-  --block-glow: rgba(56, 189, 248, 0.35);
-  --block-dim: rgb(39, 113, 149);
+  /* Re-declared, not inherited: a custom property that references another is
+     resolved where it is declared, so the :root value above was computed with
+     a 0px band and would be inherited as that. */
+  --overlay-bottom: calc(
+    var(--footer-h) + var(--panel-band) + var(--zoom-bar-h) + 20px
+  );
 }

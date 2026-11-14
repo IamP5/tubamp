@@ -1,68 +1,38 @@
-/* Settings sheet content — current-ui-inventory.md §SettingsPanel. */
+/* Settings sheet content: label · value · action rows. */
 
-.section {
+.rows {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.section + .section {
-  margin-top: 20px;
-  padding-top: 16px;
-  box-shadow: inset 0 1px 0 var(--border);
-}
-
-.sectionTitle {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text-primary);
 }
 
 .row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 120px 1fr auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: var(--ds-3);
+  min-height: 40px;
+}
+
+.row + .row {
+  border-top: 1px solid var(--ds-line);
 }
 
 .label {
-  font-size: 13px;
-  color: var(--text-secondary);
+  font-size: var(--ds-fs-body);
+  color: var(--ds-text);
 }
 
-.status {
-  font-size: 12px;
-  font-family: var(--font-mono);
-  color: var(--text-tertiary);
-}
-
-.statusOk {
-  color: var(--success);
-}
-
-.buttonRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.statusLine {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  min-height: 14px;
+.value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ds-fs-body);
+  color: var(--ds-text-2);
 }
 
 .attribution {
-  font-size: 11px;
-  color: var(--text-tertiary);
-}
-
-/* Pointer to where amp calibration moved (it is not duplicated in this sheet). */
-.footnote {
-  margin-top: 18px;
-  padding-top: 14px;
-  box-shadow: inset 0 1px 0 var(--border);
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-tertiary);
+  margin-top: var(--ds-4);
+  font-size: var(--ds-fs-caption);
+  color: var(--ds-text-3);
 }

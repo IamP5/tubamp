@@ -1,7 +1,9 @@
+import type { ButtonHTMLAttributes } from "react";
 import { motion } from "motion/react";
 import s from "./kit.module.css";
 import { cx } from "./cx";
-import { spring, tween } from "../theme/motion";
+import { tween } from "../theme/motion";
+import { PowerIcon } from "./icons";
 
 export interface ToggleProps {
   checked: boolean;
@@ -11,7 +13,7 @@ export interface ToggleProps {
   className?: string;
 }
 
-/** Small switch — settings rows, boolean params that aren't block power. */
+/** Switch, 28x16; on is accent. Settings rows and boolean parameters. */
 export function Toggle({
   checked,
   onChange,
@@ -30,10 +32,56 @@ export function Toggle({
       {...rest}
     >
       <motion.span
-        className={s.switchKnob}
-        animate={{ x: checked ? 14 : 0 }}
-        transition={spring.micro}
+        className={s.switchThumb}
+        initial={false}
+        animate={{ x: checked ? 12 : 0 }}
+        transition={tween.micro}
       />
+    </button>
+  );
+}
+
+export interface PowerButtonProps
+  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onChange" | "children"> {
+  on: boolean;
+  onChange(next: boolean): void;
+  "aria-label": string;
+  /** 24 or 28 square (default 28). */
+  size?: "sm" | "md";
+}
+
+/**
+ * Block bypass: a power icon button. On is primary text, off is disabled text.
+ * The click does not bubble, so it can sit inside a clickable card.
+ */
+export function PowerButton({
+  on,
+  onChange,
+  onClick,
+  size = "md",
+  className,
+  ...rest
+}: PowerButtonProps) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.(e);
+        onChange(!on);
+      }}
+      className={cx(
+        s.iconButton,
+        size === "sm" && s.iconButtonSm,
+        s.power,
+        on && s.powerOn,
+        className,
+      )}
+      {...rest}
+    >
+      <PowerIcon />
     </button>
   );
 }
@@ -42,43 +90,22 @@ export interface PowerPillProps {
   on: boolean;
   onChange(next: boolean): void;
   disabled?: boolean;
-  /** Hide the ON/OFF caption, leaving just the LED (compact placements). */
+  /** Accepted for old call sites; the power button has no caption. */
   ledOnly?: boolean;
   title?: string;
   className?: string;
 }
 
-/**
- * The block power control: LED + ON/OFF caption, matching the native
- * `makePowerPill`. Colour comes from the nearest `[data-block]` ancestor.
- * The LED state flip is `instant` — bypass gets clicked constantly during A/B
- * and must never feel laggy.
- */
-export function PowerPill({
-  on,
-  onChange,
-  disabled,
-  ledOnly,
-  title,
-  className,
-}: PowerPillProps) {
+/** Older name for the block power control: renders `PowerButton`. */
+export function PowerPill({ on, onChange, disabled, title, className }: PowerPillProps) {
   return (
-    <motion.button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={on ? "Bypass this block" : "Enable this block"}
-      title={title}
+    <PowerButton
+      on={on}
+      onChange={onChange}
       disabled={disabled}
-      onClick={(e) => {
-        e.stopPropagation();
-        onChange(!on);
-      }}
-      className={cx(s.powerPill, on && s.powerPillOn, className)}
-      transition={tween.instant}
-    >
-      <span className={s.powerLed} />
-      {!ledOnly && <span>{on ? "ON" : "OFF"}</span>}
-    </motion.button>
+      title={title}
+      className={className}
+      aria-label={on ? "Bypass this block" : "Enable this block"}
+    />
   );
 }

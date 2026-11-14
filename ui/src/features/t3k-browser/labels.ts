@@ -1,4 +1,4 @@
-/** Catalog vocabulary + the deterministic art fallback (docs/research/tone3000-api.md §Enums). */
+/** Catalog vocabulary (docs/research/tone3000-api.md §Enums). */
 import type { T3kBrowseKind, T3kBrowseShelf, T3kBrowseSort } from "../../bridge";
 
 /** Display names for the API's raw Gear values (`full-rig` is the deprecated
@@ -75,7 +75,7 @@ export const ARCH_LABELS: Record<string, string> = {
   custom: "Custom",
 };
 
-/** TONE3000 License enum → the name a person recognises. */
+/** TONE3000 License enum to the name a person recognises. */
 export const LICENSE_LABELS: Record<string, string> = {
   t3k: "TONE3000 license",
   "cc-by": "CC BY",
@@ -98,13 +98,8 @@ export function toneUrl(tone: { id: number; url?: string | null }): string {
     : `https://www.tone3000.com/tones/${tone.id}`;
 }
 
-/**
- * Two hues hashed from the tone id — the placeholder that stands in whenever a
- * tone has no image or the WebView refuses to load the remote one. Deterministic
- * so a tone keeps the same art across pages and sessions.
- */
-export function artHues(id: number): [number, number] {
-  const hash = Math.abs(Math.imul(id, 2654435761));
-  const from = hash % 360;
-  return [from, (from + 25 + (hash % 40)) % 360];
+/** A full-rig capture has the cabinet baked in: loading it into Amp with the
+ *  Cab block on doubles the cabinet. Worth saying on the row. */
+export function includesCab(gear: string): boolean {
+  return gear === "amp-cab" || gear === "full-rig";
 }

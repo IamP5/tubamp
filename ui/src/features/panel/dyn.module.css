@@ -1,0 +1,37 @@
+/* Gate and compressor displays: what the toolkit's plot ink does not cover.
+   Tokens only. */
+
+/* The gain-reduction column at a display's right edge: fixed width, full height. */
+.grColumn {
+  flex: none;
+  display: flex;
+  width: 52px;
+}
+
+.track {
+  fill: var(--ds-meter-track);
+  stroke: none;
+  pointer-events: none;
+}
+
+/* Scale text right-aligned against the bar. */
+.scaleText {
+  text-anchor: end;
+}
+
+/* The deepest the reduction may go (the gate's range): a setting, so the
+   accent, against the bar's meter ink. */
+.floor {
+  stroke: var(--ds-accent);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+
+/* "Sidechain HPF" is wider than a 68px cell; as the last cell of a row it would
+   be cut by the controls' edge, so it gets room on the right. */
+.lastWide {
+  flex: none;
+  display: flex;
+  padding-right: var(--ds-2);
+}

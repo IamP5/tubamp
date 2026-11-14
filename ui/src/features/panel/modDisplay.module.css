@@ -1,0 +1,8 @@
+/* The LFO display's phase marker (./modDisplay.tsx). Tokens only. */
+
+.marker {
+  fill: var(--ds-text);
+  stroke: var(--ds-bg);
+  stroke-width: 1.5;
+  pointer-events: none;
+}

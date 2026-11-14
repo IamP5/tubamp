@@ -210,9 +210,6 @@ function EmbedPanel({ slot }: EmbedPanelProps) {
           {hidden ? (
             <div className={s.dimmed}>
               <span>{name || "The plugin editor"} is hidden</span>
-              <span className={s.dimmedHint}>
-                It is drawn above this window and would cover what is open.
-              </span>
             </div>
           ) : (
             isMockBridge && (

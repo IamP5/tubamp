@@ -1,6 +1,6 @@
 /**
- * TONE3000 browser — a 380px inspector drawer on the right edge, header bottom
- * to app bottom, no backdrop (docs/REACT-UI.md §TONE3000 browser). The board
+ * TONE3000 browser — a 400px (--t3k-w) drawer on the right edge, header bottom
+ * to window bottom, no backdrop (docs/REACT-UI.md §TONE3000 browser). The board
  * stays visible and clickable while browsing, and the block panel insets its
  * right edge by the drawer's width (App.tsx `data-t3k-open`).
  *
@@ -13,20 +13,18 @@
 import { useEffect } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cx, useBlockingOverlay } from "../../components";
-import { duration, ease, noMotion, spring } from "../../theme/motion";
-import {
-  decorateTone,
-  loadedPathOf,
-  selectT3kTarget,
-  T3K_TARGET_LABELS,
-  useStore,
-} from "../../store";
+import { BLOCK_INFO } from "../../theme/blocks";
+import { ease, noMotion } from "../../theme/motion";
+import { decorateTone, loadedPathOf, selectT3kTarget, useStore } from "../../store";
 import { BrowseLevel } from "./BrowseLevel";
 import { ToneDetail } from "./ToneDetail";
 import { SignInSplash } from "./SignInSplash";
-import { T3kMark } from "./parts";
 import { useBrowse } from "./useBrowse";
 import s from "./t3k.module.css";
+
+/* DESIGN.md §Motion: overlays 240 ms, a push inside one 180 ms, one easing. */
+const SLIDE = { duration: 0.24, ease: ease.standard };
+const PUSH = { duration: 0.18, ease: ease.standard };
 
 export function T3kBrowser() {
   const open = useStore((st) => st.browser.open);
@@ -50,8 +48,9 @@ function Drawer() {
   const loadedName = useStore((st) => {
     const path = loadedPathOf(st, target);
     if (path === null) return null;
-    if (target === "cab") return st.ir?.name ?? null;
-    return (target === "amp2" ? st.modelB?.name : st.model?.name) ?? null;
+    // The tone's title when the file came from TONE3000, never its file slug.
+    const file = target === "cab" ? st.ir : target === "amp2" ? st.modelB : st.model;
+    return file ? file.tone?.title || file.name : null;
   });
 
   useEffect(() => {
@@ -73,10 +72,11 @@ function Drawer() {
   return (
     <motion.aside
       className={s.drawer}
-      initial={reduced ? { opacity: 0 } : { x: 380 }}
+      data-family={BLOCK_INFO[target].family}
+      initial={reduced ? { opacity: 0 } : { x: "100%" }}
       animate={reduced ? { opacity: 1 } : { x: 0 }}
-      exit={reduced ? { opacity: 0 } : { x: 380 }}
-      transition={reduced ? noMotion : { ...spring.reflow, mass: 1.1 }}
+      exit={reduced ? { opacity: 0 } : { x: "100%" }}
+      transition={reduced ? noMotion : SLIDE}
       aria-label="TONE3000 browser"
     >
       <div className={s.levels}>
@@ -84,8 +84,8 @@ function Drawer() {
           <motion.div
             className={s.level}
             initial={false}
-            animate={{ x: showDetail ? -76 : 0, opacity: showDetail ? 0.35 : 1 }}
-            transition={reduced ? noMotion : spring.ui}
+            animate={{ opacity: showDetail ? 0 : 1 }}
+            transition={reduced ? noMotion : PUSH}
             /* `inert`, not aria-hidden: the pushed-away level may still hold
                focus, which aria-hidden is not allowed to cover. */
             inert={showDetail}
@@ -104,10 +104,10 @@ function Drawer() {
             <motion.div
               key={detailTone.id}
               className={cx(s.level, s.levelTop)}
-              initial={reduced ? { opacity: 0 } : { x: "100%" }}
-              animate={reduced ? { opacity: 1 } : { x: 0 }}
-              exit={reduced ? { opacity: 0 } : { x: "100%" }}
-              transition={reduced ? noMotion : { ...spring.ui, restDelta: 0.5 }}
+              initial={reduced ? { opacity: 0 } : { x: 24, opacity: 0 }}
+              animate={reduced ? { opacity: 1 } : { x: 0, opacity: 1 }}
+              exit={reduced ? { opacity: 0 } : { x: 24, opacity: 0 }}
+              transition={reduced ? noMotion : PUSH}
             >
               <ToneDetail
                 tone={detailTone}
@@ -119,29 +119,11 @@ function Drawer() {
         </AnimatePresence>
       </div>
 
-      <footer className={s.dockbar}>
-        <div className={s.statusLine}>
-          <span
-            className={cx(s.statusDot, loadedName !== null && s.statusDotOn)}
-            aria-hidden="true"
-          />
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.span
-              key={`${target}:${loadedName ?? "none"}`}
-              className={s.statusText}
-              initial={reduced ? false : { opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={reduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
-              transition={
-                reduced ? noMotion : { duration: duration.fast, ease: ease.out }
-              }
-            >
-              {loadedName ?? (target === "cab" ? "No IR loaded" : "No capture loaded")}
-            </motion.span>
-          </AnimatePresence>
-          <span className={s.statusKind}>{T3K_TARGET_LABELS[target].toUpperCase()}</span>
-        </div>
-        <T3kMark />
+      <footer className={s.foot}>
+        <span className={s.footLoaded} title={loadedName ?? undefined}>
+          {loadedName ?? (target === "cab" ? "No IR loaded" : "No capture loaded")}
+        </span>
+        <span className={s.footMark}>Powered by TONE3000</span>
       </footer>
     </motion.aside>
   );

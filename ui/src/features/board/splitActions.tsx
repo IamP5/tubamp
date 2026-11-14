@@ -30,7 +30,8 @@ import {
   rowsWithRun,
   rowsWithoutRun,
 } from "./layout";
-import { LANE_TINT, SPLIT_COPY, type LaneSide } from "./lanes";
+import { SPLIT_COPY, type LaneSide } from "./lanes";
+import { withUndo } from "./undo";
 import s from "./board.module.css";
 
 /** The published partition through `laneRows`, or null while the chain is on
@@ -90,12 +91,6 @@ export function canBuildDualAmp(order: readonly BlockId[]): boolean {
   return dualAmpOrder(order, order.length) !== null;
 }
 
-/** Why the dual-amp row is disabled, or what it does — the picker's hint. */
-export function dualAmpHint(order: readonly BlockId[]): string {
-  if (canBuildDualAmp(order)) return "AMP + AMP 2";
-  return order.includes("amp2") ? "AMP 2 IN USE" : "CHAIN FULL";
-}
-
 /**
  * The one-click dual-amp rig: amp in lane A, amp2 in lane B (see
  * `dualAmpOrder`), then split mode Copy, lane A hard left, lane B hard right,
@@ -144,29 +139,24 @@ export function buildDualAmp(at?: { index: number; row: number }): boolean {
 
 function dropHint(dropped: readonly BlockId[]): string {
   if (dropped.length === 0) return "";
-  if (dropped.length === 1) return `drops ${BLOCK_INFO[dropped[0]!].shortName}`;
-  return `drops ${dropped.length} blocks`;
+  if (dropped.length === 1) return `Drops ${BLOCK_INFO[dropped[0]!].shortName}`;
+  return `Drops ${dropped.length} blocks`;
 }
 
-function laneDots(...sides: LaneSide[]) {
-  return (
-    <span className={s.menuLaneIcon}>
-      {sides.map((side) => (
-        <span
-          key={side}
-          className={s.menuLaneDot}
-          style={{ background: LANE_TINT[side].ink }}
-        />
-      ))}
-    </span>
-  );
+/** Keeps a row without an icon aligned with the rows above it that have one. */
+const NO_ICON = <span className={s.menuIconSpacer} />;
+
+/** Take the region out, with a toast that can put it back. */
+function removeWithUndo(how: Parameters<typeof removeSplitRegion>[0]): void {
+  withUndo("Removed split", () => removeSplitRegion(how));
 }
 
 /**
  * The three explicit ways out of a split, as menu rows under a "Remove split"
- * heading: keep lane A, keep lane B, or chain A → B in series. Each row names
+ * heading: keep lane A, keep lane B, or run A then B in series. Each row names
  * what it drops, so taking a dual-amp rig apart never silently stacks two
- * amps in series (the old single "rejoin" did exactly that).
+ * amps in series (the old single "rejoin" did exactly that). Each removal
+ * offers Undo.
  */
 export function splitRemoveEntries(
   order: readonly BlockId[],
@@ -179,25 +169,24 @@ export function splitRemoveEntries(
     {
       id: "remove-keep-a",
       label: `Keep lane ${names.a}`,
-      icon: laneDots("a"),
+      icon: NO_ICON,
       hint: dropHint(droppedB),
       destructive: droppedB.length > 0,
-      onSelect: () => removeSplitRegion("keepA"),
+      onSelect: () => removeWithUndo("keepA"),
     },
     {
       id: "remove-keep-b",
       label: `Keep lane ${names.b}`,
-      icon: laneDots("b"),
+      icon: NO_ICON,
       hint: dropHint(droppedA),
       destructive: droppedA.length > 0,
-      onSelect: () => removeSplitRegion("keepB"),
+      onSelect: () => removeWithUndo("keepB"),
     },
     {
       id: "remove-series",
-      label: `Chain ${names.a} → ${names.b}`,
-      icon: laneDots("a", "b"),
-      hint: "SERIES",
-      onSelect: () => removeSplitRegion("series"),
+      label: `Run ${names.a} then ${names.b}`,
+      icon: NO_ICON,
+      onSelect: () => removeWithUndo("series"),
     },
   ];
 }

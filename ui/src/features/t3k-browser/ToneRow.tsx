@@ -1,14 +1,17 @@
 /**
- * One 64px catalog row: art, title, creator line, heart — and a one-click Load.
+ * One 56px catalog row: thumbnail, title, creator line, heart, and a one-click
+ * Load that never leaves the list.
  *
- * The row body opens the detail level; the Load action resolves the tone's
- * files, picks the default (store `t3kLoadTone`), reuses a library copy or
- * downloads it, and loads it into the drawer's target. Its state is derived
- * from the store: idle → resolving → % → Loaded, or Failed + Retry.
+ * The row body opens the detail level; Load resolves the tone's files, picks
+ * the default (store `t3kLoadTone`), reuses a library copy or downloads it, and
+ * loads it into the drawer's target. Its state is derived from the store:
+ * Load to progress along the row's bottom edge to Loaded, or Retry.
  */
+import { useLayoutEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { CheckIcon, DownloadIcon, Skeleton, Spinner, cx } from "../../components";
-import { noMotion, spring, staggerFor, tween } from "../../theme/motion";
+import { Button, CheckIcon, DownloadIcon, Skeleton, Spinner, Tooltip, cx } from "../../components";
+import { BLOCK_INFO } from "../../theme/blocks";
+import { noMotion, tween } from "../../theme/motion";
 import {
   loadedPathOf,
   loadedTargetsOf,
@@ -18,25 +21,60 @@ import {
   useStore,
 } from "../../store";
 import type { T3kTarget, T3kTone } from "../../bridge";
-import { Avatar, FormatBadge, HeartButton, RetryIcon, ToneArt } from "./parts";
-import { formatCount, GEAR_LABELS } from "./labels";
+import { HeartButton, RowProgress, Thumb } from "./parts";
+import { formatCount, GEAR_LABELS, includesCab } from "./labels";
 import s from "./t3k.module.css";
 
 /** The slot a tone of this format loads into, given the drawer's target. */
-function targetFor(tone: T3kTone, target: T3kTarget): T3kTarget {
+export function targetFor(tone: T3kTone, target: T3kTarget): T3kTarget {
   if (tone.format === "ir") return "cab";
   return target === "cab" ? "amp" : target;
 }
 
+/** A tone's one-click load as the row shows it. `pct` is 0..1 while the file
+ *  downloads, null in the phases without a percentage. */
+function useRowLoad(toneId: number) {
+  const load = useStore((st) => st.t3kLoads[toneId]);
+  const progress = useStore((st) =>
+    load?.modelId != null ? st.downloads[load.modelId] : undefined,
+  );
+  const busy = load !== undefined && load.phase !== "failed";
+  const pct = load?.phase === "downloading" ? (progress ?? 0) : null;
+  return { load, busy, pct };
+}
+
+/** One line of text, truncated, with the full text in a tooltip only when cut. */
+export function TruncatedText({ text, className }: { text: string; className: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [cut, setCut] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) setCut(el.scrollWidth > el.clientWidth + 1);
+  }, [text]);
+  return (
+    <Tooltip label={text} disabled={!cut} className={s.truncAnchor}>
+      <span ref={ref} className={className}>
+        {text}
+      </span>
+    </Tooltip>
+  );
+}
+
+/** Rows of a new page come in top down, 20 ms apart, the first eight only: a
+ *  long page never takes longer to show than a short one. */
+const ROW_STAGGER = 0.02;
+const ROW_STAGGER_MAX = 8;
+
 export function ToneRow({
   tone,
-  index,
+  index = 0,
   reduced,
   onOpen,
   onToggleFavorite,
 }: {
   tone: T3kTone;
-  index: number;
+  /** Position in the list: rows of a fresh page arrive a beat apart, top down. */
+  index?: number;
   reduced: boolean;
   onOpen(tone: T3kTone): void;
   onToggleFavorite(tone: T3kTone): void;
@@ -47,23 +85,26 @@ export function ToneRow({
     const path = loadedPathOf(st, target);
     return path !== null && tonePaths(st, tone.id).includes(path);
   });
-  const loadedElsewhere = useStore((st) =>
-    loadedTargetsOf(st, tone.id).find((t) => t !== target) ?? null,
+  const loadedElsewhere = useStore(
+    (st) => loadedTargetsOf(st, tone.id).find((t) => t !== target) ?? null,
   );
-  const failed = useStore((st) => st.t3kLoads[tone.id]?.phase === "failed");
-  const error = useStore((st) => st.t3kLoads[tone.id]?.error ?? null);
+  const { load, busy, pct } = useRowLoad(tone.id);
+  const error = load?.phase === "failed" ? load.error : null;
 
   return (
     <motion.li
       className={s.row}
-      initial={reduced ? false : { opacity: 0, x: 14 }}
-      animate={{ opacity: 1, x: 0 }}
+      /* The hue of where this tone goes: a capture into the amp is amber, an
+         IR into the cab is teal, so "Loaded" matches the block that has it. */
+      data-family={BLOCK_INFO[target].family}
+      initial={reduced ? false : { opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
       transition={
-        reduced ? noMotion : { ...spring.reflow, delay: index * staggerFor(12) }
+        reduced ? noMotion : { ...tween.enter, delay: Math.min(index, ROW_STAGGER_MAX) * ROW_STAGGER }
       }
     >
       <div
-        className={cx(s.rowHit, loadedHere && s.rowHitLoaded)}
+        className={s.rowHit}
         role="button"
         tabIndex={0}
         aria-label={`${tone.title} by ${tone.creator.username} — details`}
@@ -76,79 +117,88 @@ export function ToneRow({
           }
         }}
       >
-        <ToneArt tone={tone} className={s.rowArt}>
-          {(loadedHere || loadedElsewhere) && <span className={s.artLoadedDot} />}
-        </ToneArt>
+        <Thumb tone={tone} />
 
         <span className={s.rowBody}>
-          <span className={s.rowTitle}>{tone.title}</span>
-          {failed && error ? (
-            /* The creator stays on the line: the error takes the place of the
-               gear and counts, never of the credit. */
-            <span className={s.rowMeta}>
-              <Avatar tone={tone} />
-              <span className={s.rowUser}>{tone.creator.username}</span>
-              <span className={s.dot}>·</span>
+          <TruncatedText text={tone.title} className={s.rowTitle} />
+          {/* The creator always stays on the line (licence): an error takes the
+              place of the gear and count, never of the credit. "includes a
+              cab" outranks the download count for the space. */}
+          <span className={s.rowMeta}>
+            <span className={s.rowCreator}>{tone.creator.username}</span>
+            {error ? (
               <span className={s.rowError} title={error}>
                 {error}
               </span>
-            </span>
-          ) : (
-            <span className={s.rowMeta}>
-              <Avatar tone={tone} />
-              <span className={s.rowUser}>{tone.creator.username}</span>
-              <span className={s.dot}>·</span>
-              <span className={s.rowGear}>{GEAR_LABELS[tone.gear] ?? tone.gear}</span>
-              <FormatBadge tone={tone} />
-              {loadedElsewhere ? (
-                <span className={s.elsewhereTag}>
-                  in {T3K_TARGET_LABELS[loadedElsewhere]}
+            ) : (
+              <>
+                <span className={s.rowGear}>
+                  {GEAR_LABELS[tone.gear] ?? tone.gear}
+                  {includesCab(tone.gear) && " · with cab"}
                 </span>
-              ) : (
-                <span className={s.rowDownloads}>
-                  <DownloadIcon size={10} />
-                  {formatCount(tone.downloadsCount)}
-                </span>
-              )}
-            </span>
-          )}
+                {includesCab(tone.gear) && !loadedElsewhere ? null : loadedElsewhere ? (
+                  <span className={s.rowCount}>in {T3K_TARGET_LABELS[loadedElsewhere]}</span>
+                ) : (
+                  <span className={s.rowCount} title="Downloads">
+                    <DownloadIcon size={12} />
+                    <span className={s.mono}>{formatCount(tone.downloadsCount)}</span>
+                  </span>
+                )}
+              </>
+            )}
+          </span>
         </span>
 
-        <span className={s.rowTrail}>
-          <HeartButton tone={tone} showCount onToggle={onToggleFavorite} />
-          <RowAction tone={tone} target={target} loaded={loadedHere} />
+        <HeartButton
+          tone={tone}
+          className={cx(s.rowHeart, tone.favorited && s.rowHeartOn)}
+          onToggle={onToggleFavorite}
+        />
+        <span className={s.rowAction}>
+          <LoadControl
+            tone={tone}
+            target={target}
+            loaded={loadedHere}
+            busy={busy}
+            pct={pct}
+            failed={load?.phase === "failed"}
+            error={error}
+          />
         </span>
       </div>
+      {busy && <RowProgress value={pct} />}
     </motion.li>
   );
 }
 
-/** The row's primary action, every state of it. */
-function RowAction({
+/** The row's state control: Load to percent to Loaded, or Retry. */
+function LoadControl({
   tone,
   target,
   loaded,
+  busy,
+  pct,
+  failed,
+  error,
 }: {
   tone: T3kTone;
   target: T3kTarget;
   loaded: boolean;
+  busy: boolean;
+  pct: number | null;
+  failed: boolean;
+  error: string | null;
 }) {
-  const load = useStore((st) => st.t3kLoads[tone.id]);
-  const progress = useStore((st) =>
-    load?.modelId != null ? st.downloads[load.modelId] : undefined,
-  );
   const installed = useStore((st) => st.t3kInstalled.some((f) => f.toneId === tone.id));
   const loadTone = useStore((st) => st.t3kLoadTone);
-
   const label = T3K_TARGET_LABELS[target];
   const unavailable = tone.format === "nam" && tone.modelsCount === 0;
   const stop = (e: React.SyntheticEvent): void => e.stopPropagation();
 
-  if (load && load.phase !== "failed") {
-    const pct = load.phase === "downloading" ? (progress ?? 0) : null;
+  if (busy) {
     return (
       <span
-        className={s.rowAction}
+        className={s.stateText}
         role="status"
         aria-label={
           pct !== null ? `Downloading ${Math.round(pct * 100)}%` : `Loading into ${label}`
@@ -156,36 +206,26 @@ function RowAction({
         onClick={stop}
       >
         {pct === null ? (
-          <span className={s.actionBusy}>
-            <Spinner size={11} />
-          </span>
+          <Spinner size={12} />
         ) : (
-          <span className={s.actionProgress}>
-            <motion.span
-              className={s.actionProgressFill}
-              animate={{ scaleX: Math.max(0.06, pct) }}
-              transition={tween.micro}
-            />
-            <span className={s.actionProgressText}>{Math.round(pct * 100)}%</span>
-          </span>
+          <span className={s.mono}>{Math.round(pct * 100)}%</span>
         )}
       </span>
     );
   }
 
-  if (load?.phase === "failed") {
+  if (failed) {
     return (
       <button
         type="button"
-        className={cx(s.rowAction, s.actionButton, s.actionRetry)}
-        title={load.error ?? "Failed"}
+        className={s.retry}
+        title={error ?? "Failed"}
         aria-label={`Retry loading ${tone.title} into ${label}`}
         onClick={(e) => {
           stop(e);
           void loadTone(tone);
         }}
       >
-        <RetryIcon />
         Retry
       </button>
     );
@@ -193,8 +233,8 @@ function RowAction({
 
   if (loaded) {
     return (
-      <span className={cx(s.rowAction, s.actionLoaded)} onClick={stop}>
-        <CheckIcon size={11} />
+      <span className={cx(s.stateText, s.loaded)} onClick={stop}>
+        <CheckIcon size={14} />
         Loaded
       </span>
     );
@@ -203,7 +243,7 @@ function RowAction({
   if (unavailable) {
     return (
       <span
-        className={cx(s.rowAction, s.actionNone)}
+        className={s.stateText}
         title="This tone has no A2 captures, which is all this plugin loads."
         onClick={stop}
       >
@@ -213,9 +253,8 @@ function RowAction({
   }
 
   return (
-    <button
-      type="button"
-      className={cx(s.rowAction, s.actionButton)}
+    <Button
+      size="sm"
       aria-label={`Load ${tone.title} into ${label}`}
       title={installed ? `Load into ${label}` : `Download and load into ${label}`}
       onClick={(e) => {
@@ -223,9 +262,8 @@ function RowAction({
         void loadTone(tone);
       }}
     >
-      {!installed && <DownloadIcon size={11} />}
       Load
-    </button>
+    </Button>
   );
 }
 
@@ -233,10 +271,10 @@ export function RowSkeleton() {
   return (
     <li className={s.row}>
       <div className={s.rowHit}>
-        <Skeleton width={44} height={44} radius="var(--radius-sm)" />
+        <Skeleton width={40} height={40} radius="var(--ds-r-2)" />
         <span className={s.rowBody}>
-          <Skeleton width="72%" height={11} />
-          <Skeleton width="46%" height={9} style={{ marginTop: 7 }} />
+          <Skeleton width="64%" height={12} radius="var(--ds-r-1)" />
+          <Skeleton width="40%" height={10} radius="var(--ds-r-1)" />
         </span>
       </div>
     </li>

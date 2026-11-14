@@ -1,8 +1,7 @@
 /*
-  Primitive kit styles. Tokens only — no raw hex, no raw radii, no magic ms
-  (durations that matter to choreography live in ../theme/motion.ts; the short
-  hover/press transitions below are the 120ms chrome transition from
-  vercel-design.md §4 and are intentionally CSS, not Motion).
+  The primitive kit — ui/DESIGN.md §Components. Tokens only: every colour,
+  size, radius, shadow and duration is a --ds-* token. Hover and press are CSS
+  transitions (--ds-t-fast); choreography lives in ../theme/motion.ts.
 */
 
 /* ─────────────────────────────── Button ──────────────────────────────── */
@@ -12,198 +11,164 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 32px;
-  padding: 0 12px;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: 13px;
+  height: var(--ds-h-md);
+  padding: 0 var(--ds-3);
+  border-radius: var(--ds-r-2);
+  font-family: var(--ds-font);
+  font-size: var(--ds-fs-label);
   font-weight: 500;
-  letter-spacing: 0.01em;
   line-height: 1;
-  color: var(--text-primary);
-  background: var(--bg-elevated);
-  box-shadow: var(--ring-inset);
-  transition:
-    background-color 120ms ease,
-    box-shadow 120ms ease,
-    color 120ms ease;
   white-space: nowrap;
+  color: var(--ds-text);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line-strong);
+  transition:
+    background-color var(--ds-t-fast) var(--ds-ease),
+    color var(--ds-t-fast) var(--ds-ease);
 }
-
 .button:hover:not(:disabled) {
-  background: var(--bg-elevated-hi);
-  box-shadow: var(--ring-inset-hover);
+  background: var(--ds-surface-3);
 }
-
-.button:active:not(:disabled) {
-  box-shadow: var(--ring-inset-active);
-  transform: scale(0.98);
-}
-
 .button:disabled {
   opacity: 0.4;
-  pointer-events: none;
+}
+.button > svg {
+  flex: none;
 }
 
 .buttonSm {
-  height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
+  height: var(--ds-h-sm);
+  padding: 0 var(--ds-2);
 }
-
 .buttonLg {
-  height: 36px;
-  padding: 0 16px;
+  height: var(--ds-h-lg);
+  padding: 0 var(--ds-4);
 }
 
 .buttonPrimary {
-  background: var(--accent);
-  color: #0a0a0a;
+  color: var(--ds-on-inverse);
+  background: var(--ds-inverse);
   box-shadow: none;
 }
 .buttonPrimary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  box-shadow: none;
-}
-.buttonPrimary:active:not(:disabled) {
-  background: var(--accent-active);
-  box-shadow: none;
+  background: var(--ds-inverse-hover);
 }
 
 .buttonGhost {
+  color: var(--ds-text-2);
   background: transparent;
-  color: var(--text-secondary);
   box-shadow: none;
 }
 .buttonGhost:hover:not(:disabled) {
-  background: var(--accent-fill-8);
-  color: var(--text-primary);
-  box-shadow: none;
-}
-.buttonGhost:active:not(:disabled) {
-  background: var(--accent-fill-16);
-  box-shadow: none;
+  color: var(--ds-text);
+  background: var(--ds-surface-2);
 }
 
 .buttonDanger {
-  color: var(--error);
+  color: var(--ds-danger);
+  background: transparent;
+  box-shadow: none;
 }
 .buttonDanger:hover:not(:disabled) {
-  background: var(--error-fill);
-  box-shadow: var(--ring-inset-hover);
+  background: var(--ds-surface-2);
 }
 
 .buttonBlock {
   width: 100%;
 }
 
+/* ───────────────────────────── IconButton ────────────────────────────── */
+
 .iconButton {
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: var(--ds-h-md);
+  height: var(--ds-h-md);
   padding: 0;
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
+  border-radius: var(--ds-r-2);
+  color: var(--ds-text-2);
   background: transparent;
   transition:
-    background-color 120ms ease,
-    color 120ms ease,
-    box-shadow 120ms ease;
+    background-color var(--ds-t-fast) var(--ds-ease),
+    color var(--ds-t-fast) var(--ds-ease);
 }
 .iconButton:hover:not(:disabled) {
-  color: var(--text-primary);
-  background: var(--bg-elevated-hi);
-}
-.iconButton:active:not(:disabled) {
-  transform: scale(0.94);
+  color: var(--ds-text);
+  background: var(--ds-surface-2);
 }
 .iconButton:disabled {
-  opacity: 0.35;
-  pointer-events: none;
-}
-.iconButtonPlate {
-  background: var(--bg-elevated);
-  box-shadow: var(--ring-inset);
+  opacity: 0.4;
 }
 .iconButtonSm {
-  width: 22px;
-  height: 22px;
+  width: var(--ds-h-sm);
+  height: var(--ds-h-sm);
+}
+.iconButtonPlate {
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line-strong);
+}
+.iconButtonPlate:hover:not(:disabled) {
+  background: var(--ds-surface-3);
 }
 .iconButtonDanger:hover:not(:disabled) {
-  color: var(--error);
-  background: var(--error-fill);
+  color: var(--ds-danger);
 }
 
-/* ─────────────────────────── Toggle / PowerPill ──────────────────────── */
+/* ─────────────────────────────── Power ───────────────────────────────── */
+
+.power {
+  color: var(--ds-text-disabled);
+}
+.power:hover:not(:disabled) {
+  color: var(--ds-text-3);
+}
+.powerOn,
+.powerOn:hover:not(:disabled) {
+  color: var(--ds-text);
+}
+
+/* ─────────────────────────────── Switch ──────────────────────────────── */
 
 .switch {
   position: relative;
   display: inline-flex;
+  flex: none;
   align-items: center;
-  width: 34px;
-  height: 20px;
+  width: 28px;
+  height: 16px;
   padding: 2px;
-  border-radius: 999px;
-  background: var(--bg-surface);
-  box-shadow: var(--ring-inset);
-  transition:
-    background-color 120ms ease,
-    box-shadow 120ms ease;
+  border-radius: var(--ds-r-full);
+  background: var(--ds-surface-3);
+  box-shadow: var(--ds-ring-line-strong);
+  transition: background-color var(--ds-t-fast) var(--ds-ease);
+}
+/* The mark is 16px tall; the hit area is padded invisibly to 24. */
+.switch::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  right: -2px;
+  bottom: -4px;
+  left: -2px;
 }
 .switchOn {
-  background: var(--block-fill-25, var(--accent-fill-25));
-  box-shadow: inset 0 0 0 1px var(--block-accent, var(--accent));
+  background: var(--ds-accent);
+  box-shadow: none;
 }
-.switchKnob {
-  width: 16px;
-  height: 16px;
-  border-radius: 999px;
-  background: var(--text-tertiary);
+.switchThumb {
+  width: 12px;
+  height: 12px;
+  border-radius: var(--ds-r-full);
+  background: var(--ds-text-2);
+  transition: background-color var(--ds-t-fast) var(--ds-ease);
 }
-.switchOn .switchKnob {
-  background: var(--block-accent, var(--accent));
+.switchOn .switchThumb {
+  background: var(--ds-inverse-hover);
 }
 .switch:disabled {
   opacity: 0.4;
-  pointer-events: none;
-}
-
-.powerPill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: var(--bg-surface);
-  box-shadow: var(--ring-inset);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  color: var(--text-tertiary);
-  transition:
-    background-color 120ms ease,
-    color 120ms ease,
-    box-shadow 120ms ease;
-}
-.powerPillOn {
-  color: var(--block-accent, var(--accent));
-  background: var(--block-fill-8, var(--accent-fill-8));
-  box-shadow: inset 0 0 0 1px var(--block-accent, var(--accent));
-}
-.powerLed {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--bg-app);
-  box-shadow: inset 0 0 0 1px var(--border-hover);
-}
-.powerPillOn .powerLed {
-  background: var(--block-accent, var(--accent));
-  box-shadow: 0 0 6px 1px var(--block-glow, var(--accent-glow));
 }
 
 /* ───────────────────────────── Segmented ─────────────────────────────── */
@@ -211,46 +176,55 @@
 .segmented {
   position: relative;
   display: inline-flex;
+  flex: none;
+  height: var(--ds-h-md);
   padding: 2px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-  box-shadow: var(--ring-inset);
+  border-radius: var(--ds-r-2);
+  background: var(--ds-surface-1);
+  box-shadow: var(--ds-ring-line);
 }
 .segment {
   position: relative;
-  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  min-width: 34px;
-  height: 24px;
+  gap: 6px;
+  min-width: var(--ds-h-md);
+  height: 100%;
   padding: 0 10px;
-  border-radius: 4px;
-  font-size: 12px;
+  border-radius: var(--ds-r-1);
+  font-size: var(--ds-fs-label);
   font-weight: 500;
-  color: var(--text-secondary);
-  transition: color 120ms ease;
+  color: var(--ds-text-2);
+  transition: color var(--ds-t-fast) var(--ds-ease);
 }
-.segment:hover {
-  color: var(--text-primary);
+.segment:hover:not(:disabled) {
+  color: var(--ds-text);
+}
+.segment:disabled {
+  color: var(--ds-text-disabled);
 }
 .segmentActive {
-  color: var(--text-primary);
+  color: var(--ds-text);
 }
 .segmentPill {
   position: absolute;
-  z-index: 0;
-  inset: 0;
-  border-radius: 4px;
-  background: var(--bg-elevated-hi);
-  box-shadow: var(--ring-inset-hover);
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: var(--ds-r-1);
+  background: var(--ds-surface-3);
+}
+.segmentLabel {
+  position: relative;
 }
 .segmentDot {
+  position: relative;
   width: 4px;
   height: 4px;
-  border-radius: 999px;
-  background: var(--accent);
+  border-radius: var(--ds-r-full);
+  background: var(--ds-text-3);
 }
 
 /* ─────────────────────────────── Menu ────────────────────────────────── */
@@ -261,70 +235,77 @@
   min-width: 180px;
   max-height: 320px;
   overflow-y: auto;
-  padding: 4px;
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-menu);
+  padding: var(--ds-1);
+  border-radius: var(--ds-r-3);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-shadow-float);
 }
 .menuItem {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--ds-2);
   width: 100%;
-  height: 30px;
-  padding: 0 8px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  color: var(--text-primary);
+  height: var(--ds-h-md);
+  padding: 0 var(--ds-2);
+  border-radius: var(--ds-r-1);
+  font-size: var(--ds-fs-body);
+  color: var(--ds-text);
   text-align: left;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
+  transition: background-color var(--ds-t-fast) var(--ds-ease);
 }
 .menuItem:hover:not(:disabled) {
-  background: var(--accent-fill-8);
-}
-.menuItemSelected {
-  color: var(--text-primary);
-  background: var(--bg-elevated-hi);
-}
-.menuItemDestructive {
-  color: var(--error);
-}
-.menuItemDestructive:hover:not(:disabled) {
-  background: var(--error-fill);
+  background: var(--ds-surface-3);
 }
 .menuItem:disabled {
-  opacity: 0.4;
-  pointer-events: none;
+  color: var(--ds-text-disabled);
+}
+.menuItemSelected {
+  color: var(--ds-text);
+}
+.menuItemDestructive {
+  color: var(--ds-danger);
+}
+.menuItemIcon {
+  display: inline-flex;
+  flex: none;
+  color: var(--ds-text-2);
+}
+.menuItem:disabled .menuItemIcon {
+  color: inherit;
 }
 .menuItemLabel {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .menuItemHint {
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 10px;
+  flex: none;
+  font-size: var(--ds-fs-label);
+  color: var(--ds-text-3);
+}
+.menuItemCheck {
+  flex: none;
+  color: var(--ds-text);
 }
 .menuSeparator {
   height: 1px;
-  margin: 4px -4px;
-  background: var(--border);
+  margin: var(--ds-1) calc(-1 * var(--ds-1));
+  background: var(--ds-line);
 }
 .menuSectionLabel {
-  padding: 6px 8px 4px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
+  padding: var(--ds-2) var(--ds-2) var(--ds-1);
+  font-size: var(--ds-fs-caption);
+  font-weight: 400;
+  color: var(--ds-text-3);
 }
 .menuScrim {
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 59;
 }
 
@@ -338,12 +319,13 @@
 .tooltip {
   position: fixed;
   z-index: 70;
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated-hi);
-  box-shadow: var(--shadow-tooltip);
-  font-size: 11px;
-  color: var(--text-primary);
+  padding: var(--ds-1) var(--ds-2);
+  border-radius: var(--ds-r-1);
+  background: var(--ds-surface-3);
+  box-shadow: var(--ds-shadow-float);
+  font-size: var(--ds-fs-caption);
+  line-height: 1.45;
+  color: var(--ds-text);
   pointer-events: none;
   white-space: nowrap;
 }
@@ -352,217 +334,308 @@
 
 .modalBackdrop {
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 80;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-overlay);
-  /* Unprefixed backdrop-filter only lands in Safari 18; every WebKit down to the
-     macOS 11 baseline needs the prefixed name. */
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
+  background: var(--ds-scrim);
 }
 .modalPanel {
   display: flex;
   flex-direction: column;
-  width: min(560px, calc(100% - 64px));
+  width: 480px;
+  max-width: calc(100% - 64px);
   max-height: calc(100% - 96px);
-  border-radius: var(--radius-lg);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-modal);
+  border-radius: var(--ds-r-4);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-shadow-float);
   overflow: hidden;
 }
 .modalHeader {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  height: 48px;
-  padding: 0 12px 0 20px;
-  box-shadow: inset 0 -1px 0 var(--border);
+  gap: var(--ds-3);
+  height: 52px;
+  padding: 0 var(--ds-3) 0 var(--ds-5);
 }
 .modalTitle {
-  font-size: 13px;
+  font-size: var(--ds-fs-title);
   font-weight: 600;
+  color: var(--ds-text);
 }
 .modalBody {
   flex: 1;
-  padding: 20px;
+  min-height: 0;
+  padding: var(--ds-1) var(--ds-5) var(--ds-5);
   overflow-y: auto;
 }
 .modalFooter {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  height: 56px;
-  padding: 0 20px;
-  box-shadow: inset 0 1px 0 var(--border);
+  gap: var(--ds-2);
+  padding: 0 var(--ds-5) var(--ds-5);
 }
 
 /* ─────────────────────────────── Toast ───────────────────────────────── */
 
 /*
-  Bottom-right, but "bottom" is not the window's bottom: `bottom: 16px` put the
-  stack on the footer and then straight over the param dock, which is exactly
-  where a toast is least readable. --overlay-bottom clears the footer, the dock
-  and the board's zoom bar in one token (theme/tokens.css), so this stays right
-  when any of those three change height.
+  Bottom-right, above everything anchored to the bottom: --overlay-bottom
+  clears the status bar, the editor band and the board's zoom bar in one token
+  (theme/tokens.css), so this stays right when any of those change height.
+  Absolute against the app shell, not the viewport: the mock bridge's window is
+  smaller than the browser; in the plugin the shell is the window.
 */
 .toastStack {
-  /* Absolute, against the app shell, not the viewport: the mock bridge's
-     emulated window is smaller than the browser and a fixed stack would drift
-     outside it. In the plugin the shell *is* the window, so the two agree. */
   position: absolute;
-  right: 16px;
+  /* Left of the TONE3000 drawer while it is open (App.module.css sets the
+     inset), so a toast never lands on the catalog's filters. */
+  right: calc(var(--ds-4) + var(--t3k-inset, 0px));
   bottom: var(--overlay-bottom);
   z-index: 90;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 8px;
+  gap: var(--ds-2);
 }
 .toast {
-  position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  max-width: 320px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated-hi);
-  box-shadow: var(--shadow-toast);
-  font-size: 13px;
-  overflow: hidden;
+  gap: 10px;
+  max-width: 360px;
+  padding: 11px var(--ds-3);
+  border-radius: var(--ds-r-3);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-shadow-float);
+  font-size: var(--ds-fs-body);
+  line-height: 1.4;
+  color: var(--ds-text);
 }
+/* 16px icon centred on the first 18px line. */
 .toastIcon {
+  display: inline-flex;
   flex: none;
   margin-top: 1px;
 }
+.toastIconInfo {
+  color: var(--ds-text-2);
+}
+.toastIconOk {
+  color: var(--ds-ok);
+}
+.toastIconWarn {
+  color: var(--ds-warn);
+}
+.toastIconDanger {
+  color: var(--ds-danger);
+}
 .toastMessage {
   flex: 1;
+  min-width: 0;
+  padding-right: var(--ds-1);
 }
-.toastProgress {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 2px;
-  width: 100%;
-  transform-origin: left center;
+/* A 24px ghost button that must not grow the 18px line it sits on. */
+.toastAction {
+  flex: none;
+  margin: -3px calc(-1 * var(--ds-1)) -3px 0;
+  color: var(--ds-text);
 }
 
 /* ─────────────────────────────── Meter ───────────────────────────────── */
 
 .meter {
   position: relative;
-  display: flex;
-  gap: 2px;
+  flex: none;
   overflow: hidden;
+  border-radius: var(--ds-r-full);
+  background: var(--ds-meter-track);
 }
 .meterVertical {
-  flex-direction: column-reverse;
-  width: 8px;
+  width: 4px;
   height: 100%;
+  margin: 0 auto;
 }
 .meterHorizontal {
-  flex-direction: row;
   width: 100%;
-  height: 8px;
+  height: 4px;
 }
-.meterSegment {
-  position: relative;
-  flex: 1;
-  border-radius: 1.5px;
-  background: var(--bg-surface);
-  overflow: hidden;
-}
-.meterSegmentFill {
-  position: absolute;
-  inset: 0;
-  border-radius: 1.5px;
-}
-.meterHold {
+.meterFill {
   position: absolute;
   top: 0;
-  left: 0;
   right: 0;
-  height: 2px;
-  border-radius: 1px;
-  opacity: 0.9;
-  pointer-events: none;
-}
-.meterHoldHorizontal {
-  top: 0;
   bottom: 0;
   left: 0;
-  right: auto;
-  width: 2px;
-  height: auto;
+  will-change: transform;
+}
+.meterVertical .meterFill {
+  transform-origin: 50% 100%;
+}
+.meterHorizontal .meterFill {
+  transform-origin: 0 50%;
+}
+.meterPeak {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+.meterVertical .meterPeak {
+  width: 100%;
+  height: 1px;
+}
+.meterHorizontal .meterPeak {
+  width: 1px;
+  height: 100%;
 }
 
 /* ─────────────────────────────── Knob ────────────────────────────────── */
 
 .knob {
+  position: relative;
   display: inline-flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  touch-action: none;
-  cursor: ns-resize;
   user-select: none;
 }
 .knobDial {
-  position: relative;
-  display: grid;
-  place-items: center;
+  flex: none;
+  cursor: ns-resize;
+  touch-action: none;
 }
 .knobSvg {
   overflow: visible;
 }
+.knobTrack,
+.knobArc {
+  fill: none;
+  stroke-linecap: butt;
+}
 .knobTrack {
-  stroke: var(--border);
+  stroke: var(--ds-line-strong);
 }
-.knobValue {
-  stroke: var(--block-accent, var(--accent));
-  filter: none;
+/* The value arc is the accent: the house amber, or the family hue of the block
+   whose editor the knob is in. A step quieter at rest than under the hand. */
+.knobArc {
+  stroke: var(--ds-accent);
+  opacity: 0.8;
+  transition:
+    stroke var(--ds-t-fast) var(--ds-ease),
+    opacity var(--ds-t-fast) var(--ds-ease);
 }
-.knobFace {
-  fill: var(--bg-elevated);
-  stroke: var(--border);
+.knobDisc {
+  fill: var(--ds-surface-3);
+  stroke: var(--ds-line-strong);
+  stroke-width: 1;
 }
 .knobPointer {
-  stroke: var(--block-accent, var(--accent));
+  stroke: var(--ds-text);
+  stroke-width: 1.5;
   stroke-linecap: round;
+  transition: stroke var(--ds-t-fast) var(--ds-ease);
 }
+.knobDial:hover .knobArc,
+.knobDial:hover .knobPointer,
+.knob[data-active] .knobArc,
+.knob[data-active] .knobPointer {
+  stroke: var(--ds-accent);
+  opacity: 1;
+}
+
 .knobLabel {
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
+  max-width: 100%;
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ds-fs-label);
+  font-weight: 400;
+  line-height: 16px;
+  color: var(--ds-text-2);
+}
+.knobValueRow {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
 }
 .knobReadout {
-  font-family: var(--font-mono);
-  font-feature-settings:
-    "tnum" 1,
-    "zero" 1;
+  font-family: var(--ds-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-primary);
+  font-size: var(--ds-fs-caption);
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--ds-text-3);
+  transition: color var(--ds-t-fast) var(--ds-ease);
 }
-.knobDisabled {
-  opacity: 0.45;
+.knob:hover .knobReadout,
+.knob[data-active] .knobReadout {
+  color: var(--ds-text);
+}
+.knobLabel + .knobValueRow {
+  margin-top: 0;
+}
+.knobDial + .knobValueRow {
+  margin-top: 6px;
+}
+
+/* − / + step buttons: a 12px mark centred in a 24px hit area that hangs off
+   either side of the readout, shown on hover of the cell and while dragging. */
+.knobStep {
+  position: absolute;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ds-h-sm);
+  height: var(--ds-h-sm);
+  margin-top: calc(var(--ds-h-sm) / -2);
+  padding: 0;
+  border-radius: var(--ds-r-1);
+  color: var(--ds-text-3);
+  opacity: 0;
   pointer-events: none;
+  transition:
+    opacity var(--ds-t-fast) var(--ds-ease),
+    color var(--ds-t-fast) var(--ds-ease);
 }
-/* sm knobs live in the 56px footer band: 40px dial + 2px gap + 12px label = 54px. */
-.knobSizeSm {
-  gap: 2px;
+/* The mark sits on the inner side of its hit area, 4px from the readout, so it
+   stays inside the cell even in snug rows. */
+.knobStepDec {
+  right: 100%;
+  justify-content: flex-end;
+  padding-right: var(--ds-1);
 }
-.knobSizeSm .knobLabel {
-  font-size: 10px;
-  letter-spacing: 0.03em;
+.knobStepInc {
+  left: 100%;
+  justify-content: flex-start;
+  padding-left: var(--ds-1);
+}
+.knob:hover .knobStep,
+.knob[data-active] .knobStep {
+  opacity: 1;
+  pointer-events: auto;
+}
+.knobStep:hover {
+  color: var(--ds-text);
+}
+
+.knobSm .knobLabel {
+  margin-top: var(--ds-1);
+  font-size: var(--ds-fs-caption);
+  line-height: 14px;
+}
+.knobLg .knobLabel {
+  margin-top: var(--ds-2);
+}
+
+.knobDisabled {
+  opacity: 0.4;
+  pointer-events: none;
 }
 
 /* ──────────────────────── Kbd / EmptyState / Loading ─────────────────── */
@@ -571,18 +644,16 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--bg-surface);
-  box-shadow:
-    inset 0 0 0 1px var(--border-hover),
-    0 1px 0 var(--border);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--ds-1);
+  border-radius: var(--ds-r-1);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line-strong);
+  font-family: var(--ds-mono);
+  font-size: var(--ds-fs-caption);
   line-height: 1;
-  color: var(--text-secondary);
+  color: var(--ds-text-2);
 }
 
 .emptyState {
@@ -590,64 +661,31 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 24px;
+  gap: var(--ds-1);
+  padding: var(--ds-5);
   text-align: center;
 }
-.emptyIcon {
-  color: var(--text-tertiary);
-  opacity: 0.4;
-}
 .emptyMessage {
-  font-size: 13px;
-  color: var(--text-secondary);
+  font-size: var(--ds-fs-body);
+  font-weight: 500;
+  color: var(--ds-text);
 }
 .emptyHint {
-  font-size: 12px;
-  color: var(--text-tertiary);
+  max-width: 320px;
+  font-size: var(--ds-fs-body);
+  color: var(--ds-text-2);
 }
 .emptyAction {
-  margin-top: 4px;
+  margin-top: var(--ds-3);
 }
 
 .spinner {
-  color: var(--text-secondary);
-  animation: tubamp-spin 700ms linear infinite;
+  flex: none;
+  color: var(--ds-text-3);
+  animation: tubamp-spin 800ms linear infinite; /* ds-allow: loading indicator */
 }
 
 .skeleton {
-  background:
-    linear-gradient(
-      100deg,
-      transparent 30%,
-      rgba(255, 255, 255, 0.06) 50%,
-      transparent 70%
-    ),
-    var(--bg-surface);
-  background-size: 200% 100%;
-  animation: tubamp-shimmer 1.6s ease-in-out infinite;
-}
-
-/* ─────────────────────────────── Panels ──────────────────────────────── */
-
-.card {
-  background: var(--bg-elevated);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--ring-inset);
-}
-
-.sectionTitle {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  line-height: 1.3;
-  color: var(--text-primary);
-}
-
-.microLabel {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
+  background: var(--ds-surface-2);
+  animation: tubamp-pulse 1.6s var(--ds-ease) infinite; /* ds-allow: loading skeleton */
 }

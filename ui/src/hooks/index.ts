@@ -16,6 +16,7 @@ export {
   type MeterChannel,
 } from "./useMeters";
 export { onFrame, type FrameCallback } from "./rafDriver";
+export { useSignal, type Signal } from "./useSignal";
 export {
   useDynMeters,
   DYN_FALL_DB_PER_SECOND,

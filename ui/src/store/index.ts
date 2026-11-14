@@ -55,6 +55,13 @@ export interface Toast {
   message: string;
   /** ms before auto-dismiss; 0 = sticky. */
   duration: number;
+  /** Optional ghost button on the toast ("Undo"); clicking it also dismisses. */
+  action?: ToastAction;
+}
+
+export interface ToastAction {
+  label: string;
+  onSelect(): void;
 }
 
 export interface T3kToneResult {
@@ -276,7 +283,7 @@ export interface AppActions {
   t3kOpenExternal(url: string): Promise<void>;
 
   /* toasts */
-  toast(message: string, kind?: ToastKind, duration?: number): number;
+  toast(message: string, kind?: ToastKind, duration?: number, action?: ToastAction): number;
   dismissToast(id: number): void;
 }
 
@@ -998,9 +1005,9 @@ export const useStore = create<Store>()((set, get) => {
 
     /* ───────────────────────────── toasts ────────────────────────────── */
 
-    toast(message, kind = "info", duration = 4000) {
+    toast(message, kind = "info", duration = 4000, action) {
       const id = nextToastId++;
-      set((s) => ({ toasts: [...s.toasts, { id, kind, message, duration }] }));
+      set((s) => ({ toasts: [...s.toasts, { id, kind, message, duration, action }] }));
       return id;
     },
 

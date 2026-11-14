@@ -1,12 +1,13 @@
 /**
- * The panel header's trash for SPLIT / MIX: a region has three ways out, not
- * one, so the trash opens the same "Remove split" menu the cards' kebabs show
- * (keep lane A, keep lane B, chain A → B — see features/board/splitActions).
+ * The band header's trash for Split and Mixer: a region has three ways out,
+ * not one, so the trash opens the same "Remove split" menu the board's cards
+ * show (keep lane A, keep lane B, chain A into B — features/board/splitActions).
  */
 import { IconButton, Menu, Tooltip, TrashIcon, useMenu } from "../../components";
 import { useStore } from "../../store";
 import { useLaneNames } from "../board/lanes";
 import { splitRemoveEntries } from "../board/splitActions";
+import l from "./lanes.module.css";
 
 export function SplitRemoveButton() {
   const order = useStore((st) => st.chainOrder);
@@ -14,8 +15,8 @@ export function SplitRemoveButton() {
   const { ref, anchor, open, toggle, close } = useMenu<HTMLSpanElement>();
   return (
     <>
-      <Tooltip label="Remove the split…">
-        <span ref={ref} style={{ display: "inline-flex" }}>
+      <Tooltip label="Remove the split">
+        <span ref={ref} className={l.anchor}>
           <IconButton
             aria-label="Remove the split"
             aria-haspopup="menu"

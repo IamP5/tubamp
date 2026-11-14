@@ -1,12 +1,14 @@
 /**
  * The board — the app's centrepiece (docs/REACT-UI.md §UX structure).
  *
- * A Figma/Miro-style pan/zoom stage carrying the chain: IN — block cards — OUT,
- * wrapped into rows and joined by connectors with drifting flow chevrons. Cards
- * select on click, reorder by 2-D drag (including into new rows), toggle bypass
- * from their LED, and open a kebab menu for bypass/remove. A [+] node at the end
- * of the last row offers every kind that still has a free instance, and every
- * connector gap hides an insert [+] (hover to reveal) that adds at that spot.
+ * A pan/zoom stage carrying the chain on a flat background: In — block tiles —
+ * Out, wrapped into rows and joined by quiet wires. Tiles are text tiles (glyph,
+ * name, what is loaded in them); they select on click, reorder by 2-D drag
+ * (including into new rows), toggle bypass from their power button, and open a
+ * More menu for bypass/remove (a remove toasts with Undo). An add tile at the
+ * end of the last row opens the sectioned block picker, and every wire gap
+ * hides an insert "+" (hover to reveal) that adds at that spot. Look:
+ * ui/DESIGN.md.
  *
  * Architecture notes worth keeping in mind before editing:
  *
@@ -25,14 +27,14 @@
  *    never disagree about which row a block is in.
  *  - A split region (docs/SPLIT.md §5) renders as a lane container inside its
  *    row — serial blocks may sit either side of it on the same row: SPLIT, two
- *    half-height lane tracks on the shared column grid, MIX. Each lane carries
- *    a head badge on the container frame (named after the split mode: A/B,
- *    L/R, LOW/HIGH) and closes with its own small [+] slot, so an empty lane
- *    reads as a slot and adding to a lane is one click. `lane2` is furniture —
- *    it marks where lane B begins and never gets a card. SPLIT and MIX are not
- *    draggable in v1; their kebabs (and the panel's trash) offer the three
- *    explicit ways out — keep lane A, keep lane B, chain A → B — and the [+]
- *    pickers' "Split path" section creates one (empty, or a one-click dual-amp
+ *    half-height lane tracks on the shared column grid, MIX. Each lane is named
+ *    in plain text above its first tile (after the split mode: A/B, L/R,
+ *    Low/High) and closes with its own small "+" slot, so an empty lane reads
+ *    as a slot and adding to a lane is one click. `lane2` is furniture — it
+ *    marks where lane B begins and never gets a tile. SPLIT and MIX are not
+ *    draggable in v1; their menus (and the panel's trash) offer the three
+ *    explicit ways out — keep lane A, keep lane B, run A then B — and the
+ *    pickers' "Routing" section creates one (empty, or a one-click dual-amp
  *    rig). A board with no structure lays out exactly as it did before.
  *  - Selection is UI-local (store) and the panel is an overlay over the board's
  *    bottom edge: selecting pans the board so the card is never underneath its
@@ -72,23 +74,33 @@ import {
 } from "../../chain/structure";
 import { useRigCab } from "../../hooks";
 import { useStore } from "../../store";
+import { BLOCK_INFO } from "../../theme/blocks";
 import { stagger, tween } from "../../theme/motion";
-import { EmptyState, PlusIcon, cx } from "../../components";
+import {
+  EmptyState,
+  FitIcon,
+  IconButton,
+  MinusIcon,
+  PlusIcon,
+  Tooltip,
+  cx,
+} from "../../components";
 import type { MenuEntry } from "../../components";
-import { BlockCard, type CardNote } from "./BlockCard";
+import { BlockCard } from "./BlockCard";
 import { Connectors } from "./Connectors";
 import {
   AddBlockButton,
   AddNode,
   InsertNode,
   LaneAddNode,
-  LaneBadge,
+  LaneLabel,
   Terminal,
   canAddBlock,
   pickerKinds,
   type SplitOption,
 } from "./LaneNodes";
 import {
+  CARD_H,
   PANEL_BAND,
   REGION_PAD_Y,
   boardGeometry,
@@ -103,67 +115,39 @@ import {
   sameOrder,
   slotOf,
   type LaneRegion,
+  type Slot,
 } from "./layout";
 import { laneHint, useLaneNames, useXoverHz, type LaneSide } from "./lanes";
 import {
   buildDualAmp,
   canBuildDualAmp,
-  dualAmpHint,
   removeSplitRegion,
 } from "./splitActions";
 import { MixCard, SplitCard } from "./StructureCards";
 import { useNodeMotion } from "./nodes";
-import { useBlockToggles, bypassedBlocks } from "./useBlockToggles";
+import { useBlockToggles } from "./useBlockToggles";
+import { withUndo } from "./undo";
 import { useChainDrag } from "./useChainDrag";
 import { MAX_ZOOM, MIN_ZOOM, useStageTransform } from "./useStageTransform";
 import s from "./board.module.css";
 
 const EMPTY: ReadonlySet<string> = new Set();
 
-/* Full-rig captures (see useRigCab): the amp states it, the cab warns about it. */
-const AMP_NOTE: CardNote = {
-  label: "+ CAB",
-  tip: "This capture was taken through a cabinet — it already includes the speaker.",
-  tone: "info",
-};
-const CAB_NOTE: CardNote = {
-  label: "2× CAB",
-  tip: "The loaded capture already includes a cab, so this IR stacks a second one.",
-  tone: "warn",
-};
+/** A file reference as a person reads it: the name, not the path. */
+function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
 
 /**
- * An fx card keeps its slot caption ("FX 1") and carries the hosted plugin as a
- * note, the same channel the amp/cab pair uses for secondary information — the
- * card is the slot, the note is what is currently in it.
+ * What is wrong with a plugin slot, if anything: assigned but not installed
+ * here, or assigned and not running. Loading and empty are not warnings.
  */
-function fxNote(state: FxSlotState | undefined): CardNote | undefined {
-  if (!state) return undefined;
-  if (!state.occupied)
-    return {
-      label: "EMPTY",
-      tip: "No plugin loaded — this slot passes audio through untouched.",
-      tone: "info",
-    };
-  if (state.loading)
-    return { label: "LOADING", tip: `Loading ${state.name}…`, tone: "info" };
+function fxWarning(state: FxSlotState | undefined): string | undefined {
+  if (!state?.occupied || state.loading) return undefined;
   if (state.missing)
-    return {
-      label: state.name,
-      tip: `${state.name} is not installed on this machine. Its settings are preserved.`,
-      tone: "warn",
-    };
-  if (!state.live)
-    return {
-      label: state.name,
-      tip: state.error || `${state.name} is not running.`,
-      tone: "warn",
-    };
-  return {
-    label: state.name,
-    tip: `${state.name} — ${state.manufacturer}`,
-    tone: "info",
-  };
+    return `${state.name} is not installed on this machine. Its settings are preserved.`;
+  if (!state.live) return state.error || `${state.name} is not running.`;
+  return undefined;
 }
 
 /** Staggered board build-in (motion-design.md §2.1), gated on reduced motion. */
@@ -187,18 +171,33 @@ export function Board() {
 
   const reduced = useReducedMotion() ?? false;
   const toggles = useBlockToggles();
-  const bypassed = useMemo(() => bypassedBlocks(toggles), [toggles]);
   const rigCab = useRigCab();
   const fxSlots = useStore((st) => st.fxSlots);
+  const missing = useStore((st) => st.missingMedia);
 
-  const noteFor = useCallback(
-    (id: BlockId): CardNote | undefined => {
-      if (id === "amp") return rigCab.captureHasCab ? AMP_NOTE : undefined;
-      if (id === "cab") return rigCab.doubleCab ? CAB_NOTE : undefined;
+  /* A tile's warn icon: a capture or IR a session asked for and could not
+     get, a second cab stacked on a full-rig capture, a plugin not running. */
+  const warningFor = useCallback(
+    (id: BlockId): string | undefined => {
+      if (id === "amp" && missing.model)
+        return `Capture not found: ${fileName(missing.model)}`;
+      if (id === "amp2" && missing.modelB)
+        return `Capture not found: ${fileName(missing.modelB)}`;
+      if (id === "cab") {
+        if (missing.ir) return `IR not found: ${fileName(missing.ir)}`;
+        if (rigCab.doubleCab)
+          return "The capture already includes a cab, so this IR stacks a second one.";
+      }
       const slot = fxSlotIndexOf(id);
-      return slot < 0 ? undefined : fxNote(fxSlots[slot]);
+      return slot === -1 ? undefined : fxWarning(fxSlots[slot]);
     },
-    [fxSlots, rigCab.captureHasCab, rigCab.doubleCab],
+    [fxSlots, missing.ir, missing.model, missing.modelB, rigCab.doubleCab],
+  );
+
+  const removeFromChain = useCallback(
+    (id: BlockId) =>
+      withUndo(`Removed ${BLOCK_INFO[id].displayName}`, () => removeBlock(id)),
+    [removeBlock],
   );
 
   const nodes = useNodeMotion();
@@ -214,7 +213,9 @@ export function Board() {
   }, [chainOrder]);
   const splitRoom = useMemo(() => canAddSplit(chainOrder), [chainOrder]);
   const dualRoom = useMemo(() => canBuildDualAmp(chainOrder), [chainOrder]);
-  const showAdd = canAddBlock(kinds) || (!hasStructure && splitRoom);
+  /* An empty chain shows In — Out and the empty state's one action instead. */
+  const showAdd =
+    chainOrder.length > 0 && (canAddBlock(kinds) || (!hasStructure && splitRoom));
   const { mode: splitMode, names: laneNames } = useLaneNames();
 
   /* The published partition, auto-wrapped when there is none, with the split
@@ -346,6 +347,13 @@ export function Board() {
     });
   }, [chainOrder, isPanMode]);
 
+  /* An emptied chain re-frames, so In — Out sits centred over the empty
+     state's line instead of where the old chain's middle was. */
+  const empty = chainOrder.length === 0;
+  useEffect(() => {
+    if (empty) fit(true);
+  }, [empty, fit]);
+
   /* Keyed by value: the chain round-trips through C++ (`chainChanged` hands
      back an equal order in a new array), and re-running on identity alone
      would cancel a reveal that is still animating. */
@@ -426,8 +434,8 @@ export function Board() {
     [selectBlock, setChainOrder],
   );
 
-  /** The pickers' "Split path" section, bound to an insertion point (the tail
-   *  [+] passes none: append). Absent while a region exists. */
+  /** The pickers' "Routing" section, bound to an insertion point (the add
+   *  tile passes none: append). Absent while a region exists. */
   const splitFor = useCallback(
     (at?: { index: number; row: number }): SplitOption | undefined =>
       hasStructure
@@ -437,11 +445,10 @@ export function Board() {
             onSelect: () => addSplit(at),
             dualAmp: {
               enabled: dualRoom,
-              hint: dualAmpHint(chainOrder),
               onSelect: () => buildDualAmp(at),
             },
           },
-    [addSplit, chainOrder, dualRoom, hasStructure, splitRoom],
+    [addSplit, dualRoom, hasStructure, splitRoom],
   );
   const splitOption = useMemo(() => splitFor(), [splitFor]);
 
@@ -459,14 +466,14 @@ export function Board() {
     return { a: make("a"), b: make("b") };
   }, [addBlock, regionRow]);
 
-  /* "Make stereo (dual amp)" on the AMP card, whenever the rig can be built. */
+  /* "Make dual amp" on the Amp tile, whenever the rig can be built. */
   const ampEntries = useMemo<MenuEntry[] | undefined>(
     () =>
       dualRoom && chainOrder.includes("amp")
         ? [
             {
               id: "make-stereo",
-              label: "Make stereo (dual amp)",
+              label: "Make dual amp",
               icon: <StereoGlyph />,
               onSelect: () => buildDualAmp(),
             },
@@ -500,8 +507,6 @@ export function Board() {
         style={{ x: panX, y: panY, scale: zoom }}
         data-stage-bg=""
       >
-        <div className={s.grid} data-stage-bg="" />
-
         {/* The board's origin is the stage origin: with rows there is nothing
             to centre on it, and framing is the stage transform's job (fit /
             ensure-visible), so the content keeps still while it is edited. */}
@@ -519,9 +524,6 @@ export function Board() {
                 region={board.region}
                 box={wireBox}
                 nodes={nodes}
-                selected={selected}
-                bypassed={bypassed}
-                reduced={reduced}
               />
             </div>
 
@@ -547,7 +549,7 @@ export function Board() {
                   onToggle: toggles[id].toggle,
                   onRemove: structural
                     ? () => removeSplitRegion("series")
-                    : () => removeBlock(id),
+                    : () => removeFromChain(id),
                 };
                 if (id === "split") return <SplitCard key={id} {...common} />;
                 if (id === "mix") return <MixCard key={id} {...common} />;
@@ -555,18 +557,19 @@ export function Board() {
                   <BlockCard
                     key={id}
                     {...common}
-                    note={noteFor(id)}
+                    warning={warningFor(id)}
                     extraEntries={id === "amp" ? ampEntries : undefined}
                   />
                 );
               })}
             </AnimatePresence>
 
-            {/* Lane furniture: a head badge per lane on the container frame, and
-                a lane-scoped [+] slot closing each lane. */}
+            {/* Lane furniture: each lane's name above its first tile, and a
+                lane-scoped "+" slot closing each lane. */}
             {board.region && (
-              <RegionBadges
+              <RegionLabels
                 region={board.region}
+                slots={slots}
                 mode={splitMode}
                 names={laneNames}
               />
@@ -625,8 +628,7 @@ export function Board() {
         <div className={s.emptyOverlay}>
           <EmptyState
             className={s.empty}
-            message="Empty chain"
-            hint="Signal passes straight from IN to OUT."
+            message="The chain is empty"
             action={
               <AddBlockButton
                 kinds={kinds}
@@ -649,49 +651,54 @@ export function Board() {
   );
 }
 
-/* ─────────────────────────────── lane badges ───────────────────────────── */
+/* ─────────────────────────────── lane labels ───────────────────────────── */
 
 /**
- * Both lane badges, set into the container frame's top and bottom edges above
- * lane A's and below lane B's first column. Its own component so the crossover
- * knob (which the X-Over hint quotes) re-renders two badges, not the board.
+ * Both lane names, each left-aligned above the first thing in its lane: the
+ * first tile, or the lane's add slot while the lane is empty. Lane A's lands
+ * in the frame's top pad, lane B's in the gap between the tracks. Its own
+ * component so the crossover knob (which the tooltip quotes) re-renders two
+ * labels, not the board.
  */
-function RegionBadges({
+function RegionLabels({
   region,
+  slots,
   mode,
   names,
 }: {
   region: LaneRegion;
+  slots: readonly Slot[];
   mode: number;
   names: Record<LaneSide, string>;
 }) {
   const xover = useXoverHz();
+  const anchor = (side: LaneSide, track: number) => {
+    let first: Slot | undefined;
+    for (const slot of slots)
+      if (slot.lane === side && (!first || slot.x < first.x)) first = slot;
+    // A lane with no tile and no add slot (the chain is full): its track.
+    if (!first) return { x: region.laneX, y: track - CARD_H / 2 - LABEL_GAP };
+    return { x: first.x, y: first.y - first.h / 2 - LABEL_GAP };
+  };
+  const a = anchor("a", region.trackA);
+  const b = anchor("b", region.trackB);
   return (
     <>
-      <LaneBadge
-        side="a"
-        name={names.a}
-        hint={laneHint(mode, "a", xover)}
-        x={region.laneX}
-        y={region.y - REGION_PAD_Y}
-      />
-      <LaneBadge
-        side="b"
-        name={names.b}
-        hint={laneHint(mode, "b", xover)}
-        x={region.laneX}
-        y={region.y + region.h + REGION_PAD_Y}
-      />
+      <LaneLabel side="a" name={names.a} hint={laneHint(mode, "a", xover)} {...a} />
+      <LaneLabel side="b" name={names.b} hint={laneHint(mode, "b", xover)} {...b} />
     </>
   );
 }
 
-/** Two offset waveforms — the "stereo" mark for the AMP card's menu row. */
+/** Lane label centre line, this far above the element it names. */
+const LABEL_GAP = REGION_PAD_Y / 2;
+
+/** Two overlapping rings — the "dual amp" mark for the Amp tile's menu row. */
 function StereoGlyph() {
   return (
-    <svg width={14} height={14} viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="6" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth={1.4} />
-      <circle cx="10" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth={1.4} />
+    <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="6" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth={1.5} />
+      <circle cx="10" cy="8" r="4" fill="none" stroke="currentColor" strokeWidth={1.5} />
     </svg>
   );
 }
@@ -707,8 +714,9 @@ interface ZoomControlsProps {
 }
 
 /**
- * Bottom-right zoom read-out. The percentage is written straight into the DOM
- * from the motion value — a zoom gesture must not re-render React.
+ * Bottom-right zoom group: ghost minus / plus, the percentage (click: 100%)
+ * and fit. The percentage is written straight into the DOM from the motion
+ * value — a zoom gesture must not re-render React.
  */
 function ZoomControls({
   zoom,
@@ -734,44 +742,30 @@ function ZoomControls({
       onPointerDown={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
     >
-      <button
-        type="button"
-        className={s.zoomButton}
-        aria-label="Zoom out"
-        onClick={onZoomOut}
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M3.5 8h9"
-            stroke="currentColor"
-            strokeWidth={1.5}
-            strokeLinecap="round"
-          />
-        </svg>
-      </button>
-      <button
-        ref={label}
-        type="button"
-        className={s.zoomValue}
-        aria-label="Reset zoom to 100%"
-        onClick={onReset}
-      />
-      <button
-        type="button"
-        className={s.zoomButton}
-        aria-label="Zoom in"
-        onClick={onZoomIn}
-      >
-        <PlusIcon size={14} />
-      </button>
-      <button
-        type="button"
-        className={cx(s.zoomButton, s.zoomFit)}
-        aria-label="Zoom to fit"
-        onClick={onFit}
-      >
-        FIT
-      </button>
+      <Tooltip label="Zoom out">
+        <IconButton size="sm" aria-label="Zoom out" onClick={onZoomOut}>
+          <MinusIcon />
+        </IconButton>
+      </Tooltip>
+      <Tooltip label="Reset to 100%">
+        <button
+          ref={label}
+          type="button"
+          className={s.zoomValue}
+          aria-label="Reset zoom to 100%"
+          onClick={onReset}
+        />
+      </Tooltip>
+      <Tooltip label="Zoom in">
+        <IconButton size="sm" aria-label="Zoom in" onClick={onZoomIn}>
+          <PlusIcon />
+        </IconButton>
+      </Tooltip>
+      <Tooltip label="Zoom to fit">
+        <IconButton size="sm" aria-label="Zoom to fit" onClick={onFit}>
+          <FitIcon />
+        </IconButton>
+      </Tooltip>
     </motion.div>
   );
 }

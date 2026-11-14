@@ -16,7 +16,7 @@ import { duration, ease } from "../theme/motion";
 const SHOW_DELAY_MS = 400;
 
 /** Gap between trigger and tip, and the tip's own height (4+11×1.4+4, rounded). */
-const TIP_GAP = 8;
+const TIP_GAP = 6;
 const TIP_H = 24;
 
 type Placement = "top" | "bottom";
@@ -63,7 +63,8 @@ export interface TooltipProps {
 }
 
 /**
- * 400ms show delay, 0ms hide — Geist behaviour. Never blocks pointer events.
+ * `surface-3`, 11px, radius 4; shows after 400ms, hides at once. For icon-only
+ * buttons and truncated text. Never blocks pointer events.
  * The anchor rect is captured from the pointer event itself, so no ref plumbing
  * (and no ref reads during render) is involved.
  */
@@ -134,7 +135,7 @@ export function Tooltip({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: duration.instant, ease: ease.out }}
+              transition={{ duration: duration.fast, ease: ease.standard }}
             >
               {label}
             </motion.div>

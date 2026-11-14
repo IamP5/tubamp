@@ -1,0 +1,33 @@
+/* EQ editor additions to the toolkit's ink (./ui.module.css). Tokens only. */
+
+/* The graphic bands as knobs: only while the band is too narrow for the
+   display, where the bands' handles live otherwise. */
+.narrowOnly {
+  display: none;
+}
+
+[data-narrow] .narrowOnly {
+  display: flex;
+}
+
+/* Room for the knob steppers of a row's outermost knobs (they reach about
+   10px past a small knob's cell): without it the controls column scrolls. */
+.edge {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+/* A graphic band's fader: the stem from 0 dB to the band's gain. A reference
+   at rest; it joins the handle in the accent while hovered or dragged. */
+.stem {
+  fill: none;
+  stroke: var(--ds-plot-ghost);
+  stroke-width: 1;
+  pointer-events: none;
+  transition: stroke var(--ds-t-fast) var(--ds-ease);
+}
+
+.band:hover .stem,
+.bandActive .stem {
+  stroke: var(--ds-accent-line);
+}

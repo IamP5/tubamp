@@ -1,0 +1,246 @@
+/* The block editors' shared grammar — see ./ui.tsx. Tokens only. */
+
+/* ───────────────────────────── header controls ─────────────────────────── */
+
+.stepper {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: var(--ds-h-md);
+  border-radius: var(--ds-r-2);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line);
+}
+
+.stepperArrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ds-h-sm);
+  height: 100%;
+  color: var(--ds-text-3);
+  transition: color var(--ds-t-fast) var(--ds-ease);
+}
+
+.stepperArrow:hover {
+  color: var(--ds-text);
+}
+
+.stepperName {
+  position: relative;
+  overflow: hidden;
+  min-width: 88px;
+  height: 100%;
+  padding: 0 var(--ds-2);
+  font-size: var(--ds-fs-label);
+  font-weight: 500;
+  color: var(--ds-text);
+  text-align: center;
+  white-space: nowrap;
+  /* prettier-ignore */
+  box-shadow: inset 1px 0 0 var(--ds-line), inset -1px 0 0 var(--ds-line);
+  transition: background-color var(--ds-t-fast) var(--ds-ease);
+}
+
+/* The name itself, so a step can slide it (ui.tsx). */
+.stepperText {
+  display: inline-block;
+}
+
+.stepperName:hover,
+.stepperName[aria-expanded="true"] {
+  background: var(--ds-surface-3);
+}
+
+.stepperArrow:focus-visible,
+.stepperName:focus-visible,
+.select:focus-visible {
+  outline: none;
+  box-shadow: var(--ds-focus);
+}
+
+.field {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-2);
+  min-width: 0;
+}
+
+.fieldDisabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.fieldLabel {
+  font-size: var(--ds-fs-label);
+  color: var(--ds-text-3);
+  white-space: nowrap;
+}
+
+.select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-2);
+  height: var(--ds-h-md);
+  padding: 0 var(--ds-2) 0 10px;
+  border-radius: var(--ds-r-2);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line);
+  font-size: var(--ds-fs-label);
+  font-weight: 500;
+  color: var(--ds-text);
+  transition: background-color var(--ds-t-fast) var(--ds-ease);
+}
+
+.select:hover,
+.select[aria-expanded="true"] {
+  background: var(--ds-surface-3);
+}
+
+.select svg {
+  flex: none;
+  color: var(--ds-text-3);
+}
+
+.selectValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ───────────────────────────────── layout ──────────────────────────────── */
+
+.editor {
+  display: flex;
+  align-items: stretch;
+  gap: var(--ds-5);
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* No display: the control rows sit centred in the band. */
+.editorPlain {
+  justify-content: center;
+}
+
+/*
+  The display takes every spare pixel; the controls keep their natural width.
+  Its surface is one step DOWN (the window colour) so the plot reads as a
+  recessed screen without a border-in-a-border.
+*/
+.display {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 240px;
+  min-height: 0;
+  display: flex;
+  border-radius: var(--ds-r-3);
+  background: var(--ds-bg);
+  box-shadow: var(--ds-ring-line);
+  overflow: hidden;
+}
+
+/* Too narrow for both: drop the display, keep every knob. */
+[data-narrow] .display {
+  display: none;
+}
+
+[data-narrow] .editor {
+  justify-content: center;
+}
+
+.controls {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--ds-4);
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ds-4);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-2);
+}
+
+.groupHead {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  height: var(--ds-4);
+  padding-left: var(--ds-2);
+}
+
+.groupLabel {
+  font-size: var(--ds-fs-caption);
+  color: var(--ds-text-3);
+}
+
+.groupItems {
+  display: flex;
+  align-items: flex-end;
+}
+
+.divider {
+  flex: none;
+  align-self: stretch;
+  width: 1px;
+  margin: var(--ds-2) 0;
+  background: var(--ds-line);
+}
+
+/* Fixed cells so rows line up across editors, whatever the label length. */
+.cell {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  width: 68px;
+}
+
+.cellMd {
+  width: 76px;
+}
+
+.cellLg {
+  width: 84px;
+}
+
+/* What is loaded in the block: a column at its natural width, first. */
+.lead {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--ds-3);
+  width: 320px;
+  min-width: 0;
+}
+
+[data-narrow] .lead {
+  width: 260px;
+}
+
+/* ── narrow band: the header has a third of its usual room ── */
+
+[data-narrow] .stepperName {
+  min-width: 64px;
+}
+
+/* A menu's value speaks for itself ("Ping-Pong", "1/8"); a switch does not. */
+[data-narrow] .fieldLabel:not(.fieldLabelKeep) {
+  display: none;
+}

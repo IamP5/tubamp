@@ -1,0 +1,213 @@
+/* The media card: what is loaded in an amp / amp 2 / cab block (./media.tsx). Tokens only. */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-3);
+  min-width: 0;
+}
+
+/* ── identity: title over one line of facts ── */
+
+/* What is loaded changes (a capture or IR finishes loading, one is removed):
+   the outgoing and incoming identity share one grid cell while they
+   crossfade, so the card does not jump. */
+.identityStack {
+  display: grid;
+  min-width: 0;
+}
+
+.identityStack > * {
+  grid-area: 1 / 1;
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-1);
+  min-width: 0;
+}
+
+.card .titleAnchor {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--ds-fs-title);
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--ds-text);
+}
+
+.titleText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titleEmpty {
+  font-weight: 500;
+  color: var(--ds-text-2);
+}
+
+.warnIcon {
+  flex: none;
+  color: var(--ds-warn);
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 16px;
+  font-size: var(--ds-fs-label);
+  line-height: 16px;
+  color: var(--ds-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.metaItem {
+  display: inline-flex;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.metaSep {
+  flex: none;
+  padding: 0 6px;
+}
+
+.metaWarn {
+  color: var(--ds-warn);
+}
+
+.link {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  transition: color var(--ds-t-fast) var(--ds-ease);
+}
+
+.link:hover {
+  color: var(--ds-text);
+}
+
+.link:focus-visible {
+  outline: none;
+  box-shadow: var(--ds-focus);
+  border-radius: var(--ds-r-1);
+}
+
+/* ── library row: ‹ [Captures ▾] › ✕ ── */
+
+.files {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-1);
+  min-width: 0;
+}
+
+.select {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-2);
+  height: var(--ds-h-md);
+  padding: 0 var(--ds-2) 0 10px;
+  border-radius: var(--ds-r-2);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line);
+  font-size: var(--ds-fs-label);
+  font-weight: 500;
+  color: var(--ds-text);
+  transition: background-color var(--ds-t-fast) var(--ds-ease);
+}
+
+.select:hover,
+.select[aria-expanded="true"] {
+  background: var(--ds-surface-3);
+}
+
+.select:focus-visible {
+  outline: none;
+  box-shadow: var(--ds-focus);
+}
+
+.select svg {
+  flex: none;
+  color: var(--ds-text-3);
+}
+
+.selectValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── actions ── */
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  min-width: 0;
+}
+
+/* ── a TONE3000 download in flight ── */
+
+.download {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-1);
+  min-width: 0;
+}
+
+.downloadName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ds-fs-caption);
+  color: var(--ds-text-3);
+}
+
+.progress {
+  height: 2px;
+  border-radius: var(--ds-r-full);
+  background: var(--ds-line);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--ds-accent);
+  transform-origin: left center;
+  transition: transform var(--ds-t-base) var(--ds-ease);
+}
+
+/* ── a bare switch on a group's caption line (the tone stack's on/off) ── */
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Room for the knob steppers of a row's outermost large knobs, which reach
+   about 2px past the knob's cell: without it the controls column scrolls. */
+.edge {
+  padding-left: 2px;
+  padding-right: 2px;
+}

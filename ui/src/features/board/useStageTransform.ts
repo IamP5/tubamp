@@ -37,25 +37,29 @@ import { clamp, type Box } from "./layout";
 /*
   0.3, derived the way 0.4 was derived for the single-lane board.
 
-  The auto-wrapped worst case is 24 blocks at ROW_WRAP = 6: 1204 lane units
-  wide (last row also carries [+] and OUT) and 544 tall. The minimum window
-  (900×600) leaves the board 900×496, and zoom-to-fit keeps FIT_PADDING around
-  the content, so framing it needs only max(1204/828, 544/424) → 0.688.
+  The auto-wrapped worst case is 24 blocks at ROW_WRAP = 6: about 1256 lane
+  units wide (last row also carries [+] and OUT) and 352 tall. The minimum window
+  (1000×600) leaves the board 1000×520, and zoom-to-fit keeps FIT_PADDING around
+  the content, so framing it needs only min(936/1256, 456/352) = 0.75.
 
   Hand-built rows can be wider than the wrap, so the floor is set by what a
-  user can reasonably line up in ONE row instead: sixteen blocks are 2720 lane
-  units, which needs 828/2720 = 0.304. Beyond that FIT saturates and panning
-  takes over — at 0.3 a card is already only 34px wide.
+  user can reasonably line up in ONE row instead: sixteen blocks are about 3100
+  lane units, which needs 936/3100 = 0.302. Beyond that FIT saturates and
+  panning takes over — at 0.3 a tile is already only 44px wide.
 */
 export const MIN_ZOOM = 0.3;
 export const MAX_ZOOM = 1.6;
+/** Zoom-to-fit and the initial framing never scale past 1:1 — a short chain
+ *  blown up to fill the board reads as a toy. Manual zoom may go to MAX_ZOOM. */
+export const FIT_MAX_ZOOM = 1;
 
 /** Wheel-delta → zoom-factor exponents (fine = ctrl/cmd, i.e. trackpad pinch). */
 const ZOOM_RATE = 0.0022;
 const ZOOM_RATE_FINE = 0.0007;
 
-/** Margin left around the content by zoom-to-fit, in CSS px. */
-const FIT_PADDING = 72;
+/** Margin left around the content by zoom-to-fit, in CSS px (32 a side: a
+ *  row-wrap route runs 20px past the row end, outside the content box). */
+const FIT_PADDING = 64;
 
 /** Screen px of travel a background press may have and still count as a tap. */
 const TAP_TRAVEL_PX = 4;
@@ -277,7 +281,7 @@ export function useStageTransform({
           (viewHeight(el) - FIT_PADDING) / box.h,
         ),
         MIN_ZOOM,
-        MAX_ZOOM,
+        FIT_MAX_ZOOM,
       );
       const cx = box.x + box.w / 2;
       const cy = box.y + box.h / 2;

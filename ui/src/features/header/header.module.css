@@ -1,155 +1,164 @@
-/*
-  Header bar (48px). Layout order (docs/REACT-UI.md §UX structure): brand →
-  preset pill → flexible spacer → A/B segmented → T3K status glyph → settings
-  gear. Tokens only — see ../../theme/tokens.css.
-*/
+/* Header (44px), ui/DESIGN.md §Layout. The band and its hairline are App.module.css. */
 
 .bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--ds-2);
   height: 100%;
-  padding: 0 16px;
-  background: linear-gradient(to bottom, var(--bg-surface), var(--bg-elevated));
-}
-
-/* ── Brand ── */
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-right: 6px;
-}
-
-.brandDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow: 0 0 8px 1px var(--accent-glow);
+  padding: 0 var(--ds-3) 0 var(--ds-4);
 }
 
 .wordmark {
-  font-size: 15px;
+  margin-right: var(--ds-3);
+  font-size: var(--ds-fs-body);
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--ds-text);
+  user-select: none;
+  -webkit-user-select: none;
 }
-
-/* ── Preset pill ── */
-
-.pill {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  height: 30px;
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--bg-surface);
-  box-shadow: var(--ring-inset);
-}
-
-.pillName {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 24px;
-  min-width: 100px;
-  max-width: 220px;
-  padding: 0 10px;
-  border-radius: 999px;
-  transition: background-color 120ms ease;
-}
-
-.pillName:hover {
-  background: var(--bg-elevated-hi);
-}
-
-.pillNameText {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.pillNamePlaceholder {
-  color: var(--text-tertiary);
-  font-style: normal;
-}
-
-/* ── Preset menu (custom — needs favorite/delete affordances the generic
-   Menu primitive doesn't support) ── */
-
-.presetMenu {
-  min-width: 260px;
-  padding: 4px;
-}
-
-.presetEmpty {
-  padding: 10px 8px;
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
-.presetRow {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  border-radius: var(--radius-sm);
-}
-
-.presetRowMain {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  min-width: 0;
-  padding: 0 8px;
-  border-radius: var(--radius-sm);
-  text-align: left;
-  font-size: 13px;
-  color: var(--text-primary);
-  transition: background-color 120ms ease;
-}
-
-.presetRowMain:hover {
-  background: var(--accent-fill-8);
-}
-
-.presetRowLabel {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.presetRowFavorite {
-  color: var(--text-tertiary);
-}
-
-.presetRowFavoriteOn {
-  color: var(--accent);
-}
-
-/* ── Spacer pushes A/B + T3K + settings to the right edge ── */
 
 .spacer {
   flex: 1;
 }
 
-/* ── T3K status glyph ── */
+/* ── Preset control ── */
 
-.t3k {
-  color: var(--text-tertiary);
+.preset {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-1);
+  min-width: 0;
 }
 
-.t3kConfigured {
-  color: var(--text-secondary);
+.presetNav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
 }
 
-.t3kAuthenticated {
-  color: var(--accent);
+/* The menu trigger: a secondary button; only its width is decided here. */
+.presetTrigger {
+  justify-content: space-between;
+  width: 220px;
+  min-width: 0;
+}
+
+.presetName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.presetNameEmpty {
+  color: var(--ds-text-3);
+}
+
+.presetChevron {
+  flex: none;
+  color: var(--ds-text-3);
+}
+
+/* ── Preset menu ── */
+
+.presetMenu {
+  width: 280px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.presetEmpty {
+  padding: var(--ds-2);
+  font-size: var(--ds-fs-label);
+  color: var(--ds-text-3);
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: var(--ds-h-md);
+  border-radius: var(--ds-r-2);
+  transition: background-color var(--ds-t-fast) var(--ds-ease);
+}
+
+.row:hover {
+  background: var(--ds-surface-3);
+}
+
+.rowMain {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  height: 100%;
+  min-width: 0;
+  padding: 0 var(--ds-2);
+  border-radius: var(--ds-r-2);
+  text-align: left;
+  font-size: var(--ds-fs-body);
+  color: var(--ds-text);
+}
+
+.rowCheck {
+  flex: none;
+  display: flex;
+  width: 16px;
+  color: var(--ds-text);
+}
+
+.rowLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Row actions appear on row hover; they stay hit-testable (and findable by
+   their aria-labels) while invisible. */
+.rowActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding-right: 2px;
+  opacity: 0;
+  transition: opacity var(--ds-t-fast) var(--ds-ease);
+}
+
+.row:hover .rowActions,
+.rowActions:focus-within {
+  opacity: 1;
+}
+
+.rowAction {
+  color: var(--ds-text-3);
+}
+
+.rowActionOn {
+  color: var(--ds-text);
+}
+
+/* ── A/B ── */
+
+.ab {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: var(--ds-3);
+}
+
+.chevronSm {
+  width: 12px;
+  height: 12px;
+  color: var(--ds-text-3);
+}
+
+/* Wraps a kit Button so a menu can anchor to it (the Button takes no ref). */
+.anchor {
+  display: inline-flex;
+  min-width: 0;
 }

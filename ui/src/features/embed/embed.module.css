@@ -7,30 +7,30 @@
 */
 
 /*
-  Covers the board band exactly. The board is full-screen now, so this only
-  yields a strip at the bottom when the panel happens to be open — `--panel-band`
-  (theme/tokens.css) is the single source for that, shared with the toaster's
-  bottom anchor, so the hole can never underlap the open panel card. The board
-  stays mounted underneath so its pan/zoom survives the embed, and this surface
-  is opaque so none of it shows through.
+  Covers the board exactly. The board is full-stage, so this only yields a strip
+  at the bottom while the editor band is open — `--panel-band` (theme/
+  tokens.css) is the single source for that, shared with the toaster's bottom
+  anchor, so the hole can never underlap the editor. The board stays mounted
+  underneath so its pan/zoom survives the embed; this surface is opaque.
 */
 .panel {
   position: absolute;
   inset: 0 0 var(--panel-band) 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-app);
+  background: var(--ds-bg);
 }
 
 .toolbar {
   flex: none;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--ds-2);
   height: var(--embed-toolbar-h);
-  padding: 0 8px 0 14px;
-  background: var(--bg-surface);
-  box-shadow: inset 0 -1px 0 var(--border);
+  padding: 0 var(--ds-2) 0 var(--ds-4);
+  background: var(--ds-surface-1);
+  border-bottom: 1px solid var(--ds-line);
 }
 
 /* Truncates: a hosted plugin's name has no length limit at all. */
@@ -39,9 +39,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-size: var(--ds-fs-body);
+  font-weight: 500;
+  color: var(--ds-text);
 }
 
 .maker {
@@ -50,16 +50,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  color: var(--text-tertiary);
+  font-size: var(--ds-fs-label);
+  color: var(--ds-text-3);
 }
 
 .actions {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--ds-1);
   margin-left: auto;
 }
 
@@ -72,9 +71,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Bottom is deliberately deeper than the rest: the dock's knobs raise a value
-     bubble that overhangs the dock's top edge, and the hole is a native view, so
-     an overlapping bubble is not drawn over the plugin — it is not drawn at all. */
+  /* Bottom is deliberately deeper than the rest: anything that overhangs the
+     editor band's top edge would land on the hole, and the hole is a native
+     view, so an overlapping element is not drawn over the plugin — it is not
+     drawn at all. */
   padding: 12px 12px 28px;
 }
 
@@ -90,8 +90,8 @@
 .hole {
   max-width: 100%;
   max-height: 100%;
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
+  border-radius: var(--ds-r-2);
+  background: var(--ds-surface-1);
   pointer-events: none;
   overflow: hidden;
 }
@@ -104,37 +104,30 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: var(--ds-1);
   width: 100%;
   height: 100%;
-  padding: 12px;
+  padding: var(--ds-3);
   text-align: center;
-  font-size: 11px;
+  font-size: var(--ds-fs-label);
 }
 
 .dimmed {
-  color: var(--text-tertiary);
-  background: var(--bg-app);
-  box-shadow: var(--ring-inset);
-  opacity: 0.7;
-}
-
-.dimmedHint {
-  font-size: 10px;
-  color: var(--text-tertiary);
-  opacity: 0.8;
+  color: var(--ds-text-3);
+  background: var(--ds-bg);
+  box-shadow: var(--ds-ring-line);
 }
 
 /* Dev only: in a browser there is no native view to cover this, and an empty
    box is indistinguishable from a broken one. */
 .standIn {
-  color: var(--text-secondary);
-  border: 1px dashed var(--border-active);
+  color: var(--ds-text-2);
+  border: 1px dashed var(--ds-line-strong);
   border-radius: inherit;
 }
 
 .standInHint {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-tertiary);
+  font-family: var(--ds-mono);
+  font-size: var(--ds-fs-caption);
+  color: var(--ds-text-3);
 }

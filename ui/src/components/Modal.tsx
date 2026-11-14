@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import s from "./kit.module.css";
 import { cx } from "./cx";
-import { duration, ease, spring } from "../theme/motion";
+import { duration, ease } from "../theme/motion";
 import { IconButton } from "./Button";
 import { CloseIcon } from "./icons";
 import { useBlockingOverlay } from "./overlay";
@@ -19,7 +19,6 @@ export interface ModalProps {
   className?: string;
 }
 
-/** Centered dialog: fast dismissal, slightly slower deliberate entrance. */
 /** Holds the blocking-overlay registration for exactly as long as it is mounted —
  *  which, inside AnimatePresence, is until the exit animation has finished. */
 function BlockingWhileMounted() {
@@ -27,6 +26,7 @@ function BlockingWhileMounted() {
   return null;
 }
 
+/** Centred dialog: `surface-2`, radius 12, float shadow; fades in with an 8px rise. */
 export function Modal({
   open,
   onClose,
@@ -62,7 +62,7 @@ export function Modal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: duration.base, ease: ease.out }}
+          transition={{ duration: duration.slow, ease: ease.standard }}
           onPointerDown={(e) => {
             if (e.target === e.currentTarget) onClose();
           }}
@@ -75,20 +75,15 @@ export function Modal({
             tabIndex={-1}
             className={cx(s.modalPanel, className)}
             style={width ? { width } : undefined}
-            initial={{ opacity: 0, scale: 0.96, y: 8 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{
-              opacity: 0,
-              scale: 0.98,
-              y: 4,
-              transition: { duration: duration.fast, ease: ease.in },
-            }}
-            transition={spring.ui}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: duration.slow, ease: ease.standard }}
           >
             {title !== undefined && (
               <header className={s.modalHeader}>
                 <span className={s.modalTitle}>{title}</span>
-                <IconButton aria-label="Close" onClick={onClose}>
+                <IconButton aria-label="Close" size="sm" onClick={onClose}>
                   <CloseIcon />
                 </IconButton>
               </header>

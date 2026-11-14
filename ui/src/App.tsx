@@ -1,18 +1,20 @@
 /**
- * App shell — docs/REACT-UI.md §UX structure.
+ * App shell — docs/REACT-UI.md §UX structure, ui/DESIGN.md §Layout.
  *
- * Fluid: header (48) · board (fills) · param dock (overlay card on the board's
- * bottom edge) · footer (56). The bands are fixed and everything spare goes to
- * the board — see theme/tokens.css §App metrics for what grows and why, and for
- * the derivation of the minimum size. The board is the app; the dock floats over
- * it rather than stealing layout, and both are mounted only once the first
- * `getUiState()` has resolved so nothing renders against empty state.
+ * Fluid: header (44) · board (fills) · editor ("dock", a flush band on the
+ * stage's bottom edge while a block is selected) · status bar (36). The bands
+ * are fixed and everything spare goes to the board — see theme/tokens.css §App
+ * metrics for what grows and why, and for the derivation of the minimum size.
+ * The dock overlays the board rather than stealing layout, and both are mounted
+ * only once the first `getUiState()` has resolved so nothing renders against
+ * empty state.
  *
  * Owned here because they are genuinely app-wide:
  *  - settings-sheet open state (the header holds its two triggers),
  *  - global `contextmenu` suppression (Logic's WebView host has crashed on
  *    native context menus; every menu in this UI is ours),
- *  - the entrance choreography (motion-design.md §2.1),
+ *  - the entrance choreography (bands fade in, the editor lands last; all of
+ *    it inside 240 ms),
  *  - Logic's "touch to select" parameter-under-mouse reporting,
  *  - the window's own corner grip, which has to live in the page (features/
  *    resize explains why there is nowhere else to put it).
@@ -23,7 +25,7 @@ import s from "./App.module.css";
 import { bridge, isMockBridge } from "./bridge";
 import { useStore } from "./store";
 import { Toaster, cx } from "./components";
-import { duration, ease, spring } from "./theme/motion";
+import { duration, ease } from "./theme/motion";
 import { Header } from "./features/header";
 import { Board } from "./features/board";
 import { FxEmbedStage } from "./features/embed";
@@ -33,8 +35,11 @@ import { ResizeGrip, useEmulatedWindow } from "./features/resize";
 import { SettingsSheet } from "./features/settings";
 import { T3kBrowser } from "./features/t3k-browser";
 
-/** motion-design.md §2.1: the panel lands last, after the board has assembled. */
-const PANEL_DELAY = 0.28;
+/** The editor lands last: delay + duration.fast stays under 240 ms in total. */
+const PANEL_DELAY = 0.08;
+
+/** The bands only fade: no travel, nothing to watch. */
+const BAND_IN = { duration: duration.instant, ease: ease.out };
 
 export function App() {
   const hydrate = useStore((st) => st.hydrate);
@@ -85,9 +90,9 @@ export function App() {
     >
       <motion.header
         className={s.header}
-        initial={reduced ? false : { y: -12, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        transition={{ ...spring.ui, delay: 0.02 }}
+        initial={reduced ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={BAND_IN}
       >
         <Header onOpenSettings={openSettings} />
       </motion.header>
@@ -97,7 +102,7 @@ export function App() {
         className={s.stage}
         initial={reduced ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: duration.fast, ease: ease.out }}
+        transition={BAND_IN}
       >
         {/* The board stays mounted under an embed so its pan/zoom survives;
             `inert` because the panel above it is opaque but not a focus trap. */}
@@ -109,10 +114,10 @@ export function App() {
           {ready && (
             <motion.div
               className={s.dockInner}
-              initial={reduced ? false : { opacity: 0, y: 12 }}
+              initial={reduced ? false : { opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{
-                duration: duration.slow,
+                duration: duration.fast,
                 ease: ease.out,
                 delay: reduced ? 0 : PANEL_DELAY,
               }}
@@ -125,9 +130,9 @@ export function App() {
 
       <motion.footer
         className={s.footer}
-        initial={reduced ? false : { y: 12, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        transition={{ ...spring.ui, delay: 0.02 }}
+        initial={reduced ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={BAND_IN}
       >
         {ready && <Footer />}
       </motion.footer>
@@ -139,8 +144,6 @@ export function App() {
       <SettingsSheet open={settingsOpen} onClose={closeSettings} />
       <Toaster />
       <ResizeGrip />
-
-      {isMockBridge && <span className={s.mockBadge}>mock bridge</span>}
     </div>
   );
 }

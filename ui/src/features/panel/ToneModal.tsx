@@ -10,15 +10,10 @@
  * A tone with zero models never reaches this component: the store toasts it
  * (the native UI failed silently there).
  */
-import {
-  Button,
-  DownloadIcon,
-  Modal,
-  CheckIcon,
-} from "../../components";
+import { Button, CheckIcon, Modal } from "../../components";
 import { useStore } from "../../store";
-import { blockCssVars } from "../../theme/blocks";
-import s from "./panel.module.css";
+import { ARCH_LABELS, SIZE_LABELS } from "../t3k-browser/labels";
+import s from "./toneModal.module.css";
 
 export function ToneModal() {
   const tone = useStore((st) => st.tone);
@@ -33,66 +28,61 @@ export function ToneModal() {
     <Modal
       open={tone !== null}
       onClose={dismissTone}
-      title={tone ? `TONE3000 · tone ${tone.toneId}` : "TONE3000"}
-      footer={
-        <>
-          <span className={s.footerNote}>Powered by TONE3000</span>
-          <Button onClick={dismissTone}>Close</Button>
-        </>
-      }
+      title="Choose a capture"
+      footer={<span className={s.attribution}>Powered by TONE3000</span>}
     >
-      <div className={s.toneList} style={blockCssVars("amp")} data-block="amp">
+      <ul className={s.list} data-block="amp">
         {tone?.models.map((model) => {
           const progress = downloads[model.id];
           const installed = models.find((entry) => entry.name === model.name);
           const isCurrent = installed?.path === currentPath;
+          const meta = [
+            SIZE_LABELS[model.size] ?? model.size,
+            ARCH_LABELS[model.architecture] ?? model.architecture,
+          ].filter(Boolean);
 
           return (
-            <div key={model.id} className={s.toneRow}>
-              <div className={s.toneInfo}>
-                <span className={s.toneName} title={model.name}>
+            <li key={model.id} className={s.row}>
+              <span className={s.info}>
+                <span className={s.name} title={model.name}>
                   {model.name}
                 </span>
-                <span className={s.meta}>
-                  {model.size} · {model.architecture}
-                </span>
-              </div>
+                <span className={s.meta}>{meta.join(" · ")}</span>
+              </span>
 
-              {progress !== undefined ? (
-                <div className={s.toneProgress}>
-                  <div className={s.progressTrack}>
-                    <div
-                      className={s.progressFill}
-                      style={{ width: `${Math.round(progress * 100)}%` }}
-                    />
-                  </div>
-                  <span className={s.readout}>
+              <span className={s.action}>
+                {progress !== undefined ? (
+                  <span className={s.pct} role="status">
                     {Math.round(progress * 100)}%
                   </span>
-                </div>
-              ) : installed ? (
-                <Button
-                  size="sm"
-                  variant={isCurrent ? "ghost" : "default"}
-                  disabled={isCurrent}
-                  icon={isCurrent ? <CheckIcon size={14} /> : undefined}
-                  onClick={() => void loadModel(installed.path)}
-                >
-                  {isCurrent ? "Loaded" : "Load"}
-                </Button>
-              ) : (
-                <Button
-                  size="sm"
-                  icon={<DownloadIcon size={14} />}
-                  onClick={() => void t3kDownloadModel(model)}
-                >
-                  Download
-                </Button>
+                ) : isCurrent ? (
+                  <span className={s.loaded}>
+                    <CheckIcon size={14} />
+                    Loaded
+                  </span>
+                ) : installed ? (
+                  <Button size="sm" onClick={() => void loadModel(installed.path)}>
+                    Load
+                  </Button>
+                ) : (
+                  <Button size="sm" onClick={() => void t3kDownloadModel(model)}>
+                    Download
+                  </Button>
+                )}
+              </span>
+
+              {progress !== undefined && (
+                <span className={s.track} aria-hidden="true">
+                  <span
+                    className={s.fill}
+                    style={{ transform: `scaleX(${Math.max(0.02, progress)})` }}
+                  />
+                </span>
               )}
-            </div>
+            </li>
           );
         })}
-      </div>
+      </ul>
     </Modal>
   );
 }

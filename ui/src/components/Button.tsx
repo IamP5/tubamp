@@ -2,7 +2,13 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import s from "./kit.module.css";
 import { cx } from "./cx";
 
-export type ButtonVariant = "default" | "primary" | "ghost" | "danger";
+/**
+ * `default` is the secondary button (`secondary` is the same look under its
+ * design-system name). `primary` is the inverse button: at most one per view.
+ * `danger` is a ghost with danger text, only where it deletes.
+ */
+export type ButtonVariant = "default" | "secondary" | "primary" | "ghost" | "danger";
+/** Heights 24 / 28 / 32. */
 export type ButtonSize = "sm" | "md" | "lg";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -15,6 +21,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantClass: Record<ButtonVariant, string | undefined> = {
   default: undefined,
+  secondary: undefined,
   primary: s.buttonPrimary,
   ghost: s.buttonGhost,
   danger: s.buttonDanger,
@@ -57,8 +64,9 @@ export function Button({
 export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** 16px SVG glyph. */
   children: ReactNode;
-  /** Rounded background plate behind the glyph. */
+  /** Secondary-button plate (surface and hairline) behind the glyph. */
   plate?: boolean;
+  /** 24 or 28 square. */
   size?: "sm" | "md";
   destructive?: boolean;
   /** Required — icon-only controls must still be named for a11y and tooltips. */

@@ -1,29 +1,44 @@
 /**
- * Board furniture: the IN / OUT terminals, the [+] node with its picker menu,
- * and the split region's lane furniture — each lane's head badge and its own
- * lane-scoped [+] slot.
+ * Board furniture: the In / Out end caps, the add tile with its picker, the
+ * hover inserts on the wires, and the split region's lane furniture — each
+ * lane's label and its own add slot.
  *
- * Same three-layer shape as a block card (position → entrance → face), so the
+ * Same three-layer shape as a block tile (position → entrance → face), so the
  * whole board enters as one staggered build-in and reflows on the same springs.
  */
-import { useMemo, type CSSProperties } from "react";
-import { motion } from "motion/react";
 import {
-  instanceTokensOfKind,
-  isFxBlockId,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "motion/react";
+import {
   isStructureBlockId,
   type BaseBlockId,
   type BlockId,
 } from "../../bridge/types";
-import { BLOCK_ACCENT, BLOCK_INFO } from "../../theme/blocks";
-import { BLOCK_BASES, addableKinds, instancesInChain } from "../../store";
-import { Button, Menu, Tooltip, cx, useMenu, PlusIcon } from "../../components";
-import type { MenuEntry } from "../../components";
-import { BlockGlyph, InputGlyph, OutputGlyph } from "../../components";
+import { BLOCK_INFO } from "../../theme/blocks";
+import { duration, ease } from "../../theme/motion";
+import { BLOCK_BASES, addableKinds } from "../../store";
+import {
+  BlockIcon,
+  Button,
+  PlusIcon,
+  Scrim,
+  Tooltip,
+  cx,
+  kit,
+  useMenu,
+} from "../../components";
 import { CARD_VARIANTS, CARD_VARIANTS_REDUCED } from "./BlockCard";
 import {
   ADD_H,
   ADD_W,
+  CARD_H,
   GAP,
   LANE_ADD_H,
   LANE_ADD_W,
@@ -31,11 +46,11 @@ import {
   TERMINAL_W,
   type InsertPoint,
 } from "./layout";
-import { LANE_TINT, type LaneSide } from "./lanes";
+import type { LaneSide } from "./lanes";
 import type { NodeMotion } from "./nodes";
 import s from "./board.module.css";
 
-/* ───────────────────────────── IN / OUT terminals ──────────────────────── */
+/* ─────────────────────────────── In / Out caps ─────────────────────────── */
 
 export interface TerminalProps {
   kind: "in" | "out";
@@ -43,8 +58,8 @@ export interface TerminalProps {
   reduced: boolean;
 }
 
+/** "In" / "Out": the word at the wire's end, nothing else. */
 export function Terminal({ kind, node, reduced }: TerminalProps) {
-  const Glyph = kind === "in" ? InputGlyph : OutputGlyph;
   return (
     <motion.div
       className={s.node}
@@ -62,10 +77,11 @@ export function Terminal({ kind, node, reduced }: TerminalProps) {
         className={s.cardEnter}
         variants={reduced ? CARD_VARIANTS_REDUCED : CARD_VARIANTS}
       >
-        <div className={s.terminal}>
-          <Glyph size={22} strokeWidth={1.6} />
-        </div>
-        <span className={s.terminalCaption}>{kind === "in" ? "IN" : "OUT"}</span>
+        <span
+          className={cx(s.terminal, kind === "in" ? s.terminalIn : s.terminalOut)}
+        >
+          {kind === "in" ? "In" : "Out"}
+        </span>
       </motion.div>
     </motion.div>
   );
@@ -74,17 +90,13 @@ export function Terminal({ kind, node, reduced }: TerminalProps) {
 /* ──────────────────────────────── block picker ─────────────────────────── */
 
 /**
- * One picker row per block KIND, not per instance: picking "Compressor" adds the
- * lowest free instance (`addBlock`). A duplicable kind stays listed all the way
- * to 3/3 with a count hint, and greys out there rather than vanishing — a row
- * that disappears mid-session reads as a bug. Singletons (gate, amp, cab and the
- * three fx slots) are simply dropped once they are in the chain: they have no
- * count to show and nothing to say.
+ * One picker row per block KIND, not per instance: picking "Compressor" adds
+ * the lowest free instance (`addBlock`). Every kind is always listed, in its
+ * section; one with no free instance (or a full chain) is disabled rather
+ * than dropped, so the picker never changes shape under the user.
  */
 export interface PickerKind {
   base: BaseBlockId;
-  used: number;
-  total: number;
   addable: boolean;
 }
 
@@ -94,98 +106,212 @@ export function pickerKinds(order: readonly BlockId[]): PickerKind[] {
   for (const base of BLOCK_BASES) {
     // Structural tokens are never picker rows: `split` costs three tokens and
     // comes in through its own entry, `lane2`/`mix` are not blocks at all.
-    // `BLOCK_BASES` already leaves them out — this is the belt that also proves
-    // to the compiler that what is left is an addable kind.
     if (isStructureBlockId(base)) continue;
-    const total = isFxBlockId(base) ? 1 : instanceTokensOfKind(base).length;
-    const addable = free.has(base);
-    // Singletons carry no count, so an exhausted one has nothing to render.
-    if (total === 1 && !addable) continue;
-    kinds.push({ base, used: instancesInChain(base, order), total, addable });
+    kinds.push({ base, addable: free.has(base) });
   }
   return kinds;
 }
 
-/** True when at least one kind can still be added — half of the [+] node's gate
- *  (the other half is "a split can still be created", see the board). */
+/** True when at least one kind can still be added — half of the add tile's
+ *  gate (the other half is "a split can still be created", see the board). */
 export function canAddBlock(kinds: readonly PickerKind[]): boolean {
   return kinds.some((kind) => kind.addable);
 }
 
 /**
- * The "Split path" section, when the board offers one. Bound by the caller so
- * each [+] can insert at its own position. The section is absent entirely once
- * a structure exists (exactly one region per chain); each row is merely
- * disabled when the chain has no room for the tokens it costs.
+ * The "Routing" section, when the board offers one. Bound by the caller so
+ * each add control can insert at its own position. Absent entirely once a
+ * structure exists (exactly one region per chain); each row is merely disabled
+ * when the chain has no room for the tokens it costs.
  *
- *   Empty split       — `split, lane2, mix` (an empty fork).
- *   Dual amp (stereo) — wraps the chain's amp (or inserts one) with `amp2` in
- *                       the other lane, hard-panned, ready for a 2nd capture.
+ *   Split     — `split, lane2, mix` (an empty fork).
+ *   Dual amp  — wraps the chain's amp (or inserts one) with `amp2` in the
+ *               other lane, hard-panned, ready for a second capture.
  */
 export interface SplitOption {
   enabled: boolean;
   onSelect(): void;
-  dualAmp?: { enabled: boolean; hint: string; onSelect(): void };
+  dualAmp?: { enabled: boolean; onSelect(): void };
 }
 
-/** Vercel-style picker rows: one per kind, tinted with its own accent, plus the
- *  structural "Split path" section under a separator — it makes a shape, not a
- *  block, and reading as one more block kind would be a lie. */
-export function pickerEntries(
+interface PickerRow {
+  id: string;
+  label: string;
+  glyph: BlockId;
+  disabled: boolean;
+  onSelect(): void;
+}
+
+interface PickerSection {
+  id: string;
+  label: string;
+  rows: PickerRow[];
+}
+
+/** The picker's sections, in reading order, split over two columns. */
+const SECTIONS: readonly { id: string; label: string; kinds: BaseBlockId[] }[] = [
+  { id: "dynamics", label: "Dynamics", kinds: ["gate", "comp"] },
+  { id: "gain", label: "Gain", kinds: ["drive", "amp", "amp2"] },
+  { id: "tone", label: "Tone", kinds: ["cab", "eq"] },
+  { id: "time", label: "Modulation and time", kinds: ["mod", "delay", "reverb"] },
+  { id: "plugins", label: "Plugins", kinds: ["fx1", "fx2", "fx3"] },
+];
+/** Sections before this index fill the first column. */
+const FIRST_COLUMN = 3;
+
+function pickerSections(
   kinds: readonly PickerKind[],
   onPick: (id: BlockId) => void,
   split?: SplitOption,
-  title = "Add to chain",
-): MenuEntry[] {
-  const entries: MenuEntry[] = [{ kind: "section", id: "title", label: title }];
-  for (const { base, used, total, addable } of kinds) {
-    entries.push({
-      id: base,
-      label: BLOCK_INFO[base].displayName,
-      icon: (
-        <span className={s.pickerIcon} style={{ color: BLOCK_ACCENT[base] }}>
-          <BlockGlyph block={base} size={16} strokeWidth={1.6} />
-        </span>
-      ),
-      hint: total > 1 ? `${used}/${total}` : BLOCK_INFO[base].shortName,
-      disabled: !addable,
-      onSelect: () => onPick(base),
-    });
-  }
+): PickerSection[] {
+  const byBase = new Map(kinds.map((kind) => [kind.base, kind]));
+  const sections: PickerSection[] = SECTIONS.map((section) => ({
+    id: section.id,
+    label: section.label,
+    rows: section.kinds.flatMap((base) => {
+      const kind = byBase.get(base);
+      if (!kind) return [];
+      return [
+        {
+          id: base,
+          label: BLOCK_INFO[base].displayName,
+          glyph: base,
+          disabled: !kind.addable,
+          onSelect: () => onPick(base),
+        },
+      ];
+    }),
+  }));
   if (split) {
-    entries.push({ kind: "separator", id: "split-sep" });
-    entries.push({ kind: "section", id: "split-title", label: "Split path" });
-    entries.push({
-      id: "split",
-      label: "Empty split",
-      icon: (
-        <span className={s.pickerIcon} style={{ color: BLOCK_ACCENT.split }}>
-          <BlockGlyph block="split" size={16} strokeWidth={1.6} />
-        </span>
-      ),
-      hint: "2 LANES",
-      disabled: !split.enabled,
-      onSelect: split.onSelect,
-    });
-    if (split.dualAmp) {
-      entries.push({
+    const rows: PickerRow[] = [
+      {
+        id: "split",
+        label: "Split",
+        glyph: "split",
+        disabled: !split.enabled,
+        onSelect: split.onSelect,
+      },
+    ];
+    if (split.dualAmp)
+      rows.push({
         id: "split-dual-amp",
-        label: "Dual amp (stereo)",
-        icon: (
-          <span className={s.pickerIcon} style={{ color: BLOCK_ACCENT.amp2 }}>
-            <BlockGlyph block="amp2" size={16} strokeWidth={1.6} />
-          </span>
-        ),
-        hint: split.dualAmp.hint,
+        label: "Dual amp",
+        glyph: "amp2",
         disabled: !split.dualAmp.enabled,
         onSelect: split.dualAmp.onSelect,
       });
-    }
+    sections.push({ id: "routing", label: "Routing", rows });
   }
-  return entries;
+  return sections;
 }
 
-/* ─────────────────────────────── the [+] node ──────────────────────────── */
+interface PickerMenuProps {
+  anchor: HTMLElement | null;
+  open: boolean;
+  onClose(): void;
+  kinds: readonly PickerKind[];
+  onPick(id: BlockId): void;
+  split?: SplitOption;
+}
+
+/**
+ * The block picker: the kit's menu surface and rows (`kit.menu`,
+ * `kit.menuItem`, `kit.menuSectionLabel`), laid out in two columns so every
+ * section fits a 600px window without scrolling — the kit `Menu` is one
+ * column. Placement follows `Menu`: below the anchor, above it when there is
+ * no room, clamped inside the window.
+ */
+function PickerMenu({ anchor, open, onClose, kinds, onPick, split }: PickerMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const sections = useMemo(
+    () => pickerSections(kinds, onPick, split),
+    [kinds, onPick, split],
+  );
+  const columns = [sections.slice(0, FIRST_COLUMN), sections.slice(FIRST_COLUMN)];
+
+  const place = useCallback(() => {
+    if (!anchor || !menuRef.current) return;
+    const a = anchor.getBoundingClientRect();
+    const m = menuRef.current.getBoundingClientRect();
+    let left = a.left + (a.width - m.width) / 2;
+    let top = a.bottom + 6;
+    if (top + m.height > window.innerHeight - 8) {
+      top = Math.max(8, a.top - m.height - 6);
+    }
+    left = Math.min(Math.max(8, left), window.innerWidth - m.width - 8);
+    setPos({ top, left });
+  }, [anchor]);
+
+  useLayoutEffect(() => {
+    if (open) place();
+  }, [open, place, sections.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, onClose, place]);
+
+  return createPortal(
+    <AnimatePresence>
+      {open && (
+        <>
+          <Scrim className={kit.menuScrim} onPointerDown={onClose} />
+          <motion.div
+            ref={menuRef}
+            role="menu"
+            className={cx(kit.menu, s.picker)}
+            style={{ top: pos.top, left: pos.left }}
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: duration.fast, ease: ease.out }}
+          >
+            {columns.map((column, index) => (
+              <div key={index} className={s.pickerColumn}>
+                {column.map((section) => (
+                  <div key={section.id} role="group" aria-label={section.label}>
+                    <div className={kit.menuSectionLabel}>{section.label}</div>
+                    {section.rows.map((row) => (
+                      <button
+                        key={row.id}
+                        type="button"
+                        role="menuitem"
+                        disabled={row.disabled}
+                        data-family={BLOCK_INFO[row.glyph].family}
+                        className={cx(kit.menuItem, s.pickerRow)}
+                        onClick={() => {
+                          row.onSelect();
+                          onClose();
+                        }}
+                      >
+                        <span className={cx(kit.menuItemIcon, s.pickerIcon)}>
+                          <BlockIcon block={row.glyph} size={16} strokeWidth={1.5} />
+                        </span>
+                        <span className={kit.menuItemLabel}>{row.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>,
+    document.body,
+  );
+}
+
+/* ─────────────────────────────── the add tile ──────────────────────────── */
 
 export interface AddNodeProps {
   node: NodeMotion;
@@ -204,10 +330,6 @@ export function AddNode({
   onAddSplit,
 }: AddNodeProps) {
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
-  const entries = useMemo(
-    () => pickerEntries(kinds, onAdd, onAddSplit),
-    [kinds, onAdd, onAddSplit],
-  );
 
   return (
     <motion.div
@@ -226,27 +348,28 @@ export function AddNode({
         className={s.cardEnter}
         variants={reduced ? CARD_VARIANTS_REDUCED : CARD_VARIANTS}
       >
-        <Tooltip label="Add a block to the chain" placement="top">
+        <Tooltip label="Add block" placement="top">
           <button
             type="button"
             ref={anchorRef}
-            className={cx(s.addNode, open && s.addNodeOpen)}
+            className={cx(s.addTile, open && s.addTileOpen)}
             aria-label="Add a block to the chain"
+            aria-expanded={open}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={toggle}
           >
-            <PlusIcon size={18} />
+            <PlusIcon />
           </button>
         </Tooltip>
       </motion.div>
 
-      <Menu
+      <PickerMenu
         anchor={anchor}
         open={open}
         onClose={close}
-        entries={entries}
-        align="center"
-        minWidth={210}
+        kinds={kinds}
+        onPick={onAdd}
+        split={onAddSplit}
       />
     </motion.div>
   );
@@ -254,32 +377,33 @@ export function AddNode({
 
 /* ─────────────────────────── mid-chain inserts ─────────────────────────── */
 
-/** Hover hit-box straddling a connector gap. Width covers the whole gap;
- *  height gives some slack around the wire without reaching into the cards. */
+/** Hover hit-box straddling a wire gap: the whole gap wide, a tile tall. */
 const INSERT_HIT_W = GAP;
-const INSERT_HIT_H = 56;
+const INSERT_HIT_H = CARD_H;
 
 export interface InsertNodeProps {
   point: InsertPoint;
   kinds: readonly PickerKind[];
   onAdd(id: BlockId, at: { index: number; row: number }): void;
-  /** The "Split path" section bound to THIS gap; absent once a structure
-   *  exists (and inside a lane, where a second region could never go). */
+  /** The "Routing" section bound to THIS gap; absent once a structure exists
+   *  (and inside a lane, where a second region could never go). */
   splitFor?(at: { index: number; row: number }): SplitOption | undefined;
 }
 
 /**
- * A [+] that lives in a connector gap and only shows itself on hover — the
- * "insert here" counterpart of the tail [+] node, sharing its picker. The
- * hit-box deliberately has no pointer handlers of its own: a press in a gap
- * that misses the dot must still bubble to the stage (pan / background tap).
+ * A round "+" that lives in a wire gap and only shows itself on hover — the
+ * "insert here" counterpart of the add tile, sharing its picker. The hit-box
+ * deliberately has no pointer handlers of its own: a press in a gap that
+ * misses the button must still bubble to the stage (pan / background tap).
  */
 export function InsertNode({ point, kinds, onAdd, splitFor }: InsertNodeProps) {
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
-  const entries = useMemo(() => {
-    const at = { index: point.index, row: point.row };
-    return pickerEntries(kinds, (id) => onAdd(id, at), splitFor?.(at));
-  }, [kinds, onAdd, point.index, point.row, splitFor]);
+  const at = useMemo(
+    () => ({ index: point.index, row: point.row }),
+    [point.index, point.row],
+  );
+  const pick = useCallback((id: BlockId) => onAdd(id, at), [at, onAdd]);
+  const split = useMemo(() => splitFor?.(at), [at, splitFor]);
 
   return (
     <div
@@ -292,32 +416,35 @@ export function InsertNode({ point, kinds, onAdd, splitFor }: InsertNodeProps) {
       }}
       data-open={open || undefined}
     >
-      <Tooltip label="Insert a block here" placement="top">
+      <Tooltip label="Insert block" placement="top">
         <button
           type="button"
           ref={anchorRef}
-          className={s.insertDot}
+          className={cx(s.roundButton, s.insertButton, open && s.roundButtonOpen)}
           aria-label={`Insert a block at position ${point.index + 1}`}
+          aria-expanded={open}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={toggle}
         >
-          <PlusIcon size={12} />
+          <span className={s.roundMark}>
+            <PlusIcon size={12} />
+          </span>
         </button>
       </Tooltip>
 
-      <Menu
+      <PickerMenu
         anchor={anchor}
         open={open}
         onClose={close}
-        entries={entries}
-        align="center"
-        minWidth={210}
+        kinds={kinds}
+        onPick={pick}
+        split={split}
       />
     </div>
   );
 }
 
-/* ─────────────────────── empty-chain add affordance ────────────────────── */
+/* ─────────────────────── empty-chain add action ────────────────────────── */
 
 export interface AddBlockButtonProps {
   kinds: readonly PickerKind[];
@@ -331,29 +458,26 @@ export function AddBlockButton({
   onAddSplit,
 }: AddBlockButtonProps) {
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLSpanElement>();
-  const entries = useMemo(
-    () => pickerEntries(kinds, onAdd, onAddSplit),
-    [kinds, onAdd, onAddSplit],
-  );
   return (
     <>
       <span ref={anchorRef} className={s.inlineAnchor}>
         <Button
-          size="sm"
-          icon={<PlusIcon size={14} />}
+          icon={<PlusIcon />}
+          aria-label="Add a block to the chain"
+          aria-expanded={open}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={toggle}
         >
-          Add a block
+          Add block
         </Button>
       </span>
-      <Menu
+      <PickerMenu
         anchor={anchor}
         open={open}
         onClose={close}
-        entries={entries}
-        align="center"
-        minWidth={210}
+        kinds={kinds}
+        onPick={onAdd}
+        split={onAddSplit}
       />
     </>
   );
@@ -363,7 +487,7 @@ export function AddBlockButton({
 
 export interface LaneAddNodeProps {
   side: LaneSide;
-  /** Badge text for this lane ("A", "L", "LOW" …). */
+  /** The lane's name ("A", "L", "Low" …). */
   name: string;
   node: NodeMotion;
   kinds: readonly PickerKind[];
@@ -373,10 +497,11 @@ export interface LaneAddNodeProps {
 }
 
 /**
- * The lane's own [+]: a small dashed slot closing the lane, always visible, so
- * an empty lane reads as a place to put something and filling it is one click.
- * It is wired like the tail [+] on the main path (last card → slot → MIX), and
- * it is a drop target too — dragging a card onto it appends to the lane.
+ * The lane's own add slot: a small round "+" closing the lane, always visible,
+ * so an empty lane reads as a place to put something and filling it is one
+ * click. It is wired like the add tile on the main path (last tile → slot →
+ * Mixer), and it is a drop target too — dragging a tile onto it appends to
+ * the lane.
  */
 export function LaneAddNode({
   side,
@@ -387,12 +512,6 @@ export function LaneAddNode({
   onAdd,
 }: LaneAddNodeProps) {
   const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
-  const entries = useMemo(
-    () => pickerEntries(kinds, onAdd, undefined, `Add to lane ${name}`),
-    [kinds, name, onAdd],
-  );
-  const tint = LANE_TINT[side];
-  const label = `Add a block to lane ${name}`;
 
   return (
     <motion.div
@@ -415,72 +534,48 @@ export function LaneAddNode({
           <button
             type="button"
             ref={anchorRef}
-            className={cx(s.laneAdd, open && s.laneAddOpen)}
-            style={
-              {
-                "--lane-ink": tint.ink,
-                "--lane-ring": tint.ring,
-                "--lane-fill": tint.fill,
-              } as CSSProperties
-            }
+            className={cx(s.roundButton, s.laneAdd, open && s.roundButtonOpen)}
             data-lane={side}
-            aria-label={label}
+            aria-label={`Add a block to lane ${name}`}
+            aria-expanded={open}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={toggle}
           >
-            <PlusIcon size={14} />
+            <span className={s.roundMark}>
+              <PlusIcon size={12} />
+            </span>
           </button>
         </Tooltip>
       </motion.div>
 
-      <Menu
+      <PickerMenu
         anchor={anchor}
         open={open}
         onClose={close}
-        entries={entries}
-        align="center"
-        minWidth={210}
+        kinds={kinds}
+        onPick={onAdd}
       />
     </motion.div>
   );
 }
 
-export interface LaneBadgeProps {
+export interface LaneLabelProps {
   side: LaneSide;
   name: string;
   /** What the lane receives, as a sentence (tooltip). */
   hint: string;
-  /** Left edge and centre line, in lane units. Static: the badge sits on the
-   *  container frame, which does not move vertically, at the first lane column,
-   *  which never moves horizontally. */
+  /** Left edge and centre line, in lane units. Static: lanes do not move
+   *  vertically, and the first lane column never moves horizontally. */
   x: number;
   y: number;
 }
 
-/**
- * The lane's head badge, set into the container frame like a legend — lane A's
- * on the top edge above its track, lane B's on the bottom edge below its own —
- * so both lanes are labelled whether or not anything is in them yet.
- */
-export function LaneBadge({ side, name, hint, x, y }: LaneBadgeProps) {
-  const tint = LANE_TINT[side];
+/** The lane's name, as plain text above its first tile. */
+export function LaneLabel({ side, name, hint, x, y }: LaneLabelProps) {
   return (
-    <div className={s.laneBadgeAnchor} style={{ left: x, top: y }}>
-      <Tooltip label={hint} placement={side === "a" ? "top" : "bottom"}>
-        <span
-          className={s.laneBadge}
-          data-lane={side}
-          /* The tint is layered as an image so the class's opaque background
-             colour stays underneath it: the badge sits on the region's dashed
-             frame, and a translucent fill alone lets the dashes through. */
-          style={{
-            color: tint.ink,
-            backgroundImage: `linear-gradient(${tint.fill}, ${tint.fill})`,
-            boxShadow: `inset 0 0 0 1px ${tint.ring}`,
-          }}
-          aria-label={hint}
-        >
-          <span className={s.laneBadgeDot} style={{ background: tint.ink }} />
+    <div className={s.laneLabelAnchor} style={{ left: x, top: y }}>
+      <Tooltip label={hint} placement="top">
+        <span className={s.laneLabel} data-lane={side} aria-label={hint}>
           {name}
         </span>
       </Tooltip>

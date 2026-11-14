@@ -1,152 +1,159 @@
 /**
- * Footer band (56px) — docs/REACT-UI.md §UX structure, current-ui-inventory.md
- * §PluginEditor footer controls.
+ * Status bar (36px) — ui/DESIGN.md §Layout.
  *
- * IN TRIM knob + meter, centered info line ("Model SR … Hz · Latency … smp"),
- * meter + OUT LEVEL knob. Meters are motion-value driven (`useMeters`, shared
- * rAF, asymmetric attack/release + time-based peak-hold decay) — this
- * component never re-renders per meter frame.
+ *   Input [meter] 0.0 dB     48 kHz · 1.9 ms     0.0 dB [meter] Output
+ *
+ * Input trim and output level are compact value fields (drag horizontally,
+ * double-click resets, minus / plus step on hover), not knobs. Meters are motion-value
+ * driven (`useMeters`, shared rAF), so nothing here re-renders per meter frame.
  */
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { useCallback, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import s from "./footer.module.css";
 import { useStore } from "../../store";
-import { Knob, Meter } from "../../components";
-import { useMeters } from "../../hooks";
-import { bridge, type ModelInfo, type SliderParamId } from "../../bridge";
-import { formatParamValue } from "../../bridge/paramMeta";
-import { duration, ease } from "../../theme/motion";
+import { Meter, MinusIcon, PlusIcon, Tooltip, cx } from "../../components";
+import { useMeters, useSliderParam } from "../../hooks";
+import { isMockBridge, type SliderParamId } from "../../bridge";
+import { engineStatus, paramValue } from "../../theme/words";
 
 /**
  * `ModelInfo.latencySamples` is the processor's reported latency, not a
- * model-only figure: `TubampAudioProcessor::updateLatency` reports the NAM
- * engine's latency when an enabled amp block holds a model and 0 otherwise, so
- * "no model" genuinely is "Latency 0 smp" — there is nothing else to surface.
+ * model-only figure: it is the NAM engine's latency when an enabled amp block
+ * holds a model and 0 otherwise, so with no model there is nothing to print.
  */
-function infoLine(model: ModelInfo | null): string {
-  if (!model) return "No model  ·  Latency 0 smp";
-  return `Model SR ${Math.round(model.sampleRateHz)} Hz  ·  Latency ${model.latencySamples} smp`;
-}
-
 export function Footer() {
-  const model = useStore((s) => s.model);
+  const model = useStore((st) => st.model);
   const meters = useMeters();
+  const status = model ? engineStatus(model.sampleRateHz, model.latencySamples) : "";
 
   return (
     <div className={s.bar}>
-      <TrimKnob id="input_trim" label="In Trim" />
-      <div className={s.meterSlot}>
-        <Meter channel={meters.input} aria-label="Input level" />
+      <div className={s.side}>
+        <span className={s.label}>Input</span>
+        <Meter
+          channel={meters.input}
+          orientation="horizontal"
+          className={s.meter}
+          aria-label="Input level"
+        />
+        <ValueField id="input_trim" label="In Trim" />
       </div>
 
-      <span className={s.info} data-numeric="true">
-        {infoLine(model)}
-      </span>
-
-      <div className={s.meterSlot}>
-        <Meter channel={meters.output} aria-label="Output level" />
+      <div className={s.centre}>
+        {status && (
+          <Tooltip label="Model sample rate and latency">
+            <span className={s.status}>{status}</span>
+          </Tooltip>
+        )}
+        {isMockBridge && <span className={s.status}>mock bridge</span>}
       </div>
-      <TrimKnob id="output_level" label="Out Level" />
+
+      <div className={cx(s.side, s.sideEnd)}>
+        <ValueField id="output_level" label="Out Level" />
+        <Meter
+          channel={meters.output}
+          orientation="horizontal"
+          className={s.meter}
+          aria-label="Output level"
+        />
+        <span className={s.label}>Output</span>
+      </div>
     </div>
   );
+}
+
+/** Normalised travel per pixel of horizontal drag: the full range in 360px. */
+const DRAG_PER_PX = 1 / 360;
+
+/** One step-button click, in parameter units: half a dB for levels. */
+function stepOf(unit: string, interval: number): number {
+  return unit === "dB" ? 0.5 : Math.max(interval, 0.01);
 }
 
 /**
- * IN TRIM / OUT LEVEL knob: the native control has no inline text box, only a
- * transient value bubble while hovering/dragging (`setPopupDisplayEnabled`).
- * Reproduced here without touching the shared `Knob` primitive: value text is
- * painted imperatively into a ref (same pattern `Knob` itself uses) so the
- * drag-rate `onValueChanged` stream never triggers a React re-render — only
- * the hover/drag boolean flips state, once per gesture.
+ * A level as a number you can drag. The slider semantics (role, aria-label,
+ * value range) sit on the number; `data-param-index` on the cell lets Logic's
+ * touch-to-select find it.
  */
-function TrimKnob({ id, label }: { id: SliderParamId; label: string }) {
-  const state = useMemo(() => bridge.sliderState(id), [id]);
-  const hoverRef = useRef(false);
-  const dragRef = useRef(false);
-  const [visible, setVisible] = useState(false);
-  const textRef = useRef<HTMLSpanElement>(null);
+function ValueField({ id, label }: { id: SliderParamId; label: string }) {
+  const p = useSliderParam(id);
+  const drag = useRef<{ pointerId: number; x: number; from: number } | null>(null);
+  const text = paramValue(id, p.scaled, p.properties);
+  const step = stepOf(p.label, p.properties.interval);
 
-  const paint = useCallback(() => {
-    if (textRef.current) {
-      textRef.current.textContent = formatParamValue(state.getScaledValue(), state.properties);
-    }
-  }, [state]);
-
-  useEffect(() => {
-    const offValue = state.onValueChanged(paint);
-    const offProps = state.onPropertiesChanged(paint);
-    return () => {
-      offValue();
-      offProps();
-    };
-  }, [state, paint]);
-
-  useEffect(() => {
-    if (visible) paint();
-  }, [visible, paint]);
-
-  const sync = (): void => setVisible(hoverRef.current || dragRef.current);
-
-  return (
-    <div
-      className={s.knobPopupAnchor}
-      onPointerEnter={() => {
-        hoverRef.current = true;
-        sync();
-      }}
-      onPointerLeave={() => {
-        hoverRef.current = false;
-        sync();
-      }}
-      onPointerDown={() => {
-        dragRef.current = true;
-        sync();
-      }}
-      onPointerUp={() => {
-        dragRef.current = false;
-        sync();
-      }}
-      onPointerCancel={() => {
-        dragRef.current = false;
-        sync();
-      }}
-    >
-      <Knob id={id} label={label} size="sm" hideValue />
-      <ValuePopup visible={visible} textRef={textRef} />
-    </div>
+  const onPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLSpanElement>) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      drag.current = { pointerId: e.pointerId, x: e.clientX, from: p.value };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      p.beginGesture();
+    },
+    [p],
   );
-}
 
-function ValuePopup({
-  visible,
-  textRef,
-}: {
-  visible: boolean;
-  textRef: React.RefObject<HTMLSpanElement | null>;
-}): ReactNode {
+  const onPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLSpanElement>) => {
+      const d = drag.current;
+      if (!d || e.pointerId !== d.pointerId) return;
+      const fine = e.shiftKey ? 0.2 : 1;
+      p.setNormalised(d.from + (e.clientX - d.x) * DRAG_PER_PX * fine);
+    },
+    [p],
+  );
+
+  const endDrag = useCallback(
+    (e: ReactPointerEvent<HTMLSpanElement>) => {
+      const d = drag.current;
+      if (!d || e.pointerId !== d.pointerId) return;
+      drag.current = null;
+      p.endGesture();
+    },
+    [p],
+  );
+
+  const stepBy = (dir: number): void => {
+    p.beginGesture();
+    p.setScaled(p.scaled + dir * step);
+    p.endGesture();
+  };
+
   return (
-    <AnimatePresence>
-      {visible && (
-        <motion.span
-          ref={textRef}
-          className={s.knobPopup}
-          data-numeric="true"
-          // Opacity only, as Tooltip does: animating `y` would make Motion write
-          // the whole `transform`, dropping the stylesheet's translateX(-50%)
-          // centering and letting the OUT LEVEL bubble run off the right edge.
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: duration.instant, ease: ease.out }}
-        />
-      )}
-    </AnimatePresence>
+    <div className={s.field} data-param-index={p.parameterIndex} title={p.name}>
+      <button
+        type="button"
+        className={s.step}
+        aria-label={`Decrease ${label}`}
+        tabIndex={-1}
+        onClick={() => stepBy(-1)}
+      >
+        <MinusIcon size={12} />
+      </button>
+      <span
+        className={s.value}
+        role="slider"
+        aria-label={label}
+        aria-valuemin={p.properties.start}
+        aria-valuemax={p.properties.end}
+        aria-valuenow={p.scaled}
+        aria-valuetext={text}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
+        onDoubleClick={p.reset}
+      >
+        {text}
+      </span>
+      <button
+        type="button"
+        className={s.step}
+        aria-label={`Increase ${label}`}
+        tabIndex={-1}
+        onClick={() => stepBy(1)}
+      >
+        <PlusIcon size={12} />
+      </button>
+    </div>
   );
 }

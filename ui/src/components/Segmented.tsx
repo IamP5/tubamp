@@ -2,12 +2,12 @@ import { useId } from "react";
 import { motion } from "motion/react";
 import s from "./kit.module.css";
 import { cx } from "./cx";
-import { spring } from "../theme/motion";
+import { tween } from "../theme/motion";
 
 export interface SegmentedOption<T extends string> {
   value: T;
   label: string;
-  /** Small dot after the label — used for A/B "slot has state". */
+  /** Small neutral dot after the label: used for A/B "slot has state". */
   dot?: boolean;
   title?: string;
   disabled?: boolean;
@@ -22,9 +22,10 @@ export interface SegmentedProps<T extends string> {
 }
 
 /**
- * Segmented control with a shared-element pill that slides between segments
- * (`layoutId`, transform-only). Used for A/B compare, where shift-click means
- * "capture" — hence the raw event in `onChange`.
+ * Segmented control: a `surface-1` track with a hairline, the selected segment
+ * `surface-3` with primary text, sliding between segments (`layoutId`,
+ * transform-only). Used for A/B compare, where shift-click means "capture",
+ * hence the raw event in `onChange`.
  */
 export function Segmented<T extends string>({
   options,
@@ -54,10 +55,10 @@ export function Segmented<T extends string>({
               <motion.span
                 layoutId={`segmented-pill-${groupId}`}
                 className={s.segmentPill}
-                transition={spring.ui}
+                transition={tween.enter}
               />
             )}
-            <span style={{ position: "relative" }}>{option.label}</span>
+            <span className={s.segmentLabel}>{option.label}</span>
             {option.dot && <span className={s.segmentDot} />}
           </button>
         );

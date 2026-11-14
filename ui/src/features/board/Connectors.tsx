@@ -1,42 +1,43 @@
 /**
- * The connector layer: one SVG path per gap between two lane elements, with flow
- * chevrons drifting along it (motion-design.md §2.3), plus the split container's
- * frame.
+ * The wire layer: one SVG path per gap between two lane elements, plus the
+ * split region's frame. Wires are quiet — one neutral 1.5px stroke with round
+ * joins, no arrows, no per-block or per-lane colour, unchanged by selection or
+ * bypass (ui/DESIGN.md).
+ *
+ * They are live, though: each wire is drawn twice, and the second, brighter
+ * stroke's opacity follows the signal — the input meter along the chain, the
+ * output meter on the last stretch into Out. Nothing travels and nothing
+ * loops; the wires lift while you play and settle when you stop.
  *
  * Geometry is read straight off the nodes' motion values on a frame callback
- * that is only scheduled when something actually moves, so connectors stay glued
- * to the cards through drag, reflow and settle without a single
+ * that is only scheduled when something actually moves, so wires stay glued to
+ * the tiles through drag, reflow and settle without a single
  * `getBoundingClientRect` or React render per frame. `d` is written with
- * `setAttribute`, never through React (guardrail §4.6b). The container frame is
- * drawn here for the same reason: its left and right edges are SPLIT's and MIX's
- * motion values, so it follows their springs instead of snapping a re-rendered
+ * `setAttribute`, never through React. The region frame is drawn here for the
+ * same reason: its left and right edges are the Split and Mixer tiles' motion
+ * values, so it follows their springs instead of snapping a re-rendered
  * `width` around them.
  *
- * Four shapes. Within a row (or a lane track) the wire is a straight `H` — a
- * slight bezier while a card is lifted off the line, which is also exactly the
- * shape the split's fan-out and the mixer's converge want. Across a row wrap it
- * is a dedicated route — out to the right of the row end, down through the row
- * gap, back in to the left of the next row's first card — because a mid-x bezier
- * between a large x1 and a small x2 sweeps backwards across every card in the row
- * it is leaving. Lane wires wear their lane's tint (features/board/lanes.ts) and
- * normally end in the lane's own [+] slot; only when there is nothing left to add
- * (no slot) does an EMPTY lane's wire bow out of SPLIT, along its own track and
- * back into MIX — then that bow is the only thing standing for the lane.
+ * Shapes. Within a row (or a lane track) the wire is a straight `H` — a slight
+ * bezier while a tile is lifted off the line, which is also exactly the shape
+ * the split's fan-out and the mixer's converge want. Across a row wrap it is a
+ * dedicated route — out to the right of the row end, down through the row gap,
+ * back in to the left of the next row's first tile, four rounded corners —
+ * because a mid-x bezier between a large x1 and a small x2 sweeps backwards
+ * across every tile in the row it is leaving. Lane wires normally end in the
+ * lane's own add slot; only when there is nothing left to add (no slot) does an
+ * EMPTY lane's wire bow out of Split, along its own track and back into Mixer.
  */
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { cancelFrame, frame } from "motion/react";
-import { isBlockId, type BlockId } from "../../bridge/types";
-import { BLOCK_ACCENT } from "../../theme/blocks";
+import { useMeters } from "../../hooks";
 import {
-  FLOW_ARROW_PATH_D,
   REGION_PAD_X,
-  REGION_PAD_Y,
   REGION_R,
   type Box,
   type LaneRegion,
   type Link,
 } from "./layout";
-import { LANE_TINT } from "./lanes";
 import type { NodeMotionRegistry } from "./nodes";
 import s from "./board.module.css";
 
@@ -47,26 +48,37 @@ export interface ConnectorsProps {
   /** SVG box in lane units (see layout.connectorBox). */
   box: Box;
   nodes: NodeMotionRegistry;
-  selected: BlockId | null;
-  /** Blocks whose `*_on` parameter is off — their segments dim. */
-  bypassed: ReadonlySet<BlockId>;
-  reduced: boolean;
 }
 
-/** How far a wrap runs straight out of the row end / into the next row start. */
-const WRAP_LEAD = 34;
+/** How far a wrap runs straight out of the row end / into the next row start.
+ *  Less than FIRST_CARD_X - TERMINAL_W, so the return stays left of row 1's
+ *  first tile. */
+const WRAP_LEAD = 20;
 /** Corner radius of the wrap's four turns. Fits the row gap: the return lane
  *  runs down its middle, ROW_GAP / 2 clear of both rows. */
-const WRAP_R = 18;
-/** Chevron travel on a wrap: the lead-out, the part that is still horizontal. */
-const WRAP_FLOW_LEN = WRAP_LEAD;
+const WRAP_R = 10;
 
-/** How far an empty lane's bow runs out of SPLIT before it reaches its track. */
-const BOW_LEAD = 30;
+/** Meter position (0..1 over −60…+6 dB) where a wire starts to lift, and how
+ *  bright it gets at full scale. Below about −40 dB a wire is at rest. */
+const SIGNAL_FLOOR = 0.3;
+const SIGNAL_MAX_OPACITY = 0.5;
+
+function signalOpacity(level: number): string {
+  const t = Math.min(1, Math.max(0, (level - SIGNAL_FLOOR) / (1 - SIGNAL_FLOOR)));
+  return (t * SIGNAL_MAX_OPACITY).toFixed(3);
+}
+
+/** The last stretch — into the add tile and Out — carries the output. */
+function carriesOutput(link: Link): boolean {
+  return link.to.id === "out" || link.to.id === "add" || link.from.id === "add";
+}
+
+/** How far an empty lane's bow runs out of Split before it reaches its track. */
+const BOW_LEAD = 20;
 
 function straightPath(x1: number, y1: number, x2: number, y2: number): string {
   if (Math.abs(y1 - y2) < 0.5) return `M${x1} ${y1}H${x2}`;
-  // A card lifted by a drag, and the split's fan-out / the mixer's converge: a
+  // A tile lifted by a drag, and the split's fan-out / the mixer's converge: a
   // gentle S between two near-horizontal anchors.
   const mid = (x1 + x2) / 2;
   return `M${x1} ${y1}C${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`;
@@ -118,18 +130,11 @@ function bowPath(
   );
 }
 
-export function Connectors({
-  links,
-  region,
-  box,
-  nodes,
-  selected,
-  bypassed,
-  reduced,
-}: ConnectorsProps) {
+export function Connectors({ links, region, box, nodes }: ConnectorsProps) {
   const paths = useRef<(SVGPathElement | null)[]>([]);
-  const anchors = useRef<(SVGGElement | null)[]>([]);
+  const signals = useRef<(SVGPathElement | null)[]>([]);
   const frameEl = useRef<SVGRectElement | null>(null);
+  const meters = useMeters();
 
   const draw = useCallback(() => {
     for (let i = 0; i < links.length; i += 1) {
@@ -146,29 +151,13 @@ export function Connectors({
       // legitimate Δy that is not a wrap.
       const bowed = !link.wrap && link.via !== undefined;
 
-      paths.current[i]?.setAttribute(
-        "d",
-        link.wrap
-          ? wrapPath(x1, y1, x2, y2, link.via ?? (y1 + y2) / 2)
-          : bowed
-            ? bowPath(x1, y1, x2, y2, link.via!)
-            : straightPath(x1, y1, x2, y2),
-      );
-      const anchor = anchors.current[i];
-      if (anchor) {
-        // On a wrap (and on a lane bow) the chevrons run out of the row end and
-        // fade, which is the only part of the route that is horizontal — the
-        // flow keyframes only translate x. Within a row they cross the whole gap.
-        const lead = link.wrap || bowed;
-        anchor.setAttribute(
-          "transform",
-          lead ? `translate(${x1} ${y1})` : `translate(${x1} ${(y1 + y2) / 2})`,
-        );
-        anchor.style.setProperty(
-          "--flow-len",
-          `${lead ? WRAP_FLOW_LEN : Math.max(x2 - x1, 0)}px`,
-        );
-      }
+      const d = link.wrap
+        ? wrapPath(x1, y1, x2, y2, link.via ?? (y1 + y2) / 2)
+        : bowed
+          ? bowPath(x1, y1, x2, y2, link.via!)
+          : straightPath(x1, y1, x2, y2);
+      paths.current[i]?.setAttribute("d", d);
+      signals.current[i]?.setAttribute("d", d);
     }
 
     const rect = frameEl.current;
@@ -217,13 +206,29 @@ export function Connectors({
     };
   }, [draw, links, nodes, region]);
 
-  const segments = links.map((link, i) => {
-    const feedsSelection = selected !== null && link.to.id === selected;
-    const dimmed =
-      (isBlockId(link.from.id) && bypassed.has(link.from.id)) ||
-      (isBlockId(link.to.id) && bypassed.has(link.to.id));
-    return { key: link.key, i, feedsSelection, dimmed, lane: link.lane };
-  });
+  /* The signal strokes: opacity written straight to the DOM whenever a meter's
+     smoothed level moves, which is at most once a frame and not at all in
+     silence. */
+  useEffect(() => {
+    const paint = (output: boolean, level: number): void => {
+      const opacity = signalOpacity(level);
+      for (let i = 0; i < links.length; i += 1) {
+        const link = links[i];
+        if (link && carriesOutput(link) === output) {
+          const el = signals.current[i];
+          if (el) el.style.opacity = opacity;
+        }
+      }
+    };
+    paint(false, meters.input.level.get());
+    paint(true, meters.output.level.get());
+    const offIn = meters.input.level.on("change", (v) => paint(false, v));
+    const offOut = meters.output.level.on("change", (v) => paint(true, v));
+    return () => {
+      offIn();
+      offOut();
+    };
+  }, [links, meters]);
 
   return (
     <svg
@@ -234,7 +239,7 @@ export function Connectors({
       viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
       aria-hidden="true"
     >
-      {/* Behind every wire: the split container. x / width are written by the
+      {/* Behind every wire: the split region's frame. x / width are written by the
           frame callback above; y / height are static, because rows do not move. */}
       {region && (
         <rect
@@ -242,42 +247,29 @@ export function Connectors({
           className={s.laneRegion}
           x={0}
           width={0}
-          y={region.y - REGION_PAD_Y}
-          height={region.h + REGION_PAD_Y * 2}
+          y={region.y}
+          height={region.h}
           rx={REGION_R}
         />
       )}
 
-      {segments.map(({ key, i, feedsSelection, dimmed, lane }) => (
-        <g key={key} opacity={dimmed ? 0.35 : 1} className={s.segment}>
-          <path
-            ref={(el) => {
-              paths.current[i] = el;
-            }}
-            className={s.wire}
-            style={
-              feedsSelection && selected
-                ? { stroke: BLOCK_ACCENT[selected], strokeOpacity: 0.85 }
-                : lane
-                  ? { stroke: LANE_TINT[lane].wire }
-                  : undefined
-            }
-          />
-          {!reduced && (
-            <g
-              ref={(el) => {
-                anchors.current[i] = el;
-              }}
-            >
-              <g className={s.flow}>
-                <path className={s.chevron} d={FLOW_ARROW_PATH_D} />
-              </g>
-              <g className={`${s.flow} ${s.flowTrail}`}>
-                <path className={s.chevron} d={FLOW_ARROW_PATH_D} />
-              </g>
-            </g>
-          )}
-        </g>
+      {links.map((link, i) => (
+        <path
+          key={link.key}
+          ref={(el) => {
+            paths.current[i] = el;
+          }}
+          className={s.wire}
+        />
+      ))}
+      {links.map((link, i) => (
+        <path
+          key={link.key}
+          ref={(el) => {
+            signals.current[i] = el;
+          }}
+          className={s.wireSignal}
+        />
       ))}
     </svg>
   );

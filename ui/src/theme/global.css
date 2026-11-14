@@ -1,4 +1,4 @@
-/* Global base: reset, font wiring, scrollbars, selection, reduced motion. */
+/* Global base: reset, type, scrollbars, selection, focus, reduced motion. */
 
 @import "./tokens.css";
 @import "./fonts.css";
@@ -30,15 +30,14 @@ body,
 }
 
 body {
-  background: var(--bg-app);
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 13px;
+  background: var(--ds-bg);
+  color: var(--ds-text);
+  font-family: var(--ds-font);
+  font-size: var(--ds-fs-body);
   font-weight: 400;
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
 
   /* Plugin UI, not a document: no text selection, no rubber band, no callouts. */
   user-select: none;
@@ -85,7 +84,7 @@ button {
 }
 
 button:disabled {
-  cursor: not-allowed;
+  cursor: default;
 }
 
 svg {
@@ -98,7 +97,7 @@ svg {
 }
 
 a {
-  color: var(--blue-hover);
+  color: inherit;
   text-decoration: none;
 }
 
@@ -111,8 +110,8 @@ textarea,
 }
 
 ::selection {
-  background: var(--accent-fill-25);
-  color: var(--text-primary);
+  background: var(--ds-accent-soft);
+  color: var(--ds-text);
 }
 
 :focus {
@@ -121,62 +120,58 @@ textarea,
 
 :focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
+  box-shadow: var(--ds-focus);
 }
 
-/* Tabular numerics for every live-updating readout — without this, digit-width
-   jitter shimmers the layout at meter refresh rates. */
+/* Tabular numerals for every live-updating readout, so digit widths do not
+   shimmer the layout at meter refresh rates. */
 .value-readout,
 [data-numeric="true"] {
-  font-family: var(--font-mono);
-  font-feature-settings:
-    "tnum" 1,
-    "zero" 1;
+  font-family: var(--ds-mono);
   font-variant-numeric: tabular-nums;
 }
 
-/* Thin dark scrollbars (real CSS — this is a WebView, not host chrome). */
+/* Thin, neutral scrollbars (real CSS: this is a WebView, not host chrome). */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--border-hover) transparent;
+  scrollbar-color: var(--ds-line-strong) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
-*::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--border-hover);
-  border-radius: 4px;
+  background: var(--ds-line-strong);
+  border-radius: var(--ds-r-full);
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--border-active);
+  background: var(--ds-line-heavy);
+  background-clip: padding-box;
 }
 
-@keyframes tubamp-shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
-}
-
+/* Loading indicators only (Spinner, Skeleton in components/Feedback). */
 @keyframes tubamp-spin {
   to {
     transform: rotate(360deg);
   }
 }
 
+@keyframes tubamp-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
 /*
-  Reduced motion: collapse CSS-driven decoration. Motion-library animations are
-  gated separately via `useReducedMotion()` (see theme/motion.ts helpers) so that
-  gesture-tracking transforms (knob drag, pan/zoom) keep working — they are
-  direct manipulation, not animation.
+  Reduced motion: collapse CSS-driven animation. Motion-library animations are
+  gated separately (theme/motion.ts `reduced`) so gesture-tracking transforms
+  (knob drag, pan/zoom) keep working: they are direct manipulation.
 */
 @media (prefers-reduced-motion: reduce) {
   *,

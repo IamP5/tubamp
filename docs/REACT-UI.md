@@ -2,8 +2,13 @@
 
 The native JUCE editor is replaced by a JUCE 8 `WebBrowserComponent` (WKWebView)
 hosting a Vite + React + TypeScript SPA. The main surface is a Figma/Miro-style
-pan/zoom board where the user builds the signal chain. Aesthetic: Vercel/Geist
-dark; motion via the `motion` library (motion.dev).
+pan/zoom board where the user builds the signal chain, with the selected block's
+editor in a band under it. Look: one restrained design system — neutral greys, one
+accent whose hue follows the block's family (five hues at one lightness), motion
+only where it is the signal or a value changing — specified in
+`ui/DESIGN.md`, which is the authority for how anything looks or is arranged
+(this file is the authority for behaviour and the bridge). Motion via the
+`motion` library (motion.dev).
 
 Research backing (all code-cited, read before implementing your slice):
 - `docs/research/juce-webview.md` — WebView integration recipe (JUCE APIs verified
@@ -41,7 +46,7 @@ ui/                         # the SPA (npm workspace root for the frontend)
       board/                # the canvas: stage, grid, nodes, connectors, drag, picker
       panel/                # param dock: generic bodies + amp + cab + mod
       header/               # brand, preset pill, A/B, t3k status, settings
-      footer/               # trim/level knobs, meters, info line
+      footer/               # status bar: I/O meters, trim/level fields, engine status
       settings/             # settings sheet (t3k key via native prompt, sign out)
     App.tsx  main.tsx
 src/WebEditor.h/.cpp        # new editor: WebBrowserComponent + relays + native fns + events
@@ -165,9 +170,8 @@ hand-listing 24 entries twice:
   0, `comp3` is 2); user-facing text shows `instanceOf(id) + 1`.
 - `instanceTokensOfKind(kind)` — a kind's instance tokens, instance 1 first.
 - `blockRecord(make)` — builds a `Record<BlockId, T>` from one factory over all 24
-  tokens; every identity table (`BLOCK_INFO`, `BLOCK_ACCENT`, `KNOB_SPECS`,
-  `BLOCK_GLYPH`) is written this way so an instance can never drift from its kind's
-  colour, glyph or knob row.
+  tokens; every identity table (`BLOCK_INFO`, `BLOCK_GLYPH`) is written this way so
+  an instance can never drift from its kind's name or glyph.
 
 ### Native functions (all return JSON; names verbatim)
 
@@ -464,12 +468,41 @@ body and the shortest usable board band; same numbers as `kMinEditorWidth/Height
 
 ## UX structure (the board is the app)
 
-Fluid viewport (min 1000×600, see §Window size and embedding), `--bg-app` with subtle
-radial wash, dot-grid stage. Header (48) and footer (56) are the only fixed bands; the
-board is full-screen underneath them. The panel is not a reserved band — it is an
-overlay that opens over the board's bottom edge on selection and gives the space back
-when nothing is selected (see the Panel bullet below); block cards keep their fixed
-face, because the board's own zoom is the density control.
+Fluid viewport (min 1000×600, see §Window size and embedding), a flat `--ds-bg`
+window. Header (44) and status bar (36) are the only fixed bands; the board is
+full-screen between them. The block editor is not a reserved band — it is a flush
+296px band that opens on the board's bottom edge on selection and gives the space
+back when nothing is selected (see the Panel bullet below); block tiles keep their
+fixed face, because the board's own zoom is the density control.
+
+**Look and arrangement (redesign of 2026-11, `ui/DESIGN.md`).** The bullets below
+describe behaviour, and all of it still holds. Where they describe appearance —
+per-block accent colours, power LEDs and pills, flow chevrons, knob-row bodies,
+count badges, card and drawer sizes — `ui/DESIGN.md` supersedes them:
+
+- **Tiles** are 148×48 text tiles: glyph, the block's short name, and one line
+  saying what is in it (the type, the capture's or IR's title, the plugin's name).
+  Bypass is a power icon button; a bypassed tile dims. Selected = accent ring.
+  The glyph sits on a chip in the family's hue (`BLOCK_INFO[id].family`,
+  `data-family` on the tile). Wires are plain 1.5px lines with a second, brighter
+  stroke whose opacity follows the meters (input along the chain, output on the
+  last stretch). In / Out are words at the wire's ends.
+- **Add block** is a two-column picker in sections (Dynamics, Gain, Tone,
+  Modulation and time, Plugins, Routing); a kind with no free instance is disabled.
+  Removing a block or a split shows a toast with Undo (`features/board/undo.ts`,
+  one `setChainOrder`). Zoom-to-fit and the first framing never exceed 100%.
+- **Header:** wordmark, preset stepper + menu, "Save as", A/B with a pointer-only
+  "Save to" menu, a "TONE3000" button that opens the browser, Settings.
+- **Status bar** (`features/footer`): Input meter + trim field, the engine status
+  once (`48 kHz · 1.9 ms`), Output field + meter. No knobs.
+- **Editors** share one grammar (`features/panel/ui.tsx`, `display.tsx`): the
+  block's type as a stepper beside its name in the band's header, a display that
+  draws what the effect does from its own parameters (with handles for direct
+  edits), then knobs — the two or three that define the effect large, the rest
+  small. Every parameter has exactly one control. Below ~780px of band width
+  (`data-narrow`) the display is dropped. `ui/DESIGN.md` §Editors has the table of
+  what each editor shows. A dev-only page renders one editor on its own:
+  `/editor-harness.html?block=delay&w=1180`.
 
 - **Board (full-screen)**: pan/zoom stage (wheel = zoom to cursor, ctrl/cmd+wheel fine
   zoom, space-drag / middle-drag / two-finger = pan, double-click empty = zoom-to-fit;
@@ -564,14 +597,19 @@ face, because the board's own zoom is the density control.
 - **Overlays**: settings sheet, T3K tone-selected model list w/ download
   progress, toasts for errors (replaces silent failures where inventory doc
   flags them — e.g. zero-models tone now gets a toast).
-- **TONE3000 browser (`features/t3k-browser/`)**: a fixed 380px inspector drawer
-  (fixed while the rest is fluid: the row layout is designed at that width, and a
-  wider window should give the board the space, not the catalog)
-  docked to the right edge, y=48 to the app bottom, spring slide-in, NO
-  backdrop — the board stays visible and interactive. While it is open App.tsx
-  stamps `data-t3k-open` on the root and the block panel (`.dock`) insets its
-  right edge by `--t3k-drawer-inset` (380px) instead of running under it; the
-  panel band's height and everything anchored to it are unchanged.
+- **TONE3000 browser (`features/t3k-browser/`)**: a fixed-width inspector drawer
+  (`--t3k-w`, 400px — fixed while the rest is fluid: the row layout is designed at
+  that width, and a wider window should give the board the space, not the catalog)
+  docked to the right edge between the header and the status bar (the output
+  meter stays in view while tones are auditioned), slide-in, NO backdrop — the
+  board stays visible and interactive. While it is open App.tsx stamps
+  `data-t3k-open` on the root, the block editor (`.dock`) ends at the drawer's
+  left edge instead of running under it, and toasts shift left of it
+  (`--t3k-inset`); the band's height and everything anchored to it are unchanged.
+  Opened from the header's TONE3000 button as well as from the Amp / Amp 2 / Cab
+  editors. Rows are 56px (thumbnail, title, creator · gear, downloads; favourite
+  and a Load → progress → Loaded / Retry control); the detail view lists the
+  pack's files with the same control per file.
   - **Target.** Opened from AmpBody (`openT3kBrowser("models")`), CabBody
     (`"irs"`) or — for Amp 2 — `openT3kBrowser("models", "amp2")` (without a
     target, models go to `amp2` when the amp2 block is the selected one). The
@@ -634,10 +672,21 @@ to default, wheel nudge; Geist Mono tabular readout; gesture → begin/endGestur
 
 ## Motion & design tokens
 
-`ui/src/theme/tokens.css` implements vercel-design.md §6 verbatim (+ block accent
-variables + dim/glow color-mix variants). `ui/src/theme/motion.ts` implements
-motion-design.md tokens (durations, eases, springs) as exported constants. No
-inline magic values in components — import tokens.
+`ui/src/theme/tokens.css` holds the design system's `--ds-*` tokens (surfaces,
+lines, text, the accent and its per-family hues under `[data-family]`, status,
+meters, plot ink, type scale, radii, spacing, motion) and the app metrics;
+`ui/DESIGN.md` says how they are used. Live motion has three sources, all in
+`ui/src/hooks`: `useMeters`, `useDynMeters` and `useSignal` (the input level's
+last 8 s, for displays that show an effect answering what was played); displays
+write them to the DOM through `useLive` and ease parameter jumps with `useEase`
+(`features/panel/display.tsx`).
+`ui/src/theme/motion.ts` exports the same timings and springs for `motion`
+transitions; `ui/src/theme/words.ts` is the one place labels and values are
+formatted (`paramLabel`, `paramValue`, `engineStatus`). No inline magic values in
+components — a colour, font, radius, shadow or duration only through a token.
+`node tools/design-lint.mjs src` (from `ui/`) fails on colour literals, gradients,
+uppercase, letter-spacing, blur, off-token shadows, looping animation, off-scale
+sizes and unicode icons.
 
 Performance guardrails (motion-design.md §guardrails) are review criteria, not
 suggestions: transform/opacity only; no animated box-shadow/filter (pseudo-element
@@ -647,7 +696,8 @@ one rAF driver; `prefers-reduced-motion` respected for entrance/zoom/A-B.
 ## Build & verification
 
 - `ui/`: `npm run dev` (mock bridge in browser), `npm run build` (vite build,
-  `target: 'safari14'` — macOS 11 WKWebView), `npm run typecheck`, `npm run lint`.
+  `target: 'safari14'` — macOS 11 WKWebView), `npm run typecheck`, `npm run lint`,
+  `node tools/design-lint.mjs src`.
 - CMake: plugin target flips to `JUCE_WEB_BROWSER=1`, bundles `ui/dist` zip via
   `juce_add_binary_data` with an OUTPUT-based custom command running npm build;
   `TUBAMP_BUNDLED_UI=OFF` escape hatch skips npm and serves dev URL only.

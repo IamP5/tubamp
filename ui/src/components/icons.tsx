@@ -1,15 +1,17 @@
 /**
- * Chrome icon set (16px box). Block iconography lives in ./blockGlyphs.tsx —
- * `BlockIcon` below only presets its size/stroke.
+ * Chrome icon set. Every icon is drawn on a 16px box with a 1.5px stroke, round
+ * caps and joins, `currentColor`, no fills (a dot is a zero-length round-capped
+ * line). The parent's text token decides how an icon reads.
  *
- * All icons are stroke-based, `currentColor`, no fills — so a parent's colour
- * (block accent, text token) is the only thing that decides how they read.
+ * Block iconography lives in ./blockGlyphs.tsx; `BlockIcon` below only presets
+ * its size and stroke.
  */
 import type { SVGProps } from "react";
 import type { BlockId } from "../bridge/types";
 import { BlockGlyph } from "./blockGlyphs";
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, "children"> {
+  /** Rendered box in CSS px (default 16). The stroke scales with it. */
   size?: number;
 }
 
@@ -24,10 +26,14 @@ function Svg({ size = 16, ...rest }: IconProps & { children?: React.ReactNode })
       strokeWidth={1.5}
       strokeLinecap="round"
       strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
       {...rest}
     />
   );
 }
+
+/* ─────────────────────────────── actions ──────────────────────────────── */
 
 export const CloseIcon = (p: IconProps) => (
   <Svg {...p}>
@@ -41,11 +47,121 @@ export const PlusIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const MinusIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3.5 8h9" />
+  </Svg>
+);
+
 export const CheckIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M3.5 8.5l3 3 6-7" />
   </Svg>
 );
+
+export const TrashIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 4.5h11M6 4.5V3a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v1.5M4 4.5l.6 8.1a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.6-8.1M6.75 7v3.75M9.25 7v3.75" />
+  </Svg>
+);
+
+/** Horizontal dots: the "More" menu trigger. */
+export const MoreIcon = (p: IconProps) => (
+  <Svg {...p} strokeWidth={2}>
+    <path d="M3.5 8h0M8 8h0M12.5 8h0" />
+  </Svg>
+);
+
+export const SearchIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="7" cy="7" r="4.5" />
+    <path d="M10.5 10.5l3 3" />
+  </Svg>
+);
+
+export const DownloadIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 2.5v8M4.5 7L8 10.5 11.5 7M3 13.5h10" />
+  </Svg>
+);
+
+export const SaveIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3.5 2.5h7l3 3v7a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z" />
+    <path d="M5.5 2.5v3h4v-3M5 13.5V10h6v3.5" />
+  </Svg>
+);
+
+export const UndoIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M5.5 3.5l-3 3 3 3" />
+    <path d="M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7" />
+  </Svg>
+);
+
+/** Circular arrow: try again. */
+export const RetryIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+    <path d="M12.25 1.75v2.75H9.5" />
+  </Svg>
+);
+
+/** Four corner brackets: zoom to fit. */
+export const FitIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 6V3.5a1 1 0 0 1 1-1H6M10 2.5h2.5a1 1 0 0 1 1 1V6M13.5 10v2.5a1 1 0 0 1-1 1H10M6 13.5H3.5a1 1 0 0 1-1-1V10" />
+  </Svg>
+);
+
+/** Open a link outside the plug-in. */
+export const ExternalIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9.5 2.5h4v4M13.5 2.5L8 8" />
+    <path d="M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3" />
+  </Svg>
+);
+
+export const LinkIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6.75 9.25a3 3 0 0 0 4.25 0l2-2a3 3 0 0 0-4.25-4.25l-.75.75" />
+    <path d="M9.25 6.75a3 3 0 0 0-4.25 0l-2 2a3 3 0 0 0 4.25 4.25l.75-.75" />
+  </Svg>
+);
+
+export const FilterIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
+  </Svg>
+);
+
+export const PlayIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M5 3.25v9.5a.5.5 0 0 0 .76.43l7.6-4.75a.5.5 0 0 0 0-.86l-7.6-4.75A.5.5 0 0 0 5 3.25z" />
+  </Svg>
+);
+
+export const PowerIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M11.18 4.6a5 5 0 1 1-6.36 0" />
+    <path d="M8 2.5v5" />
+  </Svg>
+);
+
+const GEAR =
+  "M7.12 1.81L8.88 1.81L9.18 3.40L10.42 3.91L11.75 3.00L13.00 4.25L12.09 5.58L12.60 6.82L14.19 7.12L14.19 8.88L12.60 9.18L12.09 10.42L13.00 11.75L11.75 13.00L10.42 12.09L9.18 12.60L8.88 14.19L7.12 14.19L6.82 12.60L5.58 12.09L4.25 13.00L3.00 11.75L3.91 10.42L3.40 9.18L1.81 8.88L1.81 7.12L3.40 6.82L3.91 5.58L3.00 4.25L4.25 3.00L5.58 3.91L6.82 3.40Z";
+
+export const SettingsIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d={GEAR} />
+    <circle cx="8" cy="8" r="2" />
+  </Svg>
+);
+
+/** Older name for `SettingsIcon`. */
+export const GearIcon = SettingsIcon;
+
+/* ────────────────────────────── navigation ────────────────────────────── */
 
 export const ChevronLeftIcon = (p: IconProps) => (
   <Svg {...p}>
@@ -61,37 +177,28 @@ export const ChevronRightIcon = (p: IconProps) => (
 
 export const ChevronDownIcon = (p: IconProps) => (
   <Svg {...p}>
-    <path d="M3.5 6L8 10.5 12.5 6" />
+    <path d="M4 6l4 4 4-4" />
   </Svg>
 );
 
-export const MoreIcon = (p: IconProps) => (
+export const ArrowLeftIcon = (p: IconProps) => (
   <Svg {...p}>
-    <circle cx="3.5" cy="8" r="0.9" fill="currentColor" stroke="none" />
-    <circle cx="8" cy="8" r="0.9" fill="currentColor" stroke="none" />
-    <circle cx="12.5" cy="8" r="0.9" fill="currentColor" stroke="none" />
+    <path d="M13 8H3M7 4L3 8l4 4" />
   </Svg>
 );
 
-export const TrashIcon = (p: IconProps) => (
+/* ─────────────────────────────── marks ────────────────────────────────── */
+
+const HEART =
+  "M8 13.25S2.5 10 2.5 6.25A3 3 0 0 1 5.5 3.25c1.1 0 2 .6 2.5 1.5.5-.9 1.4-1.5 2.5-1.5a3 3 0 0 1 3 3c0 3.75-5.5 7-5.5 7z";
+
+export const HeartIcon = ({ filled, ...p }: IconProps & { filled?: boolean }) => (
   <Svg {...p}>
-    <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8h5.8l.6-8M6.8 7v3.2M9.2 7v3.2" />
+    <path d={HEART} fill={filled ? "currentColor" : "none"} />
   </Svg>
 );
 
-export const GearIcon = (p: IconProps) => (
-  <Svg {...p}>
-    <circle cx="8" cy="8" r="2.2" />
-    <path d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7L3.6 3.6" />
-  </Svg>
-);
-
-export const SaveIcon = (p: IconProps) => (
-  <Svg {...p}>
-    <path d="M3 3.5h7.5L13 6v6.5H3z" />
-    <path d="M5.5 3.5v3h5v-3M5.5 12.5V9h5v3.5" />
-  </Svg>
-);
+export const HeartFilledIcon = (p: IconProps) => <HeartIcon {...p} filled />;
 
 export const StarIcon = ({ filled, ...p }: IconProps & { filled?: boolean }) => (
   <Svg {...p}>
@@ -102,57 +209,61 @@ export const StarIcon = ({ filled, ...p }: IconProps & { filled?: boolean }) => 
   </Svg>
 );
 
-export const DownloadIcon = (p: IconProps) => (
+/* ─────────────────────────────── status ───────────────────────────────── */
+
+export const WarningIcon = (p: IconProps) => (
   <Svg {...p}>
-    <path d="M8 2.5v7.5M4.5 7L8 10.5 11.5 7M3 13h10" />
+    <path d="M7.13 3a1 1 0 0 1 1.74 0l5.2 9a1 1 0 0 1-.87 1.5H2.8a1 1 0 0 1-.87-1.5z" />
+    <path d="M8 6.5v3M8 11.5h0" />
   </Svg>
 );
 
+/** Circled exclamation: an error. */
 export const AlertIcon = (p: IconProps) => (
   <Svg {...p}>
-    <circle cx="8" cy="8" r="5.6" />
-    <path d="M8 5v3.6M8 10.8v.6" />
+    <circle cx="8" cy="8" r="5.5" />
+    <path d="M8 5.25v3.25M8 10.75h0" />
   </Svg>
 );
 
 export const InfoIcon = (p: IconProps) => (
   <Svg {...p}>
-    <circle cx="8" cy="8" r="5.6" />
-    <path d="M8 7.4v3.4M8 5.1v.6" />
+    <circle cx="8" cy="8" r="5.5" />
+    <path d="M8 7.5v3.25M8 5.25h0" />
   </Svg>
 );
 
 export const CheckCircleIcon = (p: IconProps) => (
   <Svg {...p}>
-    <circle cx="8" cy="8" r="5.6" />
-    <path d="M5.6 8.2l1.7 1.7 3.2-3.6" />
+    <circle cx="8" cy="8" r="5.5" />
+    <path d="M5.75 8.25l1.5 1.5 3-3.25" />
   </Svg>
 );
 
+/* ─────────────────────────────── signal ───────────────────────────────── */
+
 export const InputIcon = (p: IconProps) => (
   <Svg {...p}>
-    <path d="M2.5 8h8M7.5 5l3 3-3 3M12.5 3.5v9" />
+    <path d="M2.5 8h8M7.5 5l3 3-3 3M13 3.5v9" />
   </Svg>
 );
 
 export const OutputIcon = (p: IconProps) => (
   <Svg {...p}>
-    <path d="M5.5 8h8M10.5 5l3 3-3 3M3.5 3.5v9" />
+    <path d="M5.5 8h8M10.5 5l3 3-3 3M3 3.5v9" />
   </Svg>
 );
 
 /* ─────────────────────────────── block icons ───────────────────────────── */
 
 /**
- * Chrome-sized block icon. Deliberately a thin preset over `BlockGlyph` (the
- * faithful `BlockIcons.h` port in ./blockGlyphs.tsx) rather than a second,
- * simplified path set — a block must read identically on its board card, in the
- * dock header and in any menu row.
+ * Chrome-sized block icon: a size/stroke preset over `BlockGlyph`, so a block
+ * reads identically on its board card, in the editor header and in a menu row.
  */
 export function BlockIcon({
   block,
-  size = 20,
-  strokeWidth = 1.6,
+  size = 16,
+  strokeWidth = 1.5,
   className,
 }: {
   block: BlockId;

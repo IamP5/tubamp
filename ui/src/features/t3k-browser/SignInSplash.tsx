@@ -10,7 +10,6 @@ import { useEffect, useState } from "react";
 import { Button, CloseIcon, IconButton, Spinner } from "../../components";
 import { bridge } from "../../bridge";
 import { useStore } from "../../store";
-import { T3kMark } from "./parts";
 import s from "./t3k.module.css";
 
 export function SignInSplash({ onClose }: { onClose(): void }) {
@@ -26,22 +25,20 @@ export function SignInSplash({ onClose }: { onClose(): void }) {
   return (
     <>
       <header className={s.head}>
-        <T3kMark compact />
+        <span className={s.title}>TONE3000</span>
         <span className={s.headSpacer} />
         <IconButton aria-label="Close browser" onClick={onClose} size="sm">
-          <CloseIcon size={14} />
+          <CloseIcon />
         </IconButton>
       </header>
 
       <div className={s.splash}>
-        <h2 className={s.splashTitle}>Thousands of captures, in the chain</h2>
+        <h2 className={s.splashTitle}>Captures and IRs from TONE3000</h2>
         <p className={s.splashCopy}>
-          TONE3000 hosts the community’s NAM amp captures and cab impulse
-          responses. Sign in with your TONE3000 account to browse them here and
-          load one straight into this plugin — the files land in your own
-          library.
+          {configured
+            ? "Sign in to browse the community’s amp captures and cab IRs and load them straight into the chain. Sign-in opens in your browser."
+            : "Add a TONE3000 publishable key first. Create one at tone3000.com under Settings, API Keys."}
         </p>
-
         {configured ? (
           <Button
             variant="primary"
@@ -52,19 +49,13 @@ export function SignInSplash({ onClose }: { onClose(): void }) {
               void bridge.t3kSignIn();
             }}
           >
-            {waiting ? "Waiting for browser…" : "Sign in with TONE3000"}
+            {waiting ? "Waiting for browser…" : "Sign in to TONE3000"}
           </Button>
         ) : (
           <Button variant="primary" onClick={() => void t3kConfigure()}>
             Set publishable key…
           </Button>
         )}
-
-        <p className={s.splashNote}>
-          {configured
-            ? "Sign-in opens in your browser; come back when it is done."
-            : "Create a publishable key at tone3000.com → Settings → API Keys."}
-        </p>
       </div>
     </>
   );

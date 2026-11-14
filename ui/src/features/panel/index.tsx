@@ -1,22 +1,26 @@
 /**
- * The param dock: the selected block's editor, docked over the board's bottom
- * edge (docs/REACT-UI.md §UX structure, current-ui-inventory.md
- * §BlockParamPanel).
+ * The block editor: the selected block's controls, in a flush band on the
+ * stage's bottom edge (ui/DESIGN.md §Layout, docs/REACT-UI.md §UX structure).
  *
- * Structure: an accent-tinted header (icon, display name, power pill bound to
- * the block's `*_on` param, remove-from-chain affordance) over a body that
- * switches per block type. Selection is UI-local store state; with nothing
- * selected the dock is not rendered at all — the board's empty state covers it.
+ * Structure: a 44px header — power (the block's `*_on` param), the block's
+ * name, a slot the block's own editor fills with its type/mode controls,
+ * previous/next block, remove, close — over a body that switches per block
+ * kind. Selection is UI-local store state; with nothing selected the band is
+ * not rendered at all and the board has the whole stage.
  *
- * Motion (motion-design.md §2.6): the dock itself slides in once, and the body
- * content-morphs between blocks inside `AnimatePresence mode="popLayout"` —
- * pure opacity, no travel, so knob positions stay visually stable. The header
- * accent underline is a `layoutId` shared element, so it slides and recolours
- * instead of remounting.
+ * Every editor follows one grammar (./ui.tsx): a display that draws what the
+ * effect does, then the knobs, most important first. `data-narrow` is set on
+ * the band when it is too narrow for a display (the TONE3000 drawer open in a
+ * small window), and editors drop the display rather than squeeze the knobs.
+ *
+ * Motion: the band slides in once; switching blocks crossfades the body in
+ * place (opacity only), so knob positions stay visually stable.
  */
+import { useCallback, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
-  BlockIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   CloseIcon,
   IconButton,
   PowerPill,
@@ -24,10 +28,10 @@ import {
   TrashIcon,
 } from "../../components";
 import { useToggleParam } from "../../hooks";
-import { selectFxSlotFor, useStore } from "../../store";
+import { useStore } from "../../store";
 import { BLOCK_INFO } from "../../theme/blocks";
 import { powerTip } from "../board/lanes";
-import { duration, ease, spring } from "../../theme/motion";
+import { duration, ease } from "../../theme/motion";
 import {
   fxSlotIndexOf,
   isStructureBlockId,
@@ -48,14 +52,16 @@ import { ReverbBody } from "./ReverbBody";
 import { ModBody } from "./ModBody";
 import { SplitBody } from "./SplitBody";
 import { SplitRemoveButton } from "./SplitRemoveButton";
-import { KnobRow } from "./KnobRow";
-import { KNOB_SPECS } from "./knobSpecs";
 import { ToneModal } from "./ToneModal";
-import s from "./panel.module.css";
+import { HeaderSlotContext, NarrowContext, useNarrow } from "./ui";
+import s from "./frame.module.css";
 
 export function Panel() {
   const selected = useStore((st) => st.selected);
   const reduced = useReducedMotion() ?? false;
+  const [slot, setSlot] = useState<HTMLDivElement | null>(null);
+  const [dock, setDock] = useState<HTMLDivElement | null>(null);
+  const narrow = useNarrow(dock);
 
   return (
     <>
@@ -63,41 +69,51 @@ export function Panel() {
         {selected !== null && (
           <motion.div
             key="dock"
+            ref={setDock}
             className={s.dock}
             data-block={selected}
-            initial={reduced ? { opacity: 0 } : { opacity: 0, y: 28 }}
+            data-family={BLOCK_INFO[selected].family}
+            data-narrow={narrow || undefined}
+            initial={reduced ? { opacity: 0 } : { opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{
               opacity: 0,
-              y: reduced ? 0 : 16,
+              y: reduced ? 0 : 8,
               transition: { duration: duration.fast, ease: ease.in },
             }}
-            transition={reduced ? { duration: duration.fast } : spring.ui}
+            transition={{
+              duration: reduced ? duration.fast : duration.base,
+              ease: ease.out,
+            }}
           >
-            <PanelHeader block={selected} />
+            <PanelHeader block={selected} slotRef={setSlot} />
 
-            <div className={s.body}>
-              <AnimatePresence mode="popLayout" initial={false}>
-                <motion.div
-                  key={selected}
-                  className={s.bodyInner}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{
-                    duration: reduced ? 0 : duration.fast,
-                    ease: ease.out,
-                  }}
-                >
-                  <BlockBody block={selected} />
-                </motion.div>
-              </AnimatePresence>
-            </div>
+            <NarrowContext.Provider value={narrow}>
+              <HeaderSlotContext.Provider value={slot}>
+                <div className={s.body}>
+                  <AnimatePresence mode="popLayout" initial={false}>
+                    <motion.div
+                      key={selected}
+                      className={s.bodyInner}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{
+                        duration: reduced ? 0 : duration.fast,
+                        ease: ease.out,
+                      }}
+                    >
+                      <BlockBody block={selected} />
+                    </motion.div>
+                  </AnimatePresence>
+                </div>
+              </HeaderSlotContext.Provider>
+            </NarrowContext.Provider>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Lives outside the dock: a TONE3000 download must not depend on which
+      {/* Lives outside the band: a TONE3000 download must not depend on which
           block (if any) is selected. */}
       <ToneModal />
     </>
@@ -106,16 +122,32 @@ export function Panel() {
 
 /* ─────────────────────────────── header ────────────────────────────────── */
 
-function PanelHeader({ block }: { block: BlockId }) {
+function PanelHeader({
+  block,
+  slotRef,
+}: {
+  block: BlockId;
+  slotRef: (el: HTMLDivElement | null) => void;
+}) {
   const info = BLOCK_INFO[block];
   const power = useToggleParam(info.enableParamId);
   const removeBlock = useStore((st) => st.removeBlock);
   const selectBlock = useStore((st) => st.selectBlock);
-  const fxSlot = useStore(selectFxSlotFor(block));
-
-  // A loaded slot is known by what is in it, not by which slot it is — the slot
-  // number moves to a tag beside the name so both stay visible.
-  const loadedName = fxSlot?.occupied ? fxSlot.name : "";
+  const chainOrder = useStore((st) => st.chainOrder);
+  // Previous / next walk the chain in signal order; `lane2` is furniture and
+  // never selectable.
+  const stops = useMemo<BlockId[]>(
+    () => chainOrder.filter((id) => id !== "lane2"),
+    [chainOrder],
+  );
+  const at = stops.indexOf(block);
+  const step = useCallback(
+    (delta: number) => {
+      const next = stops[at + delta];
+      if (next) selectBlock(next);
+    },
+    [at, selectBlock, stops],
+  );
 
   const removeLabel = isStructureBlockId(block)
     ? "Remove split (lanes rejoin)"
@@ -123,34 +155,44 @@ function PanelHeader({ block }: { block: BlockId }) {
 
   return (
     <header className={s.header}>
-      <span className={s.headerIcon}>
-        <BlockIcon block={block} size={20} />
-      </span>
-
-      <div className={s.titleWrap}>
-        <span className={s.titleLine}>
-          <span className={s.title} title={loadedName || undefined}>
-            {loadedName || info.displayName}
-          </span>
-          {loadedName && (
-            <span className={s.headerSlotTag}>{info.shortName}</span>
-          )}
-        </span>
-        <motion.span
-          layoutId="panel-accent"
-          className={s.underline}
-          transition={spring.ui}
-        />
-      </div>
-
-      <div className={s.headerActions} data-param-index={power.parameterIndex}>
+      <span data-param-index={power.parameterIndex}>
         <Tooltip label={powerTip(block)}>
           <PowerPill on={power.value} onChange={power.setValue} />
         </Tooltip>
-        {/* SPLIT and MIX have panels, so the trash can reach them — and removing
-            either removes the whole region, which has three ways out (keep lane A,
-            keep lane B, chain A → B): their trash opens the same menu the board's
-            structural cards show (features/board/splitActions). */}
+      </span>
+
+      {/* Always the block's own name. A plugin slot stays "Plugin 1": the
+          hosted plugin's name is in the slot's picker, beside it. */}
+      <span className={s.title}>{info.displayName}</span>
+
+      <div className={s.slot} ref={slotRef} />
+
+      <div className={s.actions}>
+        <span className={s.stepBlock}>
+          <Tooltip label="Previous block">
+            <IconButton
+              aria-label="Previous block"
+              disabled={at <= 0}
+              onClick={() => step(-1)}
+            >
+              <ChevronLeftIcon />
+            </IconButton>
+          </Tooltip>
+          <Tooltip label="Next block">
+            <IconButton
+              aria-label="Next block"
+              disabled={at === -1 || at >= stops.length - 1}
+              onClick={() => step(1)}
+            >
+              <ChevronRightIcon />
+            </IconButton>
+          </Tooltip>
+          <span className={s.actionsGap} />
+        </span>
+        {/* Split and Mixer have editors, so remove can reach them — and removing
+            either removes the whole region, which has three ways out (keep lane
+            A, keep lane B, chain A into B): their button opens the same menu the
+            board's structural tiles show (features/board/splitActions). */}
         {isStructureBlockId(block) ? (
           <SplitRemoveButton />
         ) : (
@@ -164,10 +206,13 @@ function PanelHeader({ block }: { block: BlockId }) {
             </IconButton>
           </Tooltip>
         )}
-        {/* Explicit dismiss: outside-click closes the panel too, but it must
-            not be the only way (critique — panning/fit share that gesture). */}
+        {/* Explicit dismiss: a tap on the board's background closes the editor
+            too, but it must not be the only way (panning shares that gesture). */}
         <Tooltip label="Close">
-          <IconButton aria-label="Close panel" onClick={() => selectBlock(null)}>
+          <IconButton
+            aria-label="Close panel"
+            onClick={() => selectBlock(null)}
+          >
             <CloseIcon />
           </IconButton>
         </Tooltip>
@@ -179,10 +224,8 @@ function PanelHeader({ block }: { block: BlockId }) {
 /* ──────────────────────────── body dispatch ────────────────────────────── */
 
 function BlockBody({ block }: { block: BlockId }) {
-  // Keyed by KIND, not token: mod2/mod3 need ModBody (and its per-instance Type
-  // combo) exactly like instance 1 — a token match would silently drop them to
-  // the generic knob row with no way to reach mod2_type/mod3_type. Same for
-  // comp2/comp3, drive2/drive3 and eq2/eq3.
+  // Keyed by KIND, not token: mod2/mod3 need ModBody (and its per-instance type
+  // combo) exactly like instance 1. Same for every other duplicable kind.
   const kind = kindOf(block);
   if (kind === "amp") return <AmpBody />;
   if (kind === "amp2") return <Amp2Body />;
@@ -196,12 +239,9 @@ function BlockBody({ block }: { block: BlockId }) {
   if (kind === "reverb") return <ReverbBody block={block} />;
   if (kind === "split") return <SplitBody />;
   if (kind === "mix") return <MixBody />;
-  // Guard: lane2 is furniture (docs/SPLIT.md §1) — the board never renders it
-  // as a card, so selection should never reach it, but a null body is the
-  // backstop if it somehow does rather than falling through to the generic
-  // knob row (whose spec table is deliberately empty for it too).
+  // `lane2` is furniture (docs/SPLIT.md §1): the board never renders it as a
+  // tile, so selection should never reach it; a null body is the backstop.
   if (kind === "lane2") return null;
   const fxSlot = fxSlotIndexOf(block);
-  if (fxSlot !== -1) return <FxSlotBody slot={fxSlot} />;
-  return <KnobRow specs={KNOB_SPECS[block]} />;
+  return fxSlot === -1 ? null : <FxSlotBody slot={fxSlot} />;
 }

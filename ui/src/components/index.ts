@@ -1,8 +1,8 @@
 /** The primitive kit. Feature code should import components from here. */
 export { Button, IconButton } from "./Button";
 export type { ButtonProps, ButtonVariant, ButtonSize, IconButtonProps } from "./Button";
-export { Toggle, PowerPill } from "./Toggle";
-export type { ToggleProps, PowerPillProps } from "./Toggle";
+export { Toggle, PowerButton, PowerPill } from "./Toggle";
+export type { ToggleProps, PowerButtonProps, PowerPillProps } from "./Toggle";
 export { Segmented } from "./Segmented";
 export type { SegmentedProps, SegmentedOption } from "./Segmented";
 export { Menu, useMenu } from "./Menu";

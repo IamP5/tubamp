@@ -1,4 +1,4 @@
-/* App shell: fluid, header / board / dock / footer. */
+/* App shell: header / stage (board + editor band) / status bar. ui/DESIGN.md §Layout. */
 
 /*
   Fills the window (--app-w/--app-h are 100%/100%). The mock bridge overrides
@@ -19,19 +19,16 @@
   min-width: var(--min-app-w);
   min-height: var(--min-app-h);
   overflow: hidden;
-  background:
-    radial-gradient(
-      120% 60% at 50% -10%,
-      rgba(255, 255, 255, 0.035),
-      transparent 60%
-    ),
-    var(--bg-app);
+  background: var(--ds-bg);
 }
 
+/* Plain band; one hairline between it and the stage. */
 .header {
   flex: none;
+  box-sizing: border-box;
   height: var(--header-h);
-  box-shadow: inset 0 -1px 0 var(--border);
+  border-bottom: 1px solid var(--ds-line);
+  background: var(--ds-bg);
   overflow: hidden;
   z-index: 2;
 }
@@ -43,11 +40,10 @@
 }
 
 /*
-  Full-screen board: this box is the whole stage, header-to-footer, with no
-  permanent band carved out for the panel. The panel below floats over it as
-  an overlay instead of sharing layout, so nothing here needs to reserve space
-  for it — see theme/tokens.css `--panel-band` for what the *overlay* content
-  (embed hole, toaster) reserves while the panel happens to be open.
+  The board is the whole stage, header to status bar. The editor band below
+  overlays it instead of sharing layout, so the board's pan/zoom survives a
+  selection change; see theme/tokens.css `--panel-band` for what overlay content
+  (embed hole, toaster, zoom bar) reserves while the editor is open.
 */
 .board {
   position: absolute;
@@ -56,53 +52,48 @@
 }
 
 /*
-  The param panel is an overlay card floating over the board's bottom edge, not
-  a layout sibling: with nothing selected the Panel renders nothing and the
-  board shows through underneath it (no empty rounded box). The wrapper is
-  purely a positioning box — the surface (background, ring, radius) belongs to
-  the panel itself. Mounted only while `[data-panel-open]` is set on the app
-  root (App.tsx, driven by `selected !== null`).
+  The editor: a flush band on the stage's bottom edge, mounted while
+  `[data-panel-open]` is set on the root (App.tsx, `selected !== null`). Only a
+  positioning box — the surface, its top hairline and everything inside belong
+  to the panel. With nothing selected the Panel renders nothing and the board
+  shows through.
 */
 .dock {
   position: absolute;
-  left: var(--dock-gap);
-  right: calc(var(--dock-gap) + var(--t3k-drawer-inset, 0px));
-  bottom: var(--dock-gap);
+  left: 0;
+  right: 0;
+  bottom: 0;
   height: var(--dock-h);
   pointer-events: none;
   z-index: 1;
 }
 
 /*
-  The TONE3000 drawer is open (App.tsx stamps `data-t3k-open`): the panel yields
-  the drawer's width instead of running underneath it, so no knob ends up under
-  the catalog. Only the right edge moves — the band's height (`--panel-band`)
-  and everything anchored to it (embed hole, toaster, zoom bar) are unchanged.
-  380px mirrors the drawer's fixed width (features/t3k-browser/t3k.module.css).
+  The TONE3000 drawer is open (`data-t3k-open`): the editor yields the drawer's
+  width instead of running underneath it. Only the right edge moves; the band's
+  height (`--panel-band`) and everything anchored to it are unchanged.
 */
 .root[data-t3k-open] {
-  --t3k-drawer-inset: min(380px, 100%);
+  --t3k-inset: var(--t3k-w);
 }
 
-/*
-  Entrance layer only (motion-design.md §2.1: "param panel fades/slides in
-  last"). The Panel's own AnimatePresence runs `initial={false}`, so first mount
-  is deliberately silent there and this wrapper supplies the one-shot arrival.
-*/
+.root[data-t3k-open] .dock {
+  right: var(--t3k-w);
+}
+
+/* Entrance layer only: the Panel's own AnimatePresence runs `initial={false}`,
+   so this wrapper supplies the one-shot arrival. */
 .dockInner {
   height: 100%;
 }
 
-/*
-  No `overflow: hidden` here: the band holds nothing scrollable, and clipping it
-  would swallow the trim knobs' value bubbles, which sit above the band's top
-  edge. `.root` still clips at the window edge.
-*/
+/* Status bar: plain band, one hairline above it. */
 .footer {
   flex: none;
+  box-sizing: border-box;
   height: var(--footer-h);
-  box-shadow: inset 0 1px 0 var(--border);
-  background: var(--bg-surface);
+  border-top: 1px solid var(--ds-line);
+  background: var(--ds-bg);
   z-index: 2;
 }
 
@@ -111,24 +102,5 @@
   the letterbox around it is the same colour as the app, so draw its edge.
 */
 .rootMock {
-  box-shadow: 0 0 0 1px var(--border);
-}
-
-/* Dev-only affordance: makes it obvious the mock bridge is driving the UI. */
-.mockBadge {
-  /* Absolute, not fixed: it belongs to the emulated window, not the viewport. */
-  position: absolute;
-  left: 50%;
-  top: 6px;
-  transform: translateX(-50%);
-  z-index: 100;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--warning-fill);
-  box-shadow: inset 0 0 0 1px var(--warning);
-  color: var(--warning);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  pointer-events: none;
+  box-shadow: 0 0 0 1px var(--ds-line);
 }

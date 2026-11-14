@@ -1,0 +1,183 @@
+/* Plot ink for the editors' displays — see ./display.tsx. Tokens only. */
+
+.plot {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  overflow: visible;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.split {
+  flex: none;
+  width: 1px;
+  background: var(--ds-line);
+}
+
+/* ── scaffolding ── */
+
+.grid {
+  stroke: var(--ds-plot-grid);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.axis {
+  stroke: var(--ds-plot-axis);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.tick {
+  font-family: var(--ds-mono);
+  font-size: var(--ds-fs-caption);
+  fill: var(--ds-text-3);
+  pointer-events: none;
+}
+
+/* A word on the plot ("Low", "High", "Gain reduction"): sans, not a number. */
+.caption {
+  font-family: var(--ds-font);
+  font-size: var(--ds-fs-caption);
+  fill: var(--ds-text-3);
+  pointer-events: none;
+}
+
+/* ── curves ── */
+
+/* THE curve: the one accent in the view. */
+.live {
+  fill: none;
+  stroke: var(--ds-accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+/* The block is bypassed, or the engine ignores this curve right now. */
+.liveOff {
+  stroke: var(--ds-text-3);
+}
+
+/* Flat here; inside an editor PlotDefs (display.tsx) points it at the fade
+   below, so the area is densest at the curve and gone at the baseline. */
+.fill {
+  fill: var(--ds-plot-fill);
+  stroke: none;
+  pointer-events: none;
+}
+
+.defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.fadeTop {
+  stop-color: var(--ds-accent);
+  stop-opacity: 0.26;
+}
+
+.fadeBottom {
+  stop-color: var(--ds-accent);
+  stop-opacity: 0.02;
+}
+
+/* The effect answering what was just played: the same area as the fill, its
+   opacity written per frame by useLive. Hidden until something drives it. */
+.energy {
+  fill: var(--ds-accent);
+  stroke: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Where the signal is on a curve right now (an operating point). Its position
+   and opacity are written per frame by useLive. */
+.dot {
+  fill: var(--ds-text);
+  stroke: var(--ds-bg);
+  stroke-width: 1.5;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* A reference: the unprocessed line, a second band, where a value would be. */
+.ghost {
+  fill: none;
+  stroke: var(--ds-plot-ghost);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.ghostFill {
+  fill: var(--ds-plot-grid);
+  stroke: none;
+  pointer-events: none;
+}
+
+/* Live signal (a level trace, a gain-reduction bar): meter ink, never accent. */
+.meter {
+  fill: var(--ds-meter);
+  stroke: none;
+  pointer-events: none;
+}
+
+.meterLine {
+  fill: none;
+  stroke: var(--ds-meter);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.level {
+  fill: var(--ds-plot-ghost);
+  stroke: none;
+  pointer-events: none;
+}
+
+/* ── handle ── */
+
+.handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+.handleHit {
+  fill: transparent;
+}
+
+.handleDot {
+  fill: var(--ds-bg);
+  stroke: var(--ds-text);
+  stroke-width: 1.5;
+  transition:
+    stroke var(--ds-t-fast) var(--ds-ease),
+    fill var(--ds-t-fast) var(--ds-ease);
+}
+
+.handle:hover .handleDot,
+.handleActive .handleDot {
+  fill: var(--ds-accent);
+  stroke: var(--ds-accent);
+}
+
+.handleActive {
+  cursor: grabbing;
+}
+
+.handleDisabled {
+  opacity: 0.4;
+  pointer-events: none;
+}

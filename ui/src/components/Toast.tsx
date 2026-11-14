@@ -1,28 +1,29 @@
 import { useEffect } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import s from "./kit.module.css";
+import { cx } from "./cx";
 import { duration, ease } from "../theme/motion";
 import { useStore, type Toast as ToastModel, type ToastKind } from "../store";
 import { useEmbedHole } from "./overlay";
+import { AlertIcon, CheckCircleIcon, InfoIcon, WarningIcon } from "./icons";
 
 /** Matches .toastStack's resting inset in kit.module.css. */
 const TOAST_GUTTER = 16;
 /** Narrowest a toast may get before stepping around the hole beats squeezing. */
 const TOAST_MIN_W = 240;
-import { AlertIcon, CheckCircleIcon, InfoIcon } from "./icons";
 
-const KIND_COLOUR: Record<ToastKind, string> = {
-  info: "var(--text-secondary)",
-  success: "var(--success)",
-  warning: "var(--warning)",
-  error: "var(--error)",
+const KIND_CLASS: Record<ToastKind, string> = {
+  info: s.toastIconInfo,
+  success: s.toastIconOk,
+  warning: s.toastIconWarn,
+  error: s.toastIconDanger,
 };
 
 function KindIcon({ kind }: { kind: ToastKind }) {
-  const style = { color: KIND_COLOUR[kind] };
-  if (kind === "success") return <CheckCircleIcon style={style} />;
-  if (kind === "info") return <InfoIcon style={style} />;
-  return <AlertIcon style={style} />;
+  if (kind === "success") return <CheckCircleIcon />;
+  if (kind === "warning") return <WarningIcon />;
+  if (kind === "error") return <AlertIcon />;
+  return <InfoIcon />;
 }
 
 function ToastRow({ toast }: { toast: ToastModel }) {
@@ -40,23 +41,27 @@ function ToastRow({ toast }: { toast: ToastModel }) {
       className={s.toast}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, transition: { duration: duration.instant } }}
-      transition={{ duration: duration.fast, ease: ease.out }}
+      exit={{ opacity: 0, y: 8 }}
+      transition={{ duration: duration.slow, ease: ease.standard }}
       onClick={() => dismiss(toast.id)}
       role="status"
     >
-      <span className={s.toastIcon}>
+      <span className={cx(s.toastIcon, KIND_CLASS[toast.kind])}>
         <KindIcon kind={toast.kind} />
       </span>
       <span className={s.toastMessage}>{toast.message}</span>
-      {toast.duration > 0 && (
-        <motion.span
-          className={s.toastProgress}
-          style={{ background: KIND_COLOUR[toast.kind] }}
-          initial={{ scaleX: 1 }}
-          animate={{ scaleX: 0 }}
-          transition={{ duration: toast.duration / 1000, ease: "linear" }}
-        />
+      {toast.action && (
+        <button
+          type="button"
+          className={cx(s.button, s.buttonGhost, s.buttonSm, s.toastAction)}
+          onClick={(e) => {
+            e.stopPropagation();
+            toast.action?.onSelect();
+            dismiss(toast.id);
+          }}
+        >
+          {toast.action.label}
+        </button>
       )}
     </motion.div>
   );
@@ -77,13 +82,16 @@ export function Toaster() {
 
   /* Only the horizontal axis: the stack is already anchored above the dock, so
      the overlap that actually happens is a wide plugin reaching the right edge. */
+  /* Undefined when there is nothing to step around, so the stylesheet's own
+     inset applies — which is what moves the stack left of the TONE3000 drawer
+     (an inline `right` here would override it). */
   const clearRight =
     hole && hole.x + hole.width > window.innerWidth - TOAST_GUTTER - TOAST_MIN_W
       ? Math.max(TOAST_GUTTER, window.innerWidth - hole.x + TOAST_GUTTER)
-      : TOAST_GUTTER;
+      : undefined;
 
   return (
-    <div className={s.toastStack} style={{ right: clearRight }}>
+    <div className={s.toastStack} style={clearRight === undefined ? undefined : { right: clearRight }}>
       <AnimatePresence initial={false}>
         {toasts.map((t) => (
           <ToastRow key={t.id} toast={t} />

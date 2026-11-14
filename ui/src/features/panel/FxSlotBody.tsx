@@ -1,43 +1,42 @@
 /**
- * FX slot body — the editor for one external AudioUnit slot.
+ * Plugin slot editor — one external Audio Unit slot (docs/AU-SLOTS.md,
+ * docs/REACT-UI.md §External AudioUnit slots).
  *
- * Same shape as CabBody (an action row over a body), but everything it shows is
- * driven by `FxSlotState` rather than by parameters: a slot can be empty,
- * loading, live, missing (assigned to a plugin this machine does not have) or
- * simply broken, and each of those has to be legible on its own.
+ * Everything it shows is driven by `FxSlotState`, in this order:
  *
- * Two constraints shape the interaction:
- *  - The picker is mouse-only, with no search field. Logic gives the WebView no
- *    keyboard, so a typed filter would be dead UI in the host that matters most.
- *  - The plugin's own parameters scroll inside this body. The dock is a fixed
- *    248px and a hosted plugin can expose a hundred parameters; the dock does not
- *    grow for them.
+ *   not supported   one line, nothing to do
+ *   empty           "No plugin in this slot" + Choose plugin (the one primary)
+ *   loading         a spinner and the plugin's name
+ *   missing/failed  why, in one line, + Choose another; Remove in the header
+ *   live            header: the plugin menu (picking replaces it), Open editor,
+ *                   Remove; body: its parameters as small knobs, paged
+ *
+ * The picker is mouse-only, with no search field: Logic gives the WebView no
+ * keyboard, so a typed filter would be dead UI in the host that matters most.
  *
  * This body is also where the plugin's own editor is mounted into our window
- * ("Show editor here") and, crucially, where it is unmounted again: the embed is
- * a native view that would otherwise outlive the panel that asked for it.
+ * ("Open editor") and, crucially, where it is unmounted again: the embed is a
+ * native view that would otherwise outlive the panel that asked for it.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertIcon,
   Button,
-  EmptyState,
+  ChevronDownIcon,
+  IconButton,
   Menu,
   Spinner,
   Tooltip,
+  cx,
   useMenu,
   type ButtonVariant,
+  type IconProps,
   type MenuEntry,
 } from "../../components";
-import {
-  bridge,
-  type FxPluginEntry,
-  type FxSlotIndex,
-  type FxSlotState,
-} from "../../bridge";
+import { bridge, type FxPluginEntry, type FxSlotIndex, type FxSlotState } from "../../bridge";
 import { useStore } from "../../store";
 import { FxParamGrid } from "./FxParamGrid";
-import s from "./panel.module.css";
+import { HeaderSlot } from "./ui";
+import f from "./fxSlot.module.css";
 
 /* ─────────────────────────── metering the visible slot ─────────────────── */
 
@@ -82,7 +81,7 @@ function useEmbedTeardown(slot: FxSlotIndex): void {
   }, [slot]);
 }
 
-/* ──────────────────────────────── the picker ───────────────────────────── */
+/* ──────────────────────────────── the catalog ──────────────────────────── */
 
 /** The installed-AU list is asked for once per editor: the scan is only a
  *  component-registry walk, but its answer cannot change while we are open. */
@@ -120,12 +119,13 @@ function useFxCatalog(): FxPluginEntry[] | null {
  *  and the one users navigate by when they cannot type. */
 function catalogEntries(
   plugins: FxPluginEntry[] | null,
+  current: string,
   onPick: (identifier: string) => void,
 ): MenuEntry[] {
   if (plugins === null)
     return [{ id: "scanning", label: "Scanning installed plugins…", disabled: true }];
   if (plugins.length === 0)
-    return [{ id: "empty", label: "No AudioUnit effects installed", disabled: true }];
+    return [{ id: "empty", label: "No Audio Unit effects installed", disabled: true }];
 
   const byMaker = new Map<string, FxPluginEntry[]>();
   for (const plugin of plugins) {
@@ -144,6 +144,7 @@ function catalogEntries(
         id: plugin.identifier,
         label: plugin.name,
         hint: plugin.version,
+        selected: plugin.identifier === current,
         onSelect: () => onPick(plugin.identifier),
       });
     }
@@ -151,38 +152,105 @@ function catalogEntries(
   return entries;
 }
 
-interface FxPickerProps {
+/** A button that opens the catalog. */
+function PickerButton({
+  label,
+  variant,
+  onPick,
+}: {
   label: string;
   variant?: ButtonVariant;
   onPick(identifier: string): void;
-}
-
-function FxPicker({ label, variant, onPick }: FxPickerProps) {
-  const { ref: anchorRef, anchor, open, toggle, close } = useMenu<HTMLSpanElement>();
+}) {
+  const { ref, anchor, open, toggle, close } = useMenu<HTMLSpanElement>();
   const plugins = useFxCatalog();
-  const entries = useMemo(() => catalogEntries(plugins, onPick), [plugins, onPick]);
-
+  const entries = useMemo(() => catalogEntries(plugins, "", onPick), [plugins, onPick]);
   return (
     <>
-      <span ref={anchorRef} className={s.fxAnchor}>
-        <Button
-          size="sm"
-          variant={variant}
-          onClick={toggle}
-          aria-haspopup="menu"
-          aria-expanded={open}
-        >
+      <span ref={ref} className={f.anchor}>
+        <Button variant={variant} onClick={toggle} aria-haspopup="menu" aria-expanded={open}>
           {label}
         </Button>
       </span>
-      <Menu
-        anchor={anchor}
-        open={open}
-        onClose={close}
-        entries={entries}
-        minWidth={280}
-      />
+      <Menu anchor={anchor} open={open} onClose={close} entries={entries} minWidth={280} />
     </>
+  );
+}
+
+/**
+ * The loaded plugin as a select: its name on the trigger, the catalog in the
+ * menu (picking another replaces it), then the plugin's own window and Remove
+ * (which also has its own button, dropped from a narrow band's header).
+ */
+function PluginMenu({
+  state,
+  onPick,
+  onOpenWindow,
+  onRemove,
+}: {
+  state: FxSlotState;
+  onPick(identifier: string): void;
+  onOpenWindow(): void;
+  onRemove(): void;
+}) {
+  const { ref, anchor, open, toggle, close } = useMenu();
+  const plugins = useFxCatalog();
+  const entries = useMemo<MenuEntry[]>(
+    () => [
+      ...catalogEntries(plugins, state.identifier, onPick),
+      { kind: "separator", id: "sep" },
+      { id: "window", label: "Open in its own window", onSelect: onOpenWindow },
+      { id: "remove", label: "Remove plugin", destructive: true, onSelect: onRemove },
+    ],
+    [onOpenWindow, onPick, onRemove, plugins, state.identifier],
+  );
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        className={f.select}
+        title={state.manufacturer ? `${state.name} · ${state.manufacturer}` : state.name}
+        aria-label="Plugin"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={toggle}
+      >
+        <span className={f.selectValue}>{state.name}</span>
+        <ChevronDownIcon size={14} />
+      </button>
+      <Menu anchor={anchor} open={open} onClose={close} entries={entries} minWidth={280} />
+    </>
+  );
+}
+
+/** Unload: an eject mark, since the band's header already has a trash for
+ *  removing the block itself. */
+const EjectIcon = (p: IconProps) => (
+  <svg
+    width={p.size ?? 16}
+    height={p.size ?? 16}
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <path d="M8 3.5l4.5 5h-9z" />
+    <path d="M3.5 12h9" />
+  </svg>
+);
+
+function RemoveButton({ onRemove, droppable }: { onRemove(): void; droppable?: boolean }) {
+  return (
+    <Tooltip label="Remove plugin" className={cx(f.fixed, droppable && f.droppable)}>
+      <IconButton aria-label="Remove plugin" onClick={onRemove}>
+        <EjectIcon />
+      </IconButton>
+    </Tooltip>
   );
 }
 
@@ -205,12 +273,17 @@ export function FxSlotBody({ slot }: FxSlotBodyProps) {
   useWatchedSlot(slot);
   useEmbedTeardown(slot);
 
+  /* The parameters fade in when this body saw the plugin load, and are simply
+     there when the editor opens on one already running. */
+  const [sawLoading, setSawLoading] = useState(false);
+  if (state.loading && !sawLoading) setSawLoading(true);
+
   const pick = useCallback(
     (identifier: string) => void loadFxPlugin(slot, identifier),
     [loadFxPlugin, slot],
   );
   const remove = useCallback(() => void clearFxPlugin(slot), [clearFxPlugin, slot]);
-
+  const openWindow = useCallback(() => void openFxEditor(slot), [openFxEditor, slot]);
   const toggleEmbed = useCallback(() => {
     if (embedded) void unembedFxEditor();
     else void embedFxEditor(slot);
@@ -218,138 +291,88 @@ export function FxSlotBody({ slot }: FxSlotBodyProps) {
 
   if (!supported) {
     return (
-      <div className={s.fxCentre}>
-        <EmptyState
-          message="Plugin hosting is not available"
-          hint="This build of tubamp was compiled without AudioUnit hosting, so the FX slots stay pass-throughs."
-        />
+      <div className={f.state}>
+        <span className={f.message}>Plugin hosting is not available in this build</span>
       </div>
     );
   }
 
   if (!state.occupied) {
     return (
-      <div className={s.fxCentre}>
-        <EmptyState
-          message="No plugin in this slot"
-          hint="The slot passes audio through untouched until you load one."
-          action={
-            <FxPicker label="Choose a plugin" variant="primary" onPick={pick} />
-          }
-        />
+      <div className={f.state}>
+        <span className={f.message}>No plugin in this slot</span>
+        <span className={f.action}>
+          <PickerButton label="Choose plugin" variant="primary" onPick={pick} />
+        </span>
       </div>
     );
   }
 
   if (state.loading) {
     return (
-      <div className={s.fxCentre}>
-        <div className={s.fxLoading}>
+      <div className={f.state}>
+        <span className={f.loading}>
           <Spinner size={16} />
-          <span className={s.hint}>Loading {state.name}…</span>
-        </div>
+          {state.name}
+        </span>
       </div>
     );
   }
 
-  if (!state.live) return <FxUnavailable state={state} onPick={pick} onRemove={remove} />;
+  if (!state.live) {
+    /* Assigned but not running: this machine does not have it (its settings
+       are kept and saved back untouched), or it refused to start. */
+    return (
+      <>
+        <HeaderSlot>
+          <RemoveButton onRemove={remove} />
+        </HeaderSlot>
+        <div className={f.state} role="status">
+          {state.missing ? (
+            <>
+              <span className={f.message}>{state.name || "This plugin"} is not installed</span>
+              <span className={f.hint}>Its settings are kept and saved with the session</span>
+            </>
+          ) : (
+            <span className={cx(f.message, f.danger)}>
+              {state.error || `${state.name || "The plugin"} could not be started`}
+            </span>
+          )}
+          <span className={f.action}>
+            <PickerButton label="Choose another" onPick={pick} />
+          </span>
+        </div>
+      </>
+    );
+  }
 
   return (
-    <div className={s.fxBody}>
-      <div className={s.fxHead}>
-        <div className={s.fxIdentity}>
-          <span className={s.fxName} title={state.name}>
-            {state.name}
-          </span>
-          <span className={s.fxMaker}>
-            {state.manufacturer}
-            {state.latencySamples > 0 &&
-              ` · ${state.latencySamples} smp latency`}
-          </span>
-        </div>
-
-        <div className={s.actionRow}>
-          <Tooltip
-            label={
-              embedded
-                ? "Give the board back and put this editor away."
-                : "Draw this plugin's editor on the board. It is a native view over the page, so menus and dialogs will hide it while they are open."
-            }
-          >
-            <Button size="sm" variant="primary" onClick={toggleEmbed}>
-              {embedded ? "Hide editor" : "Show editor here"}
-            </Button>
-          </Tooltip>
-          <Tooltip
-            label={
-              state.hasEditor
-                ? "Open the plugin's own window — the only place its text fields get a keyboard inside a host."
-                : "Open a generic editor window for this plugin."
-            }
-          >
-            <Button size="sm" onClick={() => void openFxEditor(slot)}>
-              Open plugin window
-            </Button>
-          </Tooltip>
-          <FxPicker label="Replace" onPick={pick} />
-          <Button size="sm" variant="ghost" onClick={remove}>
-            Remove
+    <>
+      <HeaderSlot>
+        <span className={f.headerControls}>
+          <PluginMenu state={state} onPick={pick} onOpenWindow={openWindow} onRemove={remove} />
+          <Button className={f.fixed} onClick={toggleEmbed} aria-pressed={embedded}>
+            {embedded ? "Close editor" : "Open editor"}
           </Button>
-        </div>
-      </div>
-
+          <RemoveButton onRemove={remove} droppable />
+        </span>
+      </HeaderSlot>
       {state.params.length > 0 ? (
-        <FxParamGrid slot={slot} params={state.params} />
+        <FxParamGrid
+          key={state.identifier}
+          slot={slot}
+          params={state.params}
+          latencySamples={state.latencySamples}
+          appear={sawLoading}
+        />
       ) : (
-        <div className={s.fxCentre}>
-          <span className={s.hint}>
-            This plugin exposes no parameters — use its own window.
-          </span>
+        <div className={f.state}>
+          <span className={f.hint}>No parameters</span>
+          {state.latencySamples > 0 && (
+            <span className={f.barNote}>Latency {state.latencySamples} samples</span>
+          )}
         </div>
       )}
-    </div>
-  );
-}
-
-/* ───────────────────── assigned but not running ────────────────────────── */
-
-interface FxUnavailableProps {
-  state: FxSlotState;
-  onPick(identifier: string): void;
-  onRemove(): void;
-}
-
-/**
- * The slot holds a plugin that is not running: either this machine does not have
- * it (`missing`) or it refused to start. Both keep the assignment, and the
- * missing case also keeps the plugin's saved settings — which is the one thing
- * the user needs to be told before they reach for Remove.
- */
-function FxUnavailable({ state, onPick, onRemove }: FxUnavailableProps) {
-  return (
-    <div className={s.fxBody}>
-      <div className={s.fxNotice} role="status">
-        <AlertIcon size={14} className={s.fxNoticeIcon} />
-        <div className={s.fxNoticeCopy}>
-          <span className={s.fxNoticeTitle}>
-            {state.name || "This plugin"}
-            {state.missing ? " is not installed" : " is not running"}
-            {state.manufacturer && ` — ${state.manufacturer}`}
-          </span>
-          <span className={s.fxNoticeText}>
-            {state.missing
-              ? "This machine does not have it. Its settings are preserved and saved back untouched, so the preset restores in full anywhere the plugin exists."
-              : state.error || "The plugin could not be started."}
-          </span>
-        </div>
-      </div>
-
-      <div className={s.actionRow}>
-        <FxPicker label="Replace" variant="primary" onPick={onPick} />
-        <Button size="sm" variant="ghost" onClick={onRemove}>
-          Remove
-        </Button>
-      </div>
-    </div>
+    </>
   );
 }

@@ -1,0 +1,208 @@
+/* Plugin slot editor (FxSlotBody, FxParamGrid). Tokens only. */
+
+/* ───────────────────────────── header slot ─────────────────────────────── */
+
+/* When the header is short of room the plugin menu gives way first, down to
+   its chevron (the band's title already names the plugin); Open editor and
+   Remove keep their size. */
+.headerControls {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-2);
+  min-width: 0;
+}
+
+.fixed {
+  flex: none;
+}
+
+/* Remove beside Open editor: a narrow band keeps it in the plugin menu only. */
+[data-narrow] .droppable {
+  display: none;
+}
+
+.anchor {
+  flex: none;
+  display: inline-flex;
+}
+
+/* The plugin menu's trigger: the toolkit's select (ui.module.css `.select`),
+   showing the plugin's name instead of a parameter's choice. */
+.select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-2);
+  flex: 0 1 auto;
+  min-width: var(--ds-h-lg);
+  max-width: 200px;
+  height: var(--ds-h-md);
+  padding: 0 var(--ds-2) 0 10px;
+  border-radius: var(--ds-r-2);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line);
+  font-size: var(--ds-fs-label);
+  font-weight: 500;
+  color: var(--ds-text);
+  transition: background-color var(--ds-t-fast) var(--ds-ease);
+}
+
+.select:hover,
+.select[aria-expanded="true"] {
+  background: var(--ds-surface-3);
+}
+
+.select:focus-visible {
+  outline: none;
+  box-shadow: var(--ds-focus);
+}
+
+.select svg {
+  flex: none;
+  color: var(--ds-text-3);
+}
+
+.selectValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─────────────────────────────── states ────────────────────────────────── */
+
+/* Empty, loading, failed: one centred column (the kit's EmptyState). */
+.state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ds-1);
+  min-width: 0;
+  text-align: center;
+}
+
+.message {
+  max-width: 100%;
+  font-size: var(--ds-fs-body);
+  font-weight: 500;
+  color: var(--ds-text);
+}
+
+.hint {
+  max-width: 360px;
+  font-size: var(--ds-fs-body);
+  color: var(--ds-text-2);
+}
+
+.danger {
+  color: var(--ds-danger);
+}
+
+.action {
+  margin-top: var(--ds-3);
+}
+
+.loading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-2);
+  font-size: var(--ds-fs-body);
+  color: var(--ds-text-2);
+}
+
+/* ─────────────────────────────── the grid ──────────────────────────────── */
+
+.grid {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.gridInner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-4);
+}
+
+/* The plugin has just finished loading: its parameters fade in, once. */
+.appear {
+  animation: fx-appear var(--ds-t-base) var(--ds-ease) both;
+}
+
+@keyframes fx-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .appear {
+    animation: none;
+  }
+}
+
+.gridRow {
+  display: flex;
+  align-items: flex-end;
+}
+
+.cell {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  width: 68px;
+}
+
+/* A plugin's names and strings are its own and can be long: keep the knob to
+   its cell and let the text ellipsise (the full name is the knob's title). */
+.knob {
+  max-width: 100%;
+}
+
+.readout {
+  max-width: 52px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-3);
+  height: var(--ds-h-sm);
+  padding-left: var(--ds-2);
+}
+
+.barNote {
+  font-size: var(--ds-fs-caption);
+  color: var(--ds-text-3);
+  white-space: nowrap;
+}
+
+.pageCount {
+  font-family: var(--ds-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ds-fs-caption);
+  color: var(--ds-text-3);
+  white-space: nowrap;
+}
+
+.pager {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-1);
+}
+
+.pageCount {
+  min-width: 40px;
+  text-align: center;
+}

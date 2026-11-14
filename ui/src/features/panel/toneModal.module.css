@@ -1,0 +1,90 @@
+/* ToneModal: the download dialog of the older TONE3000 "select" flow. */
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-3);
+  height: 48px;
+}
+
+.row + .row {
+  border-top: 1px solid var(--ds-line);
+}
+
+.info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.name {
+  font-family: var(--ds-mono);
+  font-size: var(--ds-fs-label);
+  line-height: 16px;
+  color: var(--ds-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meta {
+  font-size: var(--ds-fs-caption);
+  line-height: 16px;
+  color: var(--ds-text-3);
+}
+
+.action {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 80px;
+}
+
+.pct {
+  font-family: var(--ds-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ds-fs-label);
+  color: var(--ds-text-2);
+}
+
+.loaded {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-1);
+  font-size: var(--ds-fs-label);
+  font-weight: 500;
+  color: var(--ds-accent);
+}
+
+/* 2px accent progress bar along the row's bottom edge. */
+.track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  overflow: hidden;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  background: var(--ds-accent);
+  transform-origin: left center;
+  transition: transform var(--ds-t-fast) var(--ds-ease);
+}
+
+.attribution {
+  margin-right: auto;
+  font-size: var(--ds-fs-caption);
+  color: var(--ds-text-3);
+}

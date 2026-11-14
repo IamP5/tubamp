@@ -1,9 +1,11 @@
 /*
-  The board: pan/zoom stage, dot grid, chain lane, connectors, zoom control.
+  The board: pan/zoom stage, block tiles, wires, the split frame, the add
+  controls and the zoom bar. ui/DESIGN.md is the look; tokens only.
 
-  Tokens only (tokens.css / motion.ts). Anything that animates here animates
-  transform or opacity — every shadow/glow is baked into a static layer that is
-  cross-faded, per motion-design.md §4.2.
+  Transform and opacity animate; hairlines and shadows change instantly with
+  state (hover, selection, drag). The one colour that fades is a tile's glyph
+  chip, so bypassing a block reads as the block going quiet. The wires carry a
+  second, brighter stroke whose opacity follows the signal (Connectors.tsx).
 */
 
 .root {
@@ -11,11 +13,7 @@
   inset: 0;
   overflow: hidden;
   touch-action: none;
-  /* Local derivations of the global tokens — one place to retune the surface.
-     Literal rgba rather than color-mix (Safari 16.2+; baseline is safari14):
-     --text-tertiary #5a6473 at 42%. */
-  --grid-dot: rgba(90, 100, 115, 0.42);
-  --wire: var(--border-active);
+  background: var(--ds-bg);
 }
 
 .root[data-pan="ready"] {
@@ -27,37 +25,20 @@
 
 /* ─────────────────────────────── pan/zoom stage ─────────────────────────── */
 
-/* Stage box = the whole board. The param panel is an overlay that comes and
-   goes with the selection, so making the stage box stop at it would move the
-   transform origin — and jump the board sideways — every time a card is picked.
-   The panel band is handled in JS instead (useStageTransform's insetBottom),
-   where it can bias framing without touching the origin. Children overflow this
-   box freely and are clipped by `.root`. */
+/* Stage box = the whole board. The editor is an overlay that comes and goes
+   with the selection, so making the stage box stop at it would move the
+   transform origin — and jump the board sideways — every time a tile is picked.
+   The editor band is handled in JS instead (useStageTransform's insetBottom).
+   Children overflow this box freely and are clipped by `.root`. */
 .stage {
   position: absolute;
   inset: 0;
   transform-origin: 50% 50%;
 }
 
-/* Layer promotion only while a gesture is live (guardrail §4.3). */
+/* Layer promotion only while a gesture is live. */
 .stageActive {
   will-change: transform;
-}
-
-.grid {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 4000px;
-  height: 2400px;
-  margin: -1200px 0 0 -2000px;
-  background-image: radial-gradient(
-    circle at 1px 1px,
-    var(--grid-dot) 1px,
-    transparent 1.4px
-  );
-  background-size: 24px 24px;
-  background-position: center center;
 }
 
 /* ──────────────────────────────── the lane ─────────────────────────────── */
@@ -93,7 +74,7 @@
   inset: 0;
 }
 
-/* ──────────────────────────────── connectors ───────────────────────────── */
+/* ─────────────────────────────────── wires ─────────────────────────────── */
 
 .connectors {
   position: absolute;
@@ -106,69 +87,37 @@
 
 .wire {
   fill: none;
-  stroke: var(--wire);
-  stroke-width: 2;
-  stroke-linecap: round;
-  transition: stroke 150ms ease;
-}
-
-.segment {
-  transition: opacity 150ms ease;
-}
-
-.chevron {
-  fill: none;
-  stroke: var(--text-tertiary);
-  stroke-width: 1.4;
+  stroke: var(--ds-line-strong);
+  stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.flow {
-  animation: tubamp-flow 1900ms linear infinite;
+/* The same route again in a brighter neutral. Its opacity is the signal level
+   on that stretch, written per frame by Connectors.tsx: the wires lift while
+   you play and settle when you stop. Neutral, never the accent or meter ink:
+   a wire says that signal is passing, not how hot it is. */
+.wireSignal {
+  fill: none;
+  stroke: var(--ds-text);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
 }
 
-.flowTrail {
-  animation-delay: -950ms;
-}
-
-@keyframes tubamp-flow {
-  0% {
-    opacity: 0;
-    transform: translateX(0);
-  }
-  22% {
-    opacity: 0.9;
-  }
-  72% {
-    opacity: 0.9;
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(var(--flow-len, 44px));
-  }
-}
-
-/* ──────────────────────────── split container ──────────────────────────── */
-
-/* The frame around a split region (docs/SPLIT.md §5). It lives in the wire
-   layer, behind every wire, because its left and right edges are SPLIT's and
-   MIX's motion values — drawn on the connector layer's frame callback, it
-   follows their springs instead of snapping around them once per render. The
-   two lane tracks run inside it; the fan-out and the converge cross it. */
+/* The split region's frame: a hairline, no fill. It lives in the wire layer,
+   behind every wire, because its left and right edges follow the Split and
+   Mixer tiles' motion values (see Connectors.tsx). */
 .laneRegion {
-  fill: var(--bg-surface);
-  fill-opacity: 0.5;
-  stroke: var(--border);
+  fill: none;
+  stroke: var(--ds-line);
   stroke-width: 1;
-  stroke-dasharray: 6 5;
 }
 
-/* Lane head badge — set into the frame's top (lane A) or bottom (lane B) edge
-   like a legend. Colours come inline from features/board/lanes.ts (LANE_TINT),
-   the one table every lane name on screen reads. The anchor is a zero-height
-   box on the frame line, so the pill centres on it whatever its height. */
-.laneBadgeAnchor {
+/* Lane label ("A", "L", "Low"): plain text above the lane's first tile. The
+   anchor is a zero-height box on the label's centre line. */
+.laneLabelAnchor {
   position: absolute;
   height: 0;
   display: flex;
@@ -176,353 +125,236 @@
   z-index: 3;
 }
 
-.laneBadge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 18px;
-  padding: 0 7px 0 6px;
-  border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  line-height: 1;
+.laneLabel {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ds-text-3);
   white-space: nowrap;
   cursor: default;
-  /* Opaque underlay so the dashed frame line does not run through the text. */
-  background-color: var(--bg-app);
 }
 
-.laneBadgeDot {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-}
-
-/* The lane's own [+] slot: smaller and quieter than the tail [+], dashed in its
-   lane's tint so it reads as "this lane", always visible. */
-.laneAdd {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-md);
-  color: var(--lane-ink);
-  background: var(--bg-app);
-  border: 1px dashed var(--lane-ring);
-  opacity: 0.8;
-  transition:
-    opacity 120ms ease,
-    background-color 120ms ease,
-    border-color 120ms ease;
-}
-
-.laneAdd:hover,
-.laneAddOpen {
-  opacity: 1;
-  background: var(--lane-fill);
-  border-color: var(--lane-ink);
-}
-
-/* Lane swatches in menus (the "Remove split" rows), on the 14px icon grid so
-   the labels line up with the Bypass row above them. */
-.menuLaneIcon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  width: 14px;
-  height: 14px;
-  flex: none;
-}
-
-.menuLaneDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-}
-
-/* ─────────────────────────────── block card ────────────────────────────── */
+/* ─────────────────────────────── block tile ────────────────────────────── */
 
 .card {
   position: absolute;
   inset: 0;
-  border-radius: var(--radius-lg);
-  transition: opacity 100ms ease;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  padding: 0 var(--ds-1) 0 var(--ds-2);
+  border-radius: var(--ds-r-3);
+  background: var(--ds-surface-1);
+  box-shadow: var(--ds-ring-line);
 }
 
-.cardFace {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: var(--bg-elevated);
-  box-shadow: var(--ring-inset);
-  transition:
-    background-color 120ms ease,
-    box-shadow 120ms ease;
+.card:hover {
+  box-shadow: var(--ds-ring-line-strong);
 }
 
-.card:hover .cardFace {
-  background: var(--bg-elevated-hi);
-  box-shadow: var(--ring-inset-hover);
+.cardSelected,
+.cardSelected:hover {
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring);
 }
 
-/* Selected: static accent ring + glow, revealed by opacity only. */
-.cardRing {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow:
-    inset 0 0 0 2px var(--block-accent),
-    0 0 0 4px var(--block-fill-8),
-    0 6px 22px var(--block-glow);
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* Full-rig conflict: a static amber ring, under the selection ring. */
-.cardWarnRing {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  /* --warning #ffb224 at 40% / 10%; literal rgba, see the note at the top. */
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 178, 36, 0.4),
-    0 0 0 3px rgba(255, 178, 36, 0.1);
-  pointer-events: none;
-}
-
-/* Drag lift: the same trick for the drop shadow. */
-.cardLiftShadow {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow: var(--shadow-drag);
-  opacity: 0;
-  pointer-events: none;
-}
-
-.cardBypassed {
-  opacity: 0.55;
-}
-
-.cardDragging {
+.cardDragging,
+.cardDragging:hover {
   cursor: grabbing;
   will-change: transform;
+  box-shadow: var(--ds-shadow-float);
 }
 
-.cardContent {
-  position: absolute;
-  inset: 0;
+.cardSelected.cardDragging {
+  box-shadow: var(--ds-ring), var(--ds-shadow-float);
+}
+
+/* The glyph's chip: the family's hue at rest (theme/tokens.css), neutral for a
+   block with no family and for a bypassed one. */
+.cardIcon {
+  flex: none;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 9px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ds-r-2);
+  color: var(--ds-text-2);
+  background: var(--ds-surface-3);
+  transition:
+    color var(--ds-t-base) var(--ds-ease),
+    background-color var(--ds-t-base) var(--ds-ease),
+    opacity var(--ds-t-base) var(--ds-ease);
+}
+
+.node[data-family] .cardIcon {
+  color: var(--ds-accent);
+  background: var(--ds-accent-soft);
+}
+
+.node[data-family] .cardBypassed .cardIcon {
+  color: var(--ds-text-2);
+  background: var(--ds-surface-3);
+}
+
+/* Name over detail. Its right padding reserves room for whichever of the
+   actions are showing: none at rest, the power button on a bypassed tile, both
+   on hover / selection / an open menu. */
+.cardText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding-right: var(--ds-2);
   pointer-events: none;
 }
 
-/* A card with a note pill lifts its glyph + name clear of the pill. */
-.cardContentNoted {
-  padding-bottom: 16px;
-  gap: 6px;
+.cardBypassed .cardText {
+  padding-right: 28px;
 }
 
-.cardIcon {
-  color: var(--block-accent);
-  transition: color 100ms ease;
+.card:hover .cardText,
+.cardSelected .cardText,
+.cardMenuOpen .cardText {
+  padding-right: 52px;
 }
 
-.cardBypassed .cardIcon {
-  color: var(--text-tertiary);
+.cardText {
+  transition: opacity var(--ds-t-base) var(--ds-ease);
 }
 
-/* Truncates: the card is a fixed 112px and an fx slot's note carries a hosted
-   plugin's name, which has no length limit at all. */
-.cardName {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  color: var(--text-secondary);
-  transition: color 100ms ease;
+.cardBypassed .cardIcon,
+.cardBypassed .cardText {
+  opacity: 0.45;
 }
 
-.cardBypassed .cardName {
-  color: var(--text-tertiary);
-}
-
-/* Card note pill ("+ CAB" / "2× CAB"), pinned under the block name. */
-.cardNoteAnchor {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 5px;
-  justify-content: center;
-}
-
-.cardNote {
-  display: inline-flex;
+.cardNameRow {
+  display: flex;
   align-items: center;
-  gap: 3px;
-  max-width: 100%;
-  padding: 1px 5px;
-  border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-tertiary);
-  background: var(--bg-app);
-  box-shadow: inset 0 0 0 1px var(--border);
+  gap: var(--ds-1);
+  min-width: 0;
 }
 
-/* The pill is a flex box, so the ellipsis has to live on the text child — the
-   label beside it is an icon that must never shrink. */
-.cardNoteText {
+.cardName {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--ds-text);
 }
 
-.cardNoteWarn {
-  color: var(--warning);
-  /* --warning #ffb224 at 10% / 45%; literal rgba, see the note at the top. */
-  background: rgba(255, 178, 36, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(255, 178, 36, 0.45);
+/* The tooltip anchor around a detail line that may be truncated. */
+.cardDetailAnchor {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  pointer-events: auto;
 }
 
-/* Power LED: 16px hit zone, 6px dot (native parity). */
-.led {
+.cardDetail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ds-text-3);
+}
+
+.cardWarn {
+  display: inline-flex;
+  flex: none;
+  color: var(--ds-warn);
+  pointer-events: auto;
+}
+
+/* More, then power at the right edge: power is the one that can stay. */
+.cardActions {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 0;
+  bottom: 0;
+  right: var(--ds-1);
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 999px;
 }
 
-.ledDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--bg-app);
-  box-shadow: inset 0 0 0 1px var(--border-hover);
-  transition:
-    background-color 100ms ease,
-    box-shadow 100ms ease;
-}
-
-.card:not(.cardBypassed) .ledDot {
-  background: var(--block-accent);
-  box-shadow: 0 0 0 3px var(--block-fill-25);
-}
-
-.led:hover .ledDot {
-  box-shadow:
-    0 0 0 3px var(--block-fill-25),
-    inset 0 0 0 1px var(--border-active);
-}
-
-.kebab {
-  position: absolute;
-  top: 4px;
-  left: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: var(--radius-sm);
-  color: var(--text-tertiary);
+/* Kit buttons (IconButton, PowerButton): this only decides when they show. */
+.cardReveal {
   opacity: 0;
   transition:
-    opacity 120ms ease,
-    color 120ms ease,
-    background-color 120ms ease;
+    opacity var(--ds-t-fast) var(--ds-ease),
+    background-color var(--ds-t-fast) var(--ds-ease),
+    color var(--ds-t-fast) var(--ds-ease);
 }
 
-.card:hover .kebab,
-.kebabOpen {
+.card:hover .cardReveal,
+.cardSelected .cardReveal,
+.cardMenuOpen .cardReveal,
+.cardBypassed .cardRevealPower,
+.cardReveal:focus-visible {
   opacity: 1;
 }
 
-.kebab:hover {
-  color: var(--text-primary);
-  background: var(--bg-surface);
+/* Menu rows with nothing to show still line up with the ones that do. */
+.menuIconSpacer {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
 }
 
-/* ───────────────────────────── IN / OUT terminals ──────────────────────── */
+/* ─────────────────────────────── In / Out caps ─────────────────────────── */
 
 .terminal {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  box-shadow: var(--ring-inset);
-  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ds-text-3);
+  white-space: nowrap;
 }
 
-.terminalCaption {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(100% + 7px);
-  text-align: center;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  color: var(--text-tertiary);
+.terminalIn {
+  justify-content: flex-end;
+  padding-right: var(--ds-2);
 }
 
-/* ─────────────────────────────── the [+] node ──────────────────────────── */
+.terminalOut {
+  justify-content: flex-start;
+  padding-left: var(--ds-2);
+}
 
-.addNode {
+/* ──────────────────────────────── add tile ─────────────────────────────── */
+
+.addTile {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-md);
-  color: var(--text-tertiary);
+  border-radius: var(--ds-r-3);
+  color: var(--ds-text-3);
   background: transparent;
-  box-shadow: none;
-  border: 1px dashed var(--border-hover);
-  transition:
-    color 120ms ease,
-    background-color 120ms ease,
-    border-color 120ms ease;
+  box-shadow: var(--ds-ring-line);
 }
 
-.addNode:hover,
-.addNodeOpen {
-  color: var(--text-primary);
-  background: var(--bg-surface);
-  border-color: var(--border-active);
+.addTile:hover,
+.addTileOpen {
+  color: var(--ds-text);
+  background: var(--ds-surface-1);
+  box-shadow: var(--ds-ring-line-strong);
 }
 
-/* ────────────────────────── mid-chain insert [+] ───────────────────────── */
+/* ─────────────────────────── insert and lane add ───────────────────────── */
 
-/* The hit-box has no handlers of its own — a press that misses the dot must
-   bubble to the stage — it only exists to give the dot a hover area the size
-   of the whole gap, and to sit above the wire layer. */
+/* The hit-box has no handlers of its own — a press that misses the button must
+   bubble to the stage — it only gives the button a hover area the size of the
+   whole gap, above the wire layer. */
 .insertHit {
   position: absolute;
   display: flex;
@@ -531,140 +363,174 @@
   z-index: 2;
 }
 
-.insertDot {
+/* A 24px hit target around a 20px round mark. */
+.roundButton {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  color: var(--text-tertiary);
-  background: var(--bg-surface);
-  box-shadow: none;
-  border: 1px dashed var(--border-hover);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ds-r-full);
+}
+
+.roundMark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--ds-r-full);
+  color: var(--ds-text-2);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-ring-line-strong);
+}
+
+.roundButton:hover .roundMark,
+.roundButtonOpen .roundMark {
+  color: var(--ds-text);
+  background: var(--ds-surface-3);
+}
+
+.insertButton {
   opacity: 0;
-  transform: scale(0.8);
-  transition:
-    opacity 120ms ease,
-    transform 120ms ease,
-    color 120ms ease,
-    border-color 120ms ease;
+  transition: opacity var(--ds-t-fast) var(--ds-ease);
 }
 
-.insertHit:hover .insertDot,
-.insertHit[data-open] .insertDot {
+.insertHit:hover .insertButton,
+.insertHit[data-open] .insertButton,
+.insertButton:focus-visible {
   opacity: 1;
-  transform: scale(1);
 }
 
-.insertDot:hover,
-.insertHit[data-open] .insertDot {
-  color: var(--text-primary);
-  border-color: var(--border-active);
+/* The lane's own add slot: always visible, a step quieter than an insert. */
+.laneAdd {
+  position: absolute;
+  inset: 0;
+}
+
+.laneAdd .roundMark {
+  color: var(--ds-text-3);
+  background: var(--ds-surface-1);
+  box-shadow: var(--ds-ring-line);
+}
+
+/* ─────────────────────────────── block picker ──────────────────────────── */
+
+/* The kit's menu surface and rows, laid out in two columns so the whole
+   picker fits a 600px window without scrolling. */
+.picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(168px, 1fr));
+  column-gap: var(--ds-1);
+  max-height: none;
+  overflow: visible;
+}
+
+.pickerSingle {
+  grid-template-columns: minmax(184px, 1fr);
+}
+
+.pickerColumn {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pickerSection {
+  padding: var(--ds-2) var(--ds-2) var(--ds-1);
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ds-text-3);
+}
+
+.pickerColumn > .pickerSection:first-child {
+  padding-top: var(--ds-1);
 }
 
 .pickerIcon {
   display: inline-flex;
+  flex: none;
+  color: var(--ds-text-2);
+}
+
+/* A block's glyph wears its family's hue here too, so the picker teaches the
+   colours the board uses. */
+.pickerRow[data-family]:not(:disabled) .pickerIcon {
+  color: var(--ds-accent);
+}
+
+/* ─────────────────────────────── empty chain ───────────────────────────── */
+
+/* Centred in the visible band, just under the In — Out wire. */
+.emptyOverlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: var(--panel-band, 0px);
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  padding-top: 112px;
+  pointer-events: none;
+}
+
+.empty {
+  padding: 0;
+  pointer-events: auto;
 }
 
 .inlineAnchor {
   display: inline-flex;
 }
 
-/* ─────────────────────────────── empty chain ───────────────────────────── */
+/* ─────────────────────────────── zoom bar ──────────────────────────────── */
 
-/* Sits under the board rather than over it, clear of the zoom bar. */
-.emptyOverlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding-bottom: calc(var(--panel-band, 0px) + var(--zoom-bar-h) + 18px);
-  pointer-events: none;
-}
-
-.empty {
-  padding: 0;
-  gap: 6px;
-  pointer-events: auto;
-}
-
-/* ─────────────────────────────── zoom control ──────────────────────────── */
-
-/* `--panel-band` is the app-root token that flips with [data-panel-open]
-   (theme/tokens.css): the height of the band the param panel covers while a
-   block is selected, 0 otherwise — the CSS twin of layout.ts's PANEL_BAND. NOT
-   `--overlay-bottom`, which also clears the footer and this bar itself. Without
-   an anchor the bar would sit under the panel card exactly when a block is
-   selected, so FIT and the zoom steps would be unclickable. */
+/* `--panel-band` flips with [data-panel-open] (theme/tokens.css): the height
+   the editor covers while a block is selected, 0 otherwise. Without it the bar
+   would sit under the editor exactly when a block is selected. */
 .zoomBar {
   position: absolute;
-  right: 14px;
-  bottom: calc(var(--panel-band, 0px) + 12px);
+  right: var(--ds-3);
+  bottom: calc(var(--panel-band, 0px) + var(--ds-3));
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 999px;
-  /* --bg-elevated #161a21 at 88%; see --grid-dot on why this is not color-mix. */
-  background: rgba(22, 26, 33, 0.88);
-  box-shadow: var(--shadow-tooltip);
-  /* Unprefixed backdrop-filter only lands in Safari 18; every WebKit down to the
-     macOS 11 baseline needs the prefixed name. */
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
+  height: var(--zoom-bar-h);
+  padding: 0 2px;
+  border-radius: var(--ds-r-2);
+  background: var(--ds-surface-1);
+  box-shadow: var(--ds-ring-line);
 }
 
 .zoomButton {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  color: var(--text-secondary);
-  transition:
-    color 120ms ease,
-    background-color 120ms ease;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ds-r-1);
+  color: var(--ds-text-3);
 }
 
 .zoomButton:hover {
-  color: var(--text-primary);
-  background: var(--bg-elevated-hi);
+  color: var(--ds-text);
+  background: var(--ds-surface-2);
 }
 
 .zoomValue {
-  min-width: 44px;
-  height: 22px;
-  padding: 0 4px;
-  border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 22px;
-  text-align: center;
-  color: var(--text-secondary);
+  min-width: 40px;
+  height: 24px;
+  padding: 0 var(--ds-1);
+  border-radius: var(--ds-r-1);
+  font-family: var(--ds-mono);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
-  transition:
-    color 120ms ease,
-    background-color 120ms ease;
+  line-height: 24px;
+  text-align: center;
+  color: var(--ds-text-2);
 }
 
 .zoomValue:hover {
-  color: var(--text-primary);
-  background: var(--bg-elevated-hi);
-}
-
-.zoomFit {
-  width: auto;
-  padding: 0 8px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  color: var(--ds-text);
+  background: var(--ds-surface-2);
 }

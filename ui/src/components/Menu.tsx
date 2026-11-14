@@ -12,13 +12,16 @@ import s from "./kit.module.css";
 import { cx } from "./cx";
 import { Scrim } from "./overlay";
 import { duration, ease } from "../theme/motion";
+import { CheckIcon } from "./icons";
 
 export interface MenuItem {
   id: string;
   label: string;
+  /** Leading 16px icon, drawn in `text-2`. */
   icon?: ReactNode;
-  /** Right-aligned hint, e.g. a shortcut or a value. */
+  /** Trailing text in `text-3`, e.g. a value or a shortcut. */
   hint?: string;
+  /** The current item: gets a check. */
   selected?: boolean;
   disabled?: boolean;
   destructive?: boolean;
@@ -42,7 +45,8 @@ export interface MenuProps {
 }
 
 /**
- * Vercel-style dropdown, portalled to `document.body` and positioned against an
+ * Dropdown menu: `surface-2`, radius 8, float shadow, 28px items, a check on
+ * the current item. Portalled to `document.body` and positioned against an
  * anchor element. Mouse-first (the plugin WebView gets no reliable keyboard in
  * Logic) but Escape/arrow keys still work when focus is available.
  */
@@ -104,7 +108,7 @@ export function Menu({
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: duration.instant, ease: ease.out }}
+            transition={{ duration: duration.fast, ease: ease.standard }}
           >
             {entries.map((entry) => {
               if (entry.kind === "separator") {
@@ -122,6 +126,7 @@ export function Menu({
                   key={entry.id}
                   type="button"
                   role="menuitem"
+                  aria-current={entry.selected || undefined}
                   disabled={entry.disabled}
                   className={cx(
                     s.menuItem,
@@ -133,10 +138,15 @@ export function Menu({
                     onClose();
                   }}
                 >
-                  {entry.icon}
+                  {entry.icon && (
+                    <span className={s.menuItemIcon}>{entry.icon}</span>
+                  )}
                   <span className={s.menuItemLabel}>{entry.label}</span>
                   {entry.hint && (
                     <span className={s.menuItemHint}>{entry.hint}</span>
+                  )}
+                  {entry.selected && (
+                    <CheckIcon className={s.menuItemCheck} />
                   )}
                 </button>
               );

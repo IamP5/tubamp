@@ -1,61 +1,64 @@
 /**
- * Motion tokens — implements docs/research/motion-design.md §1.
+ * Motion tokens for `motion` transitions — ui/DESIGN.md §Motion, mirroring the
+ * CSS tokens `--ds-t-fast/base/slow` and `--ds-ease` in tokens.css.
  *
  * Never inline a raw ms / cubic-bezier / spring config in a component: import
- * from here so the whole app shares one physical vocabulary.
+ * from here so the whole app shares one vocabulary.
  */
 
-/** Durations in seconds (Motion's unit). See §1.1 for the ms table. */
+/** Durations in seconds (Motion's unit). */
 export const duration = {
-  /** 100ms — power dim, LED toggle, colour swaps, meter-peak flash. */
+  /** 100ms — a state flip that must never feel laggy (power, A/B). */
   instant: 0.1,
-  /** 150ms — hover/press feedback, tooltip, connector highlight. */
-  fast: 0.15,
-  /** 220ms — panel content morph, param-panel swap, block select ring. */
-  base: 0.22,
-  /** 320ms — modal/overlay open, entrance stagger step, A/B flip. */
-  slow: 0.32,
-  /** 420ms — zoom-to-fit, full preset crossfade. */
+  /** 120ms — hover and press (`--ds-t-fast`). */
+  fast: 0.12,
+  /** 180ms — selection, expand, reorder settle (`--ds-t-base`). */
+  base: 0.18,
+  /** 240ms — overlays in and out (`--ds-t-slow`). */
+  slow: 0.24,
+  /** 420ms — zoom-to-fit, a full preset crossfade. */
   deliberate: 0.42,
 } as const;
 
-/** Same values in milliseconds, for CSS `transition` strings and timers. */
+/** Same values in milliseconds, for timers. */
 export const durationMs = {
   instant: 100,
-  fast: 150,
-  base: 220,
-  slow: 320,
+  fast: 120,
+  base: 180,
+  slow: 240,
   deliberate: 420,
 } as const;
 
-/** Cubic-bezier eases for tween transitions (opacity / colour / non-physical). */
+/** The one easing (`--ds-ease`). */
+const STANDARD = [0.2, 0, 0, 1] as const;
+
+/**
+ * Eases for tween transitions. One curve: the names survive so call sites read
+ * their intent, but every one of them is `--ds-ease`.
+ */
 export const ease = {
-  /** Snappy start, soft landing. Default for anything entering or growing. */
-  out: [0.16, 1, 0.3, 1] as const,
-  /** Symmetric — crossfades / colour swaps with no directional intent. */
-  inOut: [0.65, 0, 0.35, 1] as const,
-  /** Sharp in — exits and dismissals, gone fast. */
-  in: [0.7, 0, 0.84, 0] as const,
-  /** Near-linear — hover/press tweens where springs aren't used. */
-  micro: [0.4, 0, 0.2, 1] as const,
+  standard: STANDARD,
+  out: STANDARD,
+  inOut: STANDARD,
+  in: STANDARD,
+  micro: STANDARD,
 } as const;
 
 /**
  * Springs for physical properties (x, y, scale, rotate, layout, drag).
  *
- * Invariant: damping / (2 * sqrt(stiffness * mass)) >= 0.75 for every token, so
- * everything is critically-to-slightly-underdamped — one settle tick at most,
- * never a visible bounce. `dampingRatio()` below exists to check new tokens.
+ * Invariant: damping / (2 * sqrt(stiffness * mass)) >= 0.85 for every token, so
+ * everything settles with no visible bounce. `dampingRatio()` below exists to check new tokens.
  */
 export const spring = {
   /** Hover/press micro — settles within ~120ms, zero overshoot. */
   micro: { type: "spring", stiffness: 500, damping: 40, mass: 0.5 },
   /** Default UI spring — select ring, knob snap-back, small chrome. */
   ui: { type: "spring", stiffness: 400, damping: 32, mass: 0.8 },
-  /** Drag pick-up (block lift) — livelier, still no bounce. */
-  pickup: { type: "spring", stiffness: 380, damping: 28, mass: 1 },
-  /** Drop / settle after reorder — the one intentional settle tick (ζ ≈ 0.75). */
-  settle: { type: "spring", stiffness: 300, damping: 26, mass: 1 },
+  /** Drag pick-up (block lift) — livelier, still no bounce (ζ ≈ 0.92). */
+  pickup: { type: "spring", stiffness: 380, damping: 36, mass: 1 },
+  /** Drop / settle after reorder — no visible bounce (ζ ≈ 0.98). */
+  settle: { type: "spring", stiffness: 300, damping: 34, mass: 1 },
   /** Layout reflow of siblings when a block moves / is added / removed. */
   reflow: { type: "spring", stiffness: 350, damping: 34, mass: 1 },
   /** Canvas pan/zoom — heavier, feels like a real surface. */
@@ -64,7 +67,7 @@ export const spring = {
 
 export type SpringToken = keyof typeof spring;
 
-/** ζ = damping / (2·sqrt(stiffness·mass)) — must stay >= 0.75. */
+/** ζ = damping / (2·sqrt(stiffness·mass)) — must stay >= 0.85. */
 export function dampingRatio(config: {
   stiffness: number;
   damping: number;
@@ -82,7 +85,7 @@ export const tween = {
   instant: { duration: duration.instant, ease: ease.micro },
 } as const;
 
-/** Stagger tokens (§1.4). */
+/** Stagger tokens. */
 export const stagger = {
   board: { staggerChildren: 0.035, delayChildren: 0.08 },
   list: { staggerChildren: 0.02 },
@@ -97,7 +100,7 @@ export function staggerFor(itemCount: number, spread = 0.15): number {
   return Math.min(0.02, spread / itemCount);
 }
 
-/** Meter smoothing time constants, in seconds (§2.12). */
+/** Meter smoothing time constants, in seconds. */
 export const meterSmoothing = {
   /** ~20ms — near-instant response to rising levels. */
   attackTau: 0.02,

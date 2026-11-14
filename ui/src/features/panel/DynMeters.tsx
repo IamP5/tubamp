@@ -1,147 +1,126 @@
 /**
- * Gate and compressor meters (docs/FX-ENGINES.md §7.4), fed by the `dynMeters`
- * event through `useDynMeters`. Every moving part is a MotionValue transform or a
- * direct DOM text write, so a meter never re-renders React.
+ * Pieces the gate and compressor editors share.
  *
- *  - `GateMeter`: a state lamp (closed / closing / open), the detector level over
- *    -90..0 dBFS with a marker at the threshold and one 6 dB lower (the close
- *    point, Tight and Smooth only), and gain reduction over 0..60 dB.
- *  - `CompMeter`: gain reduction over 0..20 dB for one instance.
+ * `GrMeter`: the gain-reduction column the gate and compressor displays end with
+ * (docs/FX-ENGINES.md §7.4): a 10px meter-ink bar that grows down from 0 dB,
+ * its own small dB scale beside it, a 1px peak-hold tick, and optionally the
+ * deepest the reduction may go (the gate's range). Fed by `useDynMeters`; the
+ * bar moves through `onFrame` with direct attribute writes, never a React
+ * render.
  */
-import { useCallback, useEffect, useRef } from "react";
-import { motion, useMotionValueEvent, useTransform, type MotionValue } from "motion/react";
-import {
-  COMP_GR_SCALE_DB,
-  GATE_GR_SCALE_DB,
-  GATE_LEVEL_MAX_DB,
-  GATE_LEVEL_MIN_DB,
-  useDynMeters,
-  useSliderParam,
-} from "../../hooks";
-import s from "./panel.module.css";
+import { useEffect, useRef } from "react";
+import type { MotionValue } from "motion/react";
+import { onFrame } from "../../hooks";
+import { cx } from "../../components";
+import { Plot, PlotSplit, clamp, plot as p } from "./display";
+import d from "./dyn.module.css";
 
-/** Hysteresis between the open and close points in Tight and Smooth, dB. */
-const GATE_HYSTERESIS_DB = 6;
+/** Vertical inset of every dynamics scale, so a 0 dB label and a handle at the
+ *  top are not cut by the display's edge. */
+export const DYN_PAD_Y = 10;
 
-const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
+const BAR_W = 8;
+const BAR_RIGHT = 12;
+const PEAK_HOLD_S = 1;
+const PEAK_FALL_DB_PER_S = 20;
 
-interface DynBarProps {
-  label: string;
-  /** Smoothed value in dB. */
+export function GrMeter({
+  value,
+  scaleDb,
+  ticks,
+  floorDb,
+  label = "Gain reduction",
+}: {
+  /** Smoothed gain reduction, dB >= 0. */
   value: MotionValue<number>;
-  min: number;
-  max: number;
-  /** Text for the numeric readout. */
-  format(db: number): string;
-  /** Static tick positions in dB (the gate's threshold and close point). */
-  markers?: readonly { db: number; className: string; title: string }[];
-}
-
-function DynBar({ label, value, min, max, format, markers }: DynBarProps) {
-  const width = useTransform(value, (v) => `${(clamp01((v - min) / (max - min)) * 100).toFixed(2)}%`);
-  const readoutRef = useRef<HTMLSpanElement>(null);
-
-  const paint = useCallback(
-    (v: number): void => {
-      const el = readoutRef.current;
-      if (!el) return;
-      const text = format(v);
-      if (el.textContent !== text) el.textContent = text;
-    },
-    [format],
-  );
-  useMotionValueEvent(value, "change", paint);
-  useEffect(() => {
-    paint(value.get());
-  }, [value, paint]);
-
-  return (
-    <div className={s.dynBarRow}>
-      <span className={s.dynBarLabel}>{label}</span>
-      <div className={s.dynBarTrack} role="meter" aria-label={label}>
-        <motion.div className={s.dynBarFill} style={{ width }} />
-        {markers?.map((m) => (
-          <span
-            key={m.className}
-            className={`${s.dynMarker} ${m.className}`}
-            style={{ left: `${(clamp01((m.db - min) / (max - min)) * 100).toFixed(2)}%` }}
-            title={m.title}
-          />
-        ))}
-      </div>
-      <span ref={readoutRef} className={s.dynBarReadout} />
-    </div>
-  );
-}
-
-/** Gain-reduction readout clamped to the meter's scale: past it the scale value is
- *  shown with a trailing plus ("−60+ dB"), exactly what the bar shows. */
-function grFormatter(scaleDb: number): (db: number) => string {
-  return (db) => {
-    if (db >= scaleDb) return `−${scaleDb}+ dB`;
-    return db < 0.05 ? "0.0 dB" : `−${db.toFixed(1)} dB`;
-  };
-}
-const formatGateGr = grFormatter(GATE_GR_SCALE_DB);
-const formatCompGr = grFormatter(COMP_GR_SCALE_DB);
-const formatLevel = (db: number): string =>
-  db <= GATE_LEVEL_MIN_DB ? `< ${GATE_LEVEL_MIN_DB} dB` : `${db.toFixed(0)} dB`;
-
-/** One lamp: lit while `gateState` equals `on`. */
-function Lamp({ state, on, className, children }: {
-  state: MotionValue<number>;
-  on: number;
-  className: string;
-  children: string;
+  /** The bottom of the bar, dB of reduction. */
+  scaleDb: number;
+  /** Reduction depths labelled on the scale, dB >= 0. */
+  ticks: readonly number[];
+  /** The most the effect can reduce right now (the gate's range), dB >= 0;
+   *  drawn as a reference across the bar when it is on the scale. */
+  floorDb?: number;
+  label?: string;
 }) {
-  const opacity = useTransform(state, (v) => (v === on ? 1 : 0.22));
+  const bar = useRef<SVGRectElement | null>(null);
+  const peak = useRef<SVGRectElement | null>(null);
+
+  useEffect(() => {
+    let held = 0;
+    let heldFor = 0;
+    let lastBar = "";
+    let lastPeak = "";
+    let lastEl: SVGRectElement | null = null;
+    return onFrame((dt) => {
+      const el = bar.current;
+      if (!el) return;
+      if (el !== lastEl) {
+        lastEl = el;
+        lastBar = lastPeak = "";
+      }
+      const top = Number(el.getAttribute("y"));
+      const span = Number(el.dataset.span);
+      const gr = Math.max(0, value.get());
+      if (gr >= held) {
+        held = gr;
+        heldFor = 0;
+      } else if ((heldFor += dt) > PEAK_HOLD_S) {
+        held = Math.max(gr, held - PEAK_FALL_DB_PER_S * dt);
+      }
+      const height = (clamp(gr / scaleDb, 0, 1) * span).toFixed(1);
+      if (height !== lastBar) el.setAttribute("height", (lastBar = height));
+      const tick = peak.current;
+      if (tick) {
+        const y = held < 0.05 ? "" : (top + clamp(held / scaleDb, 0, 1) * span - 1).toFixed(1);
+        if (y !== lastPeak) {
+          lastPeak = y;
+          tick.setAttribute("y", y || String(top));
+          tick.style.opacity = y ? "1" : "0";
+        }
+      }
+    });
+  }, [value, scaleDb]);
+
   return (
-    <motion.span className={`${s.lamp} ${className}`} style={{ opacity }}>
-      <span className={s.lampDot} />
-      {children}
-    </motion.span>
-  );
-}
-
-/** `classic` hides the close-point marker: Classic has no hysteresis. */
-export function GateMeter({ classic }: { classic: boolean }) {
-  const meters = useDynMeters();
-  const threshold = useSliderParam("gate_threshold").scaled;
-
-  const markers = [
-    { db: threshold, className: s.dynMarkerOpen, title: "Open point (threshold)" },
-    ...(classic
-      ? []
-      : [{ db: threshold - GATE_HYSTERESIS_DB, className: s.dynMarkerClose, title: "Close point (6 dB lower)" }]),
-  ];
-
-  return (
-    <div className={s.meterCard}>
-      <div className={s.lampRow}>
-        <Lamp state={meters.gateState} on={2} className={s.lampOpen}>OPEN</Lamp>
-        <Lamp state={meters.gateState} on={1} className={s.lampClosing}>CLOSING</Lamp>
-        <Lamp state={meters.gateState} on={0} className={s.lampClosed}>CLOSED</Lamp>
+    <>
+      <PlotSplit />
+      <div className={d.grColumn}>
+        <Plot aria-label={label}>
+          {({ w, h }) => {
+            const top = DYN_PAD_Y;
+            const span = h - 2 * DYN_PAD_Y;
+            const x = w - BAR_RIGHT - BAR_W;
+            const yOf = (db: number): number => top + clamp(db / scaleDb, 0, 1) * span;
+            return (
+              <>
+                {ticks.map((db) => {
+                  const y = Math.round(yOf(db)) + 0.5;
+                  return (
+                    <g key={db}>
+                      <line className={p.grid} x1={x - 4} x2={x} y1={y} y2={y} />
+                      <text className={cx(p.tick, d.scaleText)} x={x - 7} y={y + 4}>
+                        {db === 0 ? "0" : `−${db}`}
+                      </text>
+                    </g>
+                  );
+                })}
+                <rect className={d.track} x={x} y={top} width={BAR_W} height={span} rx={2} />
+                <rect ref={bar} className={p.meter} x={x} y={top} width={BAR_W} height={0} data-span={span} />
+                <rect ref={peak} className={p.meter} x={x} y={top} width={BAR_W} height={1} opacity={0} />
+                {floorDb !== undefined && floorDb < scaleDb && (
+                  <line
+                    className={d.floor}
+                    x1={x - 2}
+                    x2={x + BAR_W + 2}
+                    y1={Math.round(yOf(floorDb)) + 0.5}
+                    y2={Math.round(yOf(floorDb)) + 0.5}
+                  />
+                )}
+              </>
+            );
+          }}
+        </Plot>
       </div>
-      <DynBar
-        label="LEVEL"
-        value={meters.gateLevel}
-        min={GATE_LEVEL_MIN_DB}
-        max={GATE_LEVEL_MAX_DB}
-        format={formatLevel}
-        markers={markers}
-      />
-      <DynBar label="GR" value={meters.gateGr} min={0} max={GATE_GR_SCALE_DB} format={formatGateGr} />
-    </div>
-  );
-}
-
-/** Gain reduction of one compressor instance (0 = comp, 1 = comp2, 2 = comp3). */
-export function CompMeter({ instance }: { instance: number }) {
-  const meters = useDynMeters();
-  const value = meters.compGr[instance] ?? meters.compGr[0];
-  return (
-    <div className={s.compMeter}>
-      <DynBar label="GR" value={value} min={0} max={COMP_GR_SCALE_DB} format={formatCompGr} />
-    </div>
+    </>
   );
 }

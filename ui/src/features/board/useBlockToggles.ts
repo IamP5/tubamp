@@ -2,8 +2,8 @@
  * Every block's `*_on` parameter, bound once at board level.
  *
  * Twenty-seven fixed `useToggleParam` calls (BLOCK_IDS is frozen, so the hook
- * count is constant) — the card LEDs, the kebab menu labels and the connector
- * dimming all read from the same snapshot, and none of them has to subscribe
+ * count is constant) — the tile power buttons, the tile menu labels and the
+ * bypass dimming all read from the same snapshot, and none of them has to subscribe
  * individually. Replaces the native view's 100ms `refreshFromParams` poll with a
  * real subscription, so host automation / A-B recall shows up immediately.
  *
@@ -11,7 +11,7 @@
  * `chain::BlockInfo` names that very parameter) and is never rendered, so it
  * reuses the same binding rather than opening a second subscription to one relay.
  */
-import { BLOCK_IDS, type BlockId } from "../../bridge/types";
+import type { BlockId } from "../../bridge/types";
 import { useToggleParam, type ToggleParam } from "../../hooks";
 
 export type BlockToggles = Record<BlockId, ToggleParam>;
@@ -76,9 +76,3 @@ export function useBlockToggles(): BlockToggles {
   };
 }
 
-/** Blocks currently bypassed — the set the connector layer dims against. */
-export function bypassedBlocks(toggles: BlockToggles): Set<BlockId> {
-  const off = new Set<BlockId>();
-  for (const id of BLOCK_IDS) if (!toggles[id].value) off.add(id);
-  return off;
-}

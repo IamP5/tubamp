@@ -53,18 +53,20 @@ import { ROW_WRAP, rowsFor } from "../../store";
 
 export type { LaneSide };
 
-/** Block card face, per docs/REACT-UI.md §UX structure. */
-export const CARD_W = 112;
-export const CARD_H = 80;
+/** Block tile: a text tile (glyph, name, what is loaded), ui/DESIGN.md. */
+export const CARD_W = 148;
+export const CARD_H = 48;
 
-/** IN / OUT terminal badges and the [+] node share one square footprint. */
-export const TERMINAL_W = 60;
-export const TERMINAL_H = 60;
-export const ADD_W = 60;
-export const ADD_H = 60;
+/** IN / OUT end caps: the word at the wire's end, one control height tall. */
+export const TERMINAL_W = 32;
+export const TERMINAL_H = 28;
+/** The end-of-chain add tile: a square as tall as a block tile. */
+export const ADD_W = 48;
+export const ADD_H = 48;
 
-/** Gap between every pair of lane elements (the connector runs live here). */
-export const GAP = 44;
+/** Gap between every pair of lane elements (the connector runs live here).
+ *  Room for the 20px insert button with 6px of wire either side. */
+export const GAP = 32;
 
 /** Distance between two adjacent card slots. */
 export const SLOT_STRIDE = CARD_W + GAP;
@@ -74,9 +76,9 @@ export const FIRST_CARD_X = TERMINAL_W + GAP;
 
 /**
  * Vertical air between two rows. Wide enough for the wrap connector to loop
- * back through it without touching either row, and for a card's note pill.
+ * back through its middle, 20px clear of either row.
  */
-export const ROW_GAP = 56;
+export const ROW_GAP = 40;
 
 /** Distance between two adjacent row centre lines — plain rows only; a row's
  *  real spacing comes from `rowGeometry`, which is identical to this whenever
@@ -85,28 +87,33 @@ export const ROW_STRIDE = CARD_H + ROW_GAP;
 
 /** Vertical air between the two lane tracks of a split container. Narrower than
  *  ROW_GAP: the tracks belong together and no wrap route runs between them. */
-export const LANE_TRACK_GAP = 24;
+export const LANE_TRACK_GAP = 20;
 
 /** How far each lane track's centre line sits off the container's centre line. */
 export const LANE_OFFSET = (CARD_H + LANE_TRACK_GAP) / 2;
 
-/** Height of a split container: two card-tall tracks and the air between them. */
-export const LANE_ROW_H = CARD_H * 2 + LANE_TRACK_GAP;
+
 
 /** First lane column, counted from the SPLIT tile's own column. */
 export const LANE_FIRST_COLUMN = 1;
 
-/** The lane-scoped [+] slot that closes each lane: small, dashed, centred in
- *  the column after the lane's last card. */
-export const LANE_ADD_W = 36;
-export const LANE_ADD_H = 36;
+/** The lane-scoped [+] slot that closes each lane: a small round button,
+ *  centred in the column after the lane's last card. */
+export const LANE_ADD_W = 24;
+export const LANE_ADD_H = 24;
 
-/** Air between the split container's frame and the cards inside it. The lane
- *  badges sit ON the frame's top and bottom edges, so the board needs these
- *  too, not only the connector layer that draws the frame. */
-export const REGION_PAD_X = 20;
-export const REGION_PAD_Y = 14;
-export const REGION_R = 18;
+/** Air between the split container's frame and the tiles inside it. Lane A's
+ *  label sits in the top pad, above its first tile, exactly as lane B's sits
+ *  in the track gap above its own — so REGION_PAD_Y matches LANE_TRACK_GAP. */
+export const REGION_PAD_X = 12;
+export const REGION_PAD_Y = 20;
+export const REGION_R = 8;
+
+/** Height of a row holding the split region: two tile-tall tracks, the air
+ *  between them, and the frame's pads — so the row's band IS the frame, and a
+ *  row-wrap route through the gutter below it clears the frame by ROW_GAP / 2
+ *  instead of running along its bottom edge. */
+export const LANE_ROW_H = CARD_H * 2 + LANE_TRACK_GAP + REGION_PAD_Y * 2;
 
 /**
  * Height of the band the param panel covers while a block is selected — the JS
@@ -116,32 +123,25 @@ export const REGION_R = 18;
  * stage's framing decisions (fit, pan clamp, ensure-visible) and is 0 whenever
  * nothing is selected.
  */
-export const PANEL_BAND = 260;
+export const PANEL_BAND = 296;
 
 /** Vertical lift applied to a card while it is being dragged. */
-export const DRAG_LIFT = 6;
+export const DRAG_LIFT = 4;
 
 /** Pointer travel (screen px) before a press turns into a reorder drag. */
 export const DRAG_THRESHOLD_PX = 5;
 
 /**
  * Slack added around the slot boxes when the content bounding box is measured:
- * terminals carry a caption below them and cards a note pill, and neither is
- * part of a slot's own rectangle.
+ * the split frame and its lane labels reach REGION_PAD_Y past the tiles, and
+ * are not part of any slot's own rectangle.
  */
-export const CONTENT_PAD_Y = 28;
+export const CONTENT_PAD_Y = REGION_PAD_Y;
 
 /** Slack on each side of the connector SVG, so a card dragged off the end of a
  *  row still has wire under it. */
 const CONNECTOR_PAD_X = 400;
 const CONNECTOR_PAD_Y = 160;
-
-/**
- * `icons::makeFlowArrow()` from the deleted BlockIcons.h, scaled to the same 7px
- * box the native painter used and re-centred on the origin so it can be
- * translated along a connector.
- */
-export const FLOW_ARROW_PATH_D = "M-1.82 -2.38L1.82 0L-1.82 2.38";
 
 /** "lane-a" / "lane-b" are the two lane [+] slots. */
 export type NodeId = "in" | "out" | "add" | "lane-a" | "lane-b" | BlockId;
@@ -229,7 +229,8 @@ export interface LaneRegion {
   head: NodeId;
   tail: NodeId;
   tailW: number;
-  /** Top edge and height in lane units. */
+  /** Top edge and height in lane units: the frame itself (the row's band,
+   *  REGION_PAD_Y outside the lane tiles). */
   y: number;
   h: number;
   /** Centre lines of the two lane tracks. */
@@ -656,7 +657,7 @@ function connectorLinks(
   return links;
 }
 
-/** The box every slot fits inside, with room for captions and note pills. */
+/** The box every slot fits inside, with room for the split frame. */
 export function contentBox(slots: readonly Slot[]): Box {
   if (slots.length === 0) return { x: 0, y: -CARD_H / 2, w: TERMINAL_W, h: CARD_H };
   let left = Infinity;

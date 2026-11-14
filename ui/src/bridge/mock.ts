@@ -1276,6 +1276,17 @@ const installed: T3kInstalledFile[] = [];
   };
   state.models = [...state.models, entry];
   installed.push({ path: entry.path, toneId, modelId: toneId * 10, format: "nam" });
+  // Its sidecar names the tone, as a real downloaded file's does — so the UI
+  // shows the tone's title for it, not the file slug.
+  toneRefs.set(entry.path, {
+    toneId,
+    title: "Dumble ODS — Holy Grail",
+    creator: "vintage_vault",
+    gear: "amp",
+    size: "standard",
+    license: "",
+    url: `https://www.tone3000.com/tones/${toneId}`,
+  });
 }
 
 function simulateDownload(model: T3kModel, tone?: T3kTone): void {

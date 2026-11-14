@@ -1,8 +1,10 @@
 /**
  * Level 1 — browse. Kind, shelf, sort and gear chips drive the request
- * directly; the search box is sugar on top. Hosts such as Logic give the
- * WebView no keyboard at all, so typing is never the only way in: the keyboard
- * button opens a native text prompt (`t3kPromptSearch`) that does get one.
+ * directly; the search field is sugar on top. Hosts such as Logic give the
+ * WebView no keyboard at all, so the field is a button that opens a native
+ * text prompt (`t3kPromptSearch`), which does get one. Where the page does
+ * receive keys (the standalone app, a browser), typing anywhere in the list
+ * turns the field into a real input.
  *
  * Search is cheap on the API: 300 ms debounce, nothing below 2 characters
  * (empty clears), Enter submits at once, and the store's list key makes a newer
@@ -19,7 +21,6 @@ import {
   Menu,
   Segmented,
   Spinner,
-  Tooltip,
   cx,
   useMenu,
   type MenuEntry,
@@ -27,8 +28,12 @@ import {
 } from "../../components";
 import { bridge, type T3kBrowseKind } from "../../bridge";
 import { selectT3kTarget, T3K_TARGET_LABELS, useStore } from "../../store";
-import { KeyboardIcon, SearchIcon, T3kMark } from "./parts";
+import { SearchIcon } from "./parts";
 import { RowSkeleton, ToneRow } from "./ToneRow";
+
+/** Rows appended by "load more" restart the entrance order instead of all
+ *  waiting for the cap. */
+const PAGE_STAGGER_SPAN = 20;
 import {
   effectiveSort,
   GEAR_FILTERS,
@@ -42,7 +47,7 @@ import type { BrowseList } from "./useBrowse";
 import s from "./t3k.module.css";
 
 const KIND_OPTIONS: SegmentedOption<T3kBrowseKind>[] = [
-  { value: "models", label: "Models" },
+  { value: "models", label: "Captures" },
   { value: "irs", label: "IRs" },
 ];
 
@@ -81,6 +86,8 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
   /* ── search ── */
   const [search, setSearch] = useState(query);
   const [syncedQuery, setSyncedQuery] = useState(query);
+  /* The keyboard path: true while the field is a live <input>. */
+  const [editing, setEditing] = useState(false);
   // The store's query moved without us (native prompt, retarget): follow it.
   // Adjusted during render, not in an effect, so no stale frame renders.
   if (syncedQuery !== query) {
@@ -93,28 +100,52 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
   const tooShort = trimmed.length > 0 && trimmed.length < SEARCH_MIN_CHARS;
 
   useEffect(() => {
-    if (trimmed === query.trim() || tooShort) return;
+    if (!editing || trimmed === query.trim() || tooShort) return;
     const id = window.setTimeout(() => patch({ query: trimmed }), SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(id);
-  }, [trimmed, tooShort, query, patch]);
+  }, [editing, trimmed, tooShort, query, patch]);
 
   const submit = (text: string): void => patch({ query: text.trim() });
+  const clearSearch = (): void => {
+    setSearch("");
+    setEditing(false);
+    submit("");
+  };
 
   const promptSearch = async (): Promise<void> => {
-    const res = await bridge.t3kPromptSearch(search);
+    const res = await bridge.t3kPromptSearch(query);
     if (res.text === null) return;
     setSearch(res.text);
     submit(res.text);
   };
 
-  /* ── sort + filters menu ── */
+  /* A printable key while the list is in front starts typing a search — only
+     ever reached where the host delivers keys at all. */
+  useEffect(() => {
+    if (editing) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key.length !== 1 || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === " " && search === "") return;
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
+      if (document.querySelector('[role="menu"], [role="dialog"]')) return;
+      if (useStore.getState().browser.detail) return;
+      e.preventDefault();
+      setSearch(query === "" ? e.key : query + e.key);
+      setEditing(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editing, query, search]);
+
+  /* ── sort menu (the Calibrated filter lives in it too) ── */
   const {
     ref: sortRef,
     anchor: sortAnchor,
     open: sortOpen,
     toggle: toggleSort,
     close: closeSort,
-  } = useMenu();
+  } = useMenu<HTMLSpanElement>();
 
   const canCalibrate = kind === "models" && !profile;
   /* A profile list has no trending or relevance signal: it keeps the
@@ -154,10 +185,11 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
   const filtered = gear !== null || filterOn || shelf !== "all" || searching;
   const resetFilters = (): void => {
     setSearch("");
+    setEditing(false);
     patch({ gear: null, shelf: "all", calibrated: false, query: "" });
   };
 
-  /* ── scroll memory + auto paging ── */
+/* ── scroll memory + auto paging ── */
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLLIElement>(null);
   const savedTop = useStore.getState().t3kScroll[list.key] ?? 0;
@@ -210,64 +242,49 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
     return () => observer.disconnect();
   }, [canPage, nextPage, list.tones.length, fetchPage]);
 
-  /* ── copy ── */
-  const noun = kind === "irs" ? "IRs" : "models";
-  const countText = list.loading
-    ? "Loading…"
-    : list.error && list.tones.length === 0
-      ? "Not loaded"
-      : `${list.total} ${list.total === 1 ? noun.slice(0, -1) : noun}`;
-  const sortText = tooShort
-    ? "keep typing…"
-    : profile && (sort === "best-match" || sort === "trending")
-      ? "most recent first"
-      : browser.sort === null && searching
-        ? "best match · search default"
-        : SORT_LABELS[sort].toLowerCase();
+  const placeholder = profile ? "Search this list" : "Search TONE3000";
 
   return (
     <>
       <header className={s.head}>
-        <T3kMark compact />
+        <span className={s.title}>TONE3000</span>
         <span className={s.headSpacer} />
-        <span className={s.targetLabel}>Loading into</span>
         {kind === "models" && amp2InChain ? (
           <Segmented
-            className={s.targetSwitch}
             options={TARGET_OPTIONS}
             value={target === "amp2" ? "amp2" : "amp"}
             onChange={(value) => setAmpTarget(value)}
             aria-label="Load captures into"
           />
         ) : (
-          <span className={s.targetPill}>{T3K_TARGET_LABELS[target]}</span>
+          <span className={s.targetText}>Into {T3K_TARGET_LABELS[target]}</span>
         )}
         <IconButton aria-label="Close browser" onClick={onClose} size="sm">
-          <CloseIcon size={14} />
+          <CloseIcon />
         </IconButton>
       </header>
 
-      <div className={s.controls}>
-        <div className={s.controlRow}>
+      <div className={s.filters}>
+        <div className={s.filterRow}>
           <Segmented
             options={KIND_OPTIONS}
             value={kind}
             onChange={(next) => patch({ kind: next })}
             aria-label="Catalog kind"
           />
-          <button
-            ref={sortRef}
-            type="button"
-            className={cx(s.sortButton, sortOpen && s.sortButtonOpen)}
-            onClick={toggleSort}
-            aria-haspopup="menu"
-            aria-expanded={sortOpen}
-            aria-label={`Sort: ${sortLabel(sort)}${filterOn ? ", calibrated only" : ""}`}
-          >
-            {filterOn && <span className={s.filterDot} aria-hidden="true" />}
-            <span className={s.sortLabel}>{sortLabel(sort)}</span>
-            <ChevronDownIcon size={12} />
-          </button>
+          <span ref={sortRef} className={s.sortAnchor}>
+            <Button
+              size="sm"
+              onClick={toggleSort}
+              aria-haspopup="menu"
+              aria-expanded={sortOpen}
+              aria-label={`Sort: ${sortLabel(sort)}${filterOn ? ", calibrated only" : ""}`}
+            >
+              {sortLabel(sort)}
+              {filterOn && " · Calibrated"}
+              <ChevronDownIcon size={14} />
+            </Button>
+          </span>
           <Menu
             anchor={sortAnchor}
             open={sortOpen}
@@ -278,49 +295,57 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
           />
         </div>
 
-        <div className={s.searchLine}>
-          <label className={s.searchRow}>
-            <SearchIcon />
+        <div className={cx(s.field, (editing || searching) && s.fieldActive)}>
+          <span className={s.fieldIcon}>
+            <SearchIcon size={14} />
+          </span>
+          {editing ? (
             <input
-              className={s.searchInput}
+              className={s.fieldInput}
               value={search}
-              placeholder={profile ? "Search this list" : "Search TONE3000"}
+              placeholder={placeholder}
+              aria-label={placeholder}
+              autoFocus
               onChange={(e) => setSearch(e.target.value)}
+              onBlur={() => {
+                submit(search);
+                setEditing(false);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") submit(search);
-                if (e.key === "Escape" && search !== "") {
+                if (e.key === "Escape") {
                   e.stopPropagation();
-                  setSearch("");
-                  submit("");
+                  clearSearch();
                 }
               }}
               enterKeyHint="search"
               spellCheck={false}
             />
-            {search !== "" && (
-              <button
-                type="button"
-                className={s.searchClear}
-                aria-label="Clear search"
-                onClick={() => {
-                  setSearch("");
-                  submit("");
-                }}
-              >
-                <CloseIcon size={11} />
-              </button>
-            )}
-          </label>
-          <Tooltip label="Type in a dialog (for hosts without keyboard)">
+          ) : (
             <button
               type="button"
-              className={s.keyboardButton}
+              className={s.fieldButton}
               aria-label="Type a search in a dialog"
               onClick={() => void promptSearch()}
             >
-              <KeyboardIcon />
+              {searching ? (
+                <span className={s.fieldValue}>{query}</span>
+              ) : (
+                <span className={s.fieldPlaceholder}>{placeholder}</span>
+              )}
             </button>
-          </Tooltip>
+          )}
+          {(searching || (editing && search !== "")) && (
+            <IconButton
+              className={s.fieldClear}
+              aria-label="Clear search"
+              size="sm"
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={clearSearch}
+            >
+              <CloseIcon size={14} />
+            </IconButton>
+          )}
         </div>
 
         <div className={s.shelves} role="tablist" aria-label="Shelf">
@@ -350,21 +375,13 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
               {GEAR_LABELS[value]}
             </button>
           ))}
-        </div>
-
-        <div className={s.countLine}>
-          <span className={s.countText}>
-            {countText} · {sortText}
-            {filterOn && " · calibrated"}
-          </span>
-          <span className={s.countRight}>
-            {(list.loading || list.loadingMore) && <Spinner size={11} />}
-            {filtered && (
-              <button type="button" className={s.clearButton} onClick={resetFilters}>
+          {filtered && (
+            <span className={s.reset}>
+              <Button size="sm" variant="ghost" onClick={resetFilters}>
                 Reset
-              </button>
-            )}
-          </span>
+              </Button>
+            </span>
+          )}
         </div>
       </div>
 
@@ -378,33 +395,24 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
         ) : list.error && list.tones.length === 0 ? (
           <EmptyState
             className={s.empty}
-            message="Couldn’t load tones from TONE3000"
-            hint={list.error}
+            message={list.error}
             action={
               <Button size="sm" onClick={() => void fetchPage(1)}>
-                Try again
+                Retry
               </Button>
             }
           />
         ) : list.tones.length === 0 ? (
           <EmptyState
             className={s.empty}
-            message={
-              shelf !== "all" && !searching && gear === null
-                ? "Nothing here yet"
-                : "No tones match"
-            }
+            message="No tones"
             hint={
-              shelf !== "all" && !searching && gear === null
-                ? SHELF_EMPTY[shelf]
-                : searching
-                  ? "Try a different search or fewer filters."
-                  : "Try fewer filters."
+              shelf !== "all" && !searching && gear === null ? SHELF_EMPTY[shelf] : undefined
             }
             action={
               filtered ? (
                 <Button size="sm" onClick={resetFilters}>
-                  Show all {noun}
+                  Reset filters
                 </Button>
               ) : undefined
             }
@@ -412,11 +420,11 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
         ) : (
           <ul className={s.list}>
             <AnimatePresence initial={false}>
-              {list.tones.map((tone, i) => (
+              {list.tones.map((tone, index) => (
                 <ToneRow
                   key={tone.id}
                   tone={tone}
-                  index={i % 25}
+                  index={index % PAGE_STAGGER_SPAN}
                   reduced={reduced}
                   onOpen={setDetail}
                   onToggleFavorite={toggleFavorite}
@@ -426,38 +434,25 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
 
             {list.error ? (
               <li className={s.moreRow}>
-                <span className={s.moreError}>{list.error}</span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void fetchPage(nextPage)}
-                >
+                <span className={s.moreText}>{list.error}</span>
+                <Button size="sm" variant="ghost" onClick={() => void fetchPage(nextPage)}>
                   Retry
                 </Button>
               </li>
             ) : list.loadingMore ? (
               <li className={s.moreRow} aria-busy="true">
-                <span className={s.moreBusy}>
-                  <Spinner size={12} /> Loading more…
+                <span className={s.moreText}>
+                  <Spinner size={12} /> Loading more
                 </span>
               </li>
-            ) : list.hasMore ? (
-              /* The observer normally fires long before this is visible; the
-                 button is the fallback (no IntersectionObserver, tiny lists). */
-              <li className={s.moreRow} ref={sentinelRef}>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  block
-                  onClick={() => void fetchPage(nextPage)}
-                >
-                  Load more
-                </Button>
-              </li>
             ) : (
-              list.tones.length > 8 && (
-                <li className={s.endRow}>
-                  End of list · {list.total} {noun}
+              list.hasMore && (
+                /* The observer normally fires long before this is visible; the
+                   button is the fallback (no IntersectionObserver, tiny lists). */
+                <li className={s.moreRow} ref={sentinelRef}>
+                  <Button size="sm" variant="ghost" block onClick={() => void fetchPage(nextPage)}>
+                    Load more
+                  </Button>
                 </li>
               )
             )}
