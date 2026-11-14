@@ -61,7 +61,7 @@ function findRelease() {
     '--paginate',
     `repos/${repo}/releases?per_page=100`,
     '--jq',
-    `.[] | select(.tag_name == "${tag}") | {id, draft, assets: [.assets[] | {name, state}]}`,
+    `.[] | select(.tag_name == "${tag}") | {id, draft, target: .target_commitish, assets: [.assets[] | {name, state}]}`,
   );
   const found = out.split('\n').filter(Boolean).map((line) => JSON.parse(line));
   if (found.length > 1) fail(`${found.length} releases carry the tag ${tag}; delete the extra drafts by hand`);
@@ -84,6 +84,13 @@ if (manifest.version !== version) fail(`${manifestName} is for ${manifest.versio
 checkTag();
 
 let release = findRelease();
+// A draft has no tag yet, so a draft another run left for a different commit is safe to
+// delete. Retargeting it would keep that commit's installers.
+if (release?.draft && release.target !== sha) {
+  console.log(`${tag} has a draft for ${release.target}, not ${sha}; replacing it with a fresh draft`);
+  mutate('api', '-X', 'DELETE', `repos/${repo}/releases/${release.id}`);
+  release = null;
+}
 if (!release) {
   mutate('release', 'create', tag, '--draft', '--target', sha, '--title', `tubamp ${version}`, '--notes-file', notesFile);
   release = dryRun ? { draft: true, assets: [] } : findRelease();

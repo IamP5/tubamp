@@ -20,7 +20,7 @@ function github(initial = {}) {
     env: (extra = {}) => ({ PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: statePath, ...extra }),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')),
     mutations: () =>
-      JSON.parse(readFileSync(statePath, 'utf8')).calls.filter((c) => c[0] === 'release'),
+      JSON.parse(readFileSync(statePath, 'utf8')).calls.filter((c) => c[0] === 'release' || c.includes('DELETE')),
     resetCalls() {
       const s = JSON.parse(readFileSync(statePath, 'utf8'));
       writeFileSync(statePath, JSON.stringify({ ...s, calls: [] }));
@@ -141,4 +141,31 @@ test('a dry run reads the state and changes nothing', () => {
   assert.deepEqual(gh.mutations(), []);
   assert.match(result.stdout, /would run: gh release create v0\.2\.0 --draft/);
   assert.match(result.stdout, /would run: gh release edit v0\.2\.0 --draft=false --latest/);
+});
+
+test('a stale draft for another commit is replaced, not published', () => {
+  const gh = github({
+    releases: [{ id: 1, tag_name: 'v0.2.0', draft: true, target: OTHER, assets: ALL.map((name) => ({ name, state: 'uploaded' })) }],
+  });
+  const dir = releaseAssets();
+  const result = publish(gh, dir);
+  assert.equal(result.code, 0, result.stderr);
+  const [release, ...rest] = gh.state().releases;
+  assert.deepEqual(rest, []);
+  assert.equal(release.draft, false);
+  assert.equal(release.target, SHA);
+  assert.equal(gh.state().tags['v0.2.0'], SHA);
+  const uploaded = gh.mutations().filter((c) => c[1] === 'upload').flat().map((a) => a.split('/').pop());
+  assert.deepEqual(ALL.filter((name) => uploaded.includes(name)), ALL, 'every asset comes from this run');
+});
+
+test('a published release on another commit still stops the run', () => {
+  const gh = github({
+    tags: { 'v0.2.0': OTHER },
+    releases: [{ id: 1, tag_name: 'v0.2.0', draft: false, target: OTHER, assets: ALL.map((name) => ({ name, state: 'uploaded' })) }],
+  });
+  const result = publish(gh, releaseAssets());
+  assert.equal(result.code, 1);
+  assert.deepEqual(gh.mutations(), []);
+  assert.equal(gh.state().releases.length, 1);
 });

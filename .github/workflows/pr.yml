@@ -14,9 +14,13 @@ permissions:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The preview builds the squash outcome when it releases, else the merge-commit outcome.
     outputs:
-      release: ${{ steps.plan.outputs.release }}
-      build_version: ${{ steps.plan.outputs.build_version }}
+      release: ${{ steps.plan.outputs.release == 'true' || steps.plan.outputs.squash_release == 'true' }}
+      squash: ${{ steps.plan.outputs.squash_release == 'true' }}
+      squash_title: ${{ steps.plan.outputs.squash_title }}
+      build_version: ${{ steps.plan.outputs.squash_release == 'true' && steps.plan.outputs.squash_build_version || steps.plan.outputs.build_version }}
       sha: ${{ steps.plan.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,9 +35,18 @@ jobs:
       - name: Test the release scripts
         run: node --test 'scripts/release/test/*.test.mjs'
 
+      # A squash merge of a single commit keeps that commit's subject, not the PR title.
       - name: Plan (dry run)
         id: plan
-        run: node scripts/release/plan.mjs
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_COMMITS: ${{ github.event.pull_request.commits }}
+        run: |
+          title="$PR_TITLE"
+          if [ "$PR_COMMITS" = 1 ]; then title="$(git log -1 --format=%s HEAD^2)"; fi
+          printf 'squash_title=%s\n' "$title" >> "$GITHUB_OUTPUT"
+          node scripts/release/plan.mjs --summary-label 'Merged as a merge commit'
+          node scripts/release/plan.mjs --squash-title "$title" --summary-label "Squashed with this title: $title"
 
   build:
     needs: plan
@@ -44,10 +57,13 @@ jobs:
   release-preview:
     needs: [plan, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.plan.outputs.build_version }}
       SHA: ${{ needs.plan.outputs.sha }}
+      SQUASH: ${{ needs.plan.outputs.squash }}
+      SQUASH_TITLE: ${{ needs.plan.outputs.squash_title }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,11 +82,13 @@ jobs:
 
       - name: Release notes and manifest
         run: |
-          node scripts/release/notes.mjs --out dist/notes.md
+          squash=()
+          if [ "$SQUASH" = true ]; then squash=(--squash-title "$SQUASH_TITLE"); fi
+          node scripts/release/notes.mjs "${squash[@]}" --out dist/notes.md
           node scripts/release/manifest.mjs --version "$VERSION" --dir dist --notes-file dist/notes.md
           cat dist/notes.md >> "$GITHUB_STEP_SUMMARY"
 
-      # Only a releasing PR has a version whose tag must not exist yet.
+      # Only a PR that releases, merged either way, has a version whose tag must not exist yet.
       - name: Publish (dry run)
         if: needs.plan.outputs.release == 'true'
         run: node scripts/release/publish.mjs --dry-run --version "$VERSION" --sha "$SHA" --dir dist --notes-file dist/notes.md
@@ -86,6 +104,7 @@ jobs:
 
   site:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: site

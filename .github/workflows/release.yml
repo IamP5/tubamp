@@ -18,6 +18,7 @@ jobs:
   plan:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       release: ${{ steps.plan.outputs.release }}
       version: ${{ steps.plan.outputs.version }}
@@ -49,6 +50,7 @@ jobs:
   publish:
     needs: [plan, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     env:
@@ -83,7 +85,7 @@ jobs:
         run: |
           url="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/manifest.json"
           for _ in 1 2 3 4 5 6; do
-            served="$(curl -fsSL "$url" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).version)' || true)"
+            served="$(curl -fsSL --max-time 30 "$url" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).version)' || true)"
             [ "$served" = "$VERSION" ] && { echo "releases/latest serves manifest $served"; exit 0; }
             echo "releases/latest serves '$served', waiting for $VERSION"
             sleep 10

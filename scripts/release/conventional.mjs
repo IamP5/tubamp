@@ -15,7 +15,7 @@ export const TYPES = Object.keys(BUMP_BY_TYPE);
 
 const HEADER = /^([a-z]+)(?:\(([^()\r\n]+)\))?(!)?: (\S.*)$/;
 const BREAKING_FOOTER = /^BREAKING[ -]CHANGE: *(.*)$/m;
-const RELEASE_AS_FOOTER = /^Release-As: *v?(\S+) *$/im;
+const RELEASE_AS_FOOTER = /^Release-As: *v?(\S+) *$/gim;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export function parseVersion(text) {
@@ -45,17 +45,15 @@ export function parseCommit(message) {
   if (!m || !TYPES.includes(m[1])) return null;
   const body = rest.join('\n');
   const breakingFooter = BREAKING_FOOTER.exec(body);
-  const releaseAs = RELEASE_AS_FOOTER.exec(body);
-  if (releaseAs && !parseVersion(releaseAs[1])) {
-    throw new Error(`Release-As footer must be X.Y.Z, got "${releaseAs[1]}" in "${header}"`);
-  }
+  const releaseAsValues = [...body.matchAll(RELEASE_AS_FOOTER)].map((m) => m[1]);
   return {
     type: m[1],
     scope: m[2] ?? null,
     description: m[4].trim(),
     breaking: Boolean(m[3] || breakingFooter),
     breakingNote: breakingFooter?.[1].trim() || null,
-    releaseAs: releaseAs ? releaseAs[1] : null,
+    releaseAs: releaseAsValues.findLast((v) => parseVersion(v)) ?? null,
+    invalidReleaseAs: releaseAsValues.filter((v) => !parseVersion(v)),
   };
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Release notes for the version plan.mjs computes, from the same commit range.
-//   node scripts/release/notes.mjs [--out notes.md]
+//   node scripts/release/notes.mjs [--out notes.md] [--squash-title "<title>"]
 import { writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -44,10 +44,11 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     options: {
       out: { type: 'string' },
       repo: { type: 'string', default: process.env.GITHUB_REPOSITORY || 'IamP5/tubamp' },
+      'squash-title': { type: 'string' },
     },
   });
   try {
-    const notes = renderNotes(planRelease(), { repo: values.repo });
+    const notes = renderNotes(planRelease({ squashTitle: values['squash-title'] ?? null }), { repo: values.repo });
     if (values.out) writeFileSync(values.out, notes);
     else process.stdout.write(notes);
   } catch (error) {

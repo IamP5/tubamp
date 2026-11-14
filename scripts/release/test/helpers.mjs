@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,11 +23,14 @@ export function makeRepo() {
   return {
     dir,
     git,
-    commit(message) {
-      const file = `f${n++}.txt`;
-      writeFileSync(join(dir, file), file);
-      git('add', file);
-      git('commit', '-q', '-m', message);
+    commit(message, files = [`f${n}.txt`]) {
+      n++;
+      for (const file of files) {
+        mkdirSync(dirname(join(dir, file)), { recursive: true });
+        writeFileSync(join(dir, file), `${file} ${n}`);
+        git('add', file);
+      }
+      git('commit', '-q', '--allow-empty', '-m', message);
       return git('rev-parse', 'HEAD');
     },
     tag(name, ref = 'HEAD') {

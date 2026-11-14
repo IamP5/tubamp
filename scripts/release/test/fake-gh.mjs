@@ -13,7 +13,11 @@ const byTag = (tag) => state.releases.find((r) => r.tag_name === tag);
 state.calls.push(args);
 save();
 
-if (args[0] === 'api') {
+if (args[0] === 'api' && args.includes('DELETE')) {
+  const id = Number(/\/releases\/(\d+)$/.exec(args.find((a) => a.startsWith('repos/')))[1]);
+  state.releases = state.releases.filter((r) => r.id !== id);
+  save();
+} else if (args[0] === 'api') {
   const path = args.find((a) => a.startsWith('repos/'));
   const matching = /\/git\/matching-refs\/tags\/(.+)$/.exec(path);
   if (matching) {
@@ -24,7 +28,7 @@ if (args[0] === 'api') {
   } else if (path.includes('/releases?')) {
     const tag = /tag_name == "([^"]+)"/.exec(args[args.indexOf('--jq') + 1])[1];
     for (const r of state.releases.filter((x) => x.tag_name === tag)) {
-      process.stdout.write(`${JSON.stringify({ id: r.id, draft: r.draft, assets: r.assets })}\n`);
+      process.stdout.write(`${JSON.stringify({ id: r.id, draft: r.draft, target: r.target, assets: r.assets })}\n`);
     }
   } else {
     process.stderr.write(`fake gh: unhandled api ${path}\n`);
@@ -33,7 +37,7 @@ if (args[0] === 'api') {
 } else if (args[0] === 'release' && args[1] === 'create') {
   const tag = args[2];
   if (!args.includes('--draft')) process.exit(1);
-  state.releases.push({ id: state.releases.length + 1, tag_name: tag, draft: true, target: args[args.indexOf('--target') + 1], assets: [] });
+  state.releases.push({ id: Math.max(0, ...state.releases.map((r) => r.id)) + 1, tag_name: tag, draft: true, target: args[args.indexOf('--target') + 1], assets: [] });
   save();
 } else if (args[0] === 'release' && args[1] === 'upload') {
   const release = byTag(args[2]);

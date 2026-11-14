@@ -200,3 +200,118 @@ test('release notes say so when nothing is released', () => {
   assert.equal(result.code, 0);
   assert.match(result.stdout, /^Nothing to release/);
 });
+
+test('a releasable commit that changes nothing in the installer releases nothing', () => {
+  const repo = makeRepo();
+  repo.commit('feat: base');
+  repo.tag('v0.1.0');
+  repo.commit('fix(site): typo', ['site/src/app/page.tsx']);
+  repo.commit('feat: explain presets', ['docs/PRESETS.md']);
+  repo.commit('fix: workflow', ['.github/workflows/release.yml']);
+  repo.commit('fix: audit', ['.audit/landing-release.tsv']);
+  repo.commit('fix: planner', ['scripts/release/plan.mjs']);
+  repo.commit('perf: readmes', ['README.md', 'tools/fxbench/README.md']);
+  repo.commit('feat: empty', []);
+  const p = plan(repo);
+  assert.equal(p.release, false, JSON.stringify(p));
+  assert.deepEqual(p.commits, []);
+});
+
+test('what a commit touched decides, not its scope', () => {
+  const repo = makeRepo();
+  repo.commit('feat: base');
+  repo.tag('v0.1.0');
+  repo.commit('fix(site): deployment target', ['CMakeLists.txt']);
+  assert.equal(plan(repo).version, '0.1.1');
+
+  const other = makeRepo();
+  other.commit('feat: base');
+  other.tag('v0.1.0');
+  other.commit('fix(release): build script', ['scripts/release/build-installer.sh', 'Source/PluginProcessor.cpp']);
+  assert.equal(plan(other).version, '0.1.1');
+});
+
+test('a squash commit that touches the site and the plugin releases', () => {
+  const repo = makeRepo();
+  repo.commit('feat: base');
+  repo.tag('v0.1.0');
+  repo.commit('feat: download button and smoke flag (#9)', ['site/src/app/page.tsx', 'Source/smoke.cpp']);
+  assert.equal(plan(repo).version, '0.2.0');
+});
+
+test('release notes list exactly the commits that counted', () => {
+  const repo = makeRepo();
+  repo.commit('feat: base');
+  repo.tag('v0.1.0');
+  repo.commit('fix(site): typo on the page', ['site/src/app/page.tsx']);
+  repo.commit('fix(dsp): gate chatter', ['Source/Gate.cpp']);
+  const result = runScript('notes.mjs', { cwd: repo.dir, args: ['--repo', 'o/r'] });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /gate chatter/);
+  assert.ok(!result.stdout.includes('typo on the page'), result.stdout);
+});
+
+test('an invalid Release-As footer warns and is ignored, and a later valid one wins', () => {
+  const repo = makeRepo();
+  repo.commit('feat: base');
+  repo.tag('v0.9.1');
+  repo.commit('chore: release one\n\nRelease-As: 1.0');
+  let result = runScript('plan.mjs', { cwd: repo.dir });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).release, false);
+  assert.match(result.stderr, /Release-As.*"1\.0"/);
+
+  repo.commit('chore: release one, properly\n\nRelease-As: 1.0.0');
+  result = runScript('plan.mjs', { cwd: repo.dir });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).version, '1.0.0');
+});
+
+function pullRequest(topicCommits) {
+  const repo = makeRepo();
+  repo.commit('feat: base');
+  repo.tag('v0.1.0');
+  repo.git('checkout', '-q', '-b', 'topic');
+  for (const [message, files] of topicCommits) repo.commit(message, files);
+  repo.git('checkout', '-q', 'main');
+  repo.commit('chore: on main meanwhile', ['docs/x.md']);
+  repo.git('merge', '-q', '--no-ff', '-m', 'Merge pull request #7 from topic', 'topic');
+  return repo;
+}
+
+test('planning as a squash judges the range by the title', () => {
+  const repo = pullRequest([['feat(reverb): plate', ['Source/Reverb.cpp']], ['fix: typo', ['Source/Reverb.h']]]);
+  assert.equal(plan(repo).version, '0.2.0');
+  const squashed = plan(repo, ['--squash-title', 'chore: tidy the reverb']);
+  assert.equal(squashed.release, false, JSON.stringify(squashed));
+  assert.equal(plan(repo, ['--squash-title', 'fix: tidy the reverb']).version, '0.1.1');
+});
+
+test('a squash touches the union of the range paths', () => {
+  const site = pullRequest([['feat(site): hero', ['site/a.tsx']], ['feat(site): nav', ['site/b.tsx']]]);
+  assert.equal(plan(site, ['--squash-title', 'feat: new landing page']).release, false);
+
+  const both = pullRequest([['chore(site): hero', ['site/a.tsx']], ['chore: smoke flag', ['Source/smoke.cpp']]]);
+  assert.equal(plan(both).release, false);
+  assert.equal(plan(both, ['--squash-title', 'feat: hero and smoke flag']).version, '0.2.0');
+});
+
+test('a squash keeps the footers of the squashed commits', () => {
+  const repo = pullRequest([['refactor: presets\n\nBREAKING CHANGE: old presets no longer load', ['Source/Presets.cpp']]]);
+  assert.equal(plan(repo, ['--squash-title', 'chore: presets']).version, '0.2.0');
+});
+
+test('the squash plan is written to GITHUB_OUTPUT under squash_ keys', () => {
+  const repo = pullRequest([['feat: plate', ['Source/Reverb.cpp']]]);
+  const out = join(tempDir(), 'output');
+  const result = runScript('plan.mjs', {
+    cwd: repo.dir,
+    args: ['--squash-title', 'feat: plate'],
+    env: { GITHUB_OUTPUT: out },
+  });
+  assert.equal(result.code, 0, result.stderr);
+  const lines = readFileSync(out, 'utf8');
+  assert.match(lines, /^squash_release=true$/m);
+  assert.match(lines, /^squash_build_version=0\.2\.0$/m);
+  assert.doesNotMatch(lines, /^release=/m);
+});
