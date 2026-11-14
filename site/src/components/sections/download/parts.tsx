@@ -2,8 +2,8 @@ export function fieldButton(primary: boolean) {
   const base =
     "group inline-flex h-16 w-full items-center justify-between gap-4 rounded-full px-7 text-lg font-medium transition-[background-color,color,border-color,transform] duration-200 ease-ui active:scale-[0.98]";
   return primary
-    ? `${base} bg-on-signal text-signal hover:bg-ink hover:text-bone`
-    : `${base} border-2 border-on-signal/70 text-on-signal hover:border-on-signal hover:bg-on-signal hover:text-signal`;
+    ? `${base} bg-signal text-on-signal hover:bg-bone`
+    : `${base} border border-line-strong text-bone hover:border-bone`;
 }
 
 const arrow = {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { archOrder, ctaHref, macOS, releaseDate, shortHash } from "./format.ts";
+import { archOrder, ctaHref, installSteps, macOS, releaseDate, releaseMeta, shortHash, unsigned } from "./format.ts";
 
 test("release date is day, short month, year in UTC", () => {
   assert.equal(releaseDate("2026-11-14T09:30:00Z"), "14 Nov 2026");
@@ -27,4 +27,24 @@ test("a download button names an installer only for a detected architecture", ()
   assert.equal(ctaHref("arm64"), "/download/arm64");
   assert.equal(ctaHref("x86_64"), "/download/x86_64");
   assert.equal(ctaHref(null), "#download");
+});
+
+test("the reassurance line always says no account, with or without a release", () => {
+  assert.deepEqual(releaseMeta(null), ["No account", "macOS 11 or later", "Apple Silicon and Intel"]);
+  assert.deepEqual(releaseMeta({ version: "0.1.0", minimumMacOS: "12.0" }), [
+    "No account",
+    "v0.1.0",
+    "macOS 12 or later",
+    "Apple Silicon and Intel",
+  ]);
+});
+
+test("the Gatekeeper step shows for an unsigned release and for no release at all", () => {
+  assert.equal(unsigned(null), true);
+  assert.equal(unsigned({ signed: false }), true);
+  assert.equal(unsigned({ signed: true }), false);
+
+  const steps = [{ text: "Download." }, { text: "Open it.", unsigned: "Open it, then Open Anyway." }];
+  assert.deepEqual(installSteps(steps, true), ["Download.", "Open it, then Open Anyway."]);
+  assert.deepEqual(installSteps(steps, false), ["Download.", "Open it."]);
 });

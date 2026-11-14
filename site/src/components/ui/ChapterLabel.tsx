@@ -1,9 +1,8 @@
-export default function ChapterLabel({ index, children }: { index: string; children: React.ReactNode }) {
+export default function ChapterLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="label flex items-center gap-3">
-      <span className="text-[var(--accent)]">{index}</span>
-      <span className="h-px w-8 bg-line-strong" aria-hidden />
-      <span>{children}</span>
+    <p className="flex items-center gap-2.5 text-sm text-bone-2">
+      <span className="size-1.5 rounded-full bg-[var(--accent)]" aria-hidden />
+      {children}
     </p>
   );
 }

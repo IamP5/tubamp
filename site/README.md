@@ -50,7 +50,9 @@ The page never needs a deploy when the plugin ships a new version.
    "Download for Mac" buttons in the hero and nav link to an installer only
    when the browser's architecture was detected; otherwise they scroll to
    `#download`, because an installer for the wrong architecture installs a
-   plugin that never loads.
+   plugin that never loads. On a device that is plainly not a Mac
+   (`notAMac()` in `src/lib/platform.ts`) those two buttons share or copy the
+   page's address instead.
 
 A new release reaches the page within about five minutes of the next request
 after the cache goes stale: with no visitors, nothing refreshes it. To see a
@@ -63,11 +65,19 @@ The page uses two kinds of footage.
 - `public/media/ui/` holds 14 clips recorded from the real plugin editor. Each
   is an `.mp4`, a `.webm` and a `.jpg` poster. `src/data/media.ts` lists them
   (`CLIPS`), and `scripts/capture/clips.mjs` says what each one does on screen.
-- `public/media/film/` holds three macro clips (`tubes`, `strings`,
-  `speaker`) in the same three formats, 1920x1080 and 8 seconds long. They were
-  generated, not captured, and the page uses them only as atmosphere: the hero
-  and the two interludes around the chain. They are listed in `src/data/media.ts`
-  as `FILMS`.
+  Each clip plays in one chapter of the page and nowhere else; `DESIGN.md`
+  says which.
+- `public/media/film/` holds generated footage, used only as atmosphere and
+  listed in `src/data/media.ts` as `FILMS`. `speaker` sits behind the download
+  card. `capture` (an amp that breaks up into a signal) is played by the
+  scroll in the captures chapter. A video cannot seek as fast as a wheel
+  turns, so on wide screens it is 121 AVIF stills per tier under
+  `public/media/film/capture/<width>/` (`CAPTURE_SEQUENCE` in
+  `src/data/media.ts`), drawn on a canvas. It was generated at 720p and
+  upscaled to 2560x1440; that master is not in the repository. To rebuild the
+  stills and the poster from a master: `npm run film:frames -- master.mp4`.
+  `capture-720.mp4` is the loop phones play instead.
+  `tubes` and `strings` are from the earlier design and are not on the page.
 
 Both folders are committed.
 

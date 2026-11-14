@@ -10,6 +10,7 @@ export type Clip = { dir: "ui" | "film"; name: string; width: number; height: nu
 const board = { dir: "ui", width: 1280, height: 800 } as const;
 const editor = { dir: "ui", width: 1280, height: 296 } as const;
 const film = { dir: "film", width: 1920, height: 1080 } as const;
+const loop = { dir: "film", width: 1280, height: 720 } as const;
 
 export const CLIPS = {
   chainBuild: { name: "chain-build", ...board, alt: "Blocks being added to the chain on the board and dragged into a new order." },
@@ -33,6 +34,7 @@ export type ClipKey = keyof typeof CLIPS;
 export const FILMS = {
   tubes: { name: "tubes", ...film, alt: "Valve filaments glowing amber in the dark." },
   strings: { name: "strings", ...film, alt: "Three wound guitar strings lit amber on black, one of them vibrating." },
+  capture: { name: "capture-720", ...loop, alt: "A valve amplifier head breaking up into amber particles that settle into a single waveform line." },
   speaker: { name: "speaker", ...film, alt: "A black speaker cone with an amber rim light, dust lifting off it." },
 } as const satisfies Record<string, Clip>;
 
@@ -41,3 +43,28 @@ export const clipSrc = (clip: Clip) => ({
   webm: `/media/${clip.dir}/${clip.name}.webm`,
   poster: `/media/${clip.dir}/${clip.name}.jpg`,
 });
+
+/**
+ * A film as numbered stills (`001.avif` onwards) so the scroll can show any
+ * frame at once; a video has to seek. One folder per tier, named by its width.
+ * `npm run film:frames` writes them.
+ */
+export type Sequence = {
+  base: string;
+  count: number;
+  poster: string;
+  tiers: readonly { width: number; height: number }[];
+};
+
+export const CAPTURE_SEQUENCE: Sequence = {
+  base: "/media/film/capture",
+  count: 121,
+  poster: "/media/film/capture.jpg",
+  tiers: [
+    { width: 1920, height: 1080 },
+    { width: 2560, height: 1440 },
+  ],
+};
+
+export const frameSrc = (seq: Sequence, width: number, index: number) =>
+  `${seq.base}/${width}/${String(index + 1).padStart(3, "0")}.avif`;

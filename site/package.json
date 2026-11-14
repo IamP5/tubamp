@@ -14,7 +14,8 @@
     "test": "node --test \"src/**/*.test.ts\"",
     "capture": "node scripts/capture.mjs",
     "build:demo": "node scripts/build-demo.mjs",
-    "prebuild": "node scripts/build-demo.mjs"
+    "prebuild": "node scripts/build-demo.mjs",
+    "film:frames": "node scripts/film-frames.mjs"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",

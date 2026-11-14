@@ -16,8 +16,8 @@ export const SITE = {
   name: "tubamp",
   repoUrl: "https://github.com/IamP5/tubamp",
   tagline: "Your next amp is a file.",
-  line: "A free amp plugin for Logic Pro.",
-  what: "A free Audio Unit for Logic Pro that plays neural captures of real amps, in a signal chain you build yourself.",
+  line: "An amp plugin for Logic Pro.",
+  what: "tubamp plays captures of real amplifiers in Logic Pro. Build the rest of the rig around them in any order, with room for your own plugins.",
   platforms: "macOS 11 or later. Apple Silicon and Intel.",
   hosts: "Logic Pro. Other Audio Unit hosts are untested.",
 } as const;
@@ -40,24 +40,31 @@ export const NAV = [
   { href: "#captures", label: "Captures" },
   { href: "#effects", label: "Effects" },
   { href: "#try", label: "Try it" },
+  { href: "#faq", label: "Questions" },
 ] as const;
 
 export const CHAPTERS = {
   chain: {
-    index: "03",
     kicker: "Chain",
     headline: ["Build the chain.", "Any order."],
-    body: "Nine blocks on a board you can pan and zoom. Drag one somewhere else, remove it, add it again, add a second delay. The order is part of the sound and it is saved with your project.",
-    swap: {
-      title: "Any order.",
-      body: "Swap the drive and the reverb, and the whole tail distorts.",
+    body: "Nine blocks on a board. Drag one somewhere else, remove it, add it again, add a second delay. The order is part of the sound and it is saved with your project.",
+    board: {
+      label: "The chain. Drag a block, or focus one and use the arrow keys, to change the order.",
+      waveform: "The signal this order gives.",
+      rest: "The default order.",
+      tail: "Reverb now feeds the drive, so the whole tail distorts.",
+      first: "{block} now runs first.",
+      after: "{block} now runs after {other}.",
+      position: "{block}, {n} of {total}",
+      earlier: "Move {block} earlier",
+      later: "Move {block} later",
+      reset: "Reset",
     },
   },
   captures: {
-    index: "04",
     kicker: "Captures",
     headline: ["A real amp,", "captured."],
-    body: "tubamp plays Neural Amp Modeler captures, including the newer A2 format: a recording of how one real amplifier responds, in a file. Browse the TONE3000 library from inside the plugin and a capture lands in your chain without leaving Logic. Or import any .nam file you already have.",
+    body: "A capture is a file that holds how one real amplifier responds to a guitar. tubamp plays Neural Amp Modeler captures, the newer A2 format included. Browse the TONE3000 library inside the plugin with your own TONE3000 API key, or load any .nam file with no setup.",
     facts: [
       "NAM A1, A2, slimmable and LSTM captures",
       "Resamples when the session rate differs from the capture",
@@ -67,60 +74,91 @@ export const CHAPTERS = {
     attribution: "Powered by TONE3000",
   },
   effects: {
-    index: "05",
     kicker: "Effects",
     headline: ["Every block shows you", "what it is doing."],
     body: "Each editor draws the effect from the same numbers the knobs set: the gate's threshold over your playing, the compressor's curve, the delay's repeats, the reverb's tail. Grab the picture or grab the knob.",
   },
   more: {
-    index: "06",
     kicker: "More",
     headline: ["Room for", "your own gear."],
     items: [
       {
         title: "Your plugins, in the chain",
-        body: "Three slots host your own Audio Unit effects anywhere in the chain. They are saved with the project, settings included, and kept intact when the project opens on a Mac that does not have the plugin.",
+        body: "Three slots host your own Audio Unit effects anywhere in the chain. Their settings are saved with the project.",
       },
       {
         title: "Two lanes",
-        body: "Split the signal, run a second amp on lane B, and bring both back in a mixer with level, pan and phase.",
+        body: "Split the signal, run a second amp on lane B, and blend the two in a mixer with level and pan for each lane and a phase flip.",
       },
       {
         title: "Presets and A/B",
-        body: "Presets keep the capture, the cab and the chain. Two compare slots hold two versions of a sound and switch between them on one click.",
+        body: "Presets recall the capture, the cab and the chain. Two compare slots hold two versions of a sound and switch with one click.",
       },
     ],
   },
   demo: {
-    index: "07",
     kicker: "Try",
     headline: ["This is the editor.", "Go on, touch it."],
     body: "The real interface, running in your browser with a stand-in for the audio engine. Load a preset, drag a block, turn a knob.",
   },
   download: {
-    index: "08",
     kicker: "Output",
     headline: ["Plug in."],
-    body: "Free. Installs as an Audio Unit; open Logic Pro and find it under Audio Units, t0audio, tubamp.",
-    unsigned:
-      "The installer is not signed with an Apple Developer ID yet. macOS will ask you to confirm the first time: open System Settings, Privacy and Security, and choose Open Anyway.",
+    body: "Installs as an Audio Unit; open Logic Pro and find it under Audio Units, t0audio, tubamp.",
+    free: "Free, with no account.",
+    unsignedNote: "The installer is not signed with an Apple Developer ID yet.",
+    source: "Read the source on GitHub",
+    gatekeeper: {
+      q: "macOS says it cannot check the installer. Is that expected?",
+      a: "Yes. The installer is not signed with an Apple Developer ID yet, so macOS stops it the first time. Open System Settings, Privacy and Security, and choose Open Anyway.",
+    },
+    /** `unsigned` replaces the step while the installer has no Apple Developer ID signature. */
     steps: [
-      "Download the installer for your Mac.",
-      "Open it and follow the prompts.",
-      "Restart Logic Pro and add tubamp to an audio track.",
+      { text: "Download the installer for your Mac." },
+      {
+        text: "Open it and follow the prompts.",
+        unsigned:
+          "Open it. macOS stops it the first time: go to System Settings, Privacy and Security, and choose Open Anyway. Then follow the prompts.",
+      },
+      { text: "Restart Logic Pro and add tubamp to an audio track." },
     ],
     archLabels: { arm64: "Apple Silicon", x86_64: "Intel" },
   },
 } as const;
 
-/**
- * The two film interludes that bookend the chain: the signal starts at a string
- * and ends at a speaker. `turn` is the end of the line that takes the serif.
- */
-export const INTERLUDES = {
-  strings: { line: "Every sound starts at a string.", turn: "a string." },
-  speaker: { line: "And ends at a speaker.", turn: "a speaker." },
-} as const satisfies Record<string, { line: string; turn: string }>;
+/** What a visitor needs to know before the first scroll. Each is true of the plugin today. */
+export const FACTS = [
+  { big: "TONE3000", small: "The capture library, browsed inside the plugin. Powered by TONE3000." },
+  { big: "9", small: "Blocks in a chain, in any order." },
+  { big: "A2", small: "The newer NAM capture format. A1 and your own .nam files load too." },
+  { big: "3", small: "Slots that host your own Audio Unit effects." },
+] as const;
+
+/** What the primary button becomes on a device that cannot install a Mac plugin. */
+export const SHARE = {
+  label: "Send the link to my Mac",
+  short: "Send to my Mac",
+  copied: "Link copied",
+} as const;
+
+export const FAQ = [
+  {
+    q: "Do I need my own captures?",
+    a: "No. Paste your own TONE3000 API key into the plugin's settings and it browses the TONE3000 library and loads a capture with one click. Any .nam file you already have loads with no setup. Cab impulse responses work the same way.",
+  },
+  {
+    q: "Is it really free?",
+    a: "Yes. There is no account, no email and no trial timer. The button downloads the installer, and the source code is on GitHub.",
+  },
+  {
+    q: "Which Macs does it run on?",
+    a: "macOS 11 or later, on Apple Silicon and Intel. Each has its own installer, and the page picks yours when it can tell.",
+  },
+  {
+    q: "Does it work outside Logic Pro?",
+    a: "tubamp is an Audio Unit, built and tested in Logic Pro. Other Audio Unit hosts are untested.",
+  },
+] as const;
 
 export const CREDITS = [
   "NeuralAmpModelerCore by Steven Atkinson (MIT)",

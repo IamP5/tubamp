@@ -36,7 +36,8 @@ function wrapPath(rows: number) {
   return Array.from({ length: rows - 1 }, (_, r) => `M100 ${y(r)} V${mid(r)} H0 V${y(r + 1)}`).join(" ");
 }
 
-function Board({ perRow, className }: { perRow: number; className: string }) {
+/** `tight` is the board in a narrow column: the slot is named inside its tile, where "Your plugin" would not fit. */
+function Board({ perRow, className, tight = false }: { perRow: number; className: string; tight?: boolean }) {
   const rows = chunk(TILES, perRow);
   return (
     <div data-board className={`items-start gap-3 ${className}`}>
@@ -68,15 +69,26 @@ function Board({ perRow, className }: { perRow: number; className: string }) {
                         data-slot
                         className="relative flex h-full items-center rounded-lg border border-[var(--accent)] bg-ink-1 px-3 text-sm text-bone"
                       >
-                        <span className="truncate">Your plugin</span>
-                        <span className="label absolute -top-5 left-0 text-[var(--accent)]">AU {tile.n}</span>
+                        {tight ? (
+                          <span className="label text-[var(--accent)]">AU {tile.n}</span>
+                        ) : (
+                          <>
+                            <span className="truncate">Your plugin</span>
+                            <span className="label absolute -top-5 left-0 text-[var(--accent)]">AU {tile.n}</span>
+                          </>
+                        )}
                       </span>
                     </>
                   )}
                 </span>
               </Fragment>
             ))}
-            <span className="h-px w-3 flex-none bg-line-strong md:w-5" aria-hidden />
+            {/* A short last row keeps its tiles the width of the others; the wire runs on to Out. */}
+            <span
+              className={`h-px bg-line-strong ${row.length < perRow ? "basis-0" : "w-3 flex-none md:w-5"}`}
+              style={row.length < perRow ? { flexGrow: perRow - row.length } : undefined}
+              aria-hidden
+            />
           </div>
         ))}
       </div>
@@ -114,7 +126,8 @@ export default function ChainSlots() {
 
   return (
     <figure ref={scope} aria-label="A chain with three of your own Audio Unit plugins placed between the blocks.">
-      <Board perRow={5} className="hidden md:flex" />
+      <Board perRow={4} tight className="hidden lg:flex" />
+      <Board perRow={5} className="hidden md:flex lg:hidden" />
       <Board perRow={2} className="flex md:hidden" />
     </figure>
   );

@@ -22,14 +22,33 @@ export function archFromHints({ platform, uaArchitecture, glRenderer }: ArchHint
   return null;
 }
 
+/**
+ * True only for a device that plainly cannot install a Mac plugin. An unknown
+ * platform is not a "no". An iPad calls itself a Mac, but no Mac has a touch
+ * screen.
+ */
+export function notAMac({ platform, maxTouchPoints }: { platform: string; maxTouchPoints: number }): boolean {
+  if (!platform) return false;
+  return /mac/i.test(platform) ? maxTouchPoints > 1 : true;
+}
+
 type UADataLike = {
   platform?: string;
   getHighEntropyValues?: (hints: string[]) => Promise<{ architecture?: string }>;
 };
 
+function platformName(): string {
+  const nav = navigator as Navigator & { userAgentData?: UADataLike };
+  return nav.userAgentData?.platform ?? nav.platform ?? "";
+}
+
+export function detectNotAMac(): boolean {
+  return notAMac({ platform: platformName(), maxTouchPoints: navigator.maxTouchPoints ?? 0 });
+}
+
 export async function detectArch(): Promise<Arch | null> {
   const nav = navigator as Navigator & { userAgentData?: UADataLike };
-  const platform = nav.userAgentData?.platform ?? nav.platform ?? "";
+  const platform = platformName();
   let uaArchitecture: string | undefined;
   try {
     uaArchitecture = (await nav.userAgentData?.getHighEntropyValues?.(["architecture"]))?.architecture;

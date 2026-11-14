@@ -1,23 +1,17 @@
 import { RATE, renderSignal, type Stage } from "./signal";
-import type { Scene } from "./scene";
 
 export type Ink = { signal: string; ghost: string; base: string };
 
-const cache = new Map<string, Float32Array>();
+/** `span` is how much signal time fits across the canvas. */
+export const samples = (order: readonly Stage[], span: number) =>
+  renderSignal(order, { start: 0, length: Math.round(span * RATE) });
 
-function signal(chain: readonly Stage[], start: number, length: number) {
-  const key = `${chain.join()}|${start}|${length}`;
-  let x = cache.get(key);
-  if (!x) {
-    if (cache.size > 6) cache.clear();
-    x = renderSignal(chain, { start, length });
-    cache.set(key, x);
-  }
-  return x;
+export function blend(from: Float32Array, to: Float32Array, mix: number): Float32Array {
+  return to.map((v, i) => from[i] + (v - from[i]) * mix);
 }
 
-/** `span` is how much signal time fits across the canvas. */
-export function drawWave(canvas: HTMLCanvasElement, scene: Scene, ink: Ink, span: number) {
+/** `from` easing into `to`. The shape being left stays as a ghost until the new one has arrived. */
+export function drawWave(canvas: HTMLCanvasElement, from: Float32Array, to: Float32Array, mix: number, ink: Ink) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -29,14 +23,8 @@ export function drawWave(canvas: HTMLCanvasElement, scene: Scene, ink: Ink, span
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.globalAlpha = scene.chrome;
 
-  const length = Math.round(span * RATE);
-  const start = -Math.round(scene.time * RATE);
-  const { from, to, mix } = scene.wave;
-  const a = signal(from, start, length);
-  const b = signal(to, start, length);
-  const changed = from.join() !== to.join();
+  const length = to.length;
   const mid = h / 2;
   const gain = h * 0.5;
   const x = (i: number) => (i / (length - 1)) * w;
@@ -50,18 +38,18 @@ export function drawWave(canvas: HTMLCanvasElement, scene: Scene, ink: Ink, span
   ctx.stroke();
 
   ctx.lineJoin = "round";
-  if (changed && mix > 0) {
-    ctx.globalAlpha = scene.chrome * Math.min(1, mix * 1.5) * 0.55;
+  if (mix < 1) {
+    ctx.globalAlpha = (1 - mix) * 0.55;
     ctx.strokeStyle = ink.ghost;
     ctx.beginPath();
-    for (let i = 0; i < length; i++) ctx.lineTo(x(i), y(a[i]));
+    for (let i = 0; i < length; i++) ctx.lineTo(x(i), y(from[i]));
     ctx.stroke();
-    ctx.globalAlpha = scene.chrome;
+    ctx.globalAlpha = 1;
   }
 
   ctx.strokeStyle = ink.signal;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  for (let i = 0; i < length; i++) ctx.lineTo(x(i), y(a[i] + (b[i] - a[i]) * mix));
+  for (let i = 0; i < length; i++) ctx.lineTo(x(i), y(from[i] + (to[i] - from[i]) * mix));
   ctx.stroke();
 }

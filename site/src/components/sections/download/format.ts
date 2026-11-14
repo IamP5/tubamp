@@ -35,3 +35,26 @@ export function archOrder(detected: Arch | null): readonly [Arch, Arch] {
 export function ctaHref(detected: Arch | null): string {
   return detected ? `/download/${detected}` : "#download";
 }
+
+/** The reassurances that sit under a download button, in the order a doubt comes up. */
+export function releaseMeta(release: { version: string; minimumMacOS: string } | null): string[] {
+  return [
+    "No account",
+    ...(release ? [`v${release.version}`] : []),
+    `${macOS(release?.minimumMacOS ?? "11.0")} or later`,
+    "Apple Silicon and Intel",
+  ];
+}
+
+/**
+ * Whether to tell the visitor about the Gatekeeper prompt. With no release to
+ * read it is told anyway: an unneeded step costs a line, a missing one costs
+ * the install.
+ */
+export function unsigned(release: { signed: boolean } | null): boolean {
+  return !release?.signed;
+}
+
+export function installSteps(steps: readonly { text: string; unsigned?: string }[], gatekeeper: boolean): string[] {
+  return steps.map((step) => (gatekeeper && step.unsigned) || step.text);
+}

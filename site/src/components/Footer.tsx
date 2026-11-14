@@ -1,57 +1,35 @@
-"use client";
-
-import { useRef } from "react";
-import { useGSAP } from "@gsap/react";
 import { CREDITS, SITE } from "@/data/site";
-import { gsap, MQ, setupGsap } from "@/lib/motion";
+import { RELEASES_URL } from "@/lib/release-schema";
+
+const link =
+  "text-bone-2 underline decoration-line-strong underline-offset-4 transition-colors duration-150 ease-ui hover:text-bone hover:decoration-bone";
 
 export default function Footer() {
-  const ref = useRef<HTMLElement>(null);
-
-  useGSAP(
-    () => {
-      setupGsap();
-      const mm = gsap.matchMedia();
-      mm.add(MQ.motion, () => {
-        gsap.fromTo(
-          "[data-letter]",
-          { yPercent: 70 },
-          {
-            yPercent: 0,
-            ease: "none",
-            stagger: 0.08,
-            scrollTrigger: { trigger: ref.current, start: "top bottom", end: "bottom bottom", scrub: 0.6 },
-          },
-        );
-      });
-      return () => mm.revert();
-    },
-    { scope: ref },
-  );
-
   return (
-    <footer ref={ref} className="relative overflow-hidden bg-ink text-bone">
-      <div className="gutter flex flex-col gap-6 pt-14 text-sm md:flex-row md:items-baseline md:justify-between md:gap-10">
-        <a
-          href={SITE.repoUrl}
-          className="shrink-0 text-bone underline decoration-line-strong underline-offset-4 transition-colors duration-150 ease-ui hover:decoration-bone"
-        >
-          Source on GitHub
-        </a>
-        <ul className="flex flex-wrap gap-x-6 gap-y-2 text-bone-2 md:justify-end">
+    <footer className="gutter border-t border-line bg-ink py-10 text-sm">
+      <div className="mx-auto flex max-w-[110rem] flex-col gap-8 md:flex-row md:items-start md:justify-between">
+        <div className="flex flex-col gap-3">
+          <p className="text-xl font-semibold tracking-[-0.04em] text-bone">{SITE.name}</p>
+          <p className="max-w-[24rem] text-bone-3">{SITE.line}</p>
+        </div>
+        <ul className="flex flex-wrap gap-x-6 gap-y-2">
+          <li>
+            <a href={SITE.repoUrl} className={link}>
+              Source on GitHub
+            </a>
+          </li>
+          <li>
+            <a href={RELEASES_URL} className={link}>
+              All releases
+            </a>
+          </li>
+        </ul>
+        <ul className="flex max-w-[26rem] flex-wrap gap-x-5 gap-y-1.5 text-bone-3 md:justify-end">
           {CREDITS.map((credit) => (
             <li key={credit}>{credit}</li>
           ))}
         </ul>
       </div>
-      <p className="display mt-[clamp(3rem,8vw,7rem)] flex justify-center overflow-hidden text-[27.5vw] leading-[0.76] select-none">
-        <span className="sr-only">{SITE.name}</span>
-        {Array.from(SITE.name).map((letter, i) => (
-          <span key={i} data-letter aria-hidden className="inline-block will-change-transform">
-            {letter}
-          </span>
-        ))}
-      </p>
     </footer>
   );
 }

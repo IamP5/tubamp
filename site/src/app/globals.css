@@ -26,11 +26,9 @@
 
   --font-sans: var(--font-geist-sans), system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
-  --font-serif: var(--font-instrument-serif), "Times New Roman", serif;
 
-  --text-mega: clamp(4.5rem, 17vw, 19rem);
-  --text-display: clamp(3rem, 9.5vw, 10.5rem);
-  --text-h2: clamp(2.5rem, 6.4vw, 6.5rem);
+  --text-display: clamp(2.75rem, 5.6vw, 5.75rem);
+  --text-h2: clamp(2.25rem, 4.4vw, 4.25rem);
   --text-h3: clamp(1.5rem, 2.6vw, 2.5rem);
   --text-lead: clamp(1.125rem, 1.5vw, 1.5rem);
 
@@ -79,17 +77,22 @@ html.lenis, html.lenis body { height: auto; }
 .lenis.lenis-smooth { scroll-behavior: auto !important; }
 .lenis.lenis-stopped { overflow: hidden; }
 
-@utility display {
-  font-weight: 600;
-  line-height: 0.88;
-  letter-spacing: -0.045em;
+/* The chain board as one row to drag: wide enough for nine tiles, and a mouse. ChainBoard.tsx asks the same question in script. */
+@custom-variant board {
+  @media (min-width: 64rem) and (hover: hover) and (pointer: fine) {
+    @slot;
+  }
 }
 
-@utility serif-accent {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-weight: 400;
-  letter-spacing: -0.02em;
+@utility display {
+  font-weight: 560;
+  line-height: 0.98;
+  letter-spacing: -0.04em;
+}
+
+/* The half of a headline that sets up the other half. */
+@utility lead-in {
+  color: var(--color-bone-3);
 }
 
 @utility label {
@@ -103,4 +106,25 @@ html.lenis, html.lenis body { height: auto; }
 
 @utility gutter {
   padding-inline: var(--spacing-gutter);
+}
+
+/* The hero copy arrives once, on load, a line at a time. */
+@media (prefers-reduced-motion: no-preference) {
+  .hero-in {
+    animation: hero-in 0.9s var(--ease-out) both;
+    animation-delay: calc(var(--i) * 70ms + 80ms);
+  }
+}
+
+@keyframes hero-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 22px, 0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drum-caption {
+    animation: hero-in 0.5s var(--ease-out) both;
+  }
 }

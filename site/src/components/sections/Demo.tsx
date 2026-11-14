@@ -18,7 +18,7 @@ const WIDE = "(min-width: 900px)";
 
 /**
  * poster: nothing loaded, the Start button over a still.
- * missing: the demo bundle is not deployed; the presets loop stands in.
+ * missing: the demo bundle is not deployed; a still of the editor stands in (the clip already played in the hero).
  * live: the editor has the pointer and the keyboard.
  * idle: the editor is loaded but the page has the wheel back; a click hands it over again.
  */
@@ -37,22 +37,20 @@ function useWide() {
 export default function Demo() {
   const wide = useWide();
   const [line1, line2] = copy.headline;
-  const turn = "touch it.";
 
   return (
-    <section id="try" aria-labelledby="try-title" className="gutter relative bg-ink py-[clamp(6rem,12vw,11rem)]">
+    <section id="try" aria-labelledby="try-title" className="gutter relative bg-ink py-[clamp(4rem,6vw,5.5rem)]">
       <div className="mx-auto max-w-[110rem]">
-        <ChapterLabel index={copy.index}>{copy.kicker}</ChapterLabel>
+        <ChapterLabel>{copy.kicker}</ChapterLabel>
         <div className="mt-8 grid gap-8 lg:grid-cols-12 lg:items-end">
           <h2 id="try-title" className="display text-h2 lg:col-span-8">
-            {line1}
+            <span className="lead-in">{line1}</span>
             <br />
-            {line2.replace(turn, "")}
-            <span className="serif-accent">{turn}</span>
+            {line2}
           </h2>
           <p className="max-w-[34rem] text-lg text-bone-2 lg:col-span-4 lg:pb-2">{copy.body}</p>
         </div>
-        <div className="mt-[clamp(3rem,6vw,5rem)]">{wide ? <Stage /> : <Narrow />}</div>
+        <div className="mt-[clamp(2.5rem,4vw,3.5rem)]">{wide ? <Stage /> : <Narrow />}</div>
       </div>
     </section>
   );
@@ -62,7 +60,7 @@ function Narrow() {
   return (
     <figure className="flex flex-col gap-4">
       <Window>
-        <VideoLoop clip={CLIPS.presets} className="block h-auto w-full" />
+        <VideoLoop clip={CLIPS.presets} play={false} className="block h-auto w-full" />
       </Window>
       <figcaption className="text-sm text-bone-3">The live editor needs a wider screen.</figcaption>
     </figure>
@@ -161,7 +159,7 @@ function Stage() {
             />
           )}
 
-          {stage === "missing" && <VideoLoop clip={CLIPS.presets} className="absolute inset-0 h-full w-full" />}
+          {stage === "missing" && <VideoLoop clip={CLIPS.presets} play={false} className="absolute inset-0 h-full w-full" />}
 
           {stage === "poster" && <Poster onStart={start} />}
         </div>
@@ -169,7 +167,7 @@ function Stage() {
       <p className="mt-4 h-5 text-sm text-bone-3" aria-live="polite">
         {stage === "live" && "Press Esc or click outside the editor to scroll the page."}
         {stage === "idle" && "Click the editor to use it again."}
-        {stage === "missing" && "The live editor is not in this build of the page. Here it is on video."}
+        {stage === "missing" && "The live editor is not in this build of the page."}
       </p>
     </motion.div>
   );

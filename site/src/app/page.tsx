@@ -1,16 +1,15 @@
 import Footer from "@/components/Footer";
-import HeroA from "@/components/hero/a";
+import Hero from "@/components/hero";
+import InstallGuide from "@/components/InstallGuide";
 import Nav from "@/components/Nav";
 import Captures from "@/components/sections/Captures";
 import Chain from "@/components/sections/Chain";
 import Demo from "@/components/sections/Demo";
 import Download from "@/components/sections/Download";
 import Effects from "@/components/sections/Effects";
-import Interlude from "@/components/sections/Interlude";
-import Marquee from "@/components/sections/Marquee";
+import FactStrip from "@/components/sections/FactStrip";
 import More from "@/components/sections/More";
-import { FILMS } from "@/data/media";
-import { INTERLUDES } from "@/data/site";
+import { unsigned } from "@/components/sections/download/format";
 import { getLatestRelease } from "@/lib/release";
 
 export default async function Home() {
@@ -19,19 +18,17 @@ export default async function Home() {
     <>
       <Nav />
       <main>
-        <HeroA version={release?.version ?? null} />
-        <Marquee />
-        <Interlude film={FILMS.strings} opening="blinds" {...INTERLUDES.strings} />
+        <Hero release={release} />
+        <FactStrip />
         <Chain />
         <Captures />
         <Effects />
-        <More />
         <Demo />
-        <Interlude film={FILMS.speaker} opening="grid" {...INTERLUDES.speaker}>
-          <Download />
-        </Interlude>
+        <More />
+        <Download />
       </main>
       <Footer />
+      <InstallGuide gatekeeper={unsigned(release)} />
     </>
   );
 }

@@ -23,11 +23,11 @@ export default function ArchButtons({ downloads }: { downloads: Record<Arch, Dow
             </span>
             <ArrowDown />
           </a>
-          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-1 font-mono text-xs tabular-nums text-on-signal/75">
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-1 font-mono text-xs tabular-nums text-bone-3">
             <span>{formatSize(downloads[arch].size)}</span>
-            <span aria-hidden className="h-3 w-px bg-on-signal/30" />
+            <span aria-hidden className="h-3 w-px bg-line-strong" />
             <span>
-              <span className="text-on-signal/60">SHA-256 </span>
+              <span className="text-bone-3">SHA-256 </span>
               {shortHash(downloads[arch].sha256)}
             </span>
             <CopyHash sha256={downloads[arch].sha256} label={archLabels[arch]} />
@@ -58,7 +58,7 @@ function CopyHash({ sha256, label }: { sha256: string; label: string }) {
     <button
       type="button"
       onClick={copy}
-      className="-my-1 inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-on-signal transition-colors duration-150 ease-ui hover:bg-on-signal/10"
+      className="-my-1 inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-bone-2 transition-colors duration-150 ease-ui hover:bg-ink-3 hover:text-bone"
       aria-label={`Copy the full SHA-256 of the ${label} installer`}
     >
       {copied ? <Check /> : <CopyIcon />}
