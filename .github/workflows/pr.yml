@@ -1,8 +1,8 @@
 name: pr
 
+# No branch filter: a pull request stacked on another one's branch gets the same checks.
 on:
   pull_request:
-    branches: [main]
 
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
