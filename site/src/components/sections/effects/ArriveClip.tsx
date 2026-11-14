@@ -4,6 +4,7 @@ import { useRef } from "react";
 import { useGSAP } from "@gsap/react";
 import { gsap, MQ, setupGsap } from "@/lib/motion";
 import VideoLoop from "@/components/ui/VideoLoop";
+import Tilt from "@/components/ui/Tilt";
 import Window from "@/components/ui/Window";
 import type { Clip } from "@/data/media";
 
@@ -15,7 +16,8 @@ const CLOSED: Record<From, string> = {
   left: "inset(0% 100% 0% 0% round 12px)",
   right: "inset(0% 0% 0% 100% round 12px)",
 };
-const OPEN = "inset(0% 0% 0% 0% round 12px)";
+// Open past the frame so a tilted window keeps its corners.
+const OPEN = "inset(-4% -4% -4% -4% round 12px)";
 
 /**
  * A clip of the real editor in its window that opens as it scrolls in: the
@@ -26,10 +28,12 @@ export default function ArriveClip({
   clip,
   from = "center",
   className = "",
+  tilt = false,
 }: {
   clip: Clip;
   from?: From;
   className?: string;
+  tilt?: boolean;
 }) {
   const scope = useRef<HTMLDivElement>(null);
 
@@ -51,11 +55,15 @@ export default function ArriveClip({
     { scope },
   );
 
+  const framed = (
+    <Window>
+      <VideoLoop clip={clip} className="block h-auto w-full" />
+    </Window>
+  );
+
   return (
     <div ref={scope} className={className}>
-      <Window>
-        <VideoLoop clip={clip} className="block h-auto w-full" />
-      </Window>
+      {tilt ? <Tilt>{framed}</Tilt> : framed}
     </div>
   );
 }

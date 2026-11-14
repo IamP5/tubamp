@@ -1,12 +1,15 @@
 /**
- * Clips of the real editor, produced by `npm run capture` (scripts/capture.mjs)
- * from the plugin's own UI. Each has `<name>.mp4`, `<name>.webm` and
- * `<name>.jpg` (poster) under public/media/ui/.
+ * Every clip on the page. Each has `<name>.mp4`, `<name>.webm` and
+ * `<name>.jpg` (poster) under public/media/<dir>/.
+ *
+ * `ui`: the real editor, recorded by `npm run capture` (scripts/capture.mjs).
+ * `film`: generated atmosphere footage, never shown as the product.
  */
-export type Clip = { name: string; width: number; height: number; alt: string };
+export type Clip = { dir: "ui" | "film"; name: string; width: number; height: number; alt: string };
 
-const board = { width: 1280, height: 800 };
-const editor = { width: 1280, height: 296 };
+const board = { dir: "ui", width: 1280, height: 800 } as const;
+const editor = { dir: "ui", width: 1280, height: 296 } as const;
+const film = { dir: "film", width: 1920, height: 1080 } as const;
 
 export const CLIPS = {
   chainBuild: { name: "chain-build", ...board, alt: "Blocks being added to the chain on the board and dragged into a new order." },
@@ -27,8 +30,14 @@ export const CLIPS = {
 
 export type ClipKey = keyof typeof CLIPS;
 
+export const FILMS = {
+  tubes: { name: "tubes", ...film, alt: "Valve filaments glowing amber in the dark." },
+  strings: { name: "strings", ...film, alt: "Three wound guitar strings lit amber on black, one of them vibrating." },
+  speaker: { name: "speaker", ...film, alt: "A black speaker cone with an amber rim light, dust lifting off it." },
+} as const satisfies Record<string, Clip>;
+
 export const clipSrc = (clip: Clip) => ({
-  mp4: `/media/ui/${clip.name}.mp4`,
-  webm: `/media/ui/${clip.name}.webm`,
-  poster: `/media/ui/${clip.name}.jpg`,
+  mp4: `/media/${clip.dir}/${clip.name}.mp4`,
+  webm: `/media/${clip.dir}/${clip.name}.webm`,
+  poster: `/media/${clip.dir}/${clip.name}.jpg`,
 });

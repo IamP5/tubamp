@@ -58,6 +58,13 @@ export default function EffectsStack() {
             onLeaveBack: () => setActive(Math.max(0, i - 1)),
           });
         });
+
+        // The index belongs to the stack: it leaves with the last panel instead of riding up into the next chapter.
+        gsap.to("[data-index]", {
+          autoAlpha: 0,
+          ease: "none",
+          scrollTrigger: { trigger: scope.current, start: "bottom bottom", end: "bottom 85%", scrub: true },
+        });
       });
       return () => mm.revert();
     },
@@ -134,24 +141,27 @@ export default function EffectsStack() {
         data-family={EFFECT_PANELS[active].block.family}
       >
         <div className="sticky top-0 flex h-svh items-end">
-          <ol className="gutter pointer-events-auto mx-auto flex w-full max-w-[100rem] flex-wrap gap-x-7 gap-y-2 pb-[5svh]">
-            {EFFECT_PANELS.map(({ block }, i) => (
-              <li key={block.id}>
-                <button
-                  type="button"
-                  onClick={() => jump(i)}
-                  aria-current={i === active ? "step" : undefined}
-                  className="group relative py-2 text-sm text-bone-3 transition-colors duration-200 ease-ui hover:text-bone aria-[current=step]:text-bone"
-                >
-                  {block.name}
-                  <span
-                    aria-hidden
-                    className="absolute inset-x-0 bottom-0 h-0.5 origin-left scale-x-0 bg-[var(--accent)] transition-transform duration-200 ease-ui group-aria-[current=step]:scale-x-100"
-                  />
-                </button>
-              </li>
-            ))}
-          </ol>
+          {/* An opaque band: a rising panel slides under the index instead of showing through it. */}
+          <div data-index className="pointer-events-auto w-full border-t border-line bg-ink">
+            <ol className="gutter mx-auto flex w-full max-w-[100rem] flex-wrap gap-x-7 gap-y-2 pt-2 pb-[3svh]">
+              {EFFECT_PANELS.map(({ block }, i) => (
+                <li key={block.id}>
+                  <button
+                    type="button"
+                    onClick={() => jump(i)}
+                    aria-current={i === active ? "step" : undefined}
+                    className="group relative py-2 text-sm text-bone-3 transition-colors duration-200 ease-ui hover:text-bone aria-[current=step]:text-bone"
+                  >
+                    {block.name}
+                    <span
+                      aria-hidden
+                      className="absolute inset-x-0 bottom-0 h-0.5 origin-left scale-x-0 bg-[var(--accent)] transition-transform duration-200 ease-ui group-aria-[current=step]:scale-x-100"
+                    />
+                  </button>
+                </li>
+              ))}
+            </ol>
+          </div>
         </div>
       </nav>
     </div>

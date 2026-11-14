@@ -3,9 +3,9 @@
 import { useRef, type ReactNode } from "react";
 import { useGSAP } from "@gsap/react";
 import { gsap, MQ, ScrollTrigger, setupGsap } from "@/lib/motion";
-import { CHAIN } from "@/data/site";
+import { CHAIN, CHAPTERS } from "@/data/site";
 import Glyph from "./Glyph";
-import { SWAP_LINE, pad } from "./copy";
+import { pad } from "./copy";
 import { drawWave, type Ink } from "./draw";
 import { BLOCKS, PINNED, SWAP, TOTAL, finalScene, sceneAt, type Scene } from "./scene";
 import { isStage } from "./signal";
@@ -242,7 +242,7 @@ export default function ChainStage({ header, after }: { header: ReactNode; after
           </div>
 
           <div className="relative h-16 motion-reduce:hidden md:h-9">
-            {[...CHAIN.map((b, i) => ({ index: pad(i + 1), title: `${b.name}.`, body: b.does })), { index: "", ...SWAP_LINE }].map(
+            {[...CHAIN.map((b, i) => ({ index: pad(i + 1), title: `${b.name}.`, body: b.does })), { index: "", ...CHAPTERS.chain.swap }].map(
               (c) => (
                 <p
                   key={c.title}

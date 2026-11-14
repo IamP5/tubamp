@@ -16,6 +16,7 @@ export const SITE = {
   name: "tubamp",
   repoUrl: "https://github.com/IamP5/tubamp",
   tagline: "Your next amp is a file.",
+  line: "A free amp plugin for Logic Pro.",
   what: "A free Audio Unit for Logic Pro that plays neural captures of real amps, in a signal chain you build yourself.",
   platforms: "macOS 11 or later. Apple Silicon and Intel.",
   hosts: "Logic Pro and other Audio Unit hosts.",
@@ -47,6 +48,10 @@ export const CHAPTERS = {
     kicker: "Chain",
     headline: ["Build the chain.", "Any order."],
     body: "Nine blocks on a board you can pan and zoom. Drag one somewhere else, remove it, add it again, add a second delay. The order is part of the sound and it is saved with your project.",
+    swap: {
+      title: "Any order.",
+      body: "Swap the drive and the reverb, and the whole tail distorts.",
+    },
   },
   captures: {
     index: "04",
@@ -107,6 +112,15 @@ export const CHAPTERS = {
     archLabels: { arm64: "Apple Silicon", x86_64: "Intel" },
   },
 } as const;
+
+/**
+ * The two film interludes that bookend the chain: the signal starts at a string
+ * and ends at a speaker. `turn` is the end of the line that takes the serif.
+ */
+export const INTERLUDES = {
+  strings: { line: "Every sound starts at a string.", turn: "a string." },
+  speaker: { line: "And ends at a speaker.", turn: "a speaker." },
+} as const satisfies Record<string, { line: string; turn: string }>;
 
 export const CREDITS = [
   "NeuralAmpModelerCore by Steven Atkinson (MIT)",

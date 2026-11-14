@@ -1,10 +1,11 @@
 import ChapterLabel from "@/components/ui/ChapterLabel";
+import Tilt from "@/components/ui/Tilt";
 import VideoLoop from "@/components/ui/VideoLoop";
 import Window from "@/components/ui/Window";
 import { CLIPS } from "@/data/media";
 import { CHAIN, CHAPTERS } from "@/data/site";
 import ChainStage from "./chain/ChainStage";
-import { SWAP_LINE, pad } from "./chain/copy";
+import { pad } from "./chain/copy";
 
 const copy = CHAPTERS.chain;
 
@@ -43,14 +44,16 @@ export default function Chain() {
         ))}
         <li className="flex gap-3 sm:col-span-2 lg:col-span-3">
           <p>
-            <span className="text-bone">{SWAP_LINE.title}</span> <span className="text-bone-2">{SWAP_LINE.body}</span>
+            <span className="text-bone">{copy.swap.title}</span> <span className="text-bone-2">{copy.swap.body}</span>
           </p>
         </li>
       </ol>
       <div data-handover className="mt-16 md:mt-24">
-        <Window>
-          <VideoLoop clip={CLIPS.chainBuild} className="block h-auto w-full" />
-        </Window>
+        <Tilt>
+          <Window>
+            <VideoLoop clip={CLIPS.chainBuild} className="block h-auto w-full" />
+          </Window>
+        </Tilt>
       </div>
     </>
   );

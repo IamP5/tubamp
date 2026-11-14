@@ -48,7 +48,7 @@ export default function More() {
             <div className="md:order-2 md:col-span-4 md:pb-[4svh]">
               <Item index={2} {...lanes} />
             </div>
-            <ArriveClip clip={CLIPS.split} from="left" className="md:order-1 md:col-span-8" />
+            <ArriveClip clip={CLIPS.split} from="left" tilt className="md:order-1 md:col-span-8" />
           </article>
 
           <article className="grid items-center gap-y-10 md:grid-cols-12 md:gap-x-10">

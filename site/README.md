@@ -46,6 +46,66 @@ The page never needs a deploy when the plugin ships a new version.
 A new release therefore reaches the page within about five minutes. To see a
 new release sooner, redeploy from the Vercel dashboard.
 
+## Media
+
+The page uses two kinds of footage.
+
+- `public/media/ui/` holds 14 clips recorded from the real plugin editor. Each
+  is an `.mp4`, a `.webm` and a `.jpg` poster. `src/data/media.ts` lists them
+  (`CLIPS`), and `scripts/capture/clips.mjs` says what each one does on screen.
+- `public/media/film/` holds three macro clips (`tubes`, `strings`,
+  `speaker`) in the same three formats, 1920x1080 and 8 seconds long. They were
+  generated, not captured, and the page uses them only as atmosphere: the hero
+  and the two interludes around the chain. They are listed in `src/data/media.ts`
+  as `FILMS`.
+
+Both folders are committed.
+
+### Re-record the editor clips
+
+1. Serve the editor on its mock bridge: `cd ../ui && npm run dev` (port 5173).
+2. Run `npm run capture` to record all 14. To record a subset, add the names:
+   `npm run capture -- fx-eq presets`.
+
+| Setting | Meaning |
+| --- | --- |
+| `--url <url>` or `TUBAMP_UI_URL` | Editor address. Default `http://localhost:5173`. |
+| `--out <dir>` | Output folder. Default `public/media/ui`. |
+| `PLAYWRIGHT_CORE` | Path to a `playwright-core` folder. Default: the first one in `~/.npm/_npx`. |
+| `CHROME_PATH` | A `chrome-headless-shell` or Chrome binary. Default: the newest in `~/Library/Caches/ms-playwright`. |
+
+`ffmpeg` must be on `PATH`. If the editor, Playwright, Chromium or `ffmpeg` is
+missing, the script stops and says which. To get Playwright without adding a
+dependency, run `npm i --prefix /tmp/pw playwright-core && npx --prefix /tmp/pw playwright-core install chromium-headless-shell`
+and set `PLAYWRIGHT_CORE=/tmp/pw/node_modules/playwright-core`.
+
+The script opens a 1280x800 window at device scale 2 and drives it with
+scripted pointer moves, eased and with pauses. It draws a cursor into the page
+and hides the "mock bridge" status text. It grabs frames as 2560x1600
+screenshots, about 20 to 30 a second depending on machine load, and `ffmpeg`
+retimes them to a constant 30 fps. Record on an idle machine: under load the
+frame rate drops and the motion gets choppy.
+
+What it writes:
+
+- Board clips: 1920x1200, H.264 `yuv420p` with `+faststart` (CRF 24), VP9
+  webm (CRF 34), no audio.
+- Editor clips (`fx-*`): the 296 px editor band, cropped from the bottom of
+  the window above the status bar, at 2560x592 (CRF 18 and 30).
+- Poster: the first frame, as JPEG.
+
+Each clip runs 5 to 9 seconds and ends in the state it began in, so the loop
+does not jump. Two clips do not: `chain-build` keeps the blocks it added, and
+`t3k` keeps the capture it loaded.
+
+### Build the in-page demo
+
+`npm run build:demo` runs `npm ci` and `vite build` in `../ui` and copies the
+build to `public/demo/`. It builds into a temporary folder, so `ui/dist` is
+left alone. The site serves the demo at `/demo/index.html`. It is a build
+product and git ignores it. To build another copy of the editor, pass
+`-- --ui <dir>`. To skip `npm ci`, pass `-- --skip-install`.
+
 ## Where things are
 
 | Path | What it holds |
@@ -54,7 +114,7 @@ new release sooner, redeploy from the Vercel dashboard.
 | `src/components/hero/`, `src/components/sections/` | one file or folder per chapter |
 | `src/components/ui/` | shared pieces: `ButtonLink`, `VideoLoop`, `Window`, `ChapterLabel` |
 | `src/data/site.ts` | every string and fact the page states about the plugin |
-| `src/data/media.ts` | the clips of the real editor |
+| `src/data/media.ts` | the clips of the real editor and the generated film |
 | `src/lib/motion.ts` | GSAP setup, media-query conditions, easings |
 | `src/lib/release*.ts`, `src/lib/platform.ts` | release data and architecture detection |
 | `public/media/ui/` | clips recorded from the real editor (committed) |

@@ -5,9 +5,9 @@ import { useGSAP } from "@gsap/react";
 import { gsap, MQ, setupGsap } from "@/lib/motion";
 
 /**
- * The amber field arriving: it enters as an inset panel and opens to the full
- * bleed as its top climbs the viewport, while anything marked `data-rise`
- * travels up into place. Reduced motion gets the open field.
+ * The amber field arriving. It is full-bleed from its first pixel and rises
+ * over the frame before it with the scroll, while anything marked `data-rise`
+ * travels up into place a little behind it. Reduced motion gets the field at rest.
  */
 export default function Curtain({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -19,16 +19,7 @@ export default function Curtain({ children, className = "" }: { children: React.
       mm.add(MQ.motion, () => {
         const el = ref.current!;
         const scrollTrigger = { trigger: el, start: "top bottom", end: "top 10%", scrub: true };
-        gsap.fromTo(
-          el,
-          { clipPath: "inset(14% 6% 0% 6% round 40px)" },
-          { clipPath: "inset(0% 0% 0% 0% round 0px)", ease: "none", scrollTrigger },
-        );
-        gsap.fromTo(
-          el.querySelectorAll("[data-rise]"),
-          { yPercent: 45 },
-          { yPercent: 0, ease: "none", scrollTrigger },
-        );
+        gsap.fromTo(el.querySelectorAll("[data-rise]"), { yPercent: 45 }, { yPercent: 0, ease: "none", scrollTrigger });
       });
       return () => mm.revert();
     },
@@ -36,7 +27,7 @@ export default function Curtain({ children, className = "" }: { children: React.
   );
 
   return (
-    <div ref={ref} className={className}>
+    <div ref={ref} className={className} data-nav-tone="signal">
       {children}
     </div>
   );

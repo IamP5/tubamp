@@ -3,9 +3,6 @@ import ButtonLink from "@/components/ui/Button";
 import { SITE } from "@/data/site";
 import HeroStage from "./HeroStage";
 
-// Belongs in SITE next to `what`; kept here until it is moved.
-const LINE = "A free amp plugin for Logic Pro.";
-
 const turn = SITE.tagline.indexOf(" is ");
 const LEAD = SITE.tagline.slice(0, turn).split(" ");
 const ACCENT = SITE.tagline.slice(turn + 1).split(" ");
@@ -28,7 +25,7 @@ export default function HeroA({ version }: { version: string | null }) {
   return (
     <section aria-labelledby="hero-title">
       <HeroStage
-        line={<p className="text-lead text-bone-2">{LINE}</p>}
+        line={<p className="text-lead text-bone-2">{SITE.line}</p>}
         headline={
           <h1 id="hero-title" className="display text-display md:motion-reduce:text-h2">
             <Words words={LEAD} />{" "}
