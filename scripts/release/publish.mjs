@@ -82,6 +82,19 @@ function findRelease() {
   return found[0] ?? null;
 }
 
+// GitHub's release list can lag a create by a second or two: v0.1.0's first publish
+// looked in the same second and stopped with the draft already there.
+const LOOKUP_WAITS_MS = [0, 500, 1000, 2000, 4000, 8000];
+
+function findNewDraft() {
+  for (const wait of LOOKUP_WAITS_MS) {
+    if (wait) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    const found = findRelease();
+    if (found) return found;
+  }
+  return null;
+}
+
 if (!parseVersion(version ?? '')) fail(`--version must be X.Y.Z, got "${version}"`);
 if (!/^[0-9a-f]{40}$/.test(sha ?? '')) fail(`--sha must be a full commit SHA, got "${sha}"`);
 if (!notesFile || !existsSync(notesFile)) fail('--notes-file must name an existing file');
@@ -156,7 +169,7 @@ if (release?.draft && (release.target !== sha || foreign(release).length)) {
 }
 if (!release) {
   mutate('release', 'create', tag, '--draft', '--target', sha, '--title', `tubamp ${version}`, '--notes-file', notesFile);
-  release = dryRun ? { draft: true, assets: [] } : findRelease();
+  release = dryRun ? { draft: true, assets: [] } : findNewDraft();
   if (!release) fail(`created a draft for ${tag} but cannot find it`);
 }
 
