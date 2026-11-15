@@ -38,6 +38,20 @@ constexpr const char* kLatencyParameterIds[] { params::driveOn, params::drive2On
                                                params::driveType, params::drive2Type, params::drive3Type,
                                                params::ampOn, params::amp2On };
 
+// The chain block each amp runs as, indexed like params::ampOnIds.
+constexpr chain::BlockId kAmpBlocks[params::numAmps] { chain::BlockId::amp, chain::BlockId::amp2 };
+
+// The chain block each cab runs as, indexed like params::cabOnIds, and the media slot
+// that holds its IR.
+constexpr chain::BlockId kCabBlocks[params::numCabs] { chain::BlockId::cab, chain::BlockId::cab2 };
+constexpr tubamp::TubampAudioProcessor::Media kCabMedia[params::numCabs] {
+    tubamp::TubampAudioProcessor::Media::ir, tubamp::TubampAudioProcessor::Media::irB };
+
+// Every media slot, in the order a restore loads them.
+constexpr tubamp::TubampAudioProcessor::Media kMediaSlots[] {
+    tubamp::TubampAudioProcessor::Media::model, tubamp::TubampAudioProcessor::Media::modelB,
+    tubamp::TubampAudioProcessor::Media::ir, tubamp::TubampAudioProcessor::Media::irB };
+
 // How often the message thread hands the audio thread's latency to the host (the only place it
 // does, so at most one report per tick).
 constexpr int kLatencyTimerMs = 20;
@@ -61,8 +75,7 @@ double smoothstep (double x) noexcept
     return x * x * (3.0 - 2.0 * x);
 }
 
-/** split_mode's choice order, frozen with the parameter (docs/SPLIT.md §2). */
-enum class SplitMode { copy = 0, leftRight = 1, crossover = 2 };
+using chain::SplitMode;
 
 // 2 = the chain carries block instances and a row layout. 3 = the gate, comp, drive, EQ
 // and mod engine ids exist. applyStateVar still ignores this number, deliberately: every
@@ -80,6 +93,7 @@ const char* mediaSlotName (TubampAudioProcessor::Media slot) noexcept
         case TubampAudioProcessor::Media::model:  return "model";
         case TubampAudioProcessor::Media::modelB: return "modelB";
         case TubampAudioProcessor::Media::ir:     return "ir";
+        case TubampAudioProcessor::Media::irB:    return "irB";
         default:                                  return "";
     }
 }
@@ -275,7 +289,7 @@ SerializedOrder serializeOrder (const chain::Order& order)
 /** The state var presets and A/B slots store, the shape applyStateVar reads. */
 juce::var stateVar (juce::DynamicObject* paramValues, const chain::Order& order, const std::vector<int>& rows,
                     const juce::String& modelPath, const juce::String& modelPathB, const juce::String& irPath,
-                    const juce::String& fxSlotsXml)
+                    const juce::String& irPathB, const juce::String& fxSlotsXml)
 {
     const auto serialized = serializeOrder (order);
 
@@ -285,6 +299,7 @@ juce::var stateVar (juce::DynamicObject* paramValues, const chain::Order& order,
     state->setProperty ("modelPath", modelPath);
     state->setProperty ("modelPathB", modelPathB);
     state->setProperty ("irPath", irPath);
+    state->setProperty ("irPathB", irPathB);
     state->setProperty ("chainOrder", serialized.v1);
 
     if (serialized.v2.isNotEmpty())
@@ -295,6 +310,16 @@ juce::var stateVar (juce::DynamicObject* paramValues, const chain::Order& order,
 
     return juce::var (state);
 }
+
+/** State saved before the second amp had its own output mode, calibration and slim (hint 5)
+    ran it on the first amp's, with no tone stack. A restore that lacks amp2_out_mode (absent,
+    whatever the version) sets each amp 2 id from its first-amp twin and turns amp2_eq_on off. */
+constexpr std::pair<const char*, const char*> kAmp2FollowsAmp[] {
+    { params::amp2OutMode,  params::ampOutMode },
+    { params::amp2CalInput, params::ampCalInput },
+    { params::amp2CalLevel, params::ampCalLevel },
+    { params::amp2Slim,     params::ampSlim },
+};
 
 /** Every id kLegacyTypePins covers whose block instance is in `order`: the ids a restore
     sets to 0 (Classic) when the restored state does not carry them. */
@@ -326,27 +351,28 @@ TubampAudioProcessor::TubampAudioProcessor()
     namEngineB.setBypassedWhenEmpty (true);
 
     pp.gateOn        = raw (params::gateOn);
-    pp.ampOn         = raw (params::ampOn);
-    pp.cabOn         = raw (params::cabOn);
 
     pp.inputTrim     = raw (params::inputTrim);
     pp.outputLevel   = raw (params::outputLevel);
 
     pp.gateThreshold = raw (params::gateThreshold);
 
-    pp.ampInput      = raw (params::ampInput);
-    pp.ampOutput     = raw (params::ampOutput);
-    pp.ampOutMode    = raw (params::ampOutMode);
-    pp.ampCalInput   = raw (params::ampCalInput);
-    pp.ampCalLevel   = raw (params::ampCalLevel);
-    pp.ampEqOn       = raw (params::ampEqOn);
-    pp.ampEqBass     = raw (params::ampEqBass);
-    pp.ampEqMid      = raw (params::ampEqMid);
-    pp.ampEqTreble   = raw (params::ampEqTreble);
+    for (int a = 0; a < params::numAmps; ++a)
+    {
+        pp.ampOn[a]       = raw (params::ampOnIds[a]);
+        pp.ampInput[a]    = raw (params::ampInputIds[a]);
+        pp.ampOutput[a]   = raw (params::ampOutputIds[a]);
+        pp.ampOutMode[a]  = raw (params::ampOutModeIds[a]);
+        pp.ampCalInput[a] = raw (params::ampCalInputIds[a]);
+        pp.ampCalLevel[a] = raw (params::ampCalLevelIds[a]);
+        pp.ampEqOn[a]     = raw (params::ampEqOnIds[a]);
+        pp.ampEqBass[a]   = raw (params::ampEqBassIds[a]);
+        pp.ampEqMid[a]    = raw (params::ampEqMidIds[a]);
+        pp.ampEqTreble[a] = raw (params::ampEqTrebleIds[a]);
 
-    pp.amp2On        = raw (params::amp2On);
-    pp.amp2Input     = raw (params::amp2Input);
-    pp.amp2Output    = raw (params::amp2Output);
+        pendingSlim[(size_t) a].store (valueOf (raw (params::ampSlimIds[a])), std::memory_order_relaxed);
+        apvts.addParameterListener (params::ampSlimIds[a], this);
+    }
 
     pp.splitOn       = raw (params::splitOn);
     pp.splitMode     = raw (params::splitMode);
@@ -360,9 +386,13 @@ TubampAudioProcessor::TubampAudioProcessor()
     pp.mixBPhase     = raw (params::mixBPhase);
     pp.mixLevel      = raw (params::mixLevel);
 
-    pp.cabLowCut     = raw (params::cabLowCut);
-    pp.cabHighCut    = raw (params::cabHighCut);
-    pp.cabMix        = raw (params::cabMix);
+    for (int c = 0; c < params::numCabs; ++c)
+    {
+        pp.cabOn[c]      = raw (params::cabOnIds[c]);
+        pp.cabLowCut[c]  = raw (params::cabLowCutIds[c]);
+        pp.cabHighCut[c] = raw (params::cabHighCutIds[c]);
+        pp.cabMix[c]     = raw (params::cabMixIds[c]);
+    }
 
     pp.fxOn[0]       = raw (params::fx1On);
     pp.fxOn[1]       = raw (params::fx2On);
@@ -458,9 +488,6 @@ TubampAudioProcessor::TubampAudioProcessor()
         pp.modColor[k]       = raw (params::modColorIds[k]);
     }
 
-    pendingSlim.store (valueOf (raw (params::ampSlim)), std::memory_order_relaxed);
-    apvts.addParameterListener (params::ampSlim, this);
-
     for (const auto* id : kLatencyParameterIds)
         apvts.addParameterListener (id, this);
 
@@ -481,7 +508,9 @@ TubampAudioProcessor::TubampAudioProcessor()
 TubampAudioProcessor::~TubampAudioProcessor()
 {
     stopTimer();
-    apvts.removeParameterListener (params::ampSlim, this);
+
+    for (const auto* id : params::ampSlimIds)
+        apvts.removeParameterListener (id, this);
 
     for (const auto* id : kLatencyParameterIds)
         apvts.removeParameterListener (id, this);
@@ -499,17 +528,21 @@ TubampAudioProcessor::~TubampAudioProcessor()
         fxHost.clear (slot);
 
     fxHost.collectGarbage();
-    namEngine.collectGarbage();
-    namEngineB.collectGarbage();
+
+    for (auto& engine : ampEngines)
+        engine.collectGarbage();
 }
 
 void TubampAudioProcessor::parameterChanged (const juce::String& parameterID, float newValue)
 {
-    if (parameterID == params::ampSlim)
+    for (int a = 0; a < params::numAmps; ++a)
     {
-        pendingSlim.store (newValue, std::memory_order_relaxed);
-        triggerAsyncUpdate();
-        return;
+        if (parameterID == params::ampSlimIds[a])
+        {
+            pendingSlim[(size_t) a].store (newValue, std::memory_order_relaxed);
+            triggerAsyncUpdate();
+            return;
+        }
     }
 
     // One of kLatencyParameterIds. Host automation calls this on the audio thread, where only an
@@ -562,7 +595,7 @@ void TubampAudioProcessor::reportLatency()
             orderCopy = uiChainOrder;
         }
 
-        wanted = computeWantedLatency (orderCopy.data(), (int) orderCopy.size(), isOn (pp.ampOn), isOn (pp.amp2On));
+        wanted = computeWantedLatency (orderCopy.data(), (int) orderCopy.size(), isOn (pp.ampOn[0]), isOn (pp.ampOn[1]));
     }
 
     if (wanted != getLatencySamples())
@@ -571,11 +604,8 @@ void TubampAudioProcessor::reportLatency()
 
 void TubampAudioProcessor::handleAsyncUpdate()
 {
-    // One Slim control for both engines: an amp whose two halves ran at different
-    // model sizes would not be one amp.
-    const auto slim = (double) pendingSlim.load (std::memory_order_relaxed);
-    namEngine.setSlimSize (slim);
-    namEngineB.setSlimSize (slim);
+    for (int a = 0; a < params::numAmps; ++a)
+        ampEngines[(size_t) a].setSlimSize ((double) pendingSlim[(size_t) a].load (std::memory_order_relaxed));
 
     if (fxRebuildPending.exchange (false, std::memory_order_acq_rel))
     {
@@ -945,43 +975,26 @@ void TubampAudioProcessor::applyFxRecords (const std::array<FxRecord, chain::num
     updateLatency();
 }
 
-float TubampAudioProcessor::ampInputDb() const noexcept
+float TubampAudioProcessor::ampInputDb (int amp) const noexcept
 {
-    return valueOf (pp.ampInput)
-           + namEngine.getInputCalibrationDb (isOn (pp.ampCalInput), valueOf (pp.ampCalLevel, 12.0f));
+    return valueOf (pp.ampInput[amp])
+           + ampEngines[(size_t) amp].getInputCalibrationDb (isOn (pp.ampCalInput[amp]),
+                                                             valueOf (pp.ampCalLevel[amp], 12.0f));
 }
 
-float TubampAudioProcessor::ampOutputDb() const noexcept
+float TubampAudioProcessor::ampOutputDb (int amp) const noexcept
 {
     const auto mode = (params::OutputMode) juce::jlimit (
-        0, params::ampOutModeChoices.size() - 1, (int) valueOf (pp.ampOutMode, 1.0f));
+        0, params::ampOutModeChoices.size() - 1, (int) valueOf (pp.ampOutMode[amp], 1.0f));
 
-    return valueOf (pp.ampOutput)
-           + namEngine.getOutputCompensationDb (mode, valueOf (pp.ampCalLevel, 12.0f));
+    return valueOf (pp.ampOutput[amp])
+           + ampEngines[(size_t) amp].getOutputCompensationDb (mode, valueOf (pp.ampCalLevel[amp], 12.0f));
 }
 
-float TubampAudioProcessor::amp2InputDb() const noexcept
+void TubampAudioProcessor::snapAmpGains (int amp) noexcept
 {
-    // Same sharing rule as amp2OutputDb() below: engine B's own calibration metadata,
-    // the amp block's calibration knobs. Input calibration feeds a NONLINEAR model, so
-    // skipping it would not just shift lane B's level — it would change how hard the
-    // second amp is driven relative to the first.
-    return valueOf (pp.amp2Input)
-           + namEngineB.getInputCalibrationDb (isOn (pp.ampCalInput), valueOf (pp.ampCalLevel, 12.0f));
-}
-
-float TubampAudioProcessor::amp2OutputDb() const noexcept
-{
-    // Engine B's own metadata, but the amp block's mode and calibration knobs: amp2
-    // deliberately has no duplicates of them, and sharing them is what keeps two lanes
-    // loudness-matched by default — the entire point of a dual-amp rig. Without this,
-    // lane B would sit at the model's raw level while lane A is normalized, an
-    // arbitrary (often tens of dB) imbalance no mixer knob range could bridge.
-    const auto mode = (params::OutputMode) juce::jlimit (
-        0, params::ampOutModeChoices.size() - 1, (int) valueOf (pp.ampOutMode, 1.0f));
-
-    return valueOf (pp.amp2Output)
-           + namEngineB.getOutputCompensationDb (mode, valueOf (pp.ampCalLevel, 12.0f));
+    ampInLin[(size_t) amp].setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampInputDb (amp)));
+    ampOutLin[(size_t) amp].setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampOutputDb (amp)));
 }
 
 //==============================================================================
@@ -992,6 +1005,11 @@ bool TubampAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
 
     if (mainOut != juce::AudioChannelSet::mono() && mainOut != juce::AudioChannelSet::stereo())
         return false;
+
+    // Mono in with stereo out is the instance a guitar track needs: one input, and the stereo
+    // delays, reverbs and panned lanes still reach the track in stereo.
+    if (mainIn == juce::AudioChannelSet::mono())
+        return true;
 
     return mainIn == mainOut;
 }
@@ -1023,8 +1041,11 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
         reverbFx[(size_t) k].prepare (spec);
     }
 
-    cab.prepare (spec);
-    ampEq.prepare ({ spec.sampleRate, spec.maximumBlockSize, 1 });
+    for (auto& cabSim : cabs)
+        cabSim.prepare (spec);
+
+    for (auto& toneStack : ampEq)
+        toneStack.prepare ({ spec.sampleRate, spec.maximumBlockSize, 1 });
     dcBlocker.prepare (spec);
 
     gateFader.prepare (spec);
@@ -1056,8 +1077,8 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 
     maxSplitCutoffHz = (float) juce::jmax (100.0, sampleRate * 0.45);
 
-    namEngine.prepare (sampleRate, juce::jmax (1, samplesPerBlock));
-    namEngineB.prepare (sampleRate, juce::jmax (1, samplesPerBlock));
+    for (auto& engine : ampEngines)
+        engine.prepare (sampleRate, juce::jmax (1, samplesPerBlock));
 
     // Records the configuration only — it must not touch the hosted instances. The
     // host can call prepareToPlay while holding our callback lock (Logic does, on the
@@ -1094,16 +1115,16 @@ void TubampAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     laneLast = laneOffset = laneOffsetStart = 0.0;
     laneFromCount = 0;
 
-    for (auto* smoothed : { &inputTrimLin, &outputLevelLin, &ampInLin, &ampOutLin,
-                            &amp2InLin, &amp2OutLin, &mixLevelLin })
+    for (auto* smoothed : { &inputTrimLin, &outputLevelLin, &ampInLin[0], &ampOutLin[0],
+                            &ampInLin[1], &ampOutLin[1], &mixLevelLin })
         smoothed->reset (sampleRate, kGainSmoothingSeconds);
 
     inputTrimLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.inputTrim)));
     outputLevelLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.outputLevel)));
-    ampInLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampInputDb()));
-    ampOutLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampOutputDb()));
-    amp2InLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2InputDb()));
-    amp2OutLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2OutputDb()));
+
+    for (int a = 0; a < params::numAmps; ++a)
+        snapAmpGains (a);
+
     mixLevelLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (valueOf (pp.mixLevel)));
 
     for (int ch = 0; ch < 2; ++ch)
@@ -1156,8 +1177,12 @@ void TubampAudioProcessor::releaseResources()
         reverbFx[(size_t) k].reset();
     }
 
-    cab.reset();
-    ampEq.reset();
+    for (auto& cabSim : cabs)
+        cabSim.reset();
+
+    for (auto& toneStack : ampEq)
+        toneStack.reset();
+
     dcBlocker.reset();
     splitLow.reset();
     splitHigh.reset();
@@ -1179,8 +1204,18 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const int numInputChannels = getTotalNumInputChannels();
     const int numOutputChannels = getTotalNumOutputChannels();
 
+    // An output channel with no input of its own (mono in, stereo out) carries the input rather
+    // than silence. Every block that averages the channels (the amp, the gate detector, the
+    // ping-pong seed, the analyser) would otherwise read 6 dB low, and an L/R split or a hosted
+    // effect would get a dead right side. The chain then runs exactly as it does for a stereo
+    // host fed the same signal on both sides.
     for (int ch = numInputChannels; ch < numOutputChannels; ++ch)
-        buffer.clear (ch, 0, numSamples);
+    {
+        if (numInputChannels > 0)
+            buffer.copyFrom (ch, 0, buffer, 0, 0, numSamples);
+        else
+            buffer.clear (ch, 0, numSamples);
+    }
 
     // A non-finite sample from the host would live on in every recursive state it reached (the
     // always-on DC blocker first) and leave the plugin silent or non-finite until the next
@@ -1207,18 +1242,14 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // starting), so the amp gains — which carry the model's own calibration and
     // loudness compensation — jump to the new model's values instead of ramping
     // there over the first audible milliseconds.
-    if (namEngine.applyStaging (prevPresent[(size_t) chain::BlockId::amp] && isOn (pp.ampOn)))
-    {
-        ampInLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampInputDb()));
-        ampOutLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampOutputDb()));
-    }
+    for (int a = 0; a < params::numAmps; ++a)
+        if (ampEngines[(size_t) a].applyStaging (prevPresent[(size_t) kAmpBlocks[a]] && isOn (pp.ampOn[a])))
+            snapAmpGains (a);
 
-    if (namEngineB.applyStaging (prevPresent[(size_t) chain::BlockId::amp2] && isOn (pp.amp2On)))
-    {
-        amp2InLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2InputDb()));
-        amp2OutLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2OutputDb()));
-    }
-    cab.applyStaging (prevPresent[(size_t) chain::BlockId::cab] && isOn (pp.cabOn));
+    // The same for a staged IR, on both cabs.
+    for (int c = 0; c < params::numCabs; ++c)
+        cabs[(size_t) c].applyStaging (prevPresent[(size_t) kCabBlocks[c]] && isOn (pp.cabOn[c]));
+
     fxHost.applyStaging();
 
     auto* const playHead = getPlayHead();
@@ -1266,12 +1297,12 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const int numBlocks = chain::unpackTo (packedChain.load (std::memory_order_relaxed), order);
 
     std::array<bool, chain::numBlockTypes> present {};
-    int gateIndex = -1, ampIndex = -1, amp2Index = -1, cabIndex = -1;
+    int gateIndex = -1, ampIndex = -1, amp2Index = -1;
+    int cabIndex[params::numCabs] { -1, -1 };
 
     // chain::findStructure's rule, applied to the decoded stack array: the Order-taking
-    // helper would have to build a vector to run here. No id occurs twice, so every
-    // "first occurrence" below is the only one.
-    chain::Structure structure;
+    // helper would have to build a vector to run here. planWidth decodes with it too.
+    const auto structure = chain::structureOf (order, numBlocks);
 
     for (int i = 0; i < numBlocks; ++i)
     {
@@ -1286,18 +1317,14 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         else if (id == chain::BlockId::amp2)
             amp2Index = i;
         else if (id == chain::BlockId::cab)
-            cabIndex = i;
-        else if (id == chain::BlockId::split)
-            structure.splitAt = i;
-        else if (id == chain::BlockId::lane2)
-            structure.lane2At = i;
-        else if (id == chain::BlockId::mix)
-            structure.mixAt = i;
+            cabIndex[0] = i;
+        else if (id == chain::BlockId::cab2)
+            cabIndex[1] = i;
     }
 
     const bool gateOn = isOn (pp.gateOn);
-    const bool ampOn = isOn (pp.ampOn);
-    const bool amp2On = isOn (pp.amp2On);
+    const bool ampOn = isOn (pp.ampOn[0]);
+    const bool amp2On = isOn (pp.ampOn[1]);
 
     // The published order is sanitized before it is packed, so a structure here is a
     // well-formed one; the check is against a word that was never written by us. Lane B
@@ -1307,31 +1334,18 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                        && laneScratch.getNumSamples() >= numSamples
                        && laneScratch.getNumChannels() >= numOutputChannels;
 
-    // Which of the four segments an entry runs in: 0 = serial before the split (and
-    // everything in a chain without one), 1 = lane A, 2 = lane B, 3 = serial after the
-    // mixer.
-    const auto segmentOf = [&structure, lanes] (int index) noexcept
-    {
-        if (! lanes || index < structure.splitAt) return 0;
-        if (index < structure.lane2At)            return 1;
-        if (index < structure.mixAt)              return 2;
-
-        return 3;
-    };
+    const chain::Segments segments { structure, lanes };
 
     // A stereo IR runs as true stereo only where the path stays stereo: an amp folds
     // to mono, so with one downstream of the cab the right kernel could never be
     // heard as such and the left kernel is used on both channels instead (the
-    // reference plugin's rule). "Downstream" is later in the order, except that lane
-    // B is not downstream of lane A.
-    const auto foldsAfterCab = [&] (int index, bool active) noexcept
-    {
-        return active && cabIndex >= 0 && index > cabIndex
-               && ! (segmentOf (cabIndex) == 1 && segmentOf (index) == 2);
-    };
+    // reference plugin's rule). Each cab is judged from its own position, by the rule
+    // the width map draws with.
+    const bool amp2Folds = amp2On && namEngineB.hasModelInPath();
 
-    cabAllowStereo = ! (foldsAfterCab (ampIndex, ampOn)
-                        || foldsAfterCab (amp2Index, amp2On && namEngineB.hasModelInPath()));
+    for (int c = 0; c < params::numCabs; ++c)
+        cabAllowStereo[(size_t) c] = ! (chain::ampFoldsAfter (segments, cabIndex[c], ampIndex, ampOn)
+                                        || chain::ampFoldsAfter (segments, cabIndex[c], amp2Index, amp2Folds));
 
     // A block that left the chain and comes back must not replay what it was holding
     // when it left — a delay line keeps minutes of audio. The reset is deferred through
@@ -1405,7 +1419,7 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     gateFadeOn = gateRuns;
     const bool gateEngine = gateFading ? gateFader.needsEngine (gateRuns) : gateRuns;
     const bool deferGateToAmp = gateEngine && ampOn && gateIndex >= 0 && ampIndex > gateIndex
-                                && segmentOf (gateIndex) == segmentOf (ampIndex);
+                                && segments.of (gateIndex) == segments.of (ampIndex);
 
     // A deferred curve meets audio that is late by everything from the gate to the amp's
     // output, the amp's own resampler included; Tight and Smooth wait for it (Classic
@@ -1435,20 +1449,15 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
     }
 
-    if (! present[(size_t) chain::BlockId::amp])
+    for (int a = 0; a < params::numAmps; ++a)
     {
-        ampInLin.setTargetValue (juce::Decibels::decibelsToGain (ampInputDb()));
-        ampOutLin.setTargetValue (juce::Decibels::decibelsToGain (ampOutputDb()));
-        ampInLin.skip (numSamples);
-        ampOutLin.skip (numSamples);
-    }
-
-    if (! present[(size_t) chain::BlockId::amp2])
-    {
-        amp2InLin.setTargetValue (juce::Decibels::decibelsToGain (amp2InputDb()));
-        amp2OutLin.setTargetValue (juce::Decibels::decibelsToGain (amp2OutputDb()));
-        amp2InLin.skip (numSamples);
-        amp2OutLin.skip (numSamples);
+        if (! present[(size_t) kAmpBlocks[a]])
+        {
+            ampInLin[(size_t) a].setTargetValue (juce::Decibels::decibelsToGain (ampInputDb (a)));
+            ampOutLin[(size_t) a].setTargetValue (juce::Decibels::decibelsToGain (ampOutputDb (a)));
+            ampInLin[(size_t) a].skip (numSamples);
+            ampOutLin[(size_t) a].skip (numSamples);
+        }
     }
 
     // The amp blocks' mono-collapse scratch, or null when this block is bigger than
@@ -1549,9 +1558,20 @@ void TubampAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     applySmoothedGain (buffer, numSamples, outputLevelLin);
 
     {
-        const float mag = buffer.getMagnitude (0, numSamples);
-        float prev = outputPeak.load (std::memory_order_relaxed);
-        while (mag > prev && ! outputPeak.compare_exchange_weak (prev, mag, std::memory_order_relaxed)) {}
+        float mag = 0.0f, magL = 0.0f, magR = 0.0f;
+
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        {
+            const float m = buffer.getMagnitude (ch, 0, numSamples);
+            mag = juce::jmax (mag, m);
+
+            if (ch == 0) magL = m;
+            if (ch == 1) magR = m;
+        }
+
+        publishMax (outputPeak, mag);
+        publishMax (outputPeakL, magL);
+        publishMax (outputPeakR, numOutputChannels > 1 ? magR : magL);
         outputSounding = mag > 0.0f;
     }
 }
@@ -1651,12 +1671,13 @@ ModParams TubampAudioProcessor::modParams (int instance, const HostTransport& tr
     return mp;
 }
 
-void TubampAudioProcessor::processAmpMono (NamEngine& engine, juce::dsp::AudioBlock<float> block,
+void TubampAudioProcessor::processAmpMono (int amp, juce::dsp::AudioBlock<float> block,
                                            int numSamples, float* monoScratchData,
-                                           juce::SmoothedValue<float>& inGain,
-                                           juce::SmoothedValue<float>& outGain,
-                                           bool applyDeferredGate, bool useToneStack) noexcept
+                                           bool applyDeferredGate) noexcept
 {
+    auto& engine = ampEngines[(size_t) amp];
+    auto& inGain = ampInLin[(size_t) amp];
+    auto& outGain = ampOutLin[(size_t) amp];
     const int numChannels = (int) block.getNumChannels();
 
     if (numChannels < 1)
@@ -1699,19 +1720,17 @@ void TubampAudioProcessor::processAmpMono (NamEngine& engine, juce::dsp::AudioBl
     // The amp's own tone stack, on the mono path: model -> gate gain -> tone stack is
     // the reference plugin's order (docs/research/nam-plugin-params.md §4), and running
     // it before the stereo expansion is what makes it part of the amp rather than a
-    // second EQ block after it. Deliberate — do not move it later. amp2 has none: it is
-    // the same NAM core without the amp block's tone controls (docs/SPLIT.md §3), and a
-    // user who wants them adds an eq instance behind it.
-    if (useToneStack && isOn (pp.ampEqOn))
+    // second EQ block after it. Deliberate — do not move it later.
+    if (isOn (pp.ampEqOn[amp]))
     {
         EqParams ep;
         ep.type   = (int) EqFx::Type::classic;
-        ep.bass   = valueOf (pp.ampEqBass, 5.0f);
-        ep.mid    = valueOf (pp.ampEqMid, 5.0f);
-        ep.treble = valueOf (pp.ampEqTreble, 5.0f);
+        ep.bass   = valueOf (pp.ampEqBass[amp], 5.0f);
+        ep.mid    = valueOf (pp.ampEqMid[amp], 5.0f);
+        ep.treble = valueOf (pp.ampEqTreble[amp], 5.0f);
 
-        ampEq.setParameters (ep);
-        ampEq.process (juce::dsp::AudioBlock<float> (&mono, 1, (size_t) numSamples));
+        ampEq[(size_t) amp].setParameters (ep);
+        ampEq[(size_t) amp].process (juce::dsp::AudioBlock<float> (&mono, 1, (size_t) numSamples));
     }
 
     if (swappedAt < 0)
@@ -1729,8 +1748,7 @@ void TubampAudioProcessor::processAmpMono (NamEngine& engine, juce::dsp::AudioBl
         for (int n = 0; n < swappedAt; ++n)
             mono[n] *= outGain.getNextValue();
 
-        outGain.setCurrentAndTargetValue (
-            juce::Decibels::decibelsToGain (&engine == &namEngineB ? amp2OutputDb() : ampOutputDb()));
+        outGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (ampOutputDb (amp)));
 
         for (int n = swappedAt; n < numSamples; ++n)
             mono[n] *= outGain.getNextValue();
@@ -1889,31 +1907,30 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
         // --- mono collapse -> NAM engine A -> expand
         case chain::BlockId::amp:
         {
-            ampInLin.setTargetValue (juce::Decibels::decibelsToGain (ampInputDb()));
-            ampOutLin.setTargetValue (juce::Decibels::decibelsToGain (ampOutputDb()));
+            ampInLin[0].setTargetValue (juce::Decibels::decibelsToGain (ampInputDb (0)));
+            ampOutLin[0].setTargetValue (juce::Decibels::decibelsToGain (ampOutputDb (0)));
 
             if (ampOn)
             {
-                processAmpMono (namEngine, block, numSamples, monoScratchData,
-                                ampInLin, ampOutLin, deferGateToAmp, true);
+                processAmpMono (0, block, numSamples, monoScratchData, deferGateToAmp);
             }
             else
             {
                 // Amp bypassed: keep the smoothers in step so re-enabling doesn't jump,
                 // and leave the buffer untouched (same contract as every other
                 // bypassable block).
-                ampInLin.skip (numSamples);
-                ampOutLin.skip (numSamples);
+                ampInLin[0].skip (numSamples);
+                ampOutLin[0].skip (numSamples);
             }
 
             break;
         }
 
-        // --- mono collapse -> NAM engine B -> expand (no tone stack, never gated)
+        // --- mono collapse -> NAM engine B -> expand (never gated)
         case chain::BlockId::amp2:
         {
-            amp2InLin.setTargetValue (juce::Decibels::decibelsToGain (amp2InputDb()));
-            amp2OutLin.setTargetValue (juce::Decibels::decibelsToGain (amp2OutputDb()));
+            ampInLin[1].setTargetValue (juce::Decibels::decibelsToGain (ampInputDb (1)));
+            ampOutLin[1].setTargetValue (juce::Decibels::decibelsToGain (ampOutputDb (1)));
 
             // hasModelInPath(), the audio thread's own view — not hasModel(), which
             // goes true the moment a model is staged (running the block on that would
@@ -1924,8 +1941,7 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
             // then contributes to the reported latency.
             if (amp2On && namEngineB.hasModelInPath())
             {
-                processAmpMono (namEngineB, block, numSamples, monoScratchData,
-                                amp2InLin, amp2OutLin, false, false);
+                processAmpMono (1, block, numSamples, monoScratchData, false);
             }
             else
             {
@@ -1951,29 +1967,32 @@ void TubampAudioProcessor::processChainBlock (chain::BlockId id, juce::AudioBuff
                 if (adopted)
                 {
                     // The model opens from the next block: start it at its own gains.
-                    amp2InLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2InputDb()));
-                    amp2OutLin.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (amp2OutputDb()));
+                    snapAmpGains (1);
                 }
                 else
                 {
-                    amp2InLin.skip (numSamples);
-                    amp2OutLin.skip (numSamples);
+                    ampInLin[1].skip (numSamples);
+                    ampOutLin[1].skip (numSamples);
                 }
             }
 
             break;
         }
 
-        // --- cab IR
+        // --- cab IR: the two cabs are instances of one block, each with its own IR
         case chain::BlockId::cab:
+        case chain::BlockId::cab2:
         {
+            const auto c = (size_t) (id == chain::BlockId::cab2 ? 1 : 0);
+            auto& cabSim = cabs[c];
+
             // isRunning(), not hasImpulseResponse(): a cleared IR still has its fade
             // to finish, and a staged one is not in the path yet.
-            if (isOn (pp.cabOn) && cab.isRunning())
+            if (isOn (pp.cabOn[c]) && cabSim.isRunning())
             {
-                cab.setParameters (valueOf (pp.cabLowCut, 80.0f), valueOf (pp.cabHighCut, 8000.0f),
-                                   valueOf (pp.cabMix, 100.0f) * 0.01f);
-                cab.process (block, cabAllowStereo);
+                cabSim.setParameters (valueOf (pp.cabLowCut[c], 80.0f), valueOf (pp.cabHighCut[c], 8000.0f),
+                                      valueOf (pp.cabMix[c], 100.0f) * 0.01f);
+                cabSim.process (block, cabAllowStereo[c]);
             }
 
             break;
@@ -2742,6 +2761,7 @@ void TubampAudioProcessor::resetBlockInstance (chain::BlockId id, bool snap) noe
         case chain::BlockId::amp:
         case chain::BlockId::amp2:
         case chain::BlockId::cab:
+        case chain::BlockId::cab2:
         case chain::BlockId::fx1:
         case chain::BlockId::fx2:
         case chain::BlockId::fx3:
@@ -2788,6 +2808,80 @@ chain::Order TubampAudioProcessor::getChainOrder() const
     return uiChainOrder;
 }
 
+chain::WidthMap TubampAudioProcessor::getWidthMap() const
+{
+    static_assert (chain::kWidthInstances == params::maxInstances && chain::kWidthCabs == params::numCabs);
+
+    using chain::BlockId;
+    chain::WidthInputs in;
+
+    in.order = packedChain.load (std::memory_order_relaxed);
+    in.host = { (std::uint8_t) juce::jlimit (1, 2, getTotalNumInputChannels()),
+                (std::uint8_t) juce::jlimit (1, 2, getTotalNumOutputChannels()) };
+
+    auto& active = in.active;
+    active[(size_t) BlockId::gate] = isOn (pp.gateOn);
+    active[(size_t) BlockId::amp] = isOn (pp.ampOn[0]);
+    // hasModel(), the message thread's view of what hasModelInPath() becomes once the audio
+    // thread adopts the model: the two disagree for a swap fade at most.
+    active[(size_t) BlockId::amp2] = isOn (pp.ampOn[1]) && namEngineB.hasModel();
+
+    for (int c = 0; c < params::numCabs; ++c)
+    {
+        const auto& cabSim = cabs[(size_t) c];
+        active[(size_t) kCabBlocks[c]] = isOn (pp.cabOn[c]) && cabSim.hasImpulseResponse();
+        in.cab[(size_t) c] = { cabSim.hasImpulseResponse() && cabSim.getInfo().channels >= 2,
+                               valueOf (pp.cabMix[c], 100.0f) * 0.01f };
+    }
+
+    for (int k = 0; k < params::maxInstances; ++k)
+    {
+        const auto i = (size_t) k;
+        active[(size_t) chain::instanceId (BlockId::comp, k)]   = isOn (pp.compOn[i]);
+        active[(size_t) chain::instanceId (BlockId::drive, k)]  = isOn (pp.driveOn[i]);
+        active[(size_t) chain::instanceId (BlockId::eq, k)]     = isOn (pp.eqOn[i]);
+        active[(size_t) chain::instanceId (BlockId::mod, k)]    = isOn (pp.modOn[i]);
+        active[(size_t) chain::instanceId (BlockId::delay, k)]  = isOn (pp.delayOn[i]);
+        active[(size_t) chain::instanceId (BlockId::reverb, k)] = isOn (pp.reverbOn[i]);
+
+        in.mod[i] = { (int) valueOf (pp.modType[i]),
+                      (int) valueOf (pp.modChorusMode[i], (float) ChorusFx::Mode::wide),
+                      (int) valueOf (pp.modTremVoice[i], (float) TremoloFx::Voice::smooth),
+                      valueOf (pp.modDepth[i], 0.4f), valueOf (pp.modWidth[i], 1.0f), valueOf (pp.modMix[i], 0.35f) };
+
+        in.delay[i] = { (int) valueOf (pp.delayMode[i]),
+                        (int) valueOf (pp.delayType[i], (float) DelayFx::Type::digital),
+                        valueOf (pp.delayRatio[i], 100.0f), valueOf (pp.delayWidth[i], 1.0f),
+                        valueOf (pp.delayMix[i], 0.25f), valueOf (pp.delayModAmt[i], 0.2f) };
+
+        in.reverb[i] = { valueOf (pp.reverbMix[i], 0.25f), valueOf (pp.reverbWidth[i], 1.0f) };
+    }
+
+    for (int slot = 0; slot < chain::numFxSlots; ++slot)
+    {
+        const int channels = fxHost.mainChannelsFor (slot);
+        active[(size_t) chain::BlockId::fx1 + (size_t) slot] = isOn (pp.fxOn[slot]) && channels > 0;
+        in.fx[(size_t) slot] = channels == 0                         ? chain::WidthInputs::Fx::empty
+                             : channels < fxHost.getNumChannels()    ? chain::WidthInputs::Fx::monoOnly
+                                                                     : chain::WidthInputs::Fx::hostWidth;
+    }
+
+    in.split = { isOn (pp.splitOn), (int) valueOf (pp.splitMode) };
+    in.mix = { isOn (pp.mixOn), valueOf (pp.mixAPan), valueOf (pp.mixBPan) };
+
+    return chain::planWidth (in);
+}
+
+bool TubampAudioProcessor::isMonoHostNoticeDue (const chain::WidthMap& map) const noexcept
+{
+    return map.host.out == 1 && map.wouldBeStereo && ! monoHostNoticeShown.load (std::memory_order_relaxed);
+}
+
+void TubampAudioProcessor::acknowledgeMonoHostNotice() noexcept
+{
+    monoHostNoticeShown.store (true, std::memory_order_relaxed);
+}
+
 std::vector<int> TubampAudioProcessor::getChainRows() const
 {
     const juce::ScopedLock sl (chainLock);
@@ -2802,7 +2896,7 @@ juce::String TubampAudioProcessor::loadModel (const juce::File& namFile)
 
     // Push the current Slim value first: loadModel() applies whatever the engine last
     // stored to the new model, and a state restore can beat the parameter listener here.
-    namEngine.setSlimSize ((double) valueOf (apvts.getRawParameterValue (params::ampSlim)));
+    namEngine.setSlimSize ((double) valueOf (apvts.getRawParameterValue (params::ampSlimIds[0])));
 
     const auto error = namEngine.loadModel (namFile);
 
@@ -2840,7 +2934,7 @@ juce::String TubampAudioProcessor::loadModelB (const juce::File& namFile)
     // the file independently even when it is the same one: nam_core shares no weights
     // between instances (docs/STEREO.md §1), and loading is a UI action.
     namEngineB.collectGarbage();
-    namEngineB.setSlimSize ((double) valueOf (apvts.getRawParameterValue (params::ampSlim)));
+    namEngineB.setSlimSize ((double) valueOf (apvts.getRawParameterValue (params::ampSlimIds[1])));
 
     const auto error = namEngineB.loadModel (namFile);
 
@@ -2872,37 +2966,46 @@ void TubampAudioProcessor::clearModelB()
     updateLatency();
 }
 
-juce::String TubampAudioProcessor::loadIr (const juce::File& wavFile)
+juce::String TubampAudioProcessor::loadIrInto (int cabIndex, const juce::File& wavFile)
 {
-    const auto error = cab.loadImpulseResponse (wavFile);
+    // Each cab builds its own convolvers, even from the same file: nothing is shared
+    // between the two, so either can be swapped or cleared without the other noticing.
+    const auto error = cabs[(size_t) cabIndex].loadImpulseResponse (wavFile);
 
     if (error.isNotEmpty())
         return error;
 
     {
         const juce::ScopedLock sl (pathLock);
-        loadedIrPath = wavFile.getFullPathName();
-        mediaState[(size_t) Media::ir].missingPath = {};
-        mediaState[(size_t) Media::ir].packedFor = {};   // re-read on the next save
+        (cabIndex == 0 ? loadedIrPath : loadedIrPathB) = wavFile.getFullPathName();
+        mediaState[(size_t) kCabMedia[cabIndex]].missingPath = {};
+        mediaState[(size_t) kCabMedia[cabIndex]].packedFor = {};   // re-read on the next save
     }
 
     return {};
 }
 
-void TubampAudioProcessor::clearIr()
+void TubampAudioProcessor::clearIrOf (int cabIndex)
 {
-    cab.clearImpulseResponse();
+    cabs[(size_t) cabIndex].clearImpulseResponse();
 
     const juce::ScopedLock sl (pathLock);
-    loadedIrPath = {};
-    mediaState[(size_t) Media::ir] = {};
+    (cabIndex == 0 ? loadedIrPath : loadedIrPathB) = {};
+    mediaState[(size_t) kCabMedia[cabIndex]] = {};
 }
+
+juce::String TubampAudioProcessor::loadIr (const juce::File& wavFile)  { return loadIrInto (0, wavFile); }
+void TubampAudioProcessor::clearIr()                                   { clearIrOf (0); }
+juce::String TubampAudioProcessor::loadIrB (const juce::File& wavFile) { return loadIrInto (1, wavFile); }
+void TubampAudioProcessor::clearIrB()                                  { clearIrOf (1); }
 
 void TubampAudioProcessor::collectRetiredEngines()
 {
-    namEngine.collectGarbage();
-    namEngineB.collectGarbage();
-    cab.collectGarbage();
+    for (auto& engine : ampEngines)
+        engine.collectGarbage();
+
+    for (auto& cabSim : cabs)
+        cabSim.collectGarbage();
 }
 
 //==============================================================================
@@ -2913,6 +3016,7 @@ juce::String TubampAudioProcessor::loadedPathLocked (Media slot) const
         case Media::model:  return loadedModelPath;
         case Media::modelB: return loadedModelPathB;
         case Media::ir:     return loadedIrPath;
+        case Media::irB:    return loadedIrPathB;
         default:            return {};
     }
 }
@@ -2977,16 +3081,30 @@ EmbeddedMedia TubampAudioProcessor::packedMedia (Media slot)
 
 void TubampAudioProcessor::restoreMedia (Media slot, const juce::String& path, const EmbeddedMedia& embedded)
 {
+    const bool isIr = slot == Media::ir || slot == Media::irB;
+
     const auto load = [this, slot] (const juce::File& file)
     {
-        return slot == Media::model ? loadModel (file) : slot == Media::modelB ? loadModelB (file) : loadIr (file);
+        switch (slot)
+        {
+            case Media::model:  return loadModel (file);
+            case Media::modelB: return loadModelB (file);
+            case Media::ir:     return loadIr (file);
+            case Media::irB:    return loadIrB (file);
+            default:            return juce::String();
+        }
     };
 
     const auto clear = [this, slot]
     {
-        if (slot == Media::model)       clearModel();
-        else if (slot == Media::modelB) clearModelB();
-        else                            clearIr();
+        switch (slot)
+        {
+            case Media::model:  clearModel();  break;
+            case Media::modelB: clearModelB(); break;
+            case Media::ir:     clearIr();     break;
+            case Media::irB:    clearIrB();    break;
+            default:            break;
+        }
     };
 
     if (path.isEmpty())
@@ -3009,13 +3127,13 @@ void TubampAudioProcessor::restoreMedia (Media slot, const juce::String& path, c
         // library. First choice is the copy the session carries; failing that, a file
         // of the same name in this machine's library is the same capture in all
         // likelihood — which is how the reference plugin re-roots a lost path.
-        const auto directory = slot == Media::ir ? ModelLibrary::getIrsDir() : ModelLibrary::getModelsDir();
+        const auto directory = isIr ? ModelLibrary::getIrsDir() : ModelLibrary::getModelsDir();
         const auto leaf = path.replaceCharacter ('\\', '/').fromLastOccurrenceOf ("/", false, false);
 
         if (! embedded.isEmpty())
         {
             bool created = false;
-            file = embedded.materialiseIn (directory, slot == Media::ir ? "wav" : "nam", &created);
+            file = embedded.materialiseIn (directory, isIr ? "wav" : "nam", &created);
             rebuilt = created;
 
             if (created)
@@ -3056,6 +3174,7 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     const auto modelPathCopy  = mediaPathForState (Media::model);
     const auto modelPathBCopy = mediaPathForState (Media::modelB);
     const auto irPathCopy     = mediaPathForState (Media::ir);
+    const auto irPathBCopy    = mediaPathForState (Media::irB);
 
     // Hosts may call this from a save thread, where reading a hosted plugin's state is
     // not safe — the cached blob is used instead. On the message thread (Cmd-S, project
@@ -3083,6 +3202,8 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     // model" — exactly what such a session had.
     root.setProperty ("modelPathB", modelPathBCopy, nullptr);
     root.setProperty ("irPath", irPathCopy, nullptr);
+    // Absent in everything written before the second cab existed: no second IR.
+    root.setProperty ("irPathB", irPathBCopy, nullptr);
 
     const auto serialized = serializeOrder (orderCopy);
     root.setProperty ("chainOrder", serialized.v1, nullptr);
@@ -3101,6 +3222,7 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     root.setProperty ("eqAnalyserOn", eqAnalyserOn.load (std::memory_order_relaxed), nullptr);
     root.setProperty ("eqAnalyserResolution", eqAnalyserResolution.load (std::memory_order_relaxed), nullptr);
     root.setProperty ("eqAnalyserSpeed", eqAnalyserSpeed.load (std::memory_order_relaxed), nullptr);
+    root.setProperty ("monoHostNoticeShown", monoHostNoticeShown.load (std::memory_order_relaxed), nullptr);
 
     root.appendChild (apvts.copyState(), nullptr);
     root.appendChild (fxSlotsTree(), nullptr);
@@ -3108,7 +3230,7 @@ void TubampAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     // The files themselves, so the session opens where they are not (EmbeddedMedia.h).
     // Absent in everything written before this existed, and for a slot whose file is
     // gone or too large to carry: such a slot restores by path alone, as it always did.
-    for (const auto slot : { Media::model, Media::modelB, Media::ir })
+    for (const auto slot : kMediaSlots)
         if (const auto packed = packedMedia (slot); ! packed.isEmpty())
             root.appendChild (packed.toTree (mediaSlotName (slot)), nullptr);
 
@@ -3157,6 +3279,29 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
             if (! paramState.getChildWithProperty ("id", id).isValid())
                 paramState.appendChild (juce::ValueTree ("PARAM", { { "id", id }, { "value", 0.0f } }), nullptr);
 
+        // The same for amp 2's controls: they go into the tree, as the first amp's saved values.
+        if (! paramState.getChildWithProperty ("id", params::amp2OutMode).isValid())
+        {
+            const auto put = [&paramState] (const char* id, const juce::var& value)
+            {
+                if (auto child = paramState.getChildWithProperty ("id", id); child.isValid())
+                    child.setProperty ("value", value, nullptr);
+                else
+                    paramState.appendChild (juce::ValueTree ("PARAM", { { "id", id }, { "value", value } }), nullptr);
+            };
+
+            for (const auto& [amp2Id, ampId] : kAmp2FollowsAmp)
+            {
+                const auto* source = apvts.getParameter (ampId);
+                const auto saved = paramState.getChildWithProperty ("id", ampId);
+
+                put (amp2Id, saved.isValid() ? saved.getProperty ("value")
+                                             : juce::var (source->convertFrom0to1 (source->getDefaultValue())));
+            }
+
+            put (params::amp2EqOn, 0.0f);
+        }
+
         apvts.replaceState (paramState);
     }
 
@@ -3170,9 +3315,13 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
     eqAnalyserSpeed.store (juce::jlimit (0, 2, (int) root.getProperty ("eqAnalyserSpeed", 1)),
                            std::memory_order_relaxed);
 
+    // Absent in sessions saved before the notice existed: not shown yet.
+    monoHostNoticeShown.store ((bool) root.getProperty ("monoHostNoticeShown", false), std::memory_order_relaxed);
+
     const juce::String modelPath = root.getProperty ("modelPath", juce::String()).toString();
     const juce::String modelPathB = root.getProperty ("modelPathB", juce::String()).toString();
     const juce::String irPath = root.getProperty ("irPath", juce::String()).toString();
+    const juce::String irPathB = root.getProperty ("irPathB", juce::String()).toString();
 
     // The audio thread can have the new order immediately (single atomic word); the
     // notification is message-thread only.
@@ -3182,7 +3331,7 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
     // the same contract as a missing modelPath clearing the model.
     const auto fxIncoming = parseFxSlotsTree (root.getChildWithName ("FXSLOTS"));
 
-    std::array<EmbeddedMedia, 3> embedded;
+    std::array<EmbeddedMedia, numMediaSlots> embedded;
 
     for (const auto& child : root)
     {
@@ -3191,18 +3340,19 @@ void TubampAudioProcessor::setStateInformation (const void* data, int sizeInByte
 
         const auto name = child.getProperty (EmbeddedMedia::slotProperty).toString();
 
-        for (const auto slot : { Media::model, Media::modelB, Media::ir })
+        for (const auto slot : kMediaSlots)
             if (name == mediaSlotName (slot))
                 embedded[(size_t) slot] = EmbeddedMedia::fromTree (child);
     }
 
     // Model/IR loading does file IO and prewarm; it must never happen here if the
     // host restores state from a non-message thread.
-    auto restore = [this, modelPath, modelPathB, irPath, embedded, order, rows, fxIncoming]
+    auto restore = [this, modelPath, modelPathB, irPath, irPathB, embedded, order, rows, fxIncoming]
     {
         restoreMedia (Media::model,  modelPath,  embedded[(size_t) Media::model]);
         restoreMedia (Media::modelB, modelPathB, embedded[(size_t) Media::modelB]);
         restoreMedia (Media::ir,     irPath,     embedded[(size_t) Media::ir]);
+        restoreMedia (Media::irB,    irPathB,    embedded[(size_t) Media::irB]);
 
         applyFxRecords (fxIncoming);
         adoptChainOrder (order, rows);
@@ -3248,7 +3398,7 @@ juce::var TubampAudioProcessor::captureStateVar()
 
     return stateVar (paramValues, orderCopy, rowsCopy, mediaPathForState (Media::model),
                      mediaPathForState (Media::modelB), mediaPathForState (Media::ir),
-                     fxSlotsTree().toXmlString());
+                     mediaPathForState (Media::irB), fxSlotsTree().toXmlString());
 }
 
 juce::var TubampAudioProcessor::makeStateVar (const chain::Order& order,
@@ -3271,7 +3421,7 @@ juce::var TubampAudioProcessor::makeStateVar (const chain::Order& order,
         }
     }
 
-    return stateVar (paramValues, order, {}, {}, {}, {}, juce::ValueTree ("FXSLOTS").toXmlString());
+    return stateVar (paramValues, order, {}, {}, {}, {}, {}, juce::ValueTree ("FXSLOTS").toXmlString());
 }
 
 void TubampAudioProcessor::applyStateVar (const juce::var& state)
@@ -3325,6 +3475,15 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
                 parameter->setValueNotifyingHost (parameter->convertTo0to1 (plain));
             }
         }
+
+        // Amp 2's controls, the same ranges as the first amp's, so the normalised value carries over.
+        if (! paramValues->hasProperty (params::amp2OutMode))
+        {
+            for (const auto& [amp2Id, ampId] : kAmp2FollowsAmp)
+                apvts.getParameter (amp2Id)->setValueNotifyingHost (apvts.getParameter (ampId)->getValue());
+
+            apvts.getParameter (params::amp2EqOn)->setValueNotifyingHost (0.0f);
+        }
     }
 
     // Publish before the (slow, synchronous) model/IR loading below so the audio thread
@@ -3355,6 +3514,13 @@ void TubampAudioProcessor::applyStateVar (const juce::var& state)
 
     if (irPath != loadedIrPath || getMissingMediaPath (Media::ir).isNotEmpty())
         restoreMedia (Media::ir, irPath, {});
+
+    // No "irPathB" in a preset written before the second cab existed: "" clears it, the
+    // same treatment an absent modelPathB gets.
+    const juce::String irPathB = obj->getProperty ("irPathB").toString();
+
+    if (irPathB != loadedIrPathB || getMissingMediaPath (Media::irB).isNotEmpty())
+        restoreMedia (Media::irB, irPathB, {});
 
     // Presets and A/B slots written before the fx slots existed have no "fxSlots":
     // the void var stringifies to "", which parses to three empty records and clears

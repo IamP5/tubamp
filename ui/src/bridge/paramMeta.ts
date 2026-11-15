@@ -428,11 +428,37 @@ const FX_LAYOUT: readonly LayoutEntry[] = [
   ...instanced(MOD_PRO_1, "mod"),
 ];
 
+/* ───────────── v5 second amp append (the amp kind's second instance) ───── */
+
+/** The first amp's controls the second lacked, copied range, default and
+ *  choices, in Parameters.cpp's append order. */
+const AMP2_LAYOUT: readonly LayoutEntry[] = [
+  c("amp2_out_mode", "Amp 2 Output Mode", ["Raw", "Normalized", "Calibrated"], 1),
+  t("amp2_cal_input", "Amp 2 Calibrate Input", false),
+  s("amp2_cal_level", "Amp 2 Input Calibration Level", -60, 60, 0.1, 12, "dBu"),
+  s("amp2_slim", "Amp 2 Slim", 0, 1, 0.01, 0),
+  t("amp2_eq_on", "Amp 2 EQ On", true),
+  s("amp2_eq_bass", "Amp 2 EQ Bass", 0, 10, 0.1, 5),
+  s("amp2_eq_mid", "Amp 2 EQ Middle", 0, 10, 0.1, 5),
+  s("amp2_eq_treble", "Amp 2 EQ Treble", 0, 10, 0.1, 5),
+];
+
+/* ───────────── v6 second cab append (the cab kind's second instance) ───── */
+
+/** The first cab's parameters, copied range and default, in Parameters.cpp's
+ *  append order. */
+const CAB2_LAYOUT: readonly LayoutEntry[] = [
+  t("cab2_on", "Cab 2 On", true),
+  s("cab2_lowcut", "Cab 2 Low Cut", 20, 500, 1, 80, "Hz", true),
+  s("cab2_highcut", "Cab 2 High Cut", 2000, 20000, 1, 8000, "Hz", true),
+  s("cab2_mix", "Cab 2 Mix", 0, 100, 0.1, 100, "%"),
+];
+
 /** The whole APVTS layout, in order: 44 v1 parameters, 54 instance parameters,
  *  4 for the amp tone stack, 12 for the stereo-chain append, 13 for the
  *  split-path append, 39 for the reverb/delay engines append, the cab's
- *  dry/wet, then 95 for the FX engines append — 184 sliders, 36 toggles,
- *  42 combos. */
+ *  dry/wet, 95 for the FX engines append, 8 for the second amp, then 4 for
+ *  the second cab — 192 sliders, 39 toggles, 43 combos. */
 const LAYOUT: readonly LayoutEntry[] = [
   ...V1_LAYOUT,
   ...INSTANCE_LAYOUT,
@@ -442,6 +468,8 @@ const LAYOUT: readonly LayoutEntry[] = [
   ...PRO_LAYOUT,
   s("cab_mix", "Cab Mix", 0, 100, 0.1, 100, "%"),
   ...FX_LAYOUT,
+  ...AMP2_LAYOUT,
+  ...CAB2_LAYOUT,
 ];
 
 /* ────────────────────────────── derived tables ─────────────────────────── */

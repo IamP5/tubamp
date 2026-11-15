@@ -20,12 +20,14 @@ import {
   COMBO_PARAM_IDS,
   fxSlotIndexOf,
   kindOf,
+  type AmpToken,
+  type CabToken,
   type BlockId,
   type ComboParamId,
   type FxSlotIndex,
 } from "../../bridge/types";
 import { useComboParam } from "../../hooks";
-import { useStore } from "../../store";
+import { AMP_SLOTS, CAB_SLOTS, isAmpToken, isCabToken, useStore } from "../../store";
 import { BLOCK_INFO } from "../../theme/blocks";
 import { duration, ease, tween } from "../../theme/motion";
 import {
@@ -275,15 +277,15 @@ function typeParamOf(id: BlockId): ComboParamId | null {
 
 /**
  * What is in the block, read from state that already exists: the type for
- * typed blocks, the capture for Amp / Amp 2, the IR for Cab, the plugin for a
+ * typed blocks, the capture for either amp, the IR for either cab, the plugin for a
  * Plugin slot. Each source is its own component so a tile subscribes to exactly
  * the one it shows.
  */
 function BlockDetail({ id }: { id: BlockId }) {
   const param = typeParamOf(id);
   if (param) return <TypeDetail param={param} />;
-  if (id === "amp" || id === "amp2") return <CaptureDetail engineB={id === "amp2"} />;
-  if (id === "cab") return <IrDetail />;
+  if (isAmpToken(id)) return <CaptureDetail amp={id} />;
+  if (isCabToken(id)) return <IrDetail cab={id} />;
   const slot = fxSlotIndexOf(id);
   if (slot !== -1) return <PluginDetail slot={slot} />;
   return null;
@@ -293,13 +295,13 @@ function TypeDetail({ param }: { param: ComboParamId }) {
   return <DetailLine text={useComboParam(param).text} />;
 }
 
-function CaptureDetail({ engineB }: { engineB: boolean }) {
-  const model = useStore((st) => (engineB ? st.modelB : st.model));
+function CaptureDetail({ amp }: { amp: AmpToken }) {
+  const model = useStore(AMP_SLOTS[amp].model);
   return <DetailLine text={model ? model.tone?.title || model.name : ""} />;
 }
 
-function IrDetail() {
-  const ir = useStore((st) => st.ir);
+function IrDetail({ cab }: { cab: CabToken }) {
+  const ir = useStore(CAB_SLOTS[cab].ir);
   return <DetailLine text={ir ? ir.tone?.title || ir.name : ""} />;
 }
 

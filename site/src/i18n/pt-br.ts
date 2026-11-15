@@ -9,14 +9,14 @@ import type { Dictionary } from "./en.ts";
 export const ptBR: Dictionary = {
   dateLocale: "pt-BR",
   meta: {
-    title: "tubamp. Seu próximo amp é um arquivo.",
+    title: "tubamp. Seu timbre em um só plugin.",
     description:
-      "Um Audio Unit gratuito para o Logic Pro que toca capturas neurais de amps reais em uma cadeia de sinal que você mesmo monta. Apple Silicon e Intel.",
+      "Um Audio Unit gratuito para o Logic Pro: capturas neurais de amps reais, respostas ao impulso de cab e uma cadeia de efeitos que você põe na ordem que quiser. Apple Silicon e Intel.",
   },
   hero: {
-    line: "Um plugin de amp para o Logic Pro.",
-    headline: ["Seu próximo amp", "é um arquivo."],
-    what: "O tubamp toca capturas de amplificadores reais no Logic Pro. Monte o resto do rig em volta delas, em qualquer ordem, com espaço para os seus próprios plugins.",
+    line: "Amp, cab e efeitos para o Logic Pro.",
+    headline: ["Seu timbre em", "um só plugin."],
+    what: "A captura neural de um amp real, um cab e sete efeitos. Coloque na ordem que quiser e adicione os seus plugins.",
     download: "Baixar grátis para Mac",
     tryIt: "Experimente no navegador",
   },
@@ -46,7 +46,7 @@ export const ptBR: Dictionary = {
     label: "Em resumo",
     items: [
       { big: "TONE3000", small: "A biblioteca de capturas, navegável dentro do plugin. Powered by TONE3000." },
-      { big: "9", small: "Blocos em uma cadeia, em qualquer ordem." },
+      { big: "9", small: "Blocos na cadeia: um amp, um cab e sete efeitos, em qualquer ordem." },
       { big: "A2", small: "O formato de captura NAM mais recente. A1 e os seus próprios arquivos .nam também carregam." },
       { big: "3", small: "Slots que hospedam os seus próprios efeitos Audio Unit." },
     ],
@@ -54,7 +54,7 @@ export const ptBR: Dictionary = {
   chain: {
     kicker: "Cadeia",
     headline: ["Monte a cadeia.", "Em qualquer ordem."],
-    body: "Nove blocos em um board. Arraste um para outro lugar, remova, adicione de novo, adicione um segundo delay. A ordem faz parte do som e é salva com o seu projeto.",
+    body: "O amp é um bloco entre nove. Arraste qualquer um para outro lugar, remova, adicione de novo, adicione um segundo delay. A ordem faz parte do som e é salva com o seu projeto.",
     board: {
       label: "A cadeia. Arraste um bloco, ou foque um e use as setas do teclado, para mudar a ordem.",
       waveform: "O sinal que esta ordem produz.",
@@ -71,7 +71,7 @@ export const ptBR: Dictionary = {
   captures: {
     kicker: "Capturas",
     headline: ["Um amp real,", "capturado."],
-    body: "Uma captura é um arquivo que guarda como um amplificador real responde a uma guitarra. O tubamp toca capturas do Neural Amp Modeler, incluindo o formato A2, mais recente. Navegue pela biblioteca da TONE3000 dentro do plugin com a sua própria chave de API da TONE3000, ou carregue qualquer arquivo .nam sem configurar nada.",
+    body: "Uma captura é um arquivo que guarda como um amplificador real responde a uma guitarra. O tubamp toca capturas do Neural Amp Modeler, incluindo o formato A2, mais recente. Navegue pela biblioteca da TONE3000 dentro do plugin, ou carregue qualquer arquivo .nam que você já tenha.",
     facts: [
       "Capturas NAM A1, A2, slimmable e LSTM",
       "Reamostra quando a taxa da sessão é diferente da taxa da captura",
@@ -83,7 +83,7 @@ export const ptBR: Dictionary = {
   effects: {
     kicker: "Efeitos",
     headline: ["Cada bloco mostra", "o que está fazendo."],
-    body: "Cada editor desenha o efeito a partir dos mesmos números que os knobs definem: o threshold do gate sobre o que você toca, a curva do compressor, as repetições do delay, a cauda do reverb. Pegue no desenho ou pegue no knob.",
+    body: "Os efeitos vêm com o plugin; não tem loja nem nada para desbloquear. Cada editor desenha o seu efeito a partir dos mesmos números que os knobs definem: o threshold do gate sobre o que você toca, a curva do compressor, as repetições do delay, a cauda do reverb. Pegue no desenho ou pegue no knob.",
   },
   more: {
     kicker: "Mais",
@@ -163,7 +163,11 @@ export const ptBR: Dictionary = {
   faq: [
     {
       q: "Preciso ter minhas próprias capturas?",
-      a: "Não. Cole a sua própria chave de API da TONE3000 nas configurações do plugin e ele navega pela biblioteca da TONE3000 e carrega uma captura com um clique. Qualquer arquivo .nam que você já tenha carrega sem configurar nada. As respostas ao impulso de cab funcionam do mesmo jeito.",
+      a: "Não. Entre com uma conta da TONE3000 e o plugin navega pela biblioteca da TONE3000 e carrega uma captura com um clique. Qualquer arquivo .nam que você já tenha carrega sem precisar de conta. As respostas ao impulso de cab funcionam do mesmo jeito.",
+    },
+    {
+      q: "Preciso de outros plugins para ter um som completo?",
+      a: "Não. O amp, o cab e os efeitos estão todos no tubamp, então um insert na trilha já dá o timbre completo. Os três slots de Audio Unit são para os plugins que você já tem e quer na cadeia.",
     },
     {
       q: "É grátis mesmo?",

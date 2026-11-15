@@ -154,8 +154,6 @@ const BASE_GLYPH: Record<BaseBlockId, (p: GlyphProps) => ReactNode> = {
   fx1: FxGlyph,
   fx2: FxGlyph,
   fx3: FxGlyph,
-  // amp2 is engine B as an ordinary block (docs/SPLIT.md §1): amp's glyph.
-  amp2: AmpGlyph,
   split: SplitGlyph,
   mix: MixGlyph,
   // Furniture, never drawn; the Record must be total.

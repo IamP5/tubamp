@@ -150,7 +150,8 @@ const emptyUiState: UiState = {
   model: null,
   modelB: null,
   ir: null,
-  missingMedia: { model: null, modelB: null, ir: null },
+  irB: null,
+  missingMedia: { model: null, modelB: null, ir: null, irB: null },
   models: [],
   irs: [],
   presets: [],
@@ -224,8 +225,12 @@ export const juceBridge: Bridge = {
   clearIr: async () => {
     await native("clearIr")();
   },
-  importModel: () => call<ImportResult>("importModel", {}),
-  importIr: () => call<ImportResult>("importIr", {}),
+  importModel: (target = "amp") => call<ImportResult>("importModel", {}, target),
+  loadIrB: (path) => call<ErrorResult>("loadIrB", {}, path),
+  clearIrB: async () => {
+    await native("clearIrB")();
+  },
+  importIr: (target = "cab") => call<ImportResult>("importIr", {}, target),
   loadPreset: (path) => call<ErrorResult>("loadPreset", {}, path),
   savePresetAs: () => call<ErrorResult>("savePresetAs", {}),
   deletePreset: (path) => call<ErrorResult>("deletePreset", {}, path),
@@ -238,7 +243,6 @@ export const juceBridge: Bridge = {
   abRecall: async (slot: AbSlot) => {
     await native("abRecall")(slot);
   },
-  t3kConfigure: () => call<ErrorResult>("t3kConfigure", {}),
   t3kSignOut: async () => {
     await native("t3kSignOut")();
   },
@@ -251,6 +255,15 @@ export const juceBridge: Bridge = {
     await (tone
       ? native("t3kDownloadModel")(model, tone)
       : native("t3kDownloadModel")(model));
+  },
+  // Cosmetic: a photo that cannot be fetched must never block the load.
+  t3kEnsureArt: async (path, imageUrl) => {
+    if (!imageUrl) return;
+    try {
+      await native("t3kEnsureArt")(path, imageUrl);
+    } catch {
+      /* an older plugin build without the function */
+    }
   },
   t3kSignIn: async () => {
     await native("t3kSignIn")();
@@ -346,6 +359,10 @@ export const juceBridge: Bridge = {
 
   updateCommand: (command: UpdateCommand) =>
     call<ErrorResult>("updateCommand", { error: "The update command was not understood." }, command),
+
+  ackNotice: async (kind) => {
+    await native("ackNotice")(kind);
+  },
 };
 
 /* The two new events (`editorSizeChanged`, `fxEmbedChanged`) need no wiring of

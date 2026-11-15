@@ -43,7 +43,7 @@ Inline SVG takes token colours from a CSS class (`stroke: var(--ds-accent)`).
 
   | Family | Blocks | Hue |
   | --- | --- | --- |
-  | Gain | Drive, Amp, Amp 2 | amber `#f0a63a` (the house accent) |
+  | Gain | Drive, Amp | amber `#f0a63a` (the house accent) |
   | Dynamics | Gate, Compressor | blue `#85bcf5` |
   | Tone | Cab, EQ | teal `#5ecbcb` |
   | Modulation | Modulation | rose `#eb9dbb` |
@@ -167,7 +167,11 @@ The UI moves for two reasons only, and both are information.
 
 - **The signal.** Things that carry or shape the sound respond to it. The
   wires lift (a second, brighter neutral stroke whose opacity is the meter
-  level) while you play and settle when you stop. An effect display shows the
+  level) while you play and settle when you stop. Where the processor's width
+  map says the signal is stereo, a wire is two 1px rails (left above right,
+  3.5px apart, same neutral), each lifted by its own output channel; rails
+  start or merge at the tile that turns the width, and hovering that tile's
+  exit says why. No badge or glyph marks width. An effect display shows the
   effect answering what was just played: a delay's repeats light one delay time
   apart, a reverb's tail holds for its decay, a point rides a compressor's or a
   drive's curve. Source: `useMeters`, `useDynMeters` and `useSignal` (the input
@@ -291,8 +295,8 @@ Per editor (display → large knobs → small knobs):
 | Modulation | type stepper, voicing menu, sync menu, colour switch | the LFO: wave and shape drawn over two cycles, depth as amplitude, a phase marker moving at the rate | Rate, Depth, Mix | Width, Tone, Shape, Wave |
 | Delay | type stepper, mode segment, sync menu | the taps on a time axis (spacing = time, heights fall by feedback, left above the axis and right below in the stereo modes) beside the low/high cut response | Time, Feedback, Mix | Duck, Color, Mod, Ratio, Width, Low cut, High cut |
 | Reverb | type stepper | the tail over time with pre-delay and damping, beside the low/high cut response | Decay, Pre-delay, Mix | Size, Damping, Mod, Width, Low cut, High cut |
-| Amp / Amp 2 | — | (lead) the capture: its title, creator, file controls, Browse TONE3000 | Input, Output, Bass, Mid, Treble | Cal level, Slim; output mode menu; switches |
-| Cab | — | (lead) the IR; display: low/high cut response | Low cut, High cut, Mix | — |
+| Amp (both instances, `amp` and `amp2`, each on its own parameters) | output mode menu, Calibrate input | (lead) the amp's face: the capture's photo, or the default amp ("Choose an amp" when empty); title, creator; ‹ › ⋯ — the amp and ⋯ open the menu (Browse TONE3000, Import file, the library, Remove capture). Display: the tone stack | Input, Output, Bass, Mid, Treble | Cal level, Slim |
+| Cab (both instances, `cab` and `cab2`, each on its own parameters and IR) | — | (lead) the same face as the amp's: the IR's photo, or the default cabinet ("Choose an IR" when empty); title, creator; ‹ › ⋯ — the picture and ⋯ open the menu (Browse TONE3000, Import file, the library, Remove IR). Display: low/high cut response | Low cut, High cut, Mix | — |
 | Split | mode segment | the crossover (two curves) in X-Over mode; nothing otherwise | Crossover | — |
 | Mixer | — | none | A level, B level, Master | A pan, B pan; B phase switch |
 | Plugin | plugin menu | (lead) the hosted plugin and "Open editor"; its parameters as small knobs | — | — |
@@ -339,7 +343,9 @@ Per editor (display → large knobs → small knobs):
 
 The dev server runs at `http://localhost:5173/` with hot reload and a mock
 bridge (do not start or stop it). Mock flags: `?t3kfail`, `?t3kfavfail`,
-`?t3kslow`, `?t3k429`, `?t3koffline`, `?t3kprompt=text`, `?missing`.
+`?t3kslow`, `?t3k429`, `?t3koffline`, `?t3kprompt=text`, `?missing`, `?noamp` (no capture loaded), `?dualcab`,
+`?chain=gate,amp,delay` (start with that chain), `?host=mono|monostereo|stereo`
+(the instance's channel layout, default `monostereo`; drives the width map).
 
 Headless driving (the chrome-devtools MCP may be busy): a Node script importing
 the driver named in your task prompt: `open({query,width,height})` returns

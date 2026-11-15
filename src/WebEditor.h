@@ -90,9 +90,12 @@ private:
     /** modelVar()'s twin for engine B — same ModelInfo shape, empty var when B has no
         model loaded. */
     juce::var modelVarB() const;
-    juce::var irVar() const;
-    /** `{ model, modelB, ir }`: the path each slot wanted and could not get, or null. */
+    /** The IR of cab `cabIndex` (0 = cab, 1 = cab2), or null. */
+    juce::var irVar (int cabIndex = 0) const;
+    /** `{ model, modelB, ir, irB }`: the path each slot wanted and could not get, or null. */
     juce::var missingMediaVar() const;
+    /** The WidthView of docs/REACT-UI.md: the map plus whether the mono-instance notice is due. */
+    juce::var widthVar (const chain::WidthMap& map) const;
     juce::var t3kVar() const;
     juce::var fxSlotVar (int slot) const;
     juce::var fxSlotsVar() const;
@@ -105,6 +108,8 @@ private:
     // --- events
     void emit (const juce::Identifier& eventId, const juce::var& payload);
     void emitChainChanged();
+    /** widthChanged, when the map or the notice differs from what was last sent. */
+    void pollWidth();
     void emitLibraryChanged();
     void emitPresetChanged();
     void emitModelChanged();
@@ -112,6 +117,7 @@ private:
         change" reasoning — the processor has no B-side change notification either. */
     void emitModelBChanged();
     void emitIrChanged();
+    void emitIrBChanged();
     void emitMissingMediaChanged();
     void emitT3kStatus();
     void emitT3kError (const juce::String& message);
@@ -169,7 +175,7 @@ private:
 
     /** proc.loadIr() for a load the user asked for, plus the reference plugin's
         starting mix when the cab was empty: a cabinet fully wet, a room at half. */
-    juce::String loadIrFromUi (const juce::File& wavFile);
+    juce::String loadIrFromUi (const juce::File& wavFile, int cabIndex = 0);
 
     TubampAudioProcessor& proc;
 
@@ -195,13 +201,16 @@ private:
         every browse page we serialize feeds this, unknown ids mean nam. */
     std::unordered_map<juce::int64, bool> toneIsIr;
 
-    juce::String lastModelPath, lastModelPathB, lastIrPath;
+    juce::String lastModelPath, lastModelPathB, lastIrPath, lastIrPathB;
     int lastLatencySamples = -1;
 
     // What the last irChanged / missingMediaChanged said, for change detection: the
     // cab's stereo/mono verdict moves with the chain, not with the file.
-    int lastIrImage = -1;
+    int lastIrImage = -1, lastIrImageB = -1;
     juce::String lastMissingMedia;
+
+    std::optional<chain::WidthMap> lastWidth;
+    bool lastWidthNotice = false;
 
    #if TUBAMP_UPDATES
     /** "Restart <hostName> to use it." Fixed for the life of the editor. */

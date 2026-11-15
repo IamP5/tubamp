@@ -2,6 +2,8 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include "WidthMap.h"
+
 #include <memory>
 
 // The tremolo voicings of the mod block (docs/FX-ENGINES.md §4.7). One engine, five voices:
@@ -72,6 +74,10 @@ public:
     /** A sample beyond 1e6 in magnitude, like a non-finite one, is silenced on the way in;
         everything below passes untouched (Classic bit for bit). */
     void process (juce::dsp::AudioBlock<float> block);
+
+    /** Why this tremolo makes left and right differ from a mono input with two channels to
+        run on, or Why::none. */
+    static chain::Why stereoWhy (int voice, float depth, float width) noexcept;
 
     int getLatencySamples() const noexcept { return 0; }
 

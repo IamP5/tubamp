@@ -350,6 +350,18 @@ int Modulation::crossfadeHoldSamples (const ModParams& p, double sampleRate) noe
     return (int) std::ceil (longestMs * 0.001 * sampleRate) + 1 + (int) std::lround (kClassicChorusWetSettleSeconds * sampleRate);
 }
 
+chain::Why Modulation::stereoWhy (int type, int chorusMode, int tremVoice, float depth, float width, float mix) noexcept
+{
+    switch ((Type) juce::jlimit (0, numTypes - 1, type))
+    {
+        case Type::chorus:  return ChorusFx::stereoWhy (chorusMode, depth, width, mix);
+        case Type::phaser:  return chain::Why::none;
+        case Type::tremolo: return TremoloFx::stereoWhy (tremVoice, depth, width);
+    }
+
+    return chain::Why::none;
+}
+
 void Modulation::prepare (const juce::dsp::ProcessSpec& spec)
 {
     chorus.prepare (spec);

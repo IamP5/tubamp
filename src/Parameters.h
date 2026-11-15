@@ -350,6 +350,24 @@ inline constexpr auto mod3Shape       = "mod3_shape";
 inline constexpr auto mod3Wave        = "mod3_wave";
 inline constexpr auto mod3Color       = "mod3_color";
 
+// The second amp's own output mode, calibration, slim and tone stack, hint 5. amp2 is a
+// full second instance of the amp: every range and default copies the first amp's.
+inline constexpr auto amp2OutMode  = "amp2_out_mode";
+inline constexpr auto amp2CalInput = "amp2_cal_input";
+inline constexpr auto amp2CalLevel = "amp2_cal_level";
+inline constexpr auto amp2Slim     = "amp2_slim";
+inline constexpr auto amp2EqOn     = "amp2_eq_on";
+inline constexpr auto amp2EqBass   = "amp2_eq_bass";
+inline constexpr auto amp2EqMid    = "amp2_eq_mid";
+inline constexpr auto amp2EqTreble = "amp2_eq_treble";
+
+// The second cab, hint 6: a full second instance of the cab block (its own enable, cuts and
+// mix, its own IR). Every range and default copies the first cab's.
+inline constexpr auto cab2On      = "cab2_on";
+inline constexpr auto cab2LowCut  = "cab2_lowcut";
+inline constexpr auto cab2HighCut = "cab2_highcut";
+inline constexpr auto cab2Mix     = "cab2_mix";
+
 // Instance-indexed views of the ids above (index 0 = instance 1). The processor
 // resolves its per-instance pointer arrays through these; the ids stay literals, so
 // nothing anywhere may derive one by string manipulation.
@@ -438,6 +456,29 @@ inline constexpr const char* modToneIds[maxInstances]        { modTone,        m
 inline constexpr const char* modShapeIds[maxInstances]       { modShape,       mod2Shape,       mod3Shape };
 inline constexpr const char* modWaveIds[maxInstances]        { modWave,        mod2Wave,        mod3Wave };
 inline constexpr const char* modColorIds[maxInstances]       { modColor,       mod2Color,       mod3Color };
+
+/** The two amps: index 0 is the `amp` block (engine A), 1 the `amp2` block (engine B). */
+inline constexpr int numAmps = 2;
+
+inline constexpr const char* ampOnIds[numAmps]       { ampOn,       amp2On };
+inline constexpr const char* ampInputIds[numAmps]    { ampInput,    amp2Input };
+inline constexpr const char* ampOutputIds[numAmps]   { ampOutput,   amp2Output };
+inline constexpr const char* ampOutModeIds[numAmps]  { ampOutMode,  amp2OutMode };
+inline constexpr const char* ampCalInputIds[numAmps] { ampCalInput, amp2CalInput };
+inline constexpr const char* ampCalLevelIds[numAmps] { ampCalLevel, amp2CalLevel };
+inline constexpr const char* ampSlimIds[numAmps]     { ampSlim,     amp2Slim };
+inline constexpr const char* ampEqOnIds[numAmps]     { ampEqOn,     amp2EqOn };
+inline constexpr const char* ampEqBassIds[numAmps]   { ampEqBass,   amp2EqBass };
+inline constexpr const char* ampEqMidIds[numAmps]    { ampEqMid,    amp2EqMid };
+inline constexpr const char* ampEqTrebleIds[numAmps] { ampEqTreble, amp2EqTreble };
+
+/** The two cabs: index 0 is the `cab` block, 1 the `cab2` block. */
+inline constexpr int numCabs = 2;
+
+inline constexpr const char* cabOnIds[numCabs]      { cabOn,      cab2On };
+inline constexpr const char* cabLowCutIds[numCabs]  { cabLowCut,  cab2LowCut };
+inline constexpr const char* cabHighCutIds[numCabs] { cabHighCut, cab2HighCut };
+inline constexpr const char* cabMixIds[numCabs]     { cabMix,     cab2Mix };
 
 /** Band-major view of the Graphic EQ ids, in EqParams::graphicDb order (100 Hz ... 6.4 kHz):
     eqGraphicIds[band][instance]. */

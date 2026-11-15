@@ -1,8 +1,8 @@
 // Compares the UI's static parameter table (ui/src/bridge/paramMeta.ts) with the
-// plugin's real layout (tests/golden/params-v4.tsv, written by `tubamp_golden --params`).
+// plugin's real layout (tests/golden/params-v6.tsv, written by `tubamp_golden --params`).
 //
 //   cd ui && npx esbuild src/bridge/paramMeta.ts --bundle --format=esm --outfile=../build/uicheck/pm.mjs
-//   node tools/check_ui_params.mjs build/uicheck/pm.mjs tests/golden/params-v4.tsv
+//   node tools/check_ui_params.mjs build/uicheck/pm.mjs tests/golden/params-v6.tsv
 //
 // The UI table drives knob reset values, the mock bridge and PARAM_INDEX, which is only
 // right if the order matches the C++. Exit status 1 on any mismatch.

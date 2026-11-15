@@ -1,20 +1,23 @@
 /**
- * Amp editor: the NAM capture (the lead), the amp's own tone stack drawn as
- * its response, and the level controls (ui/DESIGN.md §Editors).
+ * The amp editor, one for both instances of the amp kind (`amp`, `amp2`):
+ * same layout, same controls, each bound to that instance's own parameters
+ * (ui/DESIGN.md §Editors).
  *
  *   header   Output mode, Calibrate input
- *   lead     the capture: title, creator, library, Browse TONE3000 / Import
+ *   lead     the amp's face: the capture's photo (or the default amp), its
+ *            title and creator, the library's steps and menu (./AmpFace.tsx)
  *   display  the tone stack's response, a handle on each band (when it fits)
  *   rows     Level (Input, Output) and Tone (Bass, Mid, Treble, its switch),
  *            then Cal level and Slim
  *
  * TONE3000 download state lives in the store, so a download survives switching
  * to another block; errors surface as toasts from the store's actions.
- * No tone stack on Amp 2 (docs/SPLIT.md §3): it is this block's alone.
  */
-import { Button, cx } from "../../components";
+import { cx } from "../../components";
+import type { AmpToken } from "../../bridge";
 import { useSliderParam, useToggleParam } from "../../hooks";
-import { useStore } from "../../store";
+import { AMP_SLOTS, ampCombo, ampSlider, ampToggle, useStore } from "../../store";
+import { AmpFace } from "./AmpFace";
 import {
   F_MAX,
   F_MIN,
@@ -37,33 +40,38 @@ import {
   xFreq,
 } from "./display";
 import { rigFact, titleOf, useAttribution } from "./MediaMeta";
-import { BareSwitch, DISPLAY_ROOM, MediaCard, controlsWidth, useBandWidth } from "./media";
+import { BareSwitch, DISPLAY_ROOM, controlsWidth, useBandWidth } from "./media";
 import { ChoiceMenu, Editor, Group, HeaderSlot, K, Row, SwitchField } from "./ui";
 
 /* Row widths at the toolkit's fixed cells (68 small, 84 large, 16px gaps). */
 const ROW1_LG = 5 * 84 + 16;
 const ROW1_SM = 5 * 68 + 16;
 
-export function AmpBody() {
-  const model = useStore((st) => st.model);
-  const missing = useStore((st) => st.missingMedia.model);
+export function AmpBody({ block }: { block: AmpToken }) {
+  const slot = AMP_SLOTS[block];
+  const model = useStore(slot.model);
+  const missing = useStore((st) => st.missingMedia[slot.missing]);
   const models = useStore((st) => st.models);
   const downloads = useStore((st) => st.downloads);
   const pending = useStore((st) => st.t3kPending);
-  const loadModel = useStore((st) => st.loadModel);
-  const clearModel = useStore((st) => st.clearModel);
+  const load = useStore((st) => st.loadModel);
+  const clear = useStore((st) => st.clearModel);
   const importModel = useStore((st) => st.importModel);
   const openT3kBrowser = useStore((st) => st.openT3kBrowser);
   const toast = useStore((st) => st.toast);
 
-  const calInput = useToggleParam("amp_cal_input");
-  const eqOn = useToggleParam("amp_eq_on");
+  const calInput = useToggleParam(ampToggle(block, "cal_input"));
+  const eqOn = useToggleParam(ampToggle(block, "eq_on"));
   const attribution = useAttribution(model?.tone);
   const [band, bandRef] = useBandWidth();
 
-  /* IR downloads share the progress map; they belong to the cab. */
+  /* IR downloads share the progress map and belong to the cab; a capture's
+     download shows on the amp it is headed for. */
   const active = Object.entries(downloads)
-    .filter(([id]) => pending[Number(id)]?.kind !== "wav")
+    .filter(([id]) => {
+      const item = pending[Number(id)];
+      return item?.kind !== "wav" && (item?.target ?? "amp") === block;
+    })
     .map(([id, progress]) => ({ id, progress, name: pending[Number(id)]?.name ?? `Capture ${id}` }));
 
   const room = controlsWidth(band);
@@ -73,60 +81,56 @@ export function AmpBody() {
   const toneOff = !eqOn.value;
 
   const tone = (
-    <Group label="Tone" action={<BareSwitch id="amp_eq_on" label="Enable amp EQ" />}>
-      <K id="amp_eq_bass" label="Bass" size={size} disabled={toneOff} />
-      <K id="amp_eq_mid" label="Mid" size={size} disabled={toneOff} />
-      <K id="amp_eq_treble" label="Treble" size={size} disabled={toneOff} />
+    <Group label="Tone" action={<BareSwitch id={ampToggle(block, "eq_on")} label="Enable amp EQ" />}>
+      <K id={ampSlider(block, "eq_bass")} label="Bass" size={size} disabled={toneOff} />
+      <K id={ampSlider(block, "eq_mid")} label="Mid" size={size} disabled={toneOff} />
+      <K id={ampSlider(block, "eq_treble")} label="Treble" size={size} disabled={toneOff} />
     </Group>
   );
-  const calLevel = <K id="amp_cal_level" label="Cal level" disabled={!calInput.value} />;
-  const slim = <K id="amp_slim" label="Slim" disabled={!model?.isSlimmable} />;
+  const calLevel = <K id={ampSlider(block, "cal_level")} label="Cal level" disabled={!calInput.value} />;
+  const slim = <K id={ampSlider(block, "slim")} label="Slim" disabled={!model?.isSlimmable} />;
+  const input = ampSlider(block, "input");
+  const output = ampSlider(block, "output");
 
   return (
     <>
       <HeaderSlot>
-        <ChoiceMenu id="amp_out_mode" label="Output" width={120} />
-        <SwitchField id="amp_cal_input" label="Calibrate input" />
+        <ChoiceMenu id={ampCombo(block, "out_mode")} label="Output" width={120} />
+        <SwitchField id={ampToggle(block, "cal_input")} label="Calibrate input" />
       </HeaderSlot>
       <Editor
         lead={
-          <MediaCard
+          <AmpFace
             onRoot={bandRef}
             title={model ? titleOf(model) : null}
             titleTip={model ? (model.tone?.title ? `${model.tone.title} — ${model.name}` : model.path) : undefined}
-            emptyTitle="No capture"
+            photo={model?.tone?.imageUrl ?? null}
             missing={missing}
             facts={[attribution, rigFact(model?.includesCab)]}
             entries={models}
             currentPath={model?.path ?? null}
-            library="Captures"
-            emptyLabel="No captures in the library"
-            onSelect={(path) => void loadModel(path)}
-            onClear={() => void clearModel()}
+            onSelect={(path) => void load(path, block)}
+            onClear={() => void clear(block)}
             onEmptyStep={() => toast("No captures in the library yet. Import one.", "warning")}
-            labels={{
-              menu: "Choose a capture from the library",
-              prev: "Previous capture",
-              next: "Next capture",
-              clear: "Remove capture",
-            }}
-            onBrowse={() => openT3kBrowser("models", "amp")}
-            secondary={
-              <Button variant="ghost" onClick={() => void importModel()}>
-                Import file
-              </Button>
-            }
+            sources={[
+              {
+                id: "browse",
+                label: "Browse TONE3000",
+                onSelect: () => openT3kBrowser("models", block),
+              },
+              { id: "import", label: "Import file", onSelect: () => void importModel(block) },
+            ]}
             downloads={active}
           />
         }
-        display={showDisplay ? <ToneStackPlot off={toneOff} /> : undefined}
+        display={showDisplay ? <ToneStackPlot block={block} off={toneOff} /> : undefined}
       >
         {layout === "stack" ? (
           <>
             <Row>
               <Group label="Level">
-                <K id="amp_input" label="Input" />
-                <K id="amp_output" label="Output" />
+                <K id={input} label="Input" />
+                <K id={output} label="Output" />
                 {calLevel}
                 {slim}
               </Group>
@@ -137,8 +141,8 @@ export function AmpBody() {
           <>
             <Row>
               <Group label="Level">
-                <K id="amp_input" label="Input" size={size} />
-                <K id="amp_output" label="Output" size={size} />
+                <K id={input} label="Input" size={size} />
+                <K id={output} label="Output" size={size} />
               </Group>
               {tone}
             </Row>
@@ -161,9 +165,9 @@ export function AmpBody() {
    1.8 kHz, Q 0.707, 2 dB per unit. 5 is flat. At its own frequency a shelf
    gives exactly half its gain (in dB) and the bell all of it: `atCentre`. */
 const BANDS = [
-  { id: "amp_eq_bass", label: "Bass", hz: 150, dbPerUnit: 4, atCentre: 0.5 },
-  { id: "amp_eq_mid", label: "Mid", hz: 425, dbPerUnit: 3, atCentre: 1 },
-  { id: "amp_eq_treble", label: "Treble", hz: 1800, dbPerUnit: 2, atCentre: 0.5 },
+  { key: "eq_bass", label: "Bass", hz: 150, dbPerUnit: 4, atCentre: 0.5 },
+  { key: "eq_mid", label: "Mid", hz: 425, dbPerUnit: 3, atCentre: 1 },
+  { key: "eq_treble", label: "Treble", hz: 1800, dbPerUnit: 2, atCentre: 0.5 },
 ] as const;
 const TOP = 21;
 const BOTTOM = -21;
@@ -175,10 +179,10 @@ function toneDb(f: number, gains: readonly number[]): number {
   );
 }
 
-function ToneStackPlot({ off }: { off: boolean }) {
-  const bass = useSliderParam("amp_eq_bass");
-  const mid = useSliderParam("amp_eq_mid");
-  const treble = useSliderParam("amp_eq_treble");
+function ToneStackPlot({ block, off }: { block: AmpToken; off: boolean }) {
+  const bass = useSliderParam(ampSlider(block, "eq_bass"));
+  const mid = useSliderParam(ampSlider(block, "eq_mid"));
+  const treble = useSliderParam(ampSlider(block, "eq_treble"));
   const sliders = [bass, mid, treble];
   /* What is drawn travels to a value that changed without a hand on it (a
      preset, automation); see useEase. The drag still writes from the pointer. */
@@ -205,7 +209,7 @@ function ToneStackPlot({ off }: { off: boolean }) {
               const others = toneDb(b.hz, rawGains) - b.atCentre * rawGains[i]!;
               return (
                 <PlotHandle
-                  key={b.id}
+                  key={b.key}
                   x={freqX(b.hz, w)}
                   y={y(total)}
                   label={b.label}

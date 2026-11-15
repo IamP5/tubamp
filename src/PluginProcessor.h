@@ -16,6 +16,7 @@
 #include "dsp/SpectrumTap.h"
 #include "dsp/FxHost.h"
 #include "dsp/FxCatalog.h"
+#include "dsp/WidthMap.h"
 #include "library/ModelLibrary.h"
 #include "library/PresetManager.h"
 #include "library/Tone3000Client.h"
@@ -88,8 +89,8 @@ inline constexpr LegacyTypePin kLegacyTypePins[] {
     right where the gate sits).
 
     Mono-collapse before NAM (models are mono), stereo expansion afterwards — for both
-    amp blocks: `amp` runs engine A with the amp tone stack, `amp2` runs engine B with
-    its own in/out gains and no tone stack.
+    amp blocks, two instances of the same amp: `amp` runs engine A, `amp2` engine B, each
+    with its own gains, output mode, calibration, slim and tone stack.
 
     The order may also contain ONE parallel region, `split, <lane A>, lane2, <lane B>,
     mix` (docs/SPLIT.md): lane A runs on the host buffer, lane B on laneScratch, and the
@@ -124,7 +125,10 @@ public:
     bool producesMidi() const override { return false; }
     /** The delays and reverbs ring for up to this long; a loaded IR can ring longer
         (a 10 s room), and the host must not cut it off. */
-    double getTailLengthSeconds() const override { return juce::jmax (4.0, cab.getTailSeconds()); }
+    double getTailLengthSeconds() const override
+    {
+        return juce::jmax (4.0, cabs[0].getTailSeconds(), cabs[1].getTailSeconds());
+    }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -155,14 +159,22 @@ public:
     void clearIr();
     juce::String getLoadedIrPath() const { return loadedIrPath; }
 
+    /** The `cab2` block's impulse response. Same contract as loadIr(); the two cabs are
+        independent, and clearing one never touches the other. */
+    juce::String loadIrB (const juce::File& wavFile);
+    void clearIrB();
+    juce::String getLoadedIrPathB() const { return loadedIrPathB; }
+
     /** Frees the models and convolvers the audio thread has swapped out. They are
         freed before the next load in any case; the editor calls this a few times a
         second so a replaced model's weights (and a replaced IR's convolver threads)
         do not sit in memory until then. Message thread. */
     void collectRetiredEngines();
 
-    /** The three files a session carries. */
-    enum class Media { model, modelB, ir };
+    /** The four files a session carries. irB is appended: the first three keep the
+        values mediaState was indexed with before the second cab existed. */
+    enum class Media { model, modelB, ir, irB };
+    static constexpr int numMediaSlots = 4;
 
     /** The file a restored session, preset or A/B slot named for this slot when it
         could not be found, rebuilt from the session or loaded — empty otherwise. The
@@ -197,6 +209,16 @@ public:
         after a state restore (setStateInformation / applyStateVar / preset load).
         Listeners re-read both. Set and cleared by the editor, like library.onChanged. */
     std::function<void()> onChainChanged;
+
+    /** Where the chain is mono and where stereo, and why (dsp/WidthMap.h), for the order
+        and parameters as they stand and this instance's channel layout. Read from the
+        atomics the audio thread reads; nothing is cached. Message thread. */
+    chain::WidthMap getWidthMap() const;
+
+    /** The one-time notice for a one-channel instance whose chain would be stereo with two
+        output channels: due until acknowledged, once per instance (saved with its state). */
+    bool isMonoHostNoticeDue (const chain::WidthMap& map) const noexcept;
+    void acknowledgeMonoHostNotice() noexcept;
 
     //==============================================================================
     // --- external AudioUnit slots (message thread)
@@ -253,13 +275,19 @@ public:
     void setEditorSize (juce::Point<int> size);
 
     juce::AudioProcessorValueTreeState apvts;
-    NamEngine namEngine;
+    /** One engine per amp, indexed like params::ampOnIds. */
+    std::array<NamEngine, params::numAmps> ampEngines;
+    NamEngine& namEngine { ampEngines[0] };
     /** The amp2 block's engine. Idle (and costing nothing) until a model is loaded
         into it. */
-    NamEngine namEngineB;
+    NamEngine& namEngineB { ampEngines[1] };
 
-    /** The cab block's impulse response (load through loadIr()/clearIr()). */
-    CabSim cab;
+    /** One impulse response per cab, indexed like params::cabOnIds (load through
+        loadIr()/clearIr() and loadIrB()/clearIrB()). */
+    std::array<CabSim, params::numCabs> cabs;
+    CabSim& cab { cabs[0] };
+    /** The cab2 block's impulse response. */
+    CabSim& cabB { cabs[1] };
     FxHost fxHost;
     ModelLibrary library;
     PresetManager presets;
@@ -271,8 +299,10 @@ public:
     juce::SharedResourcePointer<update::Updater> updater;
    #endif
 
-    /** UI level metering (linear peak, decayed by UI). */
+    /** UI level metering (linear peak, decayed by UI). outputPeak is the larger of the two
+        sides; a one-channel instance reports its one channel as both. */
     std::atomic<float> inputPeak { 0.0f }, outputPeak { 0.0f };
+    std::atomic<float> outputPeakL { 0.0f }, outputPeakR { 0.0f };
 
     /** Dynamics metering (docs/FX-ENGINES.md §2.8), the same contract as the peaks: the
         audio thread max-accumulates, the editor reads with exchange. Gain reductions are
@@ -300,6 +330,9 @@ public:
     std::atomic<bool> eqAnalyserOn { true };
     std::atomic<int> eqAnalyserResolution { 1 };
     std::atomic<int> eqAnalyserSpeed { 1 };
+
+    /** The mono-instance notice was acknowledged in this instance (plugin state). */
+    std::atomic<bool> monoHostNoticeShown { false };
 
     /** The rate the blocks were last prepared at (any thread). */
     double getPreparedSampleRate() const noexcept { return preparedSampleRate.load (std::memory_order_relaxed); }
@@ -460,13 +493,11 @@ private:
     EqParams eqParams (int instance) const noexcept;
     ModParams modParams (int instance, const HostTransport& transport) const noexcept;
 
-    /** Audio thread: collapse to mono -> engine -> deferred gate -> tone stack -> out
-        gain -> expand, on whichever buffer `block` views. Both amp blocks run through
-        here; only the amp block passes a tone stack or a deferred gate. */
-    void processAmpMono (NamEngine& engine, juce::dsp::AudioBlock<float> block, int numSamples,
-                         float* monoScratchData, juce::SmoothedValue<float>& inGain,
-                         juce::SmoothedValue<float>& outGain, bool applyDeferredGate,
-                         bool useToneStack) noexcept;
+    /** Audio thread: amp `amp`'s collapse to mono -> engine -> deferred gate -> tone stack
+        -> out gain -> expand, on whichever buffer `block` views. Both amp blocks run
+        through here; only the first amp is ever handed the deferred gate. */
+    void processAmpMono (int amp, juce::dsp::AudioBlock<float> block, int numSamples,
+                         float* monoScratchData, bool applyDeferredGate) noexcept;
 
     /** Audio thread: the gate's gain curve over `block`, at the gate's own position or
         `deferred` onto the amp's mono output, through gateFader when the mode is not Classic
@@ -504,17 +535,18 @@ private:
     // The two amp gains fold the model-metadata compensation into the knob value before
     // it is converted to linear, exactly as the reference plugin's _SetInputGain() /
     // _SetOutputGain() do. Audio-thread safe (atomics all the way down).
-    float ampInputDb() const noexcept;
-    float ampOutputDb() const noexcept;
-    float amp2InputDb() const noexcept;
-    float amp2OutputDb() const noexcept;
+    float ampInputDb (int amp) const noexcept;
+    float ampOutputDb (int amp) const noexcept;
 
-    // amp_slim: parameterChanged can arrive on the audio thread, and
+    /** Audio thread: both gains of amp `amp` jump to their current values. */
+    void snapAmpGains (int amp) noexcept;
+
+    // amp_slim / amp2_slim: parameterChanged can arrive on the audio thread, and
     // SlimmableModel::SetSlimmableSize is explicitly not real-time safe, so the value
     // is parked here and applied from handleAsyncUpdate() on the message thread.
     void parameterChanged (const juce::String& parameterID, float newValue) override;
     void handleAsyncUpdate() override;
-    std::atomic<float> pendingSlim { 0.0f };
+    std::array<std::atomic<float>, params::numAmps> pendingSlim {};
 
     //==============================================================================
     // --- external AudioUnit slots
@@ -579,8 +611,6 @@ private:
     struct ParamPtrs
     {
         std::atomic<float>* gateOn = nullptr;
-        std::atomic<float>* ampOn = nullptr;
-        std::atomic<float>* cabOn = nullptr;
         std::atomic<float>* fxOn[chain::numFxSlots] { nullptr, nullptr, nullptr };
 
         std::atomic<float>* inputTrim = nullptr;
@@ -600,19 +630,23 @@ private:
         std::atomic<float>* driveTone[params::maxInstances] {};
         std::atomic<float>* driveLevel[params::maxInstances] {};
 
-        std::atomic<float>* ampInput = nullptr;
-        std::atomic<float>* ampOutput = nullptr;
-        std::atomic<float>* ampOutMode = nullptr;
-        std::atomic<float>* ampCalInput = nullptr;
-        std::atomic<float>* ampCalLevel = nullptr;
-        std::atomic<float>* ampEqOn = nullptr;
-        std::atomic<float>* ampEqBass = nullptr;
-        std::atomic<float>* ampEqMid = nullptr;
-        std::atomic<float>* ampEqTreble = nullptr;
+        // Per amp, indexed like params::ampOnIds (0 = amp, 1 = amp2).
+        std::atomic<float>* ampOn[params::numAmps] {};
+        std::atomic<float>* ampInput[params::numAmps] {};
+        std::atomic<float>* ampOutput[params::numAmps] {};
+        std::atomic<float>* ampOutMode[params::numAmps] {};
+        std::atomic<float>* ampCalInput[params::numAmps] {};
+        std::atomic<float>* ampCalLevel[params::numAmps] {};
+        std::atomic<float>* ampEqOn[params::numAmps] {};
+        std::atomic<float>* ampEqBass[params::numAmps] {};
+        std::atomic<float>* ampEqMid[params::numAmps] {};
+        std::atomic<float>* ampEqTreble[params::numAmps] {};
 
-        std::atomic<float>* cabLowCut = nullptr;
-        std::atomic<float>* cabHighCut = nullptr;
-        std::atomic<float>* cabMix = nullptr;
+        // Per cab, indexed like params::cabOnIds (0 = cab, 1 = cab2).
+        std::atomic<float>* cabOn[params::numCabs] {};
+        std::atomic<float>* cabLowCut[params::numCabs] {};
+        std::atomic<float>* cabHighCut[params::numCabs] {};
+        std::atomic<float>* cabMix[params::numCabs] {};
 
         std::atomic<float>* eqOn[params::maxInstances] {};
         std::atomic<float>* eqBass[params::maxInstances] {};
@@ -651,10 +685,6 @@ private:
         std::atomic<float>* reverbLowCut[params::maxInstances] {};
         std::atomic<float>* reverbHighCut[params::maxInstances] {};
         std::atomic<float>* reverbModAmt[params::maxInstances] {};
-
-        std::atomic<float>* amp2On = nullptr;
-        std::atomic<float>* amp2Input = nullptr;
-        std::atomic<float>* amp2Output = nullptr;
 
         std::atomic<float>* splitOn = nullptr;
         std::atomic<float>* splitMode = nullptr;
@@ -731,21 +761,24 @@ private:
     std::array<CompFx, params::maxInstances> comp;
     std::array<DriveFx, params::maxInstances> drive;
     std::array<EqFx, params::maxInstances> eq;
-    /** The amp block's own tone stack, between the model's gated output and amp-out: a
-        mono EqFx that always runs Classic. */
-    EqFx ampEq;
+    /** Each amp's own tone stack, between the model's (gated) output and amp-out: a mono
+        EqFx that always runs Classic. */
+    std::array<EqFx, params::numAmps> ampEq;
     DcBlocker dcBlocker;
     std::array<Modulation, params::maxInstances> modulation;
     std::array<DelayFx, params::maxInstances> delay;
     std::array<ReverbFx, params::maxInstances> reverbFx;
-    juce::SmoothedValue<float> inputTrimLin { 1.0f }, outputLevelLin { 1.0f }, ampInLin { 1.0f }, ampOutLin { 1.0f };
-    /** The amp2 block's own gains — never the amp block's: two SmoothedValues cannot
-        share one, each has to advance exactly numSamples per block. */
-    juce::SmoothedValue<float> amp2InLin { 1.0f }, amp2OutLin { 1.0f };
+    juce::SmoothedValue<float> inputTrimLin { 1.0f }, outputLevelLin { 1.0f };
+    /** Each amp's own gains: two amps cannot share a SmoothedValue, each has to advance
+        exactly numSamples per block. */
+    std::array<juce::SmoothedValue<float>, params::numAmps> ampInLin { { juce::SmoothedValue<float> { 1.0f },
+                                                                         juce::SmoothedValue<float> { 1.0f } } };
+    std::array<juce::SmoothedValue<float>, params::numAmps> ampOutLin { { juce::SmoothedValue<float> { 1.0f },
+                                                                          juce::SmoothedValue<float> { 1.0f } } };
 
     // The mixer's gains: one per lane per channel (level x equal-power pan, sign-flipped
     // for lane B's phase invert), plus the master. Their own smoothers for the same
-    // reason as amp2's.
+    // reason as the amps'.
     std::array<juce::SmoothedValue<float>, 2> mixAGain { { juce::SmoothedValue<float> { 1.0f },
                                                            juce::SmoothedValue<float> { 1.0f } } };
     std::array<juce::SmoothedValue<float>, 2> mixBGain { { juce::SmoothedValue<float> { 1.0f },
@@ -809,10 +842,10 @@ private:
     std::uint32_t seenCallbacks = 0, lastAudioMs = 0, idleGeneration = 0;
     bool audioSeen = false;
 
-    // Audio thread: whether the cab may run a stereo IR as true stereo this block
+    // Audio thread: whether each cab may run a stereo IR as true stereo this block
     // (nothing downstream of it folds the path to mono). Decided once per block from
-    // the decoded order, read by the cab's case in the block dispatcher.
-    bool cabAllowStereo = true;
+    // the decoded order, read by the cabs' case in the block dispatcher.
+    std::array<bool, params::numCabs> cabAllowStereo { { true, true } };
 
     /** What the previous block ran, for spotting a block re-entering the chain.
         Audio thread only. */
@@ -858,7 +891,7 @@ private:
         juce::String packedFor;         // the path `packed` was read from
     };
 
-    std::array<MediaState, 3> mediaState;
+    std::array<MediaState, numMediaSlots> mediaState;
 
     juce::String loadedPathLocked (Media slot) const;
     void setMissingMedia (Media slot, const juce::String& path);
@@ -875,7 +908,11 @@ private:
         have it and rebuilding it from `embedded` when it is gone. An empty path
         clears the slot. Message thread. */
     void restoreMedia (Media slot, const juce::String& path, const EmbeddedMedia& embedded);
-    juce::String loadedModelPath, loadedModelPathB, loadedIrPath;
+    /** loadIr()/loadIrB() and clearIr()/clearIrB(), on cab `cab`. */
+    juce::String loadIrInto (int cabIndex, const juce::File& wavFile);
+    void clearIrOf (int cabIndex);
+
+    juce::String loadedModelPath, loadedModelPathB, loadedIrPath, loadedIrPathB;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TubampAudioProcessor)
 };

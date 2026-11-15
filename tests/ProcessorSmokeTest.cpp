@@ -370,8 +370,8 @@ bool runParseTests()
                   "parseOrderOrLegacy(\"-\") stays empty -- a deliberately-emptied chain is not legacy state");
 
     // maxChainLength-entry order (the chain length cap) round-trips through the widened
-    // 128-bit word. numBlockTypes (28) now exceeds maxChainLength (24) by design --
-    // split/lane2/mix/amp2 decoupled the cap from the id space (docs/SPLIT.md §1), so a
+    // 128-bit word. numBlockTypes (29) now exceeds maxChainLength (24) by design --
+    // split/lane2/mix/amp2/cab2 decoupled the cap from the id space (docs/SPLIT.md §1), so a
     // full order of every block instance no longer fits in one chain and this uses the
     // first maxChainLength block ids instead of "every block instance".
     chain::Order full;
@@ -391,6 +391,20 @@ bool runParseTests()
                       && std::equal (full.begin(), full.end(), decodedFull.begin()),
                   "maxChainLength-entry order round-trips pack -> unpackTo (widened to __int128)");
     ok &= expect (chain::unpack (packedFull) == full, "... and pack -> unpack");
+
+    // The second cab: its own token, the last id, and it fits the packed word's 5-bit field.
+    const chain::Order dualCab { BlockId::split, BlockId::amp, BlockId::cab, BlockId::lane2,
+                                 BlockId::amp2, BlockId::cab2, BlockId::mix };
+    ok &= expect (chain::toString (dualCab) == "split,amp,cab,lane2,amp2,cab2,mix"
+                      && chain::parseOrder ("split,amp,cab,lane2,amp2,cab2,mix") == dualCab,
+                  "cab2 has its own token and round-trips toString -> parseOrder");
+    ok &= expect (chain::unpack (chain::pack (dualCab)) == dualCab && (int) BlockId::cab2 == 28,
+                  "...and pack -> unpack, as id 28");
+    ok &= expect (chain::parseOrder ("cab,cab2,cab,cab2") == chain::Order { BlockId::cab, BlockId::cab2 },
+                  "each cab can be in the chain once");
+    ok &= expect (chain::kindOf (BlockId::cab2) == BlockId::cab2 && chain::instanceOf (BlockId::cab2) == 0
+                      && juce::String (chain::infoFor (BlockId::cab2).enableParamId) == params::cab2On,
+                  "cab2 is its own id outside the instance pool, enabled by cab2_on");
 
     return ok;
 }
@@ -435,6 +449,10 @@ bool runSplitStructureTests()
     const chain::Order amp2InDangling { BlockId::split, BlockId::amp2, BlockId::amp };
     ok &= expect (chain::sanitizeStructure (amp2InDangling) == chain::Order { BlockId::amp2, BlockId::amp },
                   "amp2 survives flattening -- only split/lane2/mix are stripped");
+
+    const chain::Order cab2InDangling { BlockId::split, BlockId::cab, BlockId::cab2, BlockId::mix };
+    ok &= expect (chain::sanitizeStructure (cab2InDangling) == chain::Order { BlockId::cab, BlockId::cab2 },
+                  "...and so does cab2");
 
     return ok;
 }
@@ -1437,11 +1455,8 @@ bool runDualAmpLaneTests (tubamp::TubampAudioProcessor& proc, const juce::File& 
     // through engine B.
     //
     // The two lanes are driven APART by amp2's own output knob rather than by relying on
-    // the paths' inherent differences (amp is loudness-compensated and tone-stacked,
-    // amp2 is neither): those differences are real but their SIZE depends on the model
-    // file -- a capture without loudness metadata run through a flat 5/5/5 tone stack
-    // leaves only ~10% between the channels, which is not a threshold any assertion can
-    // stand on. +6 dB on amp2_output is a post-model gain (docs/SPLIT.md §3), so it
+    // the paths' inherent differences: two instances of the same amp on the same model
+    // differ by little or nothing, which is not a threshold any assertion can stand on. +6 dB on amp2_output is a post-model gain (docs/SPLIT.md §3), so it
     // doubles lane B for every model there is.
     setFloatParam (proc, params::mixAPan, -1.0f);
     setFloatParam (proc, params::mixBPan, 1.0f);
@@ -1473,6 +1488,155 @@ bool runDualAmpLaneTests (tubamp::TubampAudioProcessor& proc, const juce::File& 
 
     proc.clearModelB();
     proc.setChainOrder (chain::defaultOrder(), {});
+    proc.prepareToPlay (sampleRate, blockSize);
+
+    return ok;
+}
+
+/** Each channel's settled tail (blocks 30-59) of the reference sine, the samples
+    processSineRmsPerChannel measures. */
+std::array<std::vector<float>, 2> channelTails (tubamp::TubampAudioProcessor& proc, double sampleRate, int blockSize)
+{
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+    std::array<std::vector<float>, 2> tails;
+
+    for (int block = 0; block < 60; ++block)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto* data = buffer.getWritePointer (ch);
+
+            for (int i = 0; i < blockSize; ++i)
+                data[i] = 0.3f * (float) std::sin (2.0 * juce::MathConstants<double>::pi
+                                                   * 220.0 * (block * blockSize + i) / sampleRate);
+        }
+
+        proc.processBlock (buffer, midi);
+
+        if (block >= 30)
+            for (int ch = 0; ch < 2; ++ch)
+                tails[(size_t) ch].insert (tails[(size_t) ch].end(), buffer.getReadPointer (ch),
+                                           buffer.getReadPointer (ch) + blockSize);
+    }
+
+    return tails;
+}
+
+/** RMS of (b - a) relative to the RMS of a: 0 for the same audio. */
+double relativeChange (const std::vector<float>& a, const std::vector<float>& b)
+{
+    double diff = 0.0, ref = 0.0;
+
+    for (size_t i = 0; i < std::min (a.size(), b.size()); ++i)
+    {
+        diff += ((double) b[i] - a[i]) * ((double) b[i] - a[i]);
+        ref += (double) a[i] * a[i];
+    }
+
+    return ref > 0.0 ? std::sqrt (diff / ref) : (diff > 0.0 ? 1.0 : 0.0);
+}
+
+/** amp2 is a second instance of the amp: its tone stack, output mode, calibration and slim
+    act on lane B only, and the first amp's act on lane A only. The same model in both
+    engines, lane A hard left and lane B hard right, so each channel is one amp. */
+bool runAmp2InstanceTests (tubamp::TubampAudioProcessor& proc, const juce::File& modelFile,
+                           double sampleRate, int blockSize)
+{
+    std::printf ("amp 2 instance:\n");
+
+    bool ok = true;
+    const tubamp::chain::Order dualAmp { BlockId::split, BlockId::amp, BlockId::lane2, BlockId::amp2, BlockId::mix };
+
+    ok &= expect (proc.loadModel (modelFile).isEmpty() && proc.loadModelB (modelFile).isEmpty(),
+                  "the same model loads into both engines");
+    pumpMessages (100);
+
+    proc.setChainOrder (dualAmp, {});
+    proc.prepareToPlay (sampleRate, blockSize);
+    setFloatParam (proc, params::splitMode, 0.0f);
+    setFloatParam (proc, params::mixAPan, -1.0f);
+    setFloatParam (proc, params::mixBPan, 1.0f);
+
+    // Each check moves one control and compares both channels with the tail before it.
+    // Unchanged is within -60 dB of the audio before (the engines' state never repeats
+    // exactly: a lane left alone measures up to 8e-5 at 48 kHz); a moved control measured
+    // 0.1 and more. Both figures are printed.
+    constexpr double kSame = 1.0e-3, kMoved = 1.0e-2;
+    auto before = channelTails (proc, sampleRate, blockSize);
+
+    const auto check = [&] (const char* what, bool laneAMoves, bool laneBMoves)
+    {
+        pumpMessages (50); // slim reaches the engines from the message thread
+        const auto after = channelTails (proc, sampleRate, blockSize);
+        const double a = relativeChange (before[0], after[0]);
+        const double b = relativeChange (before[1], after[1]);
+        char line[256];
+
+        std::snprintf (line, sizeof (line), "%s: lane A %s (%.2e), lane B %s (%.2e)", what,
+                       laneAMoves ? "changes" : "unchanged", a, laneBMoves ? "changes" : "unchanged", b);
+        ok &= expect ((laneAMoves ? a > kMoved : a < kSame) && (laneBMoves ? b > kMoved : b < kSame), line);
+        before = after;
+    };
+
+    // (a) the tone stack
+    setBoolParam (proc, params::amp2EqOn, true);
+    setFloatParam (proc, params::amp2EqBass, 10.0f);
+    check ("amp2_eq_bass 10 with amp2_eq_on", false, true);
+
+    setBoolParam (proc, params::amp2EqOn, false);
+    check ("amp2_eq_on off", false, true);
+
+    setFloatParam (proc, params::amp2EqBass, 0.0f);
+    setFloatParam (proc, params::amp2EqTreble, 10.0f);
+    check ("amp2_eq bass/treble moved while amp2_eq_on is off", false, false);
+
+    setBoolParam (proc, params::ampEqOn, true);
+    setFloatParam (proc, params::ampEqBass, 10.0f);
+    check ("the first amp's amp_eq_bass 10", true, false);
+
+    // (b) output mode and calibration
+    setFloatParam (proc, params::amp2OutMode, (float) params::OutputMode::raw);
+    check ("amp2_out_mode Raw", false, true);
+
+    setFloatParam (proc, params::ampOutMode, (float) params::OutputMode::raw);
+    check ("the first amp's amp_out_mode Raw", true, false);
+
+    setBoolParam (proc, params::amp2CalInput, true);
+    setFloatParam (proc, params::amp2CalLevel, 30.0f);
+    check ("amp2_cal_input on at amp2_cal_level 30", false, true);
+
+    setBoolParam (proc, params::ampCalInput, true);
+    setFloatParam (proc, params::ampCalLevel, 30.0f);
+    check ("the first amp's amp_cal_input on at amp_cal_level 30", true, false);
+
+    setFloatParam (proc, params::amp2CalLevel, 20.0f);
+    check ("amp2_cal_level 20", false, true);
+
+    // (c) slim, per amp (the model must be slimmable for it to mean anything)
+    if (proc.namEngine.isSlimmable() && proc.namEngineB.isSlimmable())
+    {
+        setFloatParam (proc, params::amp2Slim, 1.0f);
+        check ("amp2_slim 1", false, true);
+
+        setFloatParam (proc, params::ampSlim, 1.0f);
+        check ("the first amp's amp_slim 1", true, false);
+    }
+    else
+    {
+        ok &= expect (false, "the slim checks need a slimmable model (A2)");
+    }
+
+    for (const auto* id : { params::splitMode, params::mixAPan, params::mixBPan, params::ampEqOn, params::ampEqBass,
+                            params::ampOutMode, params::ampCalInput, params::ampCalLevel, params::ampSlim,
+                            params::amp2EqOn, params::amp2EqBass, params::amp2EqTreble, params::amp2OutMode,
+                            params::amp2CalInput, params::amp2CalLevel, params::amp2Slim })
+        if (auto* p = proc.apvts.getParameter (id))
+            p->setValueNotifyingHost (p->getDefaultValue());
+
+    pumpMessages (50);
+    proc.clearModelB();
+    proc.setChainOrder (tubamp::chain::defaultOrder(), {});
     proc.prepareToPlay (sampleRate, blockSize);
 
     return ok;
@@ -2092,8 +2256,12 @@ bool runEngineTypeStateTests (double sampleRate, int blockSize)
 }
 
 /** Parameters in the layout before the gate/comp/drive/EQ/mod engines
-    (tests/golden/params-base.tsv). Everything after them is a hint-4 addition. */
+    (tests/golden/params-base.tsv). After them come the 95 hint-4 additions, then the 8
+    hint-5 ones (amp 2's own controls), then the 4 hint-6 ones (the second cab). */
 constexpr int kBaseParamCount = 167;
+constexpr int kHint4ParamCount = 95;
+constexpr int kHint5ParamCount = 8;
+constexpr int kHint6ParamCount = 4;
 
 /** One engine type id of docs/FX-ENGINES.md §2.7.5 and the block instance it belongs to. */
 struct EngineTypeId
@@ -2128,7 +2296,7 @@ float plainValueOf (const juce::RangedAudioParameter& p)
     return p.convertFrom0to1 (p.getValue());
 }
 
-/** Every parameter after the base layout, in layout order. */
+/** Every parameter after the base layout (hints 4 to 6), in layout order. */
 std::vector<juce::RangedAudioParameter*> newParams (tubamp::TubampAudioProcessor& proc)
 {
     std::vector<juce::RangedAudioParameter*> out;
@@ -2219,17 +2387,23 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
     const auto typeIds = engineTypeIds();
     ok &= expect (typeIds.size() == 19, "19 engine type ids: gate_mode + comp/drive/eq type x3 + three mod voicings x3");
 
-    // --- layout: 95 hint-4 parameters appended after the frozen 167
+    // --- layout: 95 hint-4 parameters appended after the frozen 167, then 8 at hint 5, then 4 at hint 6
     {
         tubamp::TubampAudioProcessor fresh;
         const auto& all = fresh.getParameters();
-        bool hints = all.size() == kBaseParamCount + 95;
+        bool hints = all.size() == kBaseParamCount + kHint4ParamCount + kHint5ParamCount + kHint6ParamCount;
 
         for (int i = 0; i < all.size(); ++i)
             if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (all[i]))
-                hints &= (i < kBaseParamCount) == (p->getVersionHint() < 4);
+            {
+                const int hint = p->getVersionHint();
+                hints &= i < kBaseParamCount                    ? hint < 4
+                       : i < kBaseParamCount + kHint4ParamCount ? hint == 4
+                       : i < kBaseParamCount + kHint4ParamCount + kHint5ParamCount ? hint == 5
+                                                                                   : hint == 6;
+            }
 
-        ok &= expect (hints, "262 parameters: the base 167 at hints 1-3, then 95 at hint 4");
+        ok &= expect (hints, "274 parameters: the base 167 at hints 1-3, then 95 at hint 4, 8 at hint 5, 4 at hint 6");
 
         bool recommended = true;
 
@@ -2254,12 +2428,17 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
         return pinned;
     };
 
+    // Hint 4 only: a state this old also lacks the hint-5 ids, which restore from the first
+    // amp's (runAmp2MigrationTests), not at their defaults.
     const auto newParamsAtDefault = [] (tubamp::TubampAudioProcessor& p, const std::vector<EngineTypeId>& except)
     {
         bool defaults = true;
 
         for (auto* param : newParams (p))
         {
+            if (param->getVersionHint() != 4)
+                continue;
+
             const bool isType = std::any_of (except.begin(), except.end(),
                                              [param] (const EngineTypeId& t) { return param->paramID == t.id; });
 
@@ -2303,10 +2482,10 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
         proc.setStateInformation (blob.getData(), (int) blob.getSize());
 
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, total),
-                      "host state from this layout round-trips all 262 parameters exactly");
+                      "host state from this layout round-trips all 274 parameters exactly");
     }
 
-    // --- (a) host state from the old layout: the blob with all 95 new PARAM children
+    // --- (a) host state from the old layout: the blob with all 103 new PARAM children
     // removed, which is what a session saved before them looks like.
     juce::MemoryBlock olderBlob;
     {
@@ -2335,7 +2514,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
                           && choiceIndex (proc, params::driveType) == (int) tubamp::DriveFx::Type::screamer
                           && choiceIndex (proc, params::mod3ChorusMode) == (int) tubamp::ChorusFx::Mode::wide,
                       "(b) old-layout host state: blocks outside the chain keep the recommended type");
-        ok &= expect (newParamsAtDefault (proc, typeIds), "old-layout host state: the other new parameters stay at their defaults");
+        ok &= expect (newParamsAtDefault (proc, typeIds), "old-layout host state: the other hint-4 parameters stay at their defaults");
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, (size_t) kBaseParamCount),
                       "old-layout host state: all 167 existing parameters restore exactly");
         ok &= expect (proc.getChainOrder() == order, "old-layout host state: the chain restores as saved");
@@ -2455,14 +2634,14 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
 
         proc.applyStateVar (modern);
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, total),
-                      "(d) a preset from this layout round-trips all 262 parameters exactly");
+                      "(d) a preset from this layout round-trips all 274 parameters exactly");
 
         // The processor still holds the source's non-default types: absent ids must not
         // leave them ringing, in or out of the chain.
         proc.applyStateVar (older);
         ok &= expect (pinnedAsExpected (proc, order),
                       "(d) old-layout preset: in-chain type ids at Classic, the rest at the recommended type");
-        ok &= expect (newParamsAtDefault (proc, typeIds), "(d) old-layout preset: the other new parameters reset to their defaults");
+        ok &= expect (newParamsAtDefault (proc, typeIds), "(d) old-layout preset: the other hint-4 parameters reset to their defaults");
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, (size_t) kBaseParamCount),
                       "(d) old-layout preset: all 167 existing parameters restore exactly");
 
@@ -2479,7 +2658,7 @@ bool runLegacyPinTests (double sampleRate, int blockSize)
         setFloatParam (proc, params::compType, 0.0f);
         proc.presets.recallSlot (0);
         ok &= expect (sameRange (paramSnapshot (proc), sourceValues, 0, total),
-                      "(d) an A/B slot round-trips all 262 parameters exactly");
+                      "(d) an A/B slot round-trips all 274 parameters exactly");
     }
 
     // A preset that predates the arrangeable chain loads as the classic nine and pins them.
@@ -2567,6 +2746,152 @@ double secondsToSilence (tubamp::TubampAudioProcessor& proc, int numChannels, do
     }
 
     return -1.0;
+}
+
+/** State saved before amp 2 had its own controls (no hint-5 ids) restores amp 2 on the
+    first amp's saved output mode, calibration and slim with its tone stack off, on both
+    restore paths; state that carries the ids restores them as saved, even at their
+    defaults. A fresh instance starts amp 2 where the first amp starts. */
+bool runAmp2MigrationTests (double sampleRate, int blockSize)
+{
+    std::printf ("amp 2 migration:\n");
+
+    bool ok = true;
+    const tubamp::chain::Order dualAmp { BlockId::split, BlockId::amp, BlockId::lane2, BlockId::amp2, BlockId::mix };
+    const char* const hint5Ids[] { params::amp2OutMode, params::amp2CalInput, params::amp2CalLevel, params::amp2Slim,
+                                   params::amp2EqOn, params::amp2EqBass, params::amp2EqMid, params::amp2EqTreble };
+
+    const auto value = [] (tubamp::TubampAudioProcessor& p, const char* id)
+    {
+        return p.apvts.getRawParameterValue (id)->load();
+    };
+
+    {
+        tubamp::TubampAudioProcessor fresh;
+        ok &= expect (value (fresh, params::amp2OutMode) == value (fresh, params::ampOutMode)
+                          && value (fresh, params::amp2CalInput) == value (fresh, params::ampCalInput)
+                          && value (fresh, params::amp2CalLevel) == value (fresh, params::ampCalLevel)
+                          && value (fresh, params::amp2Slim) == value (fresh, params::ampSlim)
+                          && value (fresh, params::amp2EqOn) == value (fresh, params::ampEqOn)
+                          && value (fresh, params::amp2EqBass) == value (fresh, params::ampEqBass)
+                          && value (fresh, params::amp2EqMid) == value (fresh, params::ampEqMid)
+                          && value (fresh, params::amp2EqTreble) == value (fresh, params::ampEqTreble),
+                      "a fresh instance starts amp 2's controls where the first amp's start");
+    }
+
+    // The writer: the first amp off every default, amp 2's own controls on other values still.
+    tubamp::TubampAudioProcessor writer;
+    writer.prepareToPlay (sampleRate, blockSize);
+    writer.setChainOrder (dualAmp, {});
+    setFloatParam (writer, params::ampOutMode, (float) params::OutputMode::raw);
+    setBoolParam (writer, params::ampCalInput, true);
+    setFloatParam (writer, params::ampCalLevel, 20.0f);
+    setFloatParam (writer, params::ampSlim, 0.7f);
+    setFloatParam (writer, params::amp2OutMode, (float) params::OutputMode::calibrated);
+    setFloatParam (writer, params::amp2CalLevel, -10.0f);
+    setFloatParam (writer, params::amp2Slim, 0.2f);
+    setFloatParam (writer, params::amp2EqBass, 8.0f);
+    setBoolParam (writer, params::amp2EqOn, true);
+
+    const auto followsFirstAmp = [&] (tubamp::TubampAudioProcessor& p)
+    {
+        return choiceIndex (p, params::amp2OutMode) == (int) params::OutputMode::raw
+            && value (p, params::amp2CalInput) > 0.5f
+            && juce::approximatelyEqual (value (p, params::amp2CalLevel), 20.0f)
+            && juce::approximatelyEqual (value (p, params::amp2Slim), 0.7f)
+            && value (p, params::amp2EqOn) < 0.5f
+            && juce::approximatelyEqual (value (p, params::amp2EqBass), 5.0f)
+            && juce::approximatelyEqual (value (p, params::amp2EqMid), 5.0f)
+            && juce::approximatelyEqual (value (p, params::amp2EqTreble), 5.0f);
+    };
+
+    // Present at the defaults, so a restore that keyed on "at default" rather than on absence
+    // would wrongly copy the first amp's values over them.
+    const auto savedAtDefaults = [&] (tubamp::TubampAudioProcessor& p)
+    {
+        return choiceIndex (p, params::amp2OutMode) == (int) params::OutputMode::normalized
+            && value (p, params::amp2CalInput) < 0.5f
+            && juce::approximatelyEqual (value (p, params::amp2CalLevel), 12.0f)
+            && juce::approximatelyEqual (value (p, params::amp2Slim), 0.0f)
+            && value (p, params::amp2EqOn) > 0.5f
+            && juce::approximatelyEqual (value (p, params::amp2EqBass), 5.0f);
+    };
+
+    const auto scramble = [] (tubamp::TubampAudioProcessor& p)
+    {
+        setFloatParam (p, params::amp2OutMode, (float) params::OutputMode::calibrated);
+        setBoolParam (p, params::amp2CalInput, false);
+        setFloatParam (p, params::amp2CalLevel, -40.0f);
+        setFloatParam (p, params::amp2Slim, 0.4f);
+        setBoolParam (p, params::amp2EqOn, true);
+        setFloatParam (p, params::amp2EqBass, 1.0f);
+        setFloatParam (p, params::amp2EqMid, 9.0f);
+        setFloatParam (p, params::amp2EqTreble, 2.0f);
+    };
+
+    juce::MemoryBlock olderBlob;
+    {
+        juce::MemoryBlock blob;
+        writer.getStateInformation (blob);
+        auto xml = juce::AudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
+        auto root = xml != nullptr ? juce::ValueTree::fromXml (*xml) : juce::ValueTree();
+        auto paramTree = root.getChildWithName (writer.apvts.state.getType());
+
+        for (const auto* id : hint5Ids)
+            paramTree.removeChild (paramTree.getChildWithProperty ("id", id), nullptr);
+
+        ok &= expect (paramTree.isValid() && paramTree.getNumChildren() == kBaseParamCount + kHint4ParamCount + kHint6ParamCount,
+                      "host state stripped of the 8 hint-5 PARAM children");
+
+        if (auto olderXml = root.createXml())
+            juce::AudioProcessor::copyXmlToBinary (*olderXml, olderBlob);
+    }
+
+    auto olderVar = writer.captureStateVar();
+
+    if (auto* values = olderVar.getProperty ("params", juce::var()).getDynamicObject())
+        for (const auto* id : hint5Ids)
+            values->removeProperty (juce::Identifier (id));
+
+    {
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        scramble (proc);
+        proc.setStateInformation (olderBlob.getData(), (int) olderBlob.getSize());
+        ok &= expect (followsFirstAmp (proc), "host state without the hint-5 ids: amp 2 takes the first amp's "
+                                              "out mode, cal input, cal level and slim, tone stack off at 5/5/5");
+        ok &= expect (choiceIndex (proc, params::ampOutMode) == (int) params::OutputMode::raw
+                          && juce::approximatelyEqual (value (proc, params::ampSlim), 0.7f),
+                      "...and the first amp restores as saved");
+
+        scramble (proc);
+        proc.applyStateVar (olderVar);
+        ok &= expect (followsFirstAmp (proc), "preset without the hint-5 ids: amp 2 takes the first amp's "
+                                              "out mode, cal input, cal level and slim, tone stack off at 5/5/5");
+    }
+
+    // The same rig with amp 2's controls back at their defaults, saved with them present.
+    for (const auto* id : hint5Ids)
+        if (auto* p = writer.apvts.getParameter (id))
+            p->setValueNotifyingHost (p->getDefaultValue());
+
+    juce::MemoryBlock currentBlob;
+    writer.getStateInformation (currentBlob);
+    const auto currentVar = writer.captureStateVar();
+
+    {
+        tubamp::TubampAudioProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        scramble (proc);
+        proc.setStateInformation (currentBlob.getData(), (int) currentBlob.getSize());
+        ok &= expect (savedAtDefaults (proc), "host state carrying the hint-5 ids at their defaults restores them as saved");
+
+        scramble (proc);
+        proc.applyStateVar (currentVar);
+        ok &= expect (savedAtDefaults (proc), "preset carrying the hint-5 ids at their defaults restores them as saved");
+    }
+
+    return ok;
 }
 
 /** Every delay type x mode and every reverb type, through the real processor on both
@@ -7601,6 +7926,585 @@ bool runHeadroomTests (double sampleRate, int blockSize)
     return ok;
 }
 
+/** The layouts a host may pick, and that a mono input feeding a stereo output behaves as a
+    stereo host fed that input on both sides. */
+bool runMonoToStereoHostTests (double sampleRate, int blockSize)
+{
+    std::printf ("mono in, stereo out:\n");
+    bool ok = true;
+    char what[300];
+
+    const auto mono = juce::AudioChannelSet::mono();
+    const auto stereo = juce::AudioChannelSet::stereo();
+    const auto layout = [] (const juce::AudioChannelSet& in, const juce::AudioChannelSet& out)
+    {
+        juce::AudioProcessor::BusesLayout l;
+        l.inputBuses.add (in);
+        l.outputBuses.add (out);
+        return l;
+    };
+
+    {
+        tubamp::TubampAudioProcessor probe;
+        ok &= expect (probe.checkBusesLayoutSupported (layout (mono, mono)), "mono in, mono out is offered");
+        ok &= expect (probe.checkBusesLayoutSupported (layout (mono, stereo)), "mono in, stereo out is offered");
+        ok &= expect (probe.checkBusesLayoutSupported (layout (stereo, stereo)), "stereo in, stereo out is offered");
+        ok &= expect (! probe.checkBusesLayoutSupported (layout (stereo, mono)), "stereo in, mono out is refused");
+        ok &= expect (! probe.checkBusesLayoutSupported (layout (mono, juce::AudioChannelSet::createLCR())),
+                      "mono in, three out is refused");
+    }
+
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const auto tone = sineSignal (sampleRate, 196.0, 0.25f, at (1.0));
+    const std::vector<float> silence (tone.size(), 0.0f);
+
+    struct Case { const char* label; tubamp::chain::Order order; std::vector<std::pair<const char*, float>> settings; bool wide; };
+    const Case cases[] {
+        { "amp with no model", { BlockId::amp }, {}, false },
+        { "ping-pong delay", { BlockId::delay },
+          { { params::delayOn, 1.0f }, { params::delayMode, 1.0f }, { params::delayMix, 0.5f } }, true },
+        { "wide chorus into reverb", { BlockId::mod, BlockId::reverb },
+          { { params::modOn, 1.0f }, { params::modType, 0.0f }, { params::modChorusMode, 1.0f }, { params::modMix, 0.5f },
+            { params::reverbOn, 1.0f }, { params::reverbMix, 0.4f } }, true },
+        { "L/R split, lanes panned apart", { BlockId::split, BlockId::delay, BlockId::lane2, BlockId::mix },
+          { { params::splitMode, 1.0f }, { params::mixAPan, -1.0f }, { params::mixBPan, 1.0f }, { params::delayOn, 1.0f },
+            { params::delayMix, 0.5f } }, true } };
+
+    for (const auto& c : cases)
+    {
+        const auto make = [&] (tubamp::TubampAudioProcessor& p, const juce::AudioChannelSet& in)
+        {
+            for (const auto& [id, value] : c.settings)
+                setFloatParam (p, id, value);
+
+            p.setChainOrder (c.order, {});
+            const bool set = p.setBusesLayout (layout (in, stereo));
+            p.prepareToPlay (sampleRate, blockSize);
+            return set;
+        };
+
+        tubamp::TubampAudioProcessor monoIn, stereoIn;
+        const bool set = make (monoIn, mono) && make (stereoIn, stereo);
+
+        // The wrapper hands a mono-in instance its input on the first channel and silence on the second.
+        const auto a = renderStereo (monoIn, tone, silence, blockSize);
+        const auto b = renderStereo (stereoIn, tone, tone, blockSize);
+
+        float worst = 0.0f, side = 0.0f, peak = 0.0f;
+
+        for (size_t n = 0; n < a.l.size(); ++n)
+        {
+            worst = std::max ({ worst, std::abs (a.l[n] - b.l[n]), std::abs (a.r[n] - b.r[n]) });
+            side = std::max (side, std::abs (a.l[n] - a.r[n]));
+            peak = std::max ({ peak, std::abs (a.l[n]), std::abs (a.r[n]) });
+        }
+
+        std::snprintf (what, sizeof (what), "%s: mono in matches a stereo host fed the same signal on both sides (worst %g)",
+                       c.label, (double) worst);
+        ok &= expect (set && worst == 0.0f && peak > 0.01f, what);
+
+        std::snprintf (what, sizeof (what), "%s: left and right %s (largest difference %g)", c.label,
+                       c.wide ? "differ" : "are the same", (double) side);
+        ok &= expect (c.wide ? side > 1.0e-3f : side == 0.0f, what);
+    }
+
+    return ok;
+}
+
+//==============================================================================
+// The width map (src/dsp/WidthMap.h).
+
+const char* whyLabel (tubamp::chain::Why why)
+{
+    using tubamp::chain::Why;
+    static constexpr const char* names[] { "none", "pingPong", "dualRatio", "delayMod", "diffuse", "reverb", "chorus",
+                                           "tremolo", "stereoIr", "lanes", "plugin", "amp", "amp2", "pluginMono" };
+    const auto i = (size_t) why;
+    return i < std::size (names) ? names[i] : "?";
+}
+
+const tubamp::chain::Step* stepOf (const tubamp::chain::WidthMap& map, BlockId id)
+{
+    for (int i = 0; i < map.length; ++i)
+        if (map.steps[(size_t) i].id == id)
+            return &map.steps[(size_t) i];
+
+    return nullptr;
+}
+
+bool stepIs (const tubamp::chain::WidthMap& map, BlockId id, tubamp::chain::Turn turn, tubamp::chain::Why why)
+{
+    const auto* step = stepOf (map, id);
+    return step != nullptr && step->turn == turn && step->why == why;
+}
+
+tubamp::chain::WidthInputs widthInputsFor (const tubamp::chain::Order& order, tubamp::chain::HostLayout host,
+                                           std::initializer_list<BlockId> active)
+{
+    tubamp::chain::WidthInputs in;
+    in.order = tubamp::chain::pack (order);
+    in.host = host;
+
+    for (auto id : active)
+        in.active[(size_t) id] = true;
+
+    return in;
+}
+
+/** planWidth on hand-built inputs: the rules, with no processor involved. */
+bool runWidthPlanTests()
+{
+    using namespace tubamp::chain;
+    std::printf ("width map, planned:\n");
+    bool ok = true;
+
+    const HostLayout monoIn { 1, 2 }, stereoHost { 2, 2 }, monoHost { 1, 1 };
+
+    {
+        const auto map = planWidth (widthInputsFor ({ BlockId::amp }, monoIn, { BlockId::amp }));
+        ok &= expect (map.input == Width::mono && map.output == Width::mono && ! map.wouldBeStereo,
+                      "amp alone, mono in: mono throughout");
+
+        const auto wide = planWidth (widthInputsFor ({ BlockId::amp }, stereoHost, { BlockId::amp }));
+        ok &= expect (wide.input == Width::stereo && wide.output == Width::mono
+                      && stepIs (wide, BlockId::amp, Turn::folds, Why::amp),
+                      "amp alone, stereo in: the amp folds it, why amp");
+    }
+
+    {
+        auto in = widthInputsFor ({ BlockId::amp, BlockId::delay }, monoIn, { BlockId::amp, BlockId::delay });
+        in.delay[0].mode = 1;
+        const auto map = planWidth (in);
+        ok &= expect (map.output == Width::stereo && stepIs (map, BlockId::delay, Turn::widens, Why::pingPong)
+                      && stepIs (map, BlockId::amp, Turn::keeps, Why::none),
+                      "ping-pong delay after the amp: stereo from the delay, why pingPong");
+    }
+
+    {
+        auto in = widthInputsFor ({ BlockId::mod, BlockId::amp }, monoIn, { BlockId::mod, BlockId::amp });
+        in.mod[0] = { 0, 1, 1, 0.4f, 1.0f, 0.5f };
+        const auto map = planWidth (in);
+        ok &= expect (map.output == Width::mono && stepIs (map, BlockId::mod, Turn::widens, Why::chorus)
+                      && stepIs (map, BlockId::amp, Turn::folds, Why::amp),
+                      "wide chorus before the amp: widens, then the amp folds it");
+    }
+
+    const Order dualAmp { BlockId::split, BlockId::amp, BlockId::lane2, BlockId::amp2, BlockId::mix };
+
+    {
+        auto in = widthInputsFor (dualAmp, monoIn, { BlockId::amp, BlockId::amp2 });
+        in.mix = { true, -1.0f, 1.0f };
+        const auto map = planWidth (in);
+        const auto* split = stepOf (map, BlockId::split);
+        ok &= expect (split != nullptr && split->out == Width::mono && split->outB == Width::mono
+                      && stepOf (map, BlockId::amp)->out == Width::mono && stepOf (map, BlockId::amp2)->out == Width::mono
+                      && stepIs (map, BlockId::mix, Turn::widens, Why::lanes) && map.output == Width::stereo,
+                      "dual amp panned hard left and right: mono lanes, stereo after the mixer, why lanes");
+    }
+
+    {
+        auto in = widthInputsFor (dualAmp, monoIn, { BlockId::amp });
+        in.split.on = false;
+        in.mix = { true, -0.5f, 0.5f };
+        const auto map = planWidth (in);
+        ok &= expect (map.output == Width::mono && stepIs (map, BlockId::mix, Turn::keeps, Why::none),
+                      "one lane panned alone: a placed source, mono");
+    }
+
+    {
+        auto in = widthInputsFor ({ BlockId::split, BlockId::lane2, BlockId::mix }, monoIn, {});
+        in.mix = { true, -1.0f, 1.0f };
+        ok &= expect (planWidth (in).output == Width::mono, "two empty Copy lanes panned apart carry one signal: mono");
+
+        in.split.mode = 2;
+        ok &= expect (planWidth (in).output == Width::stereo, "two empty X-Over lanes panned apart: stereo");
+    }
+
+    {
+        auto in = widthInputsFor ({ BlockId::cab, BlockId::amp }, monoIn, { BlockId::cab, BlockId::amp });
+        in.cab[0].irStereo = true;
+        const auto map = planWidth (in);
+        ok &= expect (map.output == Width::mono && stepIs (map, BlockId::cab, Turn::keeps, Why::none),
+                      "stereo IR with an amp after it: the left kernel alone, mono");
+
+        auto alone = widthInputsFor ({ BlockId::amp, BlockId::cab }, monoIn, { BlockId::cab, BlockId::amp });
+        alone.cab[0].irStereo = true;
+        ok &= expect (stepIs (planWidth (alone), BlockId::cab, Turn::widens, Why::stereoIr),
+                      "stereo IR after the amp: true stereo, why stereoIr");
+
+        auto acrossLanes = widthInputsFor ({ BlockId::split, BlockId::cab, BlockId::lane2, BlockId::amp, BlockId::mix },
+                                           monoIn, { BlockId::cab, BlockId::amp });
+        acrossLanes.cab[0].irStereo = true;
+        ok &= expect (stepIs (planWidth (acrossLanes), BlockId::cab, Turn::widens, Why::stereoIr),
+                      "stereo IR in lane A, amp in lane B: lane B is not downstream, true stereo");
+    }
+
+    {
+        auto in = widthInputsFor ({ BlockId::amp, BlockId::delay }, monoHost, { BlockId::amp, BlockId::delay });
+        in.delay[0].mode = 1;
+        const auto map = planWidth (in);
+        bool allMono = map.input == Width::mono && map.output == Width::mono;
+
+        for (int i = 0; i < map.length; ++i)
+            allMono &= map.steps[(size_t) i].out == Width::mono;
+
+        ok &= expect (allMono && stepIs (map, BlockId::delay, Turn::monoHost, Why::pingPong) && map.wouldBeStereo,
+                      "mono host: mono everywhere, the delay would widen (monoHost, pingPong), wouldBeStereo");
+
+        const auto plain = planWidth (widthInputsFor ({ BlockId::amp }, monoHost, { BlockId::amp }));
+        ok &= expect (! plain.wouldBeStereo, "mono host, amp alone: nothing would be stereo");
+    }
+
+    {
+        auto in = widthInputsFor ({ BlockId::fx1, BlockId::fx2 }, monoIn, { BlockId::fx1, BlockId::fx2 });
+        in.fx = { WidthInputs::Fx::hostWidth, WidthInputs::Fx::monoOnly, WidthInputs::Fx::empty };
+        const auto map = planWidth (in);
+        ok &= expect (stepIs (map, BlockId::fx1, Turn::widens, Why::plugin)
+                      && stepIs (map, BlockId::fx2, Turn::folds, Why::pluginMono) && map.output == Width::mono,
+                      "a stereo plugin fed mono widens, a mono-only plugin folds");
+    }
+
+    return ok;
+}
+
+/** det / trace^2 of the channels' 2x2 power matrix from `from` on: 0 when one channel is a
+    multiple of the other (L = R, a panned mono source, a silent side), up to 0.25. */
+double stereoShare (const StereoRender& y, size_t from)
+{
+    double ll = 0.0, rr = 0.0, lr = 0.0;
+
+    for (size_t n = from; n < y.l.size(); ++n)
+    {
+        ll += (double) y.l[n] * y.l[n];
+        rr += (double) y.r[n] * y.r[n];
+        lr += (double) y.l[n] * y.r[n];
+    }
+
+    const double trace = ll + rr;
+    return trace > 1.0e-9 ? (ll * rr - lr * lr) / (trace * trace) : 0.0;
+}
+
+std::vector<float> noiseSignal (int numSamples, float amplitude, juce::int64 seed)
+{
+    juce::Random random (seed);
+    std::vector<float> x ((size_t) numSamples);
+
+    for (auto& s : x)
+        s = amplitude * (2.0f * random.nextFloat() - 1.0f);
+
+    return x;
+}
+
+bool writeTestWav (const juce::File& file, const std::vector<std::vector<float>>& channels, double sampleRate)
+{
+    file.deleteFile();
+    juce::WavAudioFormat format;
+    std::unique_ptr<juce::OutputStream> stream (file.createOutputStream());
+
+    if (stream == nullptr)
+        return false;
+
+    auto writer = format.createWriterFor (stream, juce::AudioFormatWriterOptions()
+                                                      .withSampleRate (sampleRate)
+                                                      .withNumChannels ((int) channels.size())
+                                                      .withBitsPerSample (24));
+
+    if (writer == nullptr)
+        return false;
+
+    const int numFrames = (int) channels.front().size();
+    juce::AudioBuffer<float> buffer ((int) channels.size(), numFrames);
+
+    for (size_t ch = 0; ch < channels.size(); ++ch)
+        buffer.copyFrom ((int) ch, 0, channels[ch].data(), numFrames);
+
+    return writer->writeFromAudioSampleBuffer (buffer, 0, numFrames);
+}
+
+/** The guard against the rules drifting from the DSP: for each chain the real processor's
+    output is stereo exactly when its own width map says so, in every layout. */
+bool runWidthRenderTests (const juce::File& modelFile, double sampleRate, int blockSize)
+{
+    using namespace tubamp::chain;
+    std::printf ("width map against the rendered output:\n");
+    bool ok = true;
+    char what[400];
+
+    const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                         .getChildFile ("tubamp-width-" + juce::String::toHexString (juce::Random::getSystemRandom().nextInt64()));
+    dir.createDirectory();
+
+    // The right kernel is the left one 101 samples later: a stereo IR whose sides differ.
+    std::vector<float> kernelL (2400, 0.0f), kernelR (2400, 0.0f);
+    kernelL[0] = 0.5f;
+    kernelR[101] = 0.5f;
+    const auto stereoIr = dir.getChildFile ("stereo.wav");
+    ok &= expect (writeTestWav (stereoIr, { kernelL, kernelR }, sampleRate), "wrote a two-channel test IR");
+
+    const auto mono = juce::AudioChannelSet::mono();
+    const auto stereo = juce::AudioChannelSet::stereo();
+    const auto layout = [] (const juce::AudioChannelSet& in, const juce::AudioChannelSet& out)
+    {
+        juce::AudioProcessor::BusesLayout l;
+        l.inputBuses.add (in);
+        l.outputBuses.add (out);
+        return l;
+    };
+
+    const auto at = [sampleRate] (double seconds) { return (int) std::lround (seconds * sampleRate); };
+    const auto x = noiseSignal (at (1.5), 0.25f, 0x5eed);
+    const auto other = noiseSignal (at (1.5), 0.25f, 0xbeef);
+    const std::vector<float> silence (x.size(), 0.0f);
+    const auto settled = (size_t) at (0.75);
+    constexpr double kStereo = 1.0e-6;
+
+    using Settings = std::vector<std::pair<const char*, float>>;
+    struct Case { const char* label; Order order; Settings settings; bool ir = false, models = false; };
+
+    const Settings pingPong { { params::delayOn, 1.0f }, { params::delayMode, 1.0f }, { params::delayMix, 0.5f } };
+    const Settings delayStereoNoMod { { params::delayOn, 1.0f }, { params::delayMode, 0.0f }, { params::delayModAmt, 0.0f },
+                                      { params::delayMix, 0.5f } };
+    const Settings wideChorus { { params::modOn, 1.0f }, { params::modType, 0.0f }, { params::modChorusMode, 1.0f },
+                                { params::modDepth, 0.5f }, { params::modWidth, 1.0f }, { params::modMix, 0.5f } };
+    const Settings apart { { params::mixOn, 1.0f }, { params::mixAPan, -1.0f }, { params::mixBPan, 1.0f },
+                           { params::splitOn, 1.0f } };
+
+    const auto with = [] (Settings a, const Settings& b)
+    {
+        a.insert (a.end(), b.begin(), b.end());
+        return a;
+    };
+
+    const Order lanesOnly { BlockId::split, BlockId::lane2, BlockId::mix };
+
+    const Case cases[] {
+        { "amp alone", { BlockId::amp }, { { params::ampOn, 1.0f } } },
+        { "ping-pong after the amp", { BlockId::amp, BlockId::delay }, with ({ { params::ampOn, 1.0f } }, pingPong) },
+        { "ping-pong, width 0", { BlockId::delay }, with (pingPong, { { params::delayWidth, 0.0f } }) },
+        { "ping-pong, mix 0", { BlockId::delay }, with (pingPong, { { params::delayMix, 0.0f } }) },
+        { "Dual delay, ratio 150, no modulation", { BlockId::delay },
+          with (delayStereoNoMod, { { params::delayMode, 2.0f }, { params::delayRatio, 150.0f } }) },
+        { "Dual delay, ratio 100, no modulation", { BlockId::delay },
+          with (delayStereoNoMod, { { params::delayMode, 2.0f }, { params::delayRatio, 100.0f } }) },
+        { "Stereo delay, default modulation", { BlockId::delay },
+          with (delayStereoNoMod, { { params::delayModAmt, 0.2f } }) },
+        { "Stereo delay, no modulation", { BlockId::delay }, delayStereoNoMod },
+        { "Stereo delay, Diffuse type, no modulation", { BlockId::delay },
+          with (delayStereoNoMod, { { params::delayType, 4.0f } }) },
+        { "Stereo delay, Tape type, modulated", { BlockId::delay },
+          with (delayStereoNoMod, { { params::delayType, 2.0f }, { params::delayModAmt, 0.6f } }) },
+        { "reverb", { BlockId::reverb }, { { params::reverbOn, 1.0f }, { params::reverbMix, 0.4f } } },
+        { "reverb, width 0", { BlockId::reverb },
+          { { params::reverbOn, 1.0f }, { params::reverbMix, 0.4f }, { params::reverbWidth, 0.0f } } },
+        { "Spring reverb", { BlockId::reverb },
+          { { params::reverbOn, 1.0f }, { params::reverbMix, 0.4f }, { params::reverbType, 3.0f } } },
+        { "wide chorus", { BlockId::mod }, wideChorus },
+        { "wide chorus, depth 0", { BlockId::mod }, with (wideChorus, { { params::modDepth, 0.0f } }) },
+        { "wide chorus, width 0", { BlockId::mod }, with (wideChorus, { { params::modWidth, 0.0f } }) },
+        { "Classic chorus", { BlockId::mod }, with (wideChorus, { { params::modChorusMode, 0.0f } }) },
+        { "Dimension chorus", { BlockId::mod }, with (wideChorus, { { params::modChorusMode, 3.0f } }) },
+        { "Tri chorus", { BlockId::mod }, with (wideChorus, { { params::modChorusMode, 4.0f } }) },
+        { "wide chorus before the amp", { BlockId::mod, BlockId::amp }, with (wideChorus, { { params::ampOn, 1.0f } }) },
+        { "phaser", { BlockId::mod }, with (wideChorus, { { params::modType, 1.0f } }) },
+        { "Smooth tremolo", { BlockId::mod },
+          with (wideChorus, { { params::modType, 2.0f }, { params::modTremVoice, 1.0f }, { params::modRate, 4.0f } }) },
+        { "Classic tremolo", { BlockId::mod },
+          with (wideChorus, { { params::modType, 2.0f }, { params::modTremVoice, 0.0f }, { params::modRate, 4.0f } }) },
+        { "Smooth tremolo, depth 0", { BlockId::mod },
+          with (wideChorus, { { params::modType, 2.0f }, { params::modTremVoice, 1.0f }, { params::modDepth, 0.0f } }) },
+        { "stereo IR", { BlockId::cab }, { { params::cabOn, 1.0f } }, true },
+        { "stereo IR, an amp after it", { BlockId::cab, BlockId::amp }, { { params::cabOn, 1.0f }, { params::ampOn, 1.0f } }, true },
+        { "stereo IR, mix 0", { BlockId::cab }, { { params::cabOn, 1.0f }, { params::cabMix, 0.0f } }, true },
+        { "empty Copy lanes panned apart", lanesOnly, with (apart, { { params::splitMode, 0.0f } }) },
+        { "empty L/R lanes panned apart", lanesOnly, with (apart, { { params::splitMode, 1.0f } }) },
+        { "empty X-Over lanes panned apart", lanesOnly, with (apart, { { params::splitMode, 2.0f } }) },
+        { "empty X-Over lanes, mixer off", lanesOnly,
+          with (apart, { { params::splitMode, 2.0f }, { params::mixOn, 0.0f } }) },
+        { "drive in lane A, lanes panned apart", { BlockId::split, BlockId::drive, BlockId::lane2, BlockId::mix },
+          with (apart, { { params::splitMode, 0.0f }, { params::driveOn, 1.0f } }) },
+        { "one lane with an amp, panned alone", { BlockId::split, BlockId::amp, BlockId::lane2, BlockId::mix },
+          with (apart, { { params::splitOn, 0.0f }, { params::mixAPan, -0.4f }, { params::ampOn, 1.0f } }) },
+        { "ping-pong lane alone, hard left", { BlockId::split, BlockId::delay, BlockId::lane2, BlockId::mix },
+          with (with (apart, pingPong), { { params::splitOn, 0.0f } }) },
+        { "ping-pong lane alone, centred", { BlockId::split, BlockId::delay, BlockId::lane2, BlockId::mix },
+          with (with (apart, pingPong), { { params::splitOn, 0.0f }, { params::mixAPan, 0.0f } }) },
+        { "dual amp panned hard left and right", { BlockId::split, BlockId::amp, BlockId::lane2, BlockId::amp2, BlockId::mix },
+          with (apart, { { params::splitMode, 0.0f }, { params::ampOn, 1.0f }, { params::amp2On, 1.0f },
+                         { params::amp2Input, 6.0f } }), false, true },
+    };
+
+    for (const auto& c : cases)
+    {
+        const auto make = [&] (tubamp::TubampAudioProcessor& p, const juce::AudioChannelSet& in,
+                               const juce::AudioChannelSet& out)
+        {
+            for (const auto& [id, value] : c.settings)
+                setFloatParam (p, id, value);
+
+            bool ready = p.setBusesLayout (layout (in, out));
+            p.prepareToPlay (sampleRate, blockSize);
+
+            if (c.ir)
+                ready &= p.loadIr (stereoIr).isEmpty();
+
+            if (c.models)
+                ready &= p.loadModel (modelFile).isEmpty() && p.loadModelB (modelFile).isEmpty();
+
+            p.setChainOrder (c.order, {});
+            return ready;
+        };
+
+        tubamp::TubampAudioProcessor monoToStereo, stereoSame, stereoDifferent, monoOnly;
+        const bool ready = make (monoToStereo, mono, stereo) && make (stereoSame, stereo, stereo)
+                           && make (stereoDifferent, stereo, stereo) && make (monoOnly, mono, mono);
+
+        const auto shareMonoIn = stereoShare (renderStereo (monoToStereo, x, silence, blockSize), settled);
+        const auto shareSame = stereoShare (renderStereo (stereoSame, x, x, blockSize), settled);
+        const auto shareDifferent = stereoShare (renderStereo (stereoDifferent, x, other, blockSize), settled);
+
+        const auto mapMonoIn = monoToStereo.getWidthMap();
+        const auto mapStereo = stereoDifferent.getWidthMap();
+        const auto mapMonoOnly = monoOnly.getWidthMap();
+
+        // The last place the width turns, for the report.
+        const auto lastTurn = [] (const WidthMap& map)
+        {
+            const char* why = "-";
+
+            for (int i = 0; i < map.length; ++i)
+                if (map.steps[(size_t) i].turn != Turn::keeps)
+                    why = whyLabel (map.steps[(size_t) i].why);
+
+            return why;
+        };
+
+        const bool plannedMonoIn = mapMonoIn.output == Width::stereo;
+        const bool plannedStereo = mapStereo.output == Width::stereo;
+
+        std::snprintf (what, sizeof (what), "%s: 1->2 planned %s (%s), rendered %s (%.2g); 2->2 fed the same both sides rendered %s (%.2g)",
+                       c.label, plannedMonoIn ? "stereo" : "mono", lastTurn (mapMonoIn),
+                       shareMonoIn > kStereo ? "stereo" : "mono", shareMonoIn,
+                       shareSame > kStereo ? "stereo" : "mono", shareSame);
+        ok &= expect (ready && mapMonoIn.host == HostLayout { 1, 2 } && (shareMonoIn > kStereo) == plannedMonoIn
+                      && (shareSame > kStereo) == plannedMonoIn, what);
+
+        std::snprintf (what, sizeof (what), "%s: 2->2 fed two different signals planned %s (%s), rendered %s (%.2g)",
+                       c.label, plannedStereo ? "stereo" : "mono", lastTurn (mapStereo),
+                       shareDifferent > kStereo ? "stereo" : "mono", shareDifferent);
+        ok &= expect (mapStereo.input == Width::stereo && (shareDifferent > kStereo) == plannedStereo, what);
+
+        std::snprintf (what, sizeof (what), "%s: 1->1 is mono and would be %s", c.label,
+                       mapMonoOnly.wouldBeStereo ? "stereo" : "mono");
+        ok &= expect (mapMonoOnly.host == HostLayout { 1, 1 } && mapMonoOnly.output == Width::mono
+                      && mapMonoOnly.wouldBeStereo == (shareMonoIn > kStereo), what);
+    }
+
+    dir.deleteRecursively();
+    return ok;
+}
+
+/** The mono-instance notice: due once per instance, saved with its state. */
+bool runWidthNoticeStateTests (double sampleRate, int blockSize)
+{
+    std::printf ("width map, mono-instance notice:\n");
+    bool ok = true;
+
+    juce::AudioProcessor::BusesLayout monoLayout;
+    monoLayout.inputBuses.add (juce::AudioChannelSet::mono());
+    monoLayout.outputBuses.add (juce::AudioChannelSet::mono());
+
+    const auto makeMono = [&] (tubamp::TubampAudioProcessor& p)
+    {
+        const bool set = p.setBusesLayout (monoLayout);
+        p.prepareToPlay (sampleRate, blockSize);
+        setFloatParam (p, params::delayOn, 1.0f);
+        setFloatParam (p, params::delayMode, 1.0f);
+        p.setChainOrder ({ BlockId::amp, BlockId::delay }, {});
+        return set;
+    };
+
+    tubamp::TubampAudioProcessor first;
+    ok &= expect (makeMono (first) && first.isMonoHostNoticeDue (first.getWidthMap()),
+                  "a mono instance whose chain would be stereo: the notice is due");
+
+    juce::MemoryBlock unseen;
+    first.getStateInformation (unseen);
+
+    first.acknowledgeMonoHostNotice();
+    ok &= expect (! first.isMonoHostNoticeDue (first.getWidthMap()), "acknowledged: no longer due");
+
+    juce::MemoryBlock seen;
+    first.getStateInformation (seen);
+
+    tubamp::TubampAudioProcessor restored;
+    makeMono (restored);
+    restored.setStateInformation (seen.getData(), (int) seen.getSize());
+    ok &= expect (! restored.isMonoHostNoticeDue (restored.getWidthMap())
+                      && restored.getChainOrder() == tubamp::chain::Order { BlockId::amp, BlockId::delay },
+                  "the acknowledgement round-trips through the state, with the rest of it");
+
+    restored.setStateInformation (unseen.getData(), (int) unseen.getSize());
+    ok &= expect (restored.isMonoHostNoticeDue (restored.getWidthMap()), "a state saved before it was acknowledged: due again");
+
+    // State from a build before the notice existed carries no such property.
+    auto xml = juce::AudioProcessor::getXmlFromBinary (seen.getData(), (int) seen.getSize());
+    const bool hadIt = xml != nullptr && xml->hasAttribute ("monoHostNoticeShown");
+
+    if (xml != nullptr)
+        xml->removeAttribute ("monoHostNoticeShown");
+
+    juce::MemoryBlock older;
+
+    if (xml != nullptr)
+        juce::AudioProcessor::copyXmlToBinary (*xml, older);
+
+    tubamp::TubampAudioProcessor fromOlder;
+    makeMono (fromOlder);
+    fromOlder.acknowledgeMonoHostNotice();
+    fromOlder.setStateInformation (older.getData(), (int) older.getSize());
+    ok &= expect (hadIt && fromOlder.isMonoHostNoticeDue (fromOlder.getWidthMap()),
+                  "state without the property loads as not shown");
+
+    tubamp::TubampAudioProcessor stereoHost;
+    stereoHost.prepareToPlay (sampleRate, blockSize);
+    setFloatParam (stereoHost, params::delayOn, 1.0f);
+    setFloatParam (stereoHost, params::delayMode, 1.0f);
+    stereoHost.setChainOrder ({ BlockId::amp, BlockId::delay }, {});
+    ok &= expect (! stereoHost.isMonoHostNoticeDue (stereoHost.getWidthMap()), "a stereo instance never gets the notice");
+
+    return ok;
+}
+
+/** The per-side output peaks the meters carry. */
+bool runOutputSidePeakTests (double sampleRate, int blockSize)
+{
+    std::printf ("output peaks per side:\n");
+    bool ok = true;
+
+    tubamp::TubampAudioProcessor proc;
+    proc.prepareToPlay (sampleRate, blockSize);
+    setFloatParam (proc, params::mixAPan, -1.0f);
+    setFloatParam (proc, params::splitOn, 0.0f);
+    proc.setChainOrder ({ BlockId::split, BlockId::lane2, BlockId::mix }, {});
+
+    const auto tone = sineSignal (sampleRate, 196.0, 0.25f, (int) std::lround (0.5 * sampleRate));
+    renderStereo (proc, tone, tone, blockSize);
+    proc.outputPeak.exchange (0.0f);
+    proc.outputPeakL.exchange (0.0f);
+    proc.outputPeakR.exchange (0.0f);
+    renderStereo (proc, tone, tone, blockSize);
+
+    const float out = proc.outputPeak.exchange (0.0f);
+    const float left = proc.outputPeakL.exchange (0.0f);
+    const float right = proc.outputPeakR.exchange (0.0f);
+    char what[200];
+    std::snprintf (what, sizeof (what), "one lane hard left: out %.3f = left %.3f, right %.2g", (double) out, (double) left,
+                   (double) right);
+    ok &= expect (out > 0.1f && out == left && right < 1.0e-4f, what);
+
+    return ok;
+}
+
 } // namespace
 
 // tests/EngineTests.cpp
@@ -7719,6 +8623,10 @@ int main (int argc, char** argv)
     std::printf (dualAmpLanePass ? "PASS: dual-NAM split lanes and fallback are correct\n"
                                  : "FAIL: dual-NAM split lane behaviour is wrong\n");
 
+    const bool amp2InstancePass = runAmp2InstanceTests (proc, modelFile, sampleRate, blockSize);
+    std::printf (amp2InstancePass ? "PASS: amp 2's tone stack, output mode, calibration and slim are its own\n"
+                                  : "FAIL: amp 2's controls are not its own\n");
+
     const bool splitLatencyPass = runSplitLatencyTests (proc, modelFile, sampleRate, blockSize);
     std::printf (splitLatencyPass ? "PASS: split-path latency reporting and lane compensation are correct\n"
                                   : "FAIL: split-path latency behaviour is wrong\n");
@@ -7734,6 +8642,10 @@ int main (int argc, char** argv)
     const bool legacyPinPass = runLegacyPinTests (sampleRate, blockSize);
     std::printf (legacyPinPass ? "PASS: engine type ids pin to Classic for older state and round-trip otherwise\n"
                                : "FAIL: engine type legacy pin behaviour is wrong\n");
+
+    const bool amp2MigrationPass = runAmp2MigrationTests (sampleRate, blockSize);
+    std::printf (amp2MigrationPass ? "PASS: state without amp 2's own controls restores them from the first amp's\n"
+                                   : "FAIL: amp 2's controls restore wrongly from older state\n");
 
     const bool engineRenderPass = runEngineRenderTests (proc, sampleRate, blockSize);
     std::printf (engineRenderPass ? "PASS: every reverb/delay engine renders finite and decays to silence\n"
@@ -7843,6 +8755,26 @@ int main (int argc, char** argv)
     std::printf (modRequestPass ? "PASS: mod_type asked for during a fade waits for it, never cuts, and ends on the last request\n"
                                 : "FAIL: mod_type asked for during a fade cuts or ends on the wrong type\n");
 
+    const bool monoToStereoPass = runMonoToStereoHostTests (sampleRate, blockSize);
+    std::printf (monoToStereoPass ? "PASS: a mono input reaches a stereo output as a stereo host would hear it\n"
+                                  : "FAIL: the mono in, stereo out layout is wrong\n");
+
+    const bool widthPlanPass = runWidthPlanTests();
+    std::printf (widthPlanPass ? "PASS: the width map's rules give the planned widths\n"
+                               : "FAIL: the width map's rules are wrong\n");
+
+    const bool widthRenderPass = runWidthRenderTests (modelFile, sampleRate, blockSize);
+    std::printf (widthRenderPass ? "PASS: the width map matches the rendered output in every layout\n"
+                                 : "FAIL: the width map disagrees with the rendered output\n");
+
+    const bool widthNoticePass = runWidthNoticeStateTests (sampleRate, blockSize);
+    std::printf (widthNoticePass ? "PASS: the mono-instance notice is due once and saved with the state\n"
+                                 : "FAIL: the mono-instance notice is wrong\n");
+
+    const bool sidePeakPass = runOutputSidePeakTests (sampleRate, blockSize);
+    std::printf (sidePeakPass ? "PASS: the output meters carry each side\n"
+                              : "FAIL: the per-side output meters are wrong\n");
+
     const bool headroomPass = runHeadroomTests (sampleRate, blockSize);
     std::printf (headroomPass ? "PASS: levels above full scale leave the plugin unclipped and finite\n"
                               : "FAIL: levels above full scale are clipped or not finite\n");
@@ -7854,7 +8786,8 @@ int main (int argc, char** argv)
     return enginePass && modelPass && parsePass && splitStructurePass && freshPass && chainPass && instancePass
                    && ampEqPass && factoryPass && concurrentPass && fxPass
                    && modelPathBPass && delayModePass
-                   && splitPathPass && dualAmpLanePass && splitLatencyPass && splitStatePass
+                   && splitPathPass && dualAmpLanePass && amp2InstancePass && splitLatencyPass && splitStatePass
+                   && amp2MigrationPass
                    && engineStatePass && legacyPinPass && engineRenderPass && delaySyncPass
                    && gateCompPass && gateAlignPass && dynRtPass
                    && eqDriveEnginePass && driveLatencyPass && eqDriveInstancePass && eqDriveRtPass
@@ -7862,7 +8795,8 @@ int main (int argc, char** argv)
                    && nonFinitePass && togglePass && modSwitchPass && laneChangePass && accountingPass
                    && freshInstallPass && startingPointPass
                    && latencyThreadPass && bypassedTypePass && laneRetargetPass && driveLanePass && modLevelPass
-                   && absurdPass && headroomPass && restoreOrderPass && liveRestorePass && modRequestPass
+                   && absurdPass && headroomPass && monoToStereoPass && restoreOrderPass && liveRestorePass && modRequestPass
+                   && widthPlanPass && widthRenderPass && widthNoticePass && sidePeakPass
                ? 0
                : 1;
 }

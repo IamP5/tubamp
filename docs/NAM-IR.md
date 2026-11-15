@@ -73,7 +73,9 @@ other swap, because of the gain coupling above.
   buffer. The block size is only an upper bound; the output does not depend on it.
 - **Output modes** (`amp_out_mode`): Raw; Normalized = `-18 dB − loudness`, limited to
   **±24 dB**; Calibrated = `output_level_dbu − cal level`. Input calibration
-  (`amp_cal_input`) = `cal level − input_level_dbu`.
+  (`amp_cal_input`) = `cal level − input_level_dbu`. Each amp applies its own engine's
+  metadata with its own knobs: `amp_*` for `amp` (engine A), `amp2_out_mode`,
+  `amp2_cal_input`, `amp2_cal_level` and `amp2_slim` for `amp2` (engine B).
 - **Metadata is not trusted.** A loudness that is not finite or lies outside
   −100…0 dB, and an input/output level beyond ±60 dBu, are treated as absent, which
   makes the mode that needs them behave as Raw.
@@ -131,8 +133,10 @@ at the same level.
 
 A saved plugin state used to hold only the paths of its model and IR. It now also
 holds the files themselves (`MEDIA` children: zlib + base64 with the original size and
-an FNV-1a checksum, one per slot `model`, `modelB`, `ir`; files over 32 MB are left
-out). The packed copy is read and compressed on the first save after a load and
+an FNV-1a checksum, one per slot `model`, `modelB`, `ir`, `irB`; files over 32 MB are
+left out). `irB` is the second cab's IR (the `cab2` block, docs/SPLIT.md §2a): it is
+loaded with `loadIrB()` / `clearIrB()`, saved as `irPathB`, and restored, rebuilt and
+reported missing by exactly the rules below. The packed copy is read and compressed on the first save after a load and
 cached until the next load of that slot.
 
 Restoring a slot (`TubampAudioProcessor::restoreMedia`):
@@ -170,5 +174,6 @@ catalog, and travels with the file inside a session (§4).
 `UiState.model` / `modelB` gain `tone?` (the sidecar). `UiState.ir` is an `IrInfo`:
 `path`, `name`, `channels`, `sampleRateHz`, `seconds`, `reverbLike`, `gainDb`,
 `truncated`, `image` (`none | stereo | mono-file | mono-path`), `tone?`.
-`UiState.missingMedia` is `{ model, modelB, ir }`, each the missing path or null,
+`UiState.irB` is the second cab's `IrInfo`, with an `irBChanged` event.
+`UiState.missingMedia` is `{ model, modelB, ir, irB }`, each the missing path or null,
 with a `missingMediaChanged` event. See docs/REACT-UI.md for the bridge contract.

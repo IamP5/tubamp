@@ -15,7 +15,15 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cx, useBlockingOverlay } from "../../components";
 import { BLOCK_INFO } from "../../theme/blocks";
 import { ease, noMotion } from "../../theme/motion";
-import { decorateTone, loadedPathOf, selectT3kTarget, useStore } from "../../store";
+import {
+  AMP_SLOTS,
+  CAB_SLOTS,
+  decorateTone,
+  isCabToken,
+  loadedPathOf,
+  selectT3kTarget,
+  useStore,
+} from "../../store";
 import { BrowseLevel } from "./BrowseLevel";
 import { ToneDetail } from "./ToneDetail";
 import { SignInSplash } from "./SignInSplash";
@@ -49,7 +57,7 @@ function Drawer() {
     const path = loadedPathOf(st, target);
     if (path === null) return null;
     // The tone's title when the file came from TONE3000, never its file slug.
-    const file = target === "cab" ? st.ir : target === "amp2" ? st.modelB : st.model;
+    const file = isCabToken(target) ? CAB_SLOTS[target].ir(st) : AMP_SLOTS[target].model(st);
     return file ? file.tone?.title || file.name : null;
   });
 
@@ -121,7 +129,7 @@ function Drawer() {
 
       <footer className={s.foot}>
         <span className={s.footLoaded} title={loadedName ?? undefined}>
-          {loadedName ?? (target === "cab" ? "No IR loaded" : "No capture loaded")}
+          {loadedName ?? (isCabToken(target) ? "No IR loaded" : "No capture loaded")}
         </span>
         <span className={s.footMark}>Powered by TONE3000</span>
       </footer>

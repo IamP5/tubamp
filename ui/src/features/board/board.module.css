@@ -106,6 +106,41 @@
   opacity: 0;
 }
 
+/* A stereo wire: two thin rails on the same route (Connectors.tsx), the same
+   neutral as a mono wire, each with its own signal stroke. */
+.rail {
+  fill: none;
+  stroke: var(--ds-line-strong);
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.railSignal {
+  fill: none;
+  stroke: var(--ds-text);
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+}
+
+/* Where a tile turns the width: an invisible hover area on its exit port that
+   carries the tooltip saying why. Narrower than a hit target on purpose: it is
+   never clicked, and the tile's power button and the gap's insert sit either
+   side of it. */
+.turnPort {
+  position: absolute;
+  z-index: 3;
+}
+
+.turnPortMark {
+  display: block;
+  width: 16px;
+  height: 24px;
+  cursor: default;
+}
+
 /* The split region's frame: a hairline, no fill. It lives in the wire layer,
    behind every wire, because its left and right edges follow the Split and
    Mixer tiles' motion values (see Connectors.tsx). */
@@ -327,6 +362,53 @@
 .terminalOut {
   justify-content: flex-start;
   padding-left: var(--ds-2);
+}
+
+/* The mono-instance mark after "Out": a 12px icon in a 24px hit area. The
+   terminal is narrower than label plus mark; the mark overhangs into empty
+   board past the end of the chain. */
+.outInfo {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: var(--ds-1);
+  padding: 0;
+  border: 0;
+  border-radius: var(--ds-r-2);
+  background: none;
+  color: var(--ds-text-2);
+  cursor: pointer;
+  transition: color var(--ds-t-fast) var(--ds-ease);
+}
+
+.outInfo:hover,
+.outInfo[aria-expanded="true"] {
+  color: var(--ds-text);
+}
+
+.outInfoPop {
+  position: fixed;
+  z-index: 60;
+  max-width: 260px;
+  padding: var(--ds-3);
+  border-radius: var(--ds-r-3);
+  background: var(--ds-surface-2);
+  box-shadow: var(--ds-shadow-float);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ds-text);
+}
+
+.outInfoPop p {
+  margin: 0;
+}
+
+.outInfoPop p + p {
+  margin-top: var(--ds-2);
+  color: var(--ds-text-2);
 }
 
 /* ──────────────────────────────── add tile ─────────────────────────────── */

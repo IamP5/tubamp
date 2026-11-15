@@ -2,6 +2,8 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include "WidthMap.h"
+
 #include <memory>
 
 // The reverb block (docs/REVERB-DELAY.md §2). One shell, two engines, five types:
@@ -48,6 +50,10 @@ public:
     /** Audio thread, once per block before process(). */
     void setParameters (const ReverbParams& params);
     void process (juce::dsp::AudioBlock<float> block);
+
+    /** Why this reverb makes left and right differ from a mono input with two channels to
+        run on, or Why::none. */
+    static chain::Why stereoWhy (float mix, float width) noexcept;
 
 private:
     struct Impl;

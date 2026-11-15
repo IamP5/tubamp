@@ -2,6 +2,8 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include "WidthMap.h"
+
 #include <memory>
 
 // The delay block (docs/REVERB-DELAY.md §3). One engine, five characters:
@@ -81,6 +83,10 @@ public:
     /** The base (left) delay time a parameter set resolves to: the knob when sync is
         Off, the note length at `bpm` otherwise, clamped to the knob's own range. */
     static float resolveTimeMs (const DelayParams& params) noexcept;
+
+    /** Why this delay makes left and right differ from a mono input with two channels
+        to run on, or Why::none when its two lines carry the same thing. */
+    static chain::Why stereoWhy (int mode, int type, float ratioPct, float width, float mix, float mod) noexcept;
 
 private:
     struct Impl;

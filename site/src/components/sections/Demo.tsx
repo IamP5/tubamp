@@ -11,7 +11,10 @@ import { buttonClass } from "@/components/ui/Button";
 import { CLIPS, clipSrc } from "@/data/media";
 import { useDict } from "@/i18n/DictProvider";
 
-const DEMO_URL = "/demo/index.html";
+// Opens on a whole rig rather than a fresh instance's lone amp: effects in front, an amp
+// and a cab in each lane panned apart, then EQ, delay and reverb (ui/src/bridge/mock.ts flags).
+const DEMO_URL =
+  "/demo/index.html?dualcab=wide&chain=gate,comp,drive,split,amp,cab,lane2,amp2,cab2,mix,eq,delay,reverb";
 const FRAME = { width: 1280, height: 800 };
 const WIDE = "(min-width: 900px)";
 

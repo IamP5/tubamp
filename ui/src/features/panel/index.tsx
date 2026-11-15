@@ -28,7 +28,7 @@ import {
   TrashIcon,
 } from "../../components";
 import { useToggleParam } from "../../hooks";
-import { useStore } from "../../store";
+import { isAmpToken, isCabToken, useStore } from "../../store";
 import { BLOCK_INFO } from "../../theme/blocks";
 import { powerTip } from "../board/lanes";
 import { duration, ease } from "../../theme/motion";
@@ -38,7 +38,6 @@ import {
   kindOf,
   type BlockId,
 } from "../../bridge";
-import { Amp2Body } from "./Amp2Body";
 import { AmpBody } from "./AmpBody";
 import { CabBody } from "./CabBody";
 import { CompBody } from "./CompBody";
@@ -227,9 +226,8 @@ function BlockBody({ block }: { block: BlockId }) {
   // Keyed by KIND, not token: mod2/mod3 need ModBody (and its per-instance type
   // combo) exactly like instance 1. Same for every other duplicable kind.
   const kind = kindOf(block);
-  if (kind === "amp") return <AmpBody />;
-  if (kind === "amp2") return <Amp2Body />;
-  if (kind === "cab") return <CabBody />;
+  if (isAmpToken(block)) return <AmpBody block={block} />;
+  if (isCabToken(block)) return <CabBody block={block} />;
   if (kind === "gate") return <GateBody block={block} />;
   if (kind === "comp") return <CompBody block={block} />;
   if (kind === "drive") return <DriveBody block={block} />;

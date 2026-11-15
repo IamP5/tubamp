@@ -35,6 +35,7 @@ import { ResizeGrip, useEmulatedWindow } from "./features/resize";
 import { SettingsSheet } from "./features/settings";
 import { T3kBrowser } from "./features/t3k-browser";
 import { watchUpdateNotices } from "./features/update/notices";
+import { watchWidthNotice } from "./features/board/widthNotice";
 
 /** The editor lands last: delay + duration.fast stays under 240 ms in total. */
 const PANEL_DELAY = 0.08;
@@ -58,6 +59,7 @@ export function App() {
   }, [hydrate]);
 
   useEffect(() => watchUpdateNotices(), []);
+  useEffect(() => watchWidthNotice(), []);
 
   /**
    * No native context menu anywhere in the plugin UI. Installed at the app root

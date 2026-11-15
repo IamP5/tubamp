@@ -469,6 +469,11 @@ void CabSim::setParameters (float lowCutHz, float highCutHz, float mix01)
     impl->mix.setTargetValue (juce::jlimit (0.0f, 1.0f, mix01));
 }
 
+chain::Why CabSim::stereoWhy (bool irStereo, bool allowStereo, float mix01) noexcept
+{
+    return irStereo && allowStereo && mix01 > 0.0f ? chain::Why::stereoIr : chain::Why::none;
+}
+
 void CabSim::process (juce::dsp::AudioBlock<float> block, bool allowStereo)
 {
     auto& handoff = impl->handoff;

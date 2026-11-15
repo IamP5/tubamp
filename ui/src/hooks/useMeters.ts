@@ -47,6 +47,10 @@ export interface MeterChannel {
 export interface Meters {
   input: MeterChannel;
   output: MeterChannel;
+  /** The output's left and right channels; both follow `output` when the
+   *  engine reports no per-channel levels. */
+  outputL: MeterChannel;
+  outputR: MeterChannel;
 }
 
 interface ChannelEngine extends MeterChannel {
@@ -67,15 +71,21 @@ function makeChannel(): ChannelEngine {
   };
 }
 
-const channels: { input: ChannelEngine; output: ChannelEngine } = {
+const channels: Record<keyof Meters, ChannelEngine> = {
   input: makeChannel(),
   output: makeChannel(),
+  outputL: makeChannel(),
+  outputR: makeChannel(),
 };
 
 const meters: Meters = {
   input: { level: channels.input.level, hold: channels.input.hold },
   output: { level: channels.output.level, hold: channels.output.hold },
+  outputL: { level: channels.outputL.level, hold: channels.outputL.hold },
+  outputR: { level: channels.outputR.level, hold: channels.outputR.hold },
 };
+
+const allChannels = Object.values(channels);
 
 function advance(ch: ChannelEngine, dt: number, now: number): void {
   const rising = ch.target > ch.current;
@@ -105,13 +115,14 @@ let stopBridge: (() => void) | null = null;
 let stopFrames: (() => void) | null = null;
 
 function start(): void {
-  stopBridge = bridge.on("meters", ({ in: input, out: output }) => {
+  stopBridge = bridge.on("meters", ({ in: input, out: output, outL, outR }) => {
     channels.input.target = linearToMeterPosition(input);
     channels.output.target = linearToMeterPosition(output);
+    channels.outputL.target = linearToMeterPosition(outL ?? output);
+    channels.outputR.target = linearToMeterPosition(outR ?? output);
   });
   stopFrames = onFrame((dt, now) => {
-    advance(channels.input, dt, now);
-    advance(channels.output, dt, now);
+    for (const ch of allChannels) advance(ch, dt, now);
   });
 }
 
@@ -120,7 +131,7 @@ function stop(): void {
   stopFrames?.();
   stopBridge = null;
   stopFrames = null;
-  for (const ch of [channels.input, channels.output]) {
+  for (const ch of allChannels) {
     ch.target = 0;
     ch.current = 0;
     ch.holdValue = 0;

@@ -444,9 +444,9 @@ juce::String Tone3000Client::describeFailure (int statusCode, bool timedOut, int
 //==============================================================================
 struct Tone3000Client::Impl
 {
-    /** Compile-time default client_id (CMake TUBAMP_T3K_CLIENT_ID). Publishable
+    /** The client_id, fixed at compile time (CMake TUBAMP_T3K_CLIENT_ID). Publishable
         keys are safe to embed — they only identify the app; auth is per-user
-        via PKCE. A key stored from Settings overrides it. */
+        via PKCE. It is the only key the plugin uses. */
     static juce::String builtinClientId()
     {
        #ifdef TUBAMP_T3K_CLIENT_ID
@@ -456,12 +456,7 @@ struct Tone3000Client::Impl
        #endif
     }
 
-    Impl()
-    {
-        loadConfig();
-        if (clientId.isEmpty())
-            clientId = builtinClientId();
-    }
+    Impl() { loadConfig(); }
 
     ~Impl();
 
@@ -477,15 +472,24 @@ struct Tone3000Client::Impl
         if (parsed.getDynamicObject() == nullptr)
             return;
 
-        clientId = parsed.getProperty ("clientId", juce::var()).toString();
         refreshToken = parsed.getProperty ("refreshToken", juce::var()).toString();
         username = parsed.getProperty ("username", juce::var()).toString();
+
+        // Versions that let the user enter a key stored it here. A sign-in made under
+        // another key cannot be refreshed under the built-in one, so it is dropped.
+        const auto storedClientId = parsed.getProperty ("clientId", juce::var()).toString();
+
+        if (storedClientId.isNotEmpty() && storedClientId != clientId)
+        {
+            refreshToken.clear();
+            username.clear();
+            saveConfig();
+        }
     }
 
     void saveConfig() const
     {
         auto* obj = new juce::DynamicObject();
-        obj->setProperty ("clientId", clientId);
         obj->setProperty ("refreshToken", refreshToken);
         obj->setProperty ("username", username);
 
@@ -985,7 +989,8 @@ struct Tone3000Client::Impl
     // copy: see ensureValidAccessToken().
     juce::CriticalSection refreshLock;
 
-    juce::String clientId, refreshToken, accessToken, username;
+    const juce::String clientId { builtinClientId() };
+    juce::String refreshToken, accessToken, username;
     juce::Time accessTokenExpiry, rateLimitedUntil;
     std::set<juce::int64> favoritedIds;
 
@@ -1423,7 +1428,13 @@ public:
         // Before completion is posted: whatever reacts to it (libraryChanged, the
         // panels reading creator/gear) must already find the sidecar.
         if (sidecar.has_value())
+        {
             sidecar->write (destFile);
+
+            // The tone's photo, for the amp editor. Best effort: a tone without
+            // one, or a fetch that fails, leaves the download as good as before.
+            ToneSidecar::fetchArt (sidecar->imageUrl, destFile);
+        }
 
         {
             // TONE3000 counts this as a download; the Recently used shelf is stale.
@@ -1550,24 +1561,8 @@ Tone3000Client::Impl::~Impl()
 Tone3000Client::Tone3000Client() : impl (std::make_unique<Impl>()) {}
 Tone3000Client::~Tone3000Client() = default;
 
-void Tone3000Client::setClientId (const juce::String& publishableKey)
-{
-    const juce::ScopedLock sl (impl->lock);
-    // Clearing the override falls back to the built-in key, never to "unconfigured".
-    impl->clientId = publishableKey.isNotEmpty() ? publishableKey
-                                                 : Impl::builtinClientId();
-    impl->saveConfig();
-}
-
-juce::String Tone3000Client::getClientId() const
-{
-    const juce::ScopedLock sl (impl->lock);
-    return impl->clientId;
-}
-
 bool Tone3000Client::isConfigured() const
 {
-    const juce::ScopedLock sl (impl->lock);
     return impl->clientId.isNotEmpty();
 }
 
@@ -1582,7 +1577,7 @@ void Tone3000Client::startSelectFlow (std::function<void (ToneModels)> onToneSel
 {
     if (! isConfigured())
     {
-        if (onError) onError ("TONE3000 is not configured. Add your publishable key in Settings.");
+        if (onError) onError ("This build of tubamp has no TONE3000 key.");
         return;
     }
 
@@ -1601,7 +1596,7 @@ void Tone3000Client::startSignIn (std::function<void()> onSuccess,
 {
     if (! isConfigured())
     {
-        if (onError) onError ("TONE3000 is not configured. Add your publishable key in Settings.");
+        if (onError) onError ("This build of tubamp has no TONE3000 key.");
         return;
     }
 

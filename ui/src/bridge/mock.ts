@@ -9,6 +9,9 @@
  * `juce://juce.backend`, where persistence is C++'s job).
  */
 import type {
+  AmpToken,
+  BlockId,
+  CabToken,
   EqAnalyserPrefs,
   EqAnalyserStep,
   AbSlot,
@@ -50,6 +53,11 @@ import type {
   UpdateCommand,
   UpdateFailure,
   UpdateView,
+  Width,
+  WidthStep,
+  WidthTurn,
+  WidthView,
+  WidthWhy,
 } from "./types";
 import {
   COMBO_SPECS,
@@ -59,7 +67,7 @@ import {
   skewFor,
   type SliderSpec,
 } from "./paramMeta";
-import { isBlockId, unreachable } from "./types";
+import { isBlockId, kindOf, unreachable } from "./types";
 import { sanitizeStructure } from "../chain/structure";
 import { GRAPHIC_BANDS, eqResponse } from "../features/panel/eqResponse";
 
@@ -702,6 +710,51 @@ function mockGear(name: string): Pick<ModelInfo, "gearType" | "includesCab"> {
   };
 }
 
+/**
+ * A stand-in for a tone's photo: an amp head on a bench, as an inline SVG (the
+ * dev page has no TONE3000 to fetch from). Enough of a picture to judge the amp
+ * editor's framing, crop and crossfade.
+ */
+function ampPhoto(tolex: string, cloth: string, panel: string, wall: string): string {
+  const knobs = [0, 1, 2, 3, 4, 5]
+    .map((i) => `<circle cx="${250 + i * 44}" cy="352" r="11" fill="#1b1b1b"/><rect x="${249 + i * 44}" y="342" width="2" height="9" fill="#e8e2d0"/>`)
+    .join("");
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480">` +
+    `<defs><linearGradient id="w" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${wall}"/><stop offset="1" stop-color="#0d0c0b"/></linearGradient>` +
+    `<linearGradient id="f" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a2a1c"/><stop offset="1" stop-color="#17110c"/></linearGradient></defs>` +
+    `<rect width="640" height="480" fill="url(#w)"/><rect y="392" width="640" height="88" fill="url(#f)"/>` +
+    `<ellipse cx="320" cy="396" rx="250" ry="12" fill="#000" opacity="0.45"/>` +
+    `<rect x="96" y="150" width="448" height="244" rx="14" fill="${tolex}"/>` +
+    `<rect x="118" y="172" width="404" height="140" rx="4" fill="${cloth}"/>` +
+    `<rect x="118" y="326" width="404" height="52" rx="3" fill="${panel}"/>` +
+    `<rect x="286" y="226" width="68" height="20" rx="3" fill="#efe7d2" opacity="0.9"/>` +
+    `<circle cx="150" cy="352" r="8" fill="#111"/><circle cx="494" cy="352" r="6" fill="#d94a3a"/>` +
+    knobs +
+    `</svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+/** The same for an IR's tone: a 2x12 cabinet with a microphone on it. */
+function cabPhoto(tolex: string, cloth: string, wall: string): string {
+  const cones = [226, 414]
+    .map((x) => `<circle cx="${x}" cy="262" r="78" fill="#0e0e0e" opacity="0.55"/><circle cx="${x}" cy="262" r="26" fill="#050505" opacity="0.6"/>`)
+    .join("");
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480">` +
+    `<defs><linearGradient id="w" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${wall}"/><stop offset="1" stop-color="#0d0c0b"/></linearGradient>` +
+    `<linearGradient id="f" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2c2622"/><stop offset="1" stop-color="#121010"/></linearGradient></defs>` +
+    `<rect width="640" height="480" fill="url(#w)"/><rect y="392" width="640" height="88" fill="url(#f)"/>` +
+    `<ellipse cx="320" cy="396" rx="250" ry="12" fill="#000" opacity="0.45"/>` +
+    `<rect x="96" y="120" width="448" height="274" rx="14" fill="${tolex}"/>` +
+    `<rect x="118" y="142" width="404" height="230" rx="4" fill="${cloth}"/>` +
+    cones +
+    `<rect x="300" y="352" width="40" height="10" rx="2" fill="#efe7d2" opacity="0.9"/>` +
+    `<rect x="470" y="300" width="6" height="130" fill="#8a8a8a"/><rect x="432" y="286" width="48" height="16" rx="8" fill="#b9b9b9"/>` +
+    `</svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
 const loadedModel: ModelInfo = {
   path: `${MODELS_DIR}/Marshall JCM800 Crunch.nam`,
   name: "Marshall JCM800 Crunch",
@@ -721,6 +774,7 @@ const loadedModel: ModelInfo = {
     size: "standard",
     license: "t3k",
     url: "https://www.tone3000.com/tones/1001",
+    imageUrl: ampPhoto("#16130f", "#2b2620", "#b99a4e", "#4a3f36"),
   },
 };
 
@@ -731,18 +785,93 @@ const loadedModel: ModelInfo = {
  */
 const toneRefs = new Map<string, ToneRef>([
   [loadedModel.path, loadedModel.tone as ToneRef],
+  // A second downloaded capture with a photo, so stepping crossfades between two.
+  [
+    `${MODELS_DIR}/Fender Twin Clean.nam`,
+    {
+      toneId: 1002,
+      title: "Twin Reverb '65 — Clean",
+      creator: "blackface_bob",
+      gear: "amp",
+      size: "standard",
+      license: "cc-by",
+      url: "https://www.tone3000.com/tones/1002",
+      imageUrl: ampPhoto("#0f1012", "#9a9a94", "#1c1c1e", "#39424a"),
+    },
+  ],
+  // Downloaded, but its tone has no photo: the default amp, with the credit.
+  [
+    `${MODELS_DIR}/Mesa Rectifier Modern.nam`,
+    {
+      toneId: 1003,
+      title: "Dual Rectifier — Modern High Gain",
+      creator: "recto_rick",
+      gear: "amp-cab",
+      size: "standard",
+      license: "t3k",
+      url: "https://www.tone3000.com/tones/1003",
+      imageUrl: null,
+    },
+  ],
+  // The other two library entries were imported by hand: no sidecar at all.
+
+  // IRs: two with a photo (stepping the cab crossfades between them), one
+  // downloaded without (the default cabinet, with the credit), one imported.
+  [
+    `${IRS_DIR}/Greenback 4x12 SM57 Cap.wav`,
+    {
+      toneId: 2001,
+      title: "4×12 Greenback — SM57 Cap",
+      creator: "ir_foundry",
+      gear: "cab",
+      size: "",
+      license: "cc-by",
+      url: "https://www.tone3000.com/tones/2001",
+      imageUrl: cabPhoto("#15130f", "#5b5346", "#3a4038"),
+    },
+  ],
+  [
+    `${IRS_DIR}/V30 4x12 R121 Edge.wav`,
+    {
+      toneId: 2002,
+      title: "4×12 V30 — R121 Edge",
+      creator: "cab_army",
+      gear: "cab",
+      size: "",
+      license: "t3k",
+      url: "https://www.tone3000.com/tones/2002",
+      imageUrl: cabPhoto("#101113", "#2a2c2e", "#40363a"),
+    },
+  ],
+  [
+    `${IRS_DIR}/Jensen 1x12 Ribbon.wav`,
+    {
+      toneId: 2003,
+      title: "1×12 Jensen — Ribbon",
+      creator: "studio_irs",
+      gear: "cab",
+      size: "",
+      license: "cc-by",
+      url: "https://www.tone3000.com/tones/2003",
+      imageUrl: null,
+    },
+  ],
 ]);
 
 /**
  * What the cab would report for a library entry. Deterministic and plausible:
  * a name that says room / hall / plate / stereo is a two-channel, reverb-like
  * IR, everything else a mono cabinet. The image follows the chain the way the
- * real cab's does — true stereo only while no amp sits behind it.
+ * real cab's does — true stereo only while no amp sits behind that cab.
  */
-function irInfoFor(entry: FileEntry, chainOrder: readonly string[]): IrInfo {
+function irInfoFor(
+  entry: FileEntry,
+  chainOrder: readonly string[],
+  cab: CabToken = "cab",
+): IrInfo {
   const room = /room|hall|plate|space/i.test(entry.name);
   const stereo = room || /stereo/i.test(entry.name);
-  const cabAt = chainOrder.indexOf("cab");
+  const cabAt = chainOrder.indexOf(cab);
   const ampAfter = cabAt >= 0 && chainOrder.indexOf("amp") > cabAt;
   return {
     ...entry,
@@ -793,6 +922,11 @@ const PRESET_CHAINS: Record<string, { chainOrder: string[]; chainRows: number[] 
     chainOrder: ["gate", "comp", "drive", "amp", "cab"],
     chainRows: [3, 3],
   },
+  "Dual Rig": {
+    // An amp and a cab in each lane: both amps and both cabs in one chain.
+    chainOrder: ["gate", "split", "amp", "cab", "lane2", "amp2", "cab2", "mix", "reverb"],
+    chainRows: [],
+  },
   "Dangling Split": {
     // No lane2/mix to close the split — malformed per docs/SPLIT.md §1's
     // grammar. amp2 sits right next to it on purpose: it is NOT structural, so
@@ -816,7 +950,10 @@ const state: UiState = {
     { path: `${IRS_DIR}/Greenback 4x12 SM57 Cap.wav`, name: "Greenback 4x12 SM57 Cap" },
     ["amp"],
   ),
-  missingMedia: { model: null, modelB: null, ir: null },
+  // Empty until the user places a second cab and loads an IR into it, like
+  // modelB.
+  irB: null,
+  missingMedia: { model: null, modelB: null, ir: null, irB: null },
   models: [
     { path: `${MODELS_DIR}/Marshall JCM800 Crunch.nam`, name: "Marshall JCM800 Crunch" },
     { path: `${MODELS_DIR}/Fender Twin Clean.nam`, name: "Fender Twin Clean" },
@@ -837,6 +974,7 @@ const state: UiState = {
     { name: "Clean Chorus", path: `${PRESETS_DIR}/Clean Chorus.tubamp`, favorite: false, tags: ["clean"] },
     { name: "Bedroom Metal", path: `${PRESETS_DIR}/Bedroom Metal.tubamp`, favorite: false, tags: ["metal"] },
     { name: "Slapback Country", path: `${PRESETS_DIR}/Slapback Country.tubamp`, favorite: false, tags: ["clean", "delay"] },
+    { name: "Dual Rig", path: `${PRESETS_DIR}/Dual Rig.tubamp`, favorite: false, tags: ["stereo"] },
     // Malformed-structure fixture (docs/SPLIT.md §1) — see PRESET_CHAINS below.
     { name: "Dangling Split", path: `${PRESETS_DIR}/Dangling Split.tubamp`, favorite: false, tags: ["dev"] },
   ],
@@ -888,6 +1026,8 @@ let nextNoteIn = 400;
 /** The note's fundamental, Hz: a guitar's range from low E (82 Hz) up two
  *  octaves, picked afresh at each attack. */
 let noteHz = 110;
+/** The input's last ~1.3 s at the 30 Hz tick, for the stereo outputs' repeats. */
+const meterHistory: number[] = [];
 
 function meterTick(now: number): void {
   meterRaf = requestAnimationFrame(meterTick);
@@ -909,7 +1049,18 @@ function meterTick(now: number): void {
   // Output runs a touch hotter and decays slower — amp + reverb tail.
   const output = Math.min(1, input * 1.15 + notePeak * 0.18 * Math.exp(-age * 0.8));
 
-  emit("meters", { in: input, out: output });
+  meterHistory.push(input);
+  if (meterHistory.length > 40) meterHistory.shift();
+  if (state.width?.output === "stereo") {
+    // A ping-pong of ~400 ms: the dry note on both sides, repeats right, left,
+    // right, so the two rails can be seen breathing apart.
+    const ago = (frames: number): number => meterHistory[meterHistory.length - 1 - frames] ?? 0;
+    const outR = Math.min(1, Math.max(input * 0.9, ago(12) * 0.75, ago(36) * 0.4));
+    const outL = Math.min(1, Math.max(input * 0.9, ago(24) * 0.55));
+    emit("meters", { in: input, out: Math.max(outL, outR), outL, outR });
+  } else {
+    emit("meters", { in: input, out: output, outL: output, outR: output });
+  }
   emitDynMeters(now, input);
   emitEqSpectrum(body, age);
 }
@@ -1343,14 +1494,173 @@ const t3kDelay = (ms: number): number => (slowT3k ? ms * 6 : ms);
 
 /* `?missing`: the session names a capture and an IR this machine does not have
    — the amp and cab panels show which, instead of an unexplained empty slot. */
+/* `?noamp`: nothing loaded in the amp — the default amp and "Choose an amp". */
+if (search.has("noamp")) state.model = null;
+
+/* `?chain=gate,amp,cab,delay`: start with that chain (unknown tokens dropped,
+   the structure sanitised as C++ would). */
+{
+  const chain = search.get("chain");
+  if (chain !== null) {
+    state.chainOrder = sanitizeStructure(chain.split(",").filter(isBlockId));
+    state.chainRows = [];
+  }
+}
+
+/* `?dualcab`: the dual rig — a split with an amp and a cab in each lane, each
+   amp with its own capture and each cab with its own IR. `?dualcab=split` is
+   the same split without the amps: two cabs side by side behind one amp;
+   `?dualcab=wide` pans the two rigs apart. */
+if (search.has("dualcab")) {
+  const ampless = search.get("dualcab") === "split";
+  // With `?chain=` as well, that chain stands and this only loads the second
+  // capture and IR (the site's demo opens on a full rig this way).
+  if (!search.has("chain")) {
+    state.chainOrder = ampless
+      ? ["gate", "amp", "split", "cab", "lane2", "cab2", "mix", "reverb"]
+      : ["gate", "split", "amp", "cab", "lane2", "amp2", "cab2", "mix", "reverb"];
+    state.chainRows = [];
+  }
+  const second = state.models[1];
+  const secondIr = state.irs[1];
+  if (!ampless && second) state.modelB = modelInfoFor(second);
+  if (secondIr) state.irB = irInfoFor(secondIr, state.chainOrder, "cab2");
+  state.currentPresetName = "Dual Rig";
+  // `?dualcab=wide`: the two rigs panned hard left and right.
+  if (search.get("dualcab") === "wide") {
+    sliders.get("mix_apan")?.setScaledExternally(-1);
+    sliders.get("mix_bpan")?.setScaledExternally(1);
+  }
+}
+
+/* ─────────────────────────────── width (mock) ──────────────────────────── */
+
+/** `?host=mono` (1 → 1), `?host=monostereo` (1 → 2, the default), `?host=stereo`
+ *  (2 → 2): the channel layout the host gave the instance. */
+const HOST_LAYOUTS: Record<string, WidthView["host"]> = {
+  mono: { in: 1, out: 1 },
+  monostereo: { in: 1, out: 2 },
+  stereo: { in: 2, out: 2 },
+};
+const hostLayout = HOST_LAYOUTS[search.get("host") ?? ""] ?? HOST_LAYOUTS.monostereo!;
+let monoNoticeAcked = false;
+
+const paramOn = (id: string): boolean =>
+  toggles.get(id as ToggleParamId)?.getValue() ?? true;
+const comboIndex = (id: string): number =>
+  combos.get(id as ComboParamId)?.getChoiceIndex() ?? 0;
+const sliderValue = (id: string): number =>
+  sliders.get(id as SliderParamId)?.getScaledValue() ?? 0;
+
+/** What a block alone would do to a mono signal, by the mock's rule. */
+function mockWidens(token: BlockId): WidthWhy | undefined {
+  const kind = kindOf(token);
+  if (kind === "delay")
+    return (["delayMod", "pingPong", "dualRatio"] as const)[comboIndex(`${token}_mode`)];
+  if (kind === "reverb") return "reverb";
+  if (kind === "mod" && sliderValue(`${token}_width`) > 0) {
+    const type = comboIndex(`${token}_type`);
+    return type === 0 ? "chorus" : type === 2 ? "tremolo" : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * MOCK ONLY. The real map comes from the processor, which knows every block's
+ * DSP; this is a deliberately small rule so the board has something to draw
+ * while the chain is edited: an enabled delay, reverb or wide chorus/tremolo
+ * makes the signal stereo, an enabled amp folds it to mono, lanes panned apart
+ * at an enabled mixer make it stereo. A mono-out instance computes the
+ * Mono → Stereo answer, then reports it all as mono.
+ */
+function mockWidth(order: readonly string[], host: WidthView["host"]): WidthView {
+  const input: Width = host.in === 2 ? "stereo" : "mono";
+  let w: Width = input;
+  let laneEntryB: Width = input;
+  let laneTailA: Width = input;
+  const steps: WidthStep[] = [];
+  for (const raw of order) {
+    if (!isBlockId(raw)) continue;
+    const token = raw;
+    const kind = kindOf(token);
+    let prev: Width = w;
+    let why: WidthWhy | undefined;
+    let outB: Width | undefined;
+    const on = paramOn(`${kind === "lane2" ? "split" : token}_on`);
+    if (kind === "split") {
+      const lr = on && comboIndex("split_mode") === 1;
+      w = lr ? "mono" : w;
+      outB = w;
+      laneEntryB = w;
+    } else if (kind === "lane2") {
+      laneTailA = w;
+      w = laneEntryB;
+    } else if (kind === "mix") {
+      const apart = on && Math.abs(sliderValue("mix_apan") - sliderValue("mix_bpan")) > 0.01;
+      const tails: Width = laneTailA === "stereo" || w === "stereo" ? "stereo" : "mono";
+      prev = tails;
+      w = apart ? "stereo" : tails;
+      if (apart && tails === "mono") why = "lanes";
+    } else if (on && kind === "amp") {
+      if (w === "stereo") why = token === "amp2" ? "amp2" : "amp";
+      w = "mono";
+    } else if (on) {
+      const widens = mockWidens(token);
+      if (widens && w === "mono") {
+        why = widens;
+        w = "stereo";
+      }
+    }
+    const turn: WidthTurn = prev === w ? "keeps" : w === "stereo" ? "widens" : "folds";
+    steps.push({ block: token, out: w, ...(outB ? { outB } : {}), turn, ...(why ? { why } : {}) });
+  }
+
+  if (host.out === 2) {
+    return { host, input, steps, output: w, wouldBeStereo: false, notice: null };
+  }
+  const wouldBeStereo = steps.some((step) => step.out === "stereo" || step.outB === "stereo");
+  return {
+    host,
+    input: "mono",
+    steps: steps.map((step) => ({
+      block: step.block,
+      out: "mono",
+      ...(step.outB ? { outB: "mono" as const } : {}),
+      turn: step.turn === "widens" ? "monoHost" : "keeps",
+      ...(step.turn === "widens" && step.why ? { why: step.why } : {}),
+    })),
+    output: "mono",
+    wouldBeStereo,
+    notice: wouldBeStereo && !monoNoticeAcked ? "monoHost" : null,
+  };
+}
+
+let lastWidth = "";
+
+/** Recomputes the map and emits `widthChanged` when it changed. */
+function refreshWidth(): void {
+  state.width = mockWidth(state.chainOrder, hostLayout);
+  const json = JSON.stringify(state.width);
+  if (json === lastWidth) return;
+  lastWidth = json;
+  emit("widthChanged", { width: structuredClone(state.width) });
+}
+
+for (const param of [...toggles.values(), ...combos.values(), ...sliders.values()])
+  param.onValueChanged(refreshWidth);
+refreshWidth();
+
 if (search.has("missing")) {
   state.missingMedia = {
     model: "/Volumes/Studio/Captures/Bogner Shiva Lead.nam",
     modelB: null,
     ir: "/Volumes/Studio/IRs/Mesa OS 4x12 V30 SM57.wav",
+    // The second cab's file is lost too when the dual rig is on screen.
+    irB: search.has("dualcab") ? "/Volumes/Studio/IRs/Orange PPC412 R121.wav" : null,
   };
   state.model = null;
   state.ir = null;
+  if (search.has("dualcab")) state.irB = null;
 }
 
 function t3kTransportError(): string | null {
@@ -1585,6 +1895,10 @@ function simulateDownload(model: T3kModel, tone?: T3kTone): void {
         size: model.size,
         license: tone.license ?? "",
         url: tone.url ?? `https://www.tone3000.com/tones/${tone.id}`,
+        // C++ saves the photo beside the file and serves it itself; the mock
+        // hands the catalog's own (a data URI, or a dead URL the editor must
+        // survive) straight through.
+        imageUrl: tone.imageUrl,
       });
     if (tone && !downloadedTones.includes(tone.id)) downloadedTones.unshift(tone.id);
     const shelf = isIr ? state.irs : state.models;
@@ -1610,6 +1924,7 @@ function emitChain(): void {
     chainOrder: [...state.chainOrder],
     chainRows: [...state.chainRows],
   });
+  refreshWidth();
 }
 
 function emitLibrary(): void {
@@ -1625,6 +1940,69 @@ function emitPresets(): void {
 }
 
 let importCounter = 0;
+
+function modelInfoFor(entry: FileEntry): ModelInfo {
+  return {
+    ...loadedModel,
+    tone: toneRefs.get(entry.path) ?? null,
+    path: entry.path,
+    name: entry.name,
+    ...mockGear(entry.name),
+    isSlimmable: !entry.name.toLowerCase().includes("lite"),
+    latencySamples: 90,
+  };
+}
+
+/** Each amp's engine slot, as WebEditor exposes it: its own state field and
+ *  change event. */
+function setCapture(amp: AmpToken, model: ModelInfo | null): void {
+  if (amp === "amp") {
+    state.model = model;
+    emit("modelChanged", { model: structuredClone(model) });
+  } else {
+    state.modelB = model;
+    emit("modelBChanged", { modelB: structuredClone(model) });
+  }
+}
+
+/** Each cab's IR slot, the same way: its own state field, missing-file entry
+ *  and change event. */
+function setIr(cab: CabToken, ir: IrInfo | null): void {
+  if (cab === "cab") {
+    state.ir = ir;
+    state.missingMedia = { ...state.missingMedia, ir: null };
+    emit("irChanged", { ir: ir ? { ...ir } : null });
+  } else {
+    state.irB = ir;
+    state.missingMedia = { ...state.missingMedia, irB: null };
+    emit("irBChanged", { irB: ir ? { ...ir } : null });
+  }
+  emit("missingMediaChanged", { missingMedia: { ...state.missingMedia } });
+}
+
+async function loadCabIr(cab: CabToken, path: string): Promise<ErrorResult> {
+  const entry = state.irs.find((i) => i.path === path);
+  if (!entry) return delay<ErrorResult>({ error: "IR file not found" });
+  setIr(cab, irInfoFor(entry, state.chainOrder, cab));
+  return delay<ErrorResult>({}, 120);
+}
+
+async function clearCabIr(cab: CabToken): Promise<void> {
+  await delay(null, 0);
+  setIr(cab, null);
+}
+
+async function loadCapture(amp: AmpToken, path: string): Promise<ErrorResult> {
+  const entry = state.models.find((m) => m.path === path);
+  if (!entry) return delay<ErrorResult>({ error: "Model file not found" });
+  setCapture(amp, modelInfoFor(entry));
+  return delay<ErrorResult>({}, 220);
+}
+
+async function clearCapture(amp: AmpToken): Promise<void> {
+  await delay(null, 0);
+  setCapture(amp, null);
+}
 
 export const mockBridge: Bridge = {
   kind: "mock",
@@ -1695,74 +2073,19 @@ export const mockBridge: Bridge = {
     emitChain();
   },
 
-  loadModel: async (path) => {
-    const entry = state.models.find((m) => m.path === path);
-    if (!entry) return delay<ErrorResult>({ error: "Model file not found" });
-    state.model = {
-      ...loadedModel,
-      tone: toneRefs.get(entry.path) ?? null,
-      path: entry.path,
-      name: entry.name,
-      ...mockGear(entry.name),
-      isSlimmable: !entry.name.toLowerCase().includes("lite"),
-      latencySamples: 90,
-    };
-    emit("modelChanged", { model: structuredClone(state.model) });
-    return delay<ErrorResult>({}, 220);
-  },
+  loadModel: async (path) => loadCapture("amp", path),
+  clearModel: async () => clearCapture("amp"),
+  loadModelB: async (path) => loadCapture("amp2", path),
+  clearModelB: async () => clearCapture("amp2"),
 
-  clearModel: async () => {
-    state.model = null;
-    await delay(null, 0);
-    emit("modelChanged", { model: null });
-  },
-
-  // Engine B mirrors engine A's own load/clear, including "loading A's own path"
-  // for the "Use model A" shortcut — there is nothing B-specific about that path,
-  // the model just happens to already be in the library.
-  loadModelB: async (path) => {
-    const entry = state.models.find((m) => m.path === path);
-    if (!entry) return delay<ErrorResult>({ error: "Model file not found" });
-    state.modelB = {
-      ...loadedModel,
-      tone: toneRefs.get(entry.path) ?? null,
-      path: entry.path,
-      name: entry.name,
-      ...mockGear(entry.name),
-      isSlimmable: !entry.name.toLowerCase().includes("lite"),
-      latencySamples: 90,
-    };
-    emit("modelBChanged", { modelB: structuredClone(state.modelB) });
-    return delay<ErrorResult>({}, 220);
-  },
-
-  clearModelB: async () => {
-    state.modelB = null;
-    await delay(null, 0);
-    emit("modelBChanged", { modelB: null });
-  },
-
-  loadIr: async (path) => {
-    const entry = state.irs.find((i) => i.path === path);
-    if (!entry) return delay<ErrorResult>({ error: "IR file not found" });
-    state.ir = irInfoFor(entry, state.chainOrder);
-    state.missingMedia = { ...state.missingMedia, ir: null };
-    emit("irChanged", { ir: { ...state.ir } });
-    emit("missingMediaChanged", { missingMedia: { ...state.missingMedia } });
-    return delay<ErrorResult>({}, 120);
-  },
-
-  clearIr: async () => {
-    state.ir = null;
-    state.missingMedia = { ...state.missingMedia, ir: null };
-    await delay(null, 0);
-    emit("irChanged", { ir: null });
-    emit("missingMediaChanged", { missingMedia: { ...state.missingMedia } });
-  },
+  loadIr: async (path) => loadCabIr("cab", path),
+  clearIr: async () => clearCabIr("cab"),
+  loadIrB: async (path) => loadCabIr("cab2", path),
+  clearIrB: async () => clearCabIr("cab2"),
 
   // Import installs the file *and* loads it, like WebEditor's native functions —
   // the UI must not load again on the returned path.
-  importModel: async () => {
+  importModel: async (target = "amp") => {
     importCounter += 1;
     const entry: FileEntry = {
       path: `${MODELS_DIR}/Imported Model ${importCounter}.nam`,
@@ -1771,20 +2094,11 @@ export const mockBridge: Bridge = {
     state.models = [...state.models, entry];
     await delay(null, 400); // native file chooser round-trip
     emitLibrary();
-    state.model = {
-      ...loadedModel,
-      tone: toneRefs.get(entry.path) ?? null,
-      path: entry.path,
-      name: entry.name,
-      ...mockGear(entry.name),
-      isSlimmable: true,
-      latencySamples: 90,
-    };
-    emit("modelChanged", { model: structuredClone(state.model) });
+    setCapture(target, { ...modelInfoFor(entry), isSlimmable: true });
     return { path: entry.path, name: entry.name } satisfies ImportResult;
   },
 
-  importIr: async () => {
+  importIr: async (target = "cab") => {
     importCounter += 1;
     const entry: FileEntry = {
       path: `${IRS_DIR}/Imported IR ${importCounter}.wav`,
@@ -1793,8 +2107,7 @@ export const mockBridge: Bridge = {
     state.irs = [...state.irs, entry];
     await delay(null, 400);
     emitLibrary();
-    state.ir = irInfoFor(entry, state.chainOrder);
-    emit("irChanged", { ir: { ...state.ir } });
+    setIr(target, irInfoFor(entry, state.chainOrder, target));
     return { path: entry.path, name: entry.name } satisfies ImportResult;
   },
 
@@ -1876,15 +2189,8 @@ export const mockBridge: Bridge = {
     emitPresets();
   },
 
-  t3kConfigure: async () => {
-    await delay(null, 600); // native AlertWindow key prompt
-    state.t3k = { configured: true, authenticated: true, username: "mock_user" };
-    emit("t3kStatus", { ...state.t3k });
-    return {} satisfies ErrorResult;
-  },
-
-  // Signing out forgets the tokens, not the publishable key (Tone3000Client::
-  // signOut) — which is also what makes the drawer's sign-in splash reachable.
+  // Signing out forgets the tokens (Tone3000Client::signOut) — which is what
+  // makes the drawer's sign-in splash reachable.
   t3kSignOut: async () => {
     state.t3k = { ...state.t3k, authenticated: false, username: null };
     await delay(null, 0);
@@ -1894,7 +2200,7 @@ export const mockBridge: Bridge = {
   t3kStartSelectFlow: async () => {
     if (!state.t3k.configured) {
       await delay(null, 200);
-      emit("t3kError", { message: "Add your TONE3000 key in Settings first." });
+      emit("t3kError", { message: "This build of tubamp has no TONE3000 key." });
       return;
     }
     await delay(null, 900); // browser round-trip + user picking a tone
@@ -1908,10 +2214,16 @@ export const mockBridge: Bridge = {
     simulateDownload(model, tone);
   },
 
+  t3kEnsureArt: async (path, imageUrl) => {
+    const ref = toneRefs.get(path);
+    if (ref && !ref.imageUrl && imageUrl) toneRefs.set(path, { ...ref, imageUrl });
+    await delay(null, 60);
+  },
+
   t3kSignIn: async () => {
     if (!state.t3k.configured) {
       await delay(null, 200);
-      emit("t3kError", { message: "Add your TONE3000 key in Settings first." });
+      emit("t3kError", { message: "This build of tubamp has no TONE3000 key." });
       return;
     }
     await delay(null, 800); // system browser round-trip
@@ -2176,5 +2488,11 @@ export const mockBridge: Bridge = {
     await delay(null, 30);
     performUpdate(command);
     return {} satisfies ErrorResult;
+  },
+
+  ackNotice: async () => {
+    await delay(null, 30);
+    monoNoticeAcked = true;
+    refreshWidth();
   },
 };

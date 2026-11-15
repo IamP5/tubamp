@@ -19,6 +19,8 @@ import {
   FX_BLOCK_IDS,
   type AbSlot,
   type AbState,
+  type AmpToken,
+  type CabToken,
   type BaseBlockId,
   type BlockId,
   type EditorSizeLimits,
@@ -29,6 +31,7 @@ import {
   type FxSlotIndex,
   type FxSlotState,
   type IrInfo,
+  type WidthView,
   type MissingMedia,
   type ModelInfo,
   type PresetInfo,
@@ -46,11 +49,16 @@ import {
   type UpdateView,
   UPDATE_OFF,
 } from "../bridge";
+import { AMP_SLOTS, AMP_TOKENS, ampLabel, isAmpToken, placedAmp } from "./amps";
+import { CAB_SLOTS, CAB_TOKENS, cabLabel, isCabToken, placedCab } from "./cabs";
 import {
   MAX_CHAIN_LENGTH,
   flattenStructure,
   sanitizeStructure,
 } from "../chain/structure";
+
+export * from "./amps";
+export * from "./cabs";
 
 export type ToastKind = "info" | "success" | "warning" | "error";
 
@@ -93,10 +101,10 @@ export interface T3kPendingDownload {
 export interface T3kBrowserState {
   open: boolean;
   kind: T3kBrowseKind;
-  /** Which NAM engine captures load into; IRs always go to the cab. Read it
-   *  through `selectT3kTarget`, which also falls back to `amp` once `amp2`
-   *  leaves the chain. */
-  ampTarget: "amp" | "amp2";
+  /** Which amp captures load into, and which cab IRs do. Read them through
+   *  `selectT3kTarget`, which falls back to whichever one is placed. */
+  ampTarget: AmpToken;
+  cabTarget: CabToken;
   shelf: T3kBrowseShelf;
   /** null = API default (best-match with a query, trending without). */
   sort: T3kBrowseSort | null;
@@ -151,6 +159,11 @@ export interface AppState {
    *  `amp2` is in the chain, since clearing model A must not clear B. */
   modelB: ModelInfo | null;
   ir: IrInfo | null;
+  /** The second cab's IR (the `cab2` block), tracked like `modelB`. */
+  irB: IrInfo | null;
+  /** Where the chain is mono and where stereo; undefined from a C++ build that
+   *  predates it. */
+  width: WidthView | undefined;
   /** Files a restored session / preset wanted and could not get (bridge types). */
   missingMedia: MissingMedia;
   models: FileEntry[];
@@ -239,17 +252,14 @@ export interface AppActions {
   setEqFreeze(on: boolean): void;
 
   /* library / presets — thin wrappers that surface errors as toasts */
-  loadModel(path: string): Promise<void>;
-  clearModel(): Promise<void>;
-  /** Engine B (docs/STEREO.md §1 plumbing; model-B UI now lives on the `amp2`
-   *  block, docs/SPLIT.md §5). "Use model A" is just `loadModelB(model.path)`
-   *  from the caller — there is no separate action for it. */
-  loadModelB(path: string): Promise<void>;
-  clearModelB(): Promise<void>;
-  importModel(): Promise<void>;
-  loadIr(path: string): Promise<void>;
-  clearIr(): Promise<void>;
-  importIr(): Promise<void>;
+  /** Each takes the amp whose capture it changes, the first by default. */
+  loadModel(path: string, amp?: AmpToken): Promise<void>;
+  clearModel(amp?: AmpToken): Promise<void>;
+  importModel(amp?: AmpToken): Promise<void>;
+  /** Each takes the cab whose IR it changes, the first by default. */
+  loadIr(path: string, cab?: CabToken): Promise<void>;
+  clearIr(cab?: CabToken): Promise<void>;
+  importIr(cab?: CabToken): Promise<void>;
   loadPreset(path: string): Promise<void>;
   savePresetAs(): Promise<void>;
   deletePreset(path: string): Promise<void>;
@@ -272,14 +282,13 @@ export interface AppActions {
   resizeEditor(width: number, height: number): void;
 
   /* TONE3000 */
-  t3kConfigure(): Promise<void>;
   t3kSignOut(): Promise<void>;
   t3kStartSelectFlow(): Promise<void>;
   /** `toneId` credits the download to a browser row; omit it for the select flow. */
   t3kDownloadModel(model: T3kModel, toneId?: number): Promise<void>;
   dismissTone(): void;
-  /** `target` defaults to the cab for IRs, and for models to `amp2` when the
-   *  Amp 2 panel is the selected block, else `amp`. Keeps the rest of the
+  /** `target` defaults to the selected block when it is of the kind's own
+   *  (a cab for IRs, an amp for models), else the first one. Keeps the rest of the
    *  remembered browser state; a kind change resets gear (the gear sets differ)
    *  and closes a detail level of the other format. */
   openT3kBrowser(kind: T3kBrowseKind, target?: T3kTarget): void;
@@ -289,7 +298,8 @@ export interface AppActions {
       Pick<T3kBrowserState, "kind" | "shelf" | "sort" | "query" | "gear" | "calibrated">
     >,
   ): void;
-  setT3kAmpTarget(target: "amp" | "amp2"): void;
+  setT3kAmpTarget(target: AmpToken): void;
+  setT3kCabTarget(target: CabToken): void;
   setT3kDetail(tone: T3kTone | null): void;
   setT3kScroll(key: string, top: number): void;
   /** Fetch `page` of the current list. No-op while that list has a page in
@@ -467,7 +477,9 @@ const initialState: AppState = {
   model: null,
   modelB: null,
   ir: null,
-  missingMedia: { model: null, modelB: null, ir: null },
+  irB: null,
+  width: undefined,
+  missingMedia: { model: null, modelB: null, ir: null, irB: null },
   models: [],
   irs: [],
   presets: [],
@@ -503,6 +515,7 @@ const initialState: AppState = {
     open: false,
     kind: "models",
     ampTarget: "amp",
+    cabTarget: "cab",
     shelf: "all",
     sort: null,
     query: "",
@@ -547,8 +560,11 @@ export const useStore = create<Store>()((set, get) => {
         // `?? null`: a C++ build that predates docs/STEREO.md must still hydrate.
         modelB: state.modelB ?? null,
         ir: state.ir,
-        // `??`: a C++ build that predates missing-file reporting must still hydrate.
-        missingMedia: state.missingMedia ?? { model: null, modelB: null, ir: null },
+        irB: state.irB ?? null,
+        width: state.width,
+        // A C++ build that predates missing-file reporting, or the second cab,
+        // must still hydrate.
+        missingMedia: { ...initialState.missingMedia, ...state.missingMedia },
         models: state.models,
         irs: state.irs,
         presets: state.presets,
@@ -664,50 +680,38 @@ export const useStore = create<Store>()((set, get) => {
 
     /* ──────────────────────── library / presets ──────────────────────── */
 
-    async loadModel(path) {
-      const res = await bridge.loadModel(path);
+    async loadModel(path, amp = "amp") {
+      const res = await AMP_SLOTS[amp].load(path);
       if (!reportError(res.error)) {
         const name = get().models.find((m) => m.path === path)?.name ?? "";
-        if (name) get().toast(`Loaded ${name}`, "success", 2500);
+        if (name) toastLoaded(name, amp);
       }
     },
 
-    async clearModel() {
-      await bridge.clearModel();
-    },
-
-    async loadModelB(path) {
-      const res = await bridge.loadModelB(path);
-      if (!reportError(res.error)) {
-        const name = get().models.find((m) => m.path === path)?.name ?? "";
-        if (name) get().toast(`Loaded ${name} as Model B`, "success", 2500);
-      }
-    },
-
-    async clearModelB() {
-      await bridge.clearModelB();
+    async clearModel(amp = "amp") {
+      await AMP_SLOTS[amp].clear();
     },
 
     // `importModel`/`importIr` install *and* load the file on the C++ side, so
     // there is no loadModel/loadIr call here: a second one would re-parse the
     // capture on the message thread and fire a second latency change at the host.
-    async importModel() {
-      const res = await bridge.importModel();
+    async importModel(amp = "amp") {
+      const res = await bridge.importModel(amp);
       if (reportError(res.error)) return;
-      if (res.name) get().toast(`Loaded ${res.name}`, "success", 2500);
+      if (res.name) toastLoaded(res.name, amp);
     },
 
-    async loadIr(path) {
-      const res = await bridge.loadIr(path);
+    async loadIr(path, cab = "cab") {
+      const res = await CAB_SLOTS[cab].load(path);
       reportError(res.error);
     },
 
-    async clearIr() {
-      await bridge.clearIr();
+    async clearIr(cab = "cab") {
+      await CAB_SLOTS[cab].clear();
     },
 
-    async importIr() {
-      const res = await bridge.importIr();
+    async importIr(cab = "cab") {
+      const res = await CAB_SLOTS[cab].import();
       reportError(res.error);
     },
 
@@ -790,11 +794,6 @@ export const useStore = create<Store>()((set, get) => {
 
     /* ─────────────────────────── TONE3000 ────────────────────────────── */
 
-    async t3kConfigure() {
-      const res = await bridge.t3kConfigure();
-      reportError(res.error);
-    },
-
     async t3kSignOut() {
       await bridge.t3kSignOut();
     },
@@ -825,14 +824,20 @@ export const useStore = create<Store>()((set, get) => {
     openT3kBrowser(kind, target) {
       const s = get();
       const b = s.browser;
-      const ampTarget: "amp" | "amp2" =
-        target === "amp" || target === "amp2"
-          ? target
-          : kind === "models" && s.selected === "amp2"
-            ? "amp2"
-            : kind === "models"
-              ? "amp"
-              : b.ampTarget;
+      const ampTarget: AmpToken = isAmpToken(target)
+        ? target
+        : kind === "models"
+          ? isAmpToken(s.selected)
+            ? s.selected
+            : "amp"
+          : b.ampTarget;
+      const cabTarget: CabToken = isCabToken(target)
+        ? target
+        : kind === "irs"
+          ? isCabToken(s.selected)
+            ? s.selected
+            : "cab"
+          : b.cabTarget;
       const kindChanged = b.kind !== kind;
       const format = kind === "irs" ? "ir" : "nam";
       set({
@@ -841,6 +846,7 @@ export const useStore = create<Store>()((set, get) => {
           open: true,
           kind,
           ampTarget,
+          cabTarget,
           gear: kindChanged ? null : b.gear,
           detail: b.detail && b.detail.format !== format ? null : b.detail,
         },
@@ -868,6 +874,10 @@ export const useStore = create<Store>()((set, get) => {
         }
         return { browser: next };
       });
+    },
+
+    setT3kCabTarget(cabTarget) {
+      set((s) => ({ browser: { ...s.browser, cabTarget } }));
     },
 
     setT3kAmpTarget(ampTarget) {
@@ -1029,6 +1039,7 @@ export const useStore = create<Store>()((set, get) => {
       if (path) {
         if (latestPick[target] !== tone.id) return setLoad(null);
         setLoad({ phase: "loading", target, modelId: model.id, error: null });
+        await bridge.t3kEnsureArt(path, tone.imageUrl);
         const error = await loadIntoTarget(target, path, model.name);
         if (error) return fail(error, model.id);
         set((s) => ({ t3kDownloaded: creditPath(s.t3kDownloaded, tone.id, path) }));
@@ -1128,7 +1139,7 @@ const favoritesInFlight = new Set<number>();
 
 /** Last tone picked per target: a download that finishes after a newer pick
  *  only lands in the library, it does not steal the slot back. */
-const latestPick: Record<T3kTarget, number> = { amp: 0, amp2: 0, cab: 0 };
+const latestPick: Record<T3kTarget, number> = { amp: 0, amp2: 0, cab: 0, cab2: 0 };
 
 /** Calibration is a capture-only search filter; it means nothing elsewhere. */
 function effectiveCalibrated(b: T3kBrowserState): boolean {
@@ -1187,17 +1198,15 @@ function dropShelfLists(
 
 /** The engine/slot a load from the browser lands in. */
 export function selectT3kTarget(s: Store): T3kTarget {
-  if (s.browser.kind === "irs") return "cab";
-  return s.browser.ampTarget === "amp2" && s.chainOrder.includes("amp2")
-    ? "amp2"
-    : "amp";
+  if (s.browser.kind === "irs") return placedCab(s.browser.cabTarget, s.chainOrder);
+  return placedAmp(s.browser.ampTarget, s.chainOrder);
 }
 
-function targetForTone(s: Store, tone: T3kTone): T3kTarget {
-  if (tone.format === "ir") return "cab";
-  return s.browser.ampTarget === "amp2" && s.chainOrder.includes("amp2")
-    ? "amp2"
-    : "amp";
+/** The slot a tone loads into: its format decides the kind (an IR goes to a
+ *  cab, a capture to an amp), the drawer's target which of the two. */
+export function targetForTone(s: Store, tone: T3kTone): T3kTarget {
+  if (tone.format === "ir") return placedCab(s.browser.cabTarget, s.chainOrder);
+  return placedAmp(s.browser.ampTarget, s.chainOrder);
 }
 
 /** Mirrors Tone3000Client's slugify: how a downloaded file ends up named. */
@@ -1227,9 +1236,8 @@ export function findInstalledPath(s: AppState, model: T3kModel): string | null {
 
 /** What each target slot currently holds. */
 export function loadedPathOf(s: AppState, target: T3kTarget): string | null {
-  if (target === "cab") return s.ir?.path ?? null;
-  if (target === "amp2") return s.modelB?.path ?? null;
-  return s.model?.path ?? null;
+  if (isCabToken(target)) return CAB_SLOTS[target].ir(s)?.path ?? null;
+  return AMP_SLOTS[target].model(s)?.path ?? null;
 }
 
 /** Every library path known to come from `toneId` (sidecars + this session). */
@@ -1240,11 +1248,17 @@ export function tonePaths(s: AppState, toneId: number): string[] {
   ];
 }
 
-/** Targets whose slot currently holds a file of `toneId`. */
+/** Placed targets whose slot currently holds a file of `toneId`. An amp off
+ *  the chain keeps its capture but is no place a tone is "in"; the same goes
+ *  for the second cab (the first counts wherever it is, as it always did). */
 export function loadedTargetsOf(s: AppState, toneId: number): T3kTarget[] {
   const paths = tonePaths(s, toneId);
   if (paths.length === 0) return [];
-  return (["amp", "amp2", "cab"] as const).filter((t) => {
+  const targets: T3kTarget[] = [
+    ...AMP_TOKENS.filter((t) => s.chainOrder.includes(t)),
+    ...CAB_TOKENS.filter((t) => t === "cab" || s.chainOrder.includes(t)),
+  ];
+  return targets.filter((t) => {
     const loaded = loadedPathOf(s, t);
     return loaded !== null && paths.includes(loaded);
   });
@@ -1272,11 +1286,18 @@ function creditPath(
   return paths.includes(path) ? credited : { ...credited, [toneId]: [...paths, path] };
 }
 
-export const T3K_TARGET_LABELS: Record<T3kTarget, string> = {
-  amp: "Amp",
-  amp2: "Amp 2",
-  cab: "Cab",
-};
+/** What a target is called in the browser's words, given the chain. */
+export function t3kTargetLabel(target: T3kTarget, order: readonly BlockId[]): string {
+  return isCabToken(target) ? cabLabel(target, order) : ampLabel(target, order);
+}
+
+/** "Loaded X", naming the amp or cab only when there are two to choose from. */
+function toastLoaded(name: string, target: T3kTarget): void {
+  const { chainOrder, toast } = useStore.getState();
+  const label = t3kTargetLabel(target, chainOrder);
+  const alone = label === "Amp" || label === "Cab";
+  toast(alone ? `Loaded ${name}` : `Loaded ${name} into ${label}`, "success", 2500);
+}
 
 /** Loads into one slot; resolves with an error message or null. */
 async function loadIntoTarget(
@@ -1284,20 +1305,11 @@ async function loadIntoTarget(
   path: string,
   name: string,
 ): Promise<string | null> {
-  const res =
-    target === "cab"
-      ? await bridge.loadIr(path)
-      : target === "amp2"
-        ? await bridge.loadModelB(path)
-        : await bridge.loadModel(path);
+  const res = isCabToken(target)
+    ? await CAB_SLOTS[target].load(path)
+    : await AMP_SLOTS[target].load(path);
   if (res.error) return res.error;
-  useStore
-    .getState()
-    .toast(
-      target === "amp2" ? `Loaded ${name} into Amp 2` : `Loaded ${name}`,
-      "success",
-      2500,
-    );
+  toastLoaded(name, target);
   return null;
 }
 
@@ -1372,6 +1384,10 @@ export function connectStore(): () => void {
     bridge.on("modelBChanged", ({ modelB }) => set({ modelB })),
 
     bridge.on("irChanged", ({ ir }) => set({ ir })),
+
+    bridge.on("irBChanged", ({ irB }) => set({ irB })),
+
+    bridge.on("widthChanged", ({ width }) => set({ width })),
 
     bridge.on("missingMediaChanged", ({ missingMedia }) => set({ missingMedia })),
 

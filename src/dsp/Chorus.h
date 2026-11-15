@@ -2,6 +2,8 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include "WidthMap.h"
+
 #include <memory>
 
 // The chorus voicings of the mod block (docs/FX-ENGINES.md §4.5). One engine, five modes:
@@ -59,6 +61,10 @@ public:
     void setParameters (const ChorusParams& params);
     /** A non-finite input sample, or one beyond +-1e6, is processed as 0 (and written back as 0). */
     void process (juce::dsp::AudioBlock<float> block);
+
+    /** Why this chorus makes left and right differ from a mono input with two channels to
+        run on, or Why::none. */
+    static chain::Why stereoWhy (int mode, float depth, float width, float mix) noexcept;
 
     int getLatencySamples() const noexcept { return 0; }
     /** Test hook (fxbench solo=<voice>): routes one voice to both outputs at mix 1;

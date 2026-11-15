@@ -14,7 +14,7 @@
  * INSTANCE, not a block type: the first twelve are the v1 ids and are frozen,
  * the twelve instance tokens are appended after them exactly as
  * `chain::BlockId` appends its new enumerators, and split/lane2/mix/amp2
- * (docs/SPLIT.md §1) close out the list — the exact tail order `ChainOrder.h`
+ * (docs/SPLIT.md §1) and cab2 close out the list — the exact tail order `ChainOrder.h`
  * appends its own enumerators in, `split == 24` pinned there too. Instance 1
  * of every kind keeps the legacy token (`comp`), so existing state loads
  * unchanged.
@@ -48,6 +48,7 @@ export const BLOCK_IDS = [
   "lane2",
   "mix",
   "amp2",
+  "cab2",
 ] as const;
 
 export type BlockId = (typeof BLOCK_IDS)[number];
@@ -73,11 +74,9 @@ export function fxSlotIndexOf(block: BlockId): FxSlotIndex | -1 {
 
 /* ─────────────────────────────── block kinds ───────────────────────────── */
 
-/** The ten built-in kinds, in enum order — also the picker's row order. `amp2`
- *  joined this list in docs/SPLIT.md §1: an ordinary, freely-placeable
- *  singleton block (engine B), addable through the same generic mechanism as
- *  gate/amp/cab. The fx slots are singleton blocks rather than a kind: which
- *  slot it is carries the identity, and what is in it is named in text. */
+/** The nine built-in kinds, in enum order — also the picker's row order. The fx
+ *  slots are singleton blocks rather than a kind: which slot it is carries the
+ *  identity, and what is in it is named in text. */
 export const BLOCK_KINDS = [
   "gate",
   "comp",
@@ -88,7 +87,6 @@ export const BLOCK_KINDS = [
   "mod",
   "delay",
   "reverb",
-  "amp2",
 ] as const;
 
 export type BlockKind = (typeof BLOCK_KINDS)[number];
@@ -115,8 +113,9 @@ export function isStructureBlockId(value: string): value is StructureBlockId {
  *  (see `blockRecord`). */
 export type BaseBlockId = BlockKind | FxBlockId | StructureBlockId;
 
-/** Kinds that exist three times over. gate, amp, cab and the fx slots stay
- *  singletons. */
+/** Kinds that exist three times over, minting `<kind><n>_*` parameters through
+ *  `EXTRA_INSTANCES`. gate and the fx slots stay singletons; amp and cab have
+ *  exactly two instances each, see `KIND_INSTANCES`. */
 export const DUPLICABLE_KINDS = [
   "comp",
   "drive",
@@ -137,13 +136,14 @@ export const KIND_INSTANCES = {
   gate: ["gate"],
   comp: ["comp", "comp2", "comp3"],
   drive: ["drive", "drive2", "drive3"],
-  amp: ["amp"],
-  cab: ["cab"],
+  /* Two, not three: the processor has two NAM engines (docs/SPLIT.md §1). */
+  amp: ["amp", "amp2"],
+  /* Two as well: one IR each, so a split can run a cab in both lanes. */
+  cab: ["cab", "cab2"],
   eq: ["eq", "eq2", "eq3"],
   mod: ["mod", "mod2", "mod3"],
   delay: ["delay", "delay2", "delay3"],
   reverb: ["reverb", "reverb2", "reverb3"],
-  amp2: ["amp2"],
 } as const satisfies Record<BlockKind, readonly BlockId[]>;
 
 const BLOCK_KIND_OF = {} as Record<BlockId, BaseBlockId>;
@@ -154,10 +154,7 @@ for (const slot of FX_BLOCK_IDS) {
   BLOCK_INSTANCE_OF[slot] = 0;
 }
 // Structural furniture is its own singleton kind each, mirroring ChainOrder.h's
-// `kindOf` (split/lane2/mix/amp2 share one switch case there, each returning
-// itself) — matched here for split/lane2/mix; amp2 goes through the BLOCK_KINDS
-// loop below instead, since (unlike these three) it belongs in the generic
-// picker.
+// `kindOf` for split/lane2/mix.
 for (const id of STRUCTURE_BLOCK_IDS) {
   BLOCK_KIND_OF[id] = id;
   BLOCK_INSTANCE_OF[id] = 0;
@@ -186,7 +183,7 @@ export function instanceTokensOfKind(kind: BlockKind): readonly BlockId[] {
   return KIND_INSTANCES[kind];
 }
 
-/** A total table over all 24 tokens from one factory. Identity tables are
+/** A total table over every token from one factory. Identity tables are
  *  written once per base and mapped through this, so an instance can never
  *  drift from its kind's colour, glyph or knob row. */
 export function blockRecord<T>(make: (id: BlockId) => T): Record<BlockId, T> {
@@ -198,7 +195,7 @@ export function blockRecord<T>(make: (id: BlockId) => T): Record<BlockId, T> {
 /* ─────────────────────────── parameter identifiers ─────────────────────── */
 
 /**
- * 184 slider params — ids are the APVTS ids verbatim and are frozen.
+ * 192 slider params — ids are the APVTS ids verbatim and are frozen.
  *
  * The first 29 are v1's, in v1 order. The rest are appended in Parameters.cpp's
  * v2 append order: each duplicable kind's instances 2 and 3 (same ranges,
@@ -405,10 +402,22 @@ export const SLIDER_PARAM_IDS = [
   "mod3_tone",
   "mod3_shape",
   "mod3_wave",
+
+  /* v5: the second amp's own copy of the first's controls */
+  "amp2_cal_level",
+  "amp2_slim",
+  "amp2_eq_bass",
+  "amp2_eq_mid",
+  "amp2_eq_treble",
+
+  /* v6: the second cab */
+  "cab2_lowcut",
+  "cab2_highcut",
+  "cab2_mix",
 ] as const;
 
 /**
- * 36 toggle params: v1's 13, then every instance's bypass and the amp EQ's,
+ * 39 toggle params: v1's 13, then every instance's bypass and the amp EQ's,
  * then the split-path enables (docs/SPLIT.md §2). `amp_stereo` is gone —
  * SUPERSEDED by `amp2` as a chain block (docs/SPLIT.md, top): there is no
  * toggle for it any more, only the block's own `amp2_on`.
@@ -454,9 +463,16 @@ export const TOGGLE_PARAM_IDS = [
   "mod_color",
   "mod2_color",
   "mod3_color",
+
+  /* v5: the second amp's own copy of the first's controls */
+  "amp2_cal_input",
+  "amp2_eq_on",
+
+  /* v6: the second cab */
+  "cab2_on",
 ] as const;
 
-/** 42 combo params — mod and delay (docs/STEREO.md §4) are the duplicable kinds
+/** 43 combo params — mod and delay (docs/STEREO.md §4) are the duplicable kinds
  *  with a choice parameter; `split_mode` (docs/SPLIT.md §2) is the split
  *  region's, FROZEN once shipped like `delay_mode`; the nine appended last are
  *  the delay/reverb type + delay sync choices (docs/REVERB-DELAY.md §1). */
@@ -509,6 +525,9 @@ export const COMBO_PARAM_IDS = [
   "mod3_phaser_model",
   "mod3_trem_voice",
   "mod3_sync",
+
+  /* v5: the second amp's own copy of the first's controls */
+  "amp2_out_mode",
 ] as const;
 
 export type SliderParamId = (typeof SLIDER_PARAM_IDS)[number];
@@ -517,12 +536,12 @@ export type ComboParamId = (typeof COMBO_PARAM_IDS)[number];
 export type ParamId = SliderParamId | ToggleParamId | ComboParamId;
 
 /** Mirrors WebEditor.cpp's static_asserts (docs/FX-ENGINES.md §7.5): the build
- *  fails here if an id list drifts from 184 / 36 / 42. */
+ *  fails here if an id list drifts from 192 / 39 / 43. */
 export type RelayCountsCheck = [
   (typeof SLIDER_PARAM_IDS)["length"],
   (typeof TOGGLE_PARAM_IDS)["length"],
   (typeof COMBO_PARAM_IDS)["length"],
-] extends [184, 36, 42]
+] extends [192, 39, 43]
   ? true
   : never;
 /** Assigning `true` to a `never` fails the type-check when a count drifts. */
@@ -625,6 +644,10 @@ export interface ToneRef {
   license: string;
   /** The tone's page on tone3000.com; empty without a tone id. */
   url: string;
+  /** The tone's photo, saved beside the file when it was downloaded and served
+   *  by the plugin itself (so it shows offline). Null / absent when the tone
+   *  had none, or the file was downloaded before photos were kept. */
+  imageUrl?: string | null;
 }
 
 /** How the cab applied its IR the last time it ran: true stereo, or one kernel
@@ -656,6 +679,56 @@ export interface MissingMedia {
   model: string | null;
   modelB: string | null;
   ir: string | null;
+  /** The second cab's IR (the `cab2` block). */
+  irB: string | null;
+}
+
+/** "stereo" means left and right carry different signals; a post-amp signal on
+ *  two identical channels is "mono". */
+export type Width = "mono" | "stereo";
+
+/** What a block does to the width: passes it on, makes it stereo, folds it to
+ *  mono, or would make it stereo but the instance's output is mono. */
+export type WidthTurn = "keeps" | "widens" | "folds" | "monoHost";
+
+export type WidthWhy =
+  | "pingPong"
+  | "dualRatio"
+  | "delayMod"
+  | "diffuse"
+  | "reverb"
+  | "chorus"
+  | "tremolo"
+  | "stereoIr"
+  | "lanes"
+  | "plugin"
+  | "amp"
+  | "amp2"
+  | "pluginMono";
+
+export interface WidthStep {
+  /** Chain token, `lane2` included. */
+  block: string;
+  out: Width;
+  /** Split only: what enters lane B (`out` is lane A's). */
+  outB?: Width;
+  turn: WidthTurn;
+  why?: WidthWhy;
+}
+
+/** The processor's map of where the signal is mono and where it is stereo. The
+ *  UI draws it as given and never derives width itself. */
+export interface WidthView {
+  /** The instance's channel layout as the host set it up. */
+  host: { in: 1 | 2; out: 1 | 2 };
+  input: Width;
+  /** One per `chainOrder` entry, in the same order. */
+  steps: WidthStep[];
+  output: Width;
+  /** A mono-out instance whose chain would be stereo somewhere in Mono → Stereo. */
+  wouldBeStereo: boolean;
+  /** Show the one-time notice now, then `ackNotice` it. */
+  notice: "monoHost" | null;
 }
 
 export interface PresetInfo {
@@ -674,6 +747,7 @@ export interface AbState {
 }
 
 export interface T3kState {
+  /** The build carries a TONE3000 key (CMake TUBAMP_T3K_CLIENT_ID); the user cannot set one. */
   configured: boolean;
   authenticated: boolean;
   /** TONE3000 username once known (fetched after sign-in); null before. */
@@ -776,6 +850,9 @@ export interface UiState {
    *  regardless — clearing model A must not clear B. */
   modelB: ModelInfo | null;
   ir: IrInfo | null;
+  /** The second cab's IR (the `cab2` block); null when empty, same shape as
+   *  `ir`. Tracked whether or not `cab2` is in the chain, like `modelB`. */
+  irB: IrInfo | null;
   missingMedia: MissingMedia;
   models: FileEntry[];
   irs: FileEntry[];
@@ -796,6 +873,9 @@ export interface UiState {
   /** Same shape as the `updateChanged` payload. Optional so a C++ build that
    *  predates the updater still hydrates (the store reads it as `UPDATE_OFF`). */
   update?: UpdateView;
+  /** Same shape as the `widthChanged` payload. Absent from a C++ build that
+   *  predates it: the board then draws every wire as one stroke. */
+  width?: WidthView;
 }
 
 /** 0 = Low, 1 = Medium, 2 = High. */
@@ -932,8 +1012,14 @@ export type T3kBrowseSort =
   | "downloads"
   | "oldest";
 
+/** The amp kind's two instance tokens. */
+export type AmpToken = (typeof KIND_INSTANCES.amp)[number];
+
+/** The cab kind's two instance tokens. */
+export type CabToken = (typeof KIND_INSTANCES.cab)[number];
+
 /** Which block a browser load lands in. */
-export type T3kTarget = "amp" | "amp2" | "cab";
+export type T3kTarget = AmpToken | CabToken;
 
 /**
  * One page of the catalog. `kind` maps C++-side to
@@ -1023,7 +1109,9 @@ export interface T3kModelsResult {
 /* ───────────────────────────────── events ─────────────────────────────── */
 
 export interface BridgeEventMap {
-  meters: { in: number; out: number };
+  /** `outL` / `outR`: the output's two channels on the same scale as `out`;
+   *  absent from older builds (read `out` for both). */
+  meters: { in: number; out: number; outL?: number; outR?: number };
   /** Dynamics meters, 30 Hz alongside `meters`, reset-on-read (docs/FX-ENGINES.md
    *  §2.8). `gate.state`: -1 inactive, 0 closed, 1 hold, 2 open. `gate.gr` and
    *  `comp[i]` are gain reduction in dB (>= 0; the gate can reach 90, Classic 120).
@@ -1052,6 +1140,9 @@ export interface BridgeEventMap {
    *  `loadedModelPathB` alongside the A/IR paths it already watches. */
   modelBChanged: { modelB: ModelInfo | null };
   irChanged: { ir: IrInfo | null };
+  /** Mirrors `irChanged` for the second cab. */
+  irBChanged: { irB: IrInfo | null };
+  widthChanged: { width: WidthView };
   missingMediaChanged: { missingMedia: MissingMedia };
   t3kStatus: T3kState;
   t3kToneSelected: { toneId: number; models: T3kModel[] };
@@ -1130,19 +1221,21 @@ export interface Bridge {
   setChainOrder(tokens: string[], rows: number[]): Promise<void>;
   loadModel(path: string): Promise<ErrorResult>;
   clearModel(): Promise<void>;
-  /** Mirrors `loadModel`/`clearModel` for engine B (docs/STEREO.md §1 plumbing;
-   *  the model-B UI now lives on the `amp2` block, docs/SPLIT.md §5). Loading
-   *  A's own path here is exactly how "Use model A" works — there is no
-   *  separate native fn for it. */
+  /** Mirrors `loadModel`/`clearModel` for the second amp (the `amp2` block). */
   loadModelB(path: string): Promise<ErrorResult>;
   clearModelB(): Promise<void>;
   loadIr(path: string): Promise<ErrorResult>;
   clearIr(): Promise<void>;
+  /** Mirrors `loadIr`/`clearIr` for the second cab (the `cab2` block). */
+  loadIrB(path: string): Promise<ErrorResult>;
+  clearIrB(): Promise<void>;
   /** Native async FileChooser (.nam). Installs into the library *and* loads the
-   *  file; callers must not follow up with `loadModel(path)`. */
-  importModel(): Promise<ImportResult>;
-  /** Native async FileChooser (.wav). Installs *and* loads, like importModel. */
-  importIr(): Promise<ImportResult>;
+   *  file into `target`'s engine (default `"amp"`), which then fires
+   *  `modelChanged` or `modelBChanged`; callers must not follow up with a load. */
+  importModel(target?: AmpToken): Promise<ImportResult>;
+  /** Native async FileChooser (.wav). Installs *and* loads into `target`'s cab
+   *  (default `"cab"`), like importModel; fires `irChanged` or `irBChanged`. */
+  importIr(target?: CabToken): Promise<ImportResult>;
   loadPreset(path: string): Promise<ErrorResult>;
   /** Native AlertWindow text prompt, then saves. */
   savePresetAs(): Promise<ErrorResult>;
@@ -1150,8 +1243,6 @@ export interface Bridge {
   setPresetFavorite(path: string, favorite: boolean): Promise<void>;
   abCapture(slot: AbSlot): Promise<void>;
   abRecall(slot: AbSlot): Promise<void>;
-  /** Native AlertWindow prompt for the publishable key. */
-  t3kConfigure(): Promise<ErrorResult>;
   t3kSignOut(): Promise<void>;
   /** Async; results arrive as `t3kToneSelected` / `t3kError`. */
   t3kStartSelectFlow(): Promise<void>;
@@ -1160,6 +1251,10 @@ export interface Bridge {
    *  modelName, creator, raw gear, format, size, architecture, license) beside
    *  the file BEFORE `libraryChanged`/`t3kComplete`. */
   t3kDownloadModel(model: T3kModel, tone?: T3kTone): Promise<void>;
+  /** A library copy downloaded before photos were kept: fetch the tone's photo
+   *  for it (no-op when it has one, has no sidecar, or `imageUrl` is null).
+   *  Always resolves; call before loading the file so its `tone.imageUrl` is set. */
+  t3kEnsureArt(path: string, imageUrl: string | null): Promise<void>;
   /** Standard OAuth flow (system browser + loopback redirect), no tone
    *  selection. Outcome arrives as `t3kStatus` (success) / `t3kError`. */
   t3kSignIn(): Promise<void>;
@@ -1262,4 +1357,7 @@ export interface Bridge {
   /** Resolves `{}` when the command was understood (whether or not it applied
    *  in the current phase), `{error}` when it could not be parsed. Never rejects. */
   updateCommand(command: UpdateCommand): Promise<ErrorResult>;
+
+  /** The UI has shown `WidthView.notice`; the processor stops raising it. */
+  ackNotice(kind: "monoHost"): Promise<void>;
 }

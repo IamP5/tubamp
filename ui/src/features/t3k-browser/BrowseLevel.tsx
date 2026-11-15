@@ -26,8 +26,16 @@ import {
   type MenuEntry,
   type SegmentedOption,
 } from "../../components";
-import { bridge, type T3kBrowseKind } from "../../bridge";
-import { selectT3kTarget, T3K_TARGET_LABELS, useStore } from "../../store";
+import { bridge, type AmpToken, type CabToken, type T3kBrowseKind } from "../../bridge";
+import {
+  AMP_TOKENS,
+  CAB_TOKENS,
+  isAmpToken,
+  isCabToken,
+  selectT3kTarget,
+  t3kTargetLabel,
+  useStore,
+} from "../../store";
 import { SearchIcon } from "./parts";
 import { RowSkeleton, ToneRow } from "./ToneRow";
 
@@ -51,9 +59,15 @@ const KIND_OPTIONS: SegmentedOption<T3kBrowseKind>[] = [
   { value: "irs", label: "IRs" },
 ];
 
-const TARGET_OPTIONS: SegmentedOption<"amp" | "amp2">[] = [
-  { value: "amp", label: "Amp" },
+/* Offered only while both amps (or both cabs) are placed, so they need their
+   numbers. */
+const TARGET_OPTIONS: SegmentedOption<AmpToken>[] = [
+  { value: "amp", label: "Amp 1" },
   { value: "amp2", label: "Amp 2" },
+];
+const CAB_TARGET_OPTIONS: SegmentedOption<CabToken>[] = [
+  { value: "cab", label: "Cab 1" },
+  { value: "cab2", label: "Cab 2" },
 ];
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -74,9 +88,12 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
   const setDetail = useStore((st) => st.setT3kDetail);
   const toggleFavorite = useStore((st) => st.t3kToggleFavorite);
   const setAmpTarget = useStore((st) => st.setT3kAmpTarget);
+  const setCabTarget = useStore((st) => st.setT3kCabTarget);
   const setScroll = useStore((st) => st.setT3kScroll);
   const target = useStore(selectT3kTarget);
-  const amp2InChain = useStore((st) => st.chainOrder.includes("amp2"));
+  const bothAmps = useStore((st) => AMP_TOKENS.every((t) => st.chainOrder.includes(t)));
+  const bothCabs = useStore((st) => CAB_TOKENS.every((t) => st.chainOrder.includes(t)));
+  const targetLabel = useStore((st) => t3kTargetLabel(target, st.chainOrder));
 
   const { kind, shelf, query, gear, calibrated } = browser;
   const sort = effectiveSort(browser.sort, query);
@@ -249,15 +266,22 @@ export function BrowseLevel({ list, reduced, onClose }: BrowseLevelProps) {
       <header className={s.head}>
         <span className={s.title}>TONE3000</span>
         <span className={s.headSpacer} />
-        {kind === "models" && amp2InChain ? (
+        {kind === "models" && bothAmps && isAmpToken(target) ? (
           <Segmented
             options={TARGET_OPTIONS}
-            value={target === "amp2" ? "amp2" : "amp"}
+            value={target}
             onChange={(value) => setAmpTarget(value)}
             aria-label="Load captures into"
           />
+        ) : kind === "irs" && bothCabs && isCabToken(target) ? (
+          <Segmented
+            options={CAB_TARGET_OPTIONS}
+            value={target}
+            onChange={(value) => setCabTarget(value)}
+            aria-label="Load IRs into"
+          />
         ) : (
-          <span className={s.targetText}>Into {T3K_TARGET_LABELS[target]}</span>
+          <span className={s.targetText}>Into {targetLabel}</span>
         )}
         <IconButton aria-label="Close browser" onClick={onClose} size="sm">
           <CloseIcon />

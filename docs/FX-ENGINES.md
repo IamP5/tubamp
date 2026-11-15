@@ -1987,7 +1987,8 @@ A switch asked back every 4 ms from 0 to 120 ms after the request now leaves a c
 #### 4.4.2 Parameters
 
 Existing, unchanged: `eq_on`; `eq_bass`, `eq_mid`, `eq_treble` 0…10 step 0.1 default 5
-(instances `eq2_*`, `eq3_*`; amp: `amp_eq_on`, `amp_eq_bass/mid/treble`). New (hint 4),
+(instances `eq2_*`, `eq3_*`; amps: `amp_eq_on`, `amp_eq_bass/mid/treble`, and the second
+amp's `amp2_eq_*` at hint 5, the same law). New (hint 4),
 instance 1 shown, instances `eq2_*` / `eq3_*` ("EQ 2 …") identical:
 
 | id | host name | range | step | skew | default | unit | read by |
@@ -3791,7 +3792,11 @@ Layout size: 166 + 95 = 261 parameters.
 
 Since the merge with the NAM/IR work (docs/NAM-IR.md §3) the base layout also holds
 `cab_mix` at hint 3, ahead of the hint-4 block: 184 sliders / 36 toggles / 42 combos and
-167 + 95 = 262 parameters. The other counts in this document predate that merge.
+167 + 95 = 262 parameters. After the hint-4 block come amp 2's own controls at hint 5
+(docs/SPLIT.md §2): 270 parameters, 189 sliders / 38 toggles / 43 combos
+(`tests/golden/params-v5.tsv`), then the second cab's four at hint 6 (docs/SPLIT.md
+§2a): 274 parameters, 192 sliders / 39 toggles / 43 combos
+(`tests/golden/params-v6.tsv`). The other counts in this document predate both.
 
 ## Appendix B — sources opened while writing this spec
 
