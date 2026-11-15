@@ -1,15 +1,18 @@
 import type { Arch } from "../../../lib/release-schema.ts";
 
-const dateFormat = new Intl.DateTimeFormat("en-GB", {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  timeZone: "UTC",
-});
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
 
-/** "14 Nov 2026". Fixed locale and zone so the server and every visitor print the same date. */
-export function releaseDate(iso: string): string {
-  return dateFormat.format(new Date(iso));
+/**
+ * "14 Nov 2026" in en-GB. The locale is the page's and the zone is fixed, so
+ * the server and every visitor print the same date.
+ */
+export function releaseDate(iso: string, locale: string): string {
+  let format = dateFormats.get(locale);
+  if (!format) {
+    format = new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+    dateFormats.set(locale, format);
+  }
+  return format.format(new Date(iso));
 }
 
 export const HASH_PREFIX = 12;
@@ -17,6 +20,9 @@ export const HASH_PREFIX = 12;
 export function shortHash(sha256: string): string {
   return sha256.slice(0, HASH_PREFIX);
 }
+
+/** What the page says the plugin needs while there is no release to read it from. */
+export const DEFAULT_MACOS = "11.0";
 
 /** "11.0" reads as "macOS 11"; "13.5" stays "macOS 13.5". */
 export function macOS(version: string): string {
@@ -37,12 +43,15 @@ export function ctaHref(detected: Arch | null): string {
 }
 
 /** The reassurances that sit under a download button, in the order a doubt comes up. */
-export function releaseMeta(release: { version: string; minimumMacOS: string } | null): string[] {
+export function releaseMeta(
+  release: { version: string; minimumMacOS: string } | null,
+  copy: { noAccount: string; orLater: string; archs: string },
+): string[] {
   return [
-    "No account",
+    copy.noAccount,
     ...(release ? [`v${release.version}`] : []),
-    `${macOS(release?.minimumMacOS ?? "11.0")} or later`,
-    "Apple Silicon and Intel",
+    copy.orLater.replace("{os}", macOS(release?.minimumMacOS ?? DEFAULT_MACOS)),
+    copy.archs,
   ];
 }
 

@@ -1,11 +1,10 @@
 import ChapterLabel from "@/components/ui/ChapterLabel";
-import { CHAPTERS } from "@/data/site";
+import { getDictionary } from "@/i18n/dictionaries";
 import ChainBoard from "./chain/ChainBoard";
 import Reveal, { Line } from "./effects/Reveal";
 
-const copy = CHAPTERS.chain;
-
-export default function Chain() {
+export default async function Chain() {
+  const copy = (await getDictionary()).chain;
   return (
     <section id="chain" aria-labelledby="chain-title" className="gutter relative py-20 md:py-[9svh]">
       <div className="mx-auto max-w-[110rem]">

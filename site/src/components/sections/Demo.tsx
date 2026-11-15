@@ -9,9 +9,8 @@ import Window from "@/components/ui/Window";
 import { useReducedMotion } from "@/components/SmoothScroll";
 import { buttonClass } from "@/components/ui/Button";
 import { CLIPS, clipSrc } from "@/data/media";
-import { CHAPTERS } from "@/data/site";
+import { useDict } from "@/i18n/DictProvider";
 
-const copy = CHAPTERS.demo;
 const DEMO_URL = "/demo/index.html";
 const FRAME = { width: 1280, height: 800 };
 const WIDE = "(min-width: 900px)";
@@ -36,6 +35,7 @@ function useWide() {
 
 export default function Demo() {
   const wide = useWide();
+  const copy = useDict().demo;
   const [line1, line2] = copy.headline;
 
   return (
@@ -57,12 +57,13 @@ export default function Demo() {
 }
 
 function Narrow() {
+  const copy = useDict().demo;
   return (
     <figure className="flex flex-col gap-4">
       <Window>
         <VideoLoop clip={CLIPS.presets} play={false} className="block h-auto w-full" />
       </Window>
-      <figcaption className="text-sm text-bone-3">The live editor needs a wider screen.</figcaption>
+      <figcaption className="text-sm text-bone-3">{copy.narrow}</figcaption>
     </figure>
   );
 }
@@ -73,6 +74,7 @@ function Stage() {
   const boxRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const reduced = useReducedMotion();
+  const copy = useDict().demo;
 
   const { scrollYProgress } = useScroll({ target: boxRef, offset: ["start end", "start 30%"] });
   const grow = useTransform(scrollYProgress, [0, 1], [0.9, 1]);
@@ -138,7 +140,7 @@ function Stage() {
             <iframe
               ref={frameRef}
               src={DEMO_URL}
-              title="The tubamp editor, running in the page"
+              title={copy.frameTitle}
               width={FRAME.width}
               height={FRAME.height}
               onLoad={() => frameRef.current?.focus()}
@@ -154,7 +156,7 @@ function Stage() {
             <button
               type="button"
               onClick={start}
-              aria-label="Use the editor"
+              aria-label={copy.use}
               className="absolute inset-0 cursor-pointer"
             />
           )}
@@ -165,9 +167,9 @@ function Stage() {
         </div>
       </Window>
       <p className="mt-4 h-5 text-sm text-bone-3" aria-live="polite">
-        {stage === "live" && "Press Esc or click outside the editor to scroll the page."}
-        {stage === "idle" && "Click the editor to use it again."}
-        {stage === "missing" && "The live editor is not in this build of the page."}
+        {stage === "live" && copy.live}
+        {stage === "idle" && copy.idle}
+        {stage === "missing" && copy.missing}
       </p>
     </motion.div>
   );
@@ -175,6 +177,7 @@ function Stage() {
 
 function Poster({ onStart }: { onStart: () => void }) {
   const [still, setStill] = useState(true);
+  const copy = useDict().demo;
   return (
     <div className="absolute inset-0">
       {still && (
@@ -193,7 +196,7 @@ function Poster({ onStart }: { onStart: () => void }) {
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
             <path d="M4 2.8v10.4a.8.8 0 0 0 1.2.7l8.6-5.2a.8.8 0 0 0 0-1.4L5.2 2.1A.8.8 0 0 0 4 2.8Z" />
           </svg>
-          Start the editor
+          {copy.start}
         </button>
       </div>
     </div>

@@ -4,6 +4,7 @@ import { Fragment, useRef } from "react";
 import { useGSAP } from "@gsap/react";
 import { gsap, MQ, setupGsap } from "@/lib/motion";
 import { CHAIN } from "@/data/site";
+import { useDict } from "@/i18n/DictProvider";
 
 type Tile = { kind: "block"; name: string } | { kind: "slot"; n: number };
 
@@ -39,6 +40,7 @@ function wrapPath(rows: number) {
 /** `tight` is the board in a narrow column: the slot is named inside its tile, where "Your plugin" would not fit. */
 function Board({ perRow, className, tight = false }: { perRow: number; className: string; tight?: boolean }) {
   const rows = chunk(TILES, perRow);
+  const { yours } = useDict().more.slots;
   return (
     <div data-board className={`items-start gap-3 ${className}`}>
       <span className="label flex h-[52px] items-center">In</span>
@@ -73,7 +75,7 @@ function Board({ perRow, className, tight = false }: { perRow: number; className
                           <span className="label text-[var(--accent)]">AU {tile.n}</span>
                         ) : (
                           <>
-                            <span className="truncate">Your plugin</span>
+                            <span className="truncate">{yours}</span>
                             <span className="label absolute -top-5 left-0 text-[var(--accent)]">AU {tile.n}</span>
                           </>
                         )}
@@ -99,6 +101,7 @@ function Board({ perRow, className, tight = false }: { perRow: number; className
 
 export default function ChainSlots() {
   const scope = useRef<HTMLDivElement>(null);
+  const t = useDict();
 
   useGSAP(
     () => {
@@ -125,7 +128,7 @@ export default function ChainSlots() {
   );
 
   return (
-    <figure ref={scope} aria-label="A chain with three of your own Audio Unit plugins placed between the blocks.">
+    <figure ref={scope} aria-label={t.more.slots.label}>
       <Board perRow={4} tight className="hidden lg:flex" />
       <Board perRow={5} className="hidden md:flex lg:hidden" />
       <Board perRow={2} className="flex md:hidden" />

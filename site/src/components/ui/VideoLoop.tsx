@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { clipSrc, type Clip } from "@/data/media";
+import { useDict } from "@/i18n/DictProvider";
 
 export default function VideoLoop({
   clip,
@@ -15,6 +16,7 @@ export default function VideoLoop({
   const ref = useRef<HTMLVideoElement>(null);
   const [near, setNear] = useState(false);
   const src = clipSrc(clip);
+  const alt = useDict().media[clip.name];
 
   useEffect(() => {
     const video = ref.current;
@@ -45,7 +47,7 @@ export default function VideoLoop({
       height={clip.height}
       style={{ aspectRatio: `${clip.width} / ${clip.height}` }}
       poster={src.poster}
-      aria-label={clip.alt}
+      aria-label={alt}
       muted
       loop
       playsInline

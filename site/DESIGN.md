@@ -97,10 +97,19 @@ with a cause.**
 Plain, short, concrete, a little dry. Say what the thing does. "Your next amp
 is a file." "Build the chain. Any order." No "unleash", "revolutionary",
 "seamless", "next-level", no exclamation marks, no emoji. Sentence case
-everywhere. Every factual claim must be true of the plugin today; the facts
-live in `src/data/site.ts` and came from the repository's README and docs. Do
+everywhere. Every factual claim must be true of the plugin today; the
+sentences live in `src/i18n/en.ts` and came from the repository's README and
+docs. Do
 not invent numbers, model counts, latency figures, testimonials or awards.
-"Powered by TONE3000" must stay visible wherever TONE3000 is shown (licence).
+"Powered by TONE3000" must stay visible wherever TONE3000 is shown (licence),
+in English in every locale.
+
+The page is written in English and Brazilian Portuguese (`src/i18n/pt-br.ts`).
+The Portuguese keeps the same voice. Names the plugin shows (block names, In,
+Out, AU) and words Brazilian guitarists use in English (amp, cab, gate, drive,
+delay, reverb, preset, knob) are not translated: the clips beside the text
+show the plugin in English. A new string goes into both files; a test fails
+when they drift apart.
 
 ## Type
 
@@ -188,8 +197,9 @@ raw WebGL with no library behind it.
 | Footer | `components/Footer.tsx` | links and credits, small |
 | After a click | `components/InstallGuide.tsx` | what to do with the file that just downloaded |
 
-Copy, block names, families and facts are in `src/data/site.ts`. Media paths
-are in `src/data/media.ts`. Read both before writing a string.
+Copy and facts are in `src/i18n/en.ts` and `src/i18n/pt-br.ts`. Block names
+and families are in `src/data/site.ts`. Media paths are in
+`src/data/media.ts`. Read them before writing a string.
 
 ### The chain board
 

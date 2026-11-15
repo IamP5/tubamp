@@ -1,23 +1,22 @@
 import VideoLoop from "@/components/ui/VideoLoop";
 import ChapterLabel from "@/components/ui/ChapterLabel";
 import { FILMS } from "@/data/media";
-import { CHAPTERS, FAQ, SITE } from "@/data/site";
+import { SITE } from "@/data/site";
+import { fill } from "@/i18n/config";
+import { getDictionary } from "@/i18n/dictionaries";
 import type { Release } from "@/lib/release-schema";
 import Reveal, { Line } from "../effects/Reveal";
 import ArchButtons from "./ArchButtons";
 import Backdrop from "./Backdrop";
-import { installSteps, macOS, releaseDate, unsigned } from "./format";
+import { DEFAULT_MACOS, installSteps, macOS, releaseDate, unsigned } from "./format";
 import { ArrowOut, fieldButton } from "./parts";
 
-const copy = CHAPTERS.download;
-
-export default function DownloadField({ release, id = "download" }: { release: Release | null; id?: string }) {
-  const requirements = [
-    release ? SITE.platforms.replace(/^macOS [\d.]+/, macOS(release.minimumMacOS)) : SITE.platforms,
-    SITE.hosts,
-  ];
+export default async function DownloadField({ release, id = "download" }: { release: Release | null; id?: string }) {
+  const t = await getDictionary();
+  const copy = t.download;
+  const requirements = [fill(copy.platforms, { os: macOS(release?.minimumMacOS ?? DEFAULT_MACOS) }), copy.hosts];
   const gatekeeper = unsigned(release);
-  const questions = [...(gatekeeper ? [copy.gatekeeper] : []), ...FAQ];
+  const questions = [...(gatekeeper ? [copy.gatekeeper] : []), ...t.faq];
   const link =
     "text-bone-2 underline decoration-line-strong underline-offset-4 transition-colors duration-150 ease-ui hover:text-bone hover:decoration-bone";
 
@@ -47,7 +46,7 @@ export default function DownloadField({ release, id = "download" }: { release: R
             // A route handler that redirects to the installer: next/link would prefetch it.
             // eslint-disable-next-line @next/next/no-html-link-for-pages
             <a href="/download/arm64" className={`${fieldButton(true)} mx-auto flex! sm:max-w-sm`}>
-              Get it on GitHub
+              {copy.getOnGitHub}
               <ArrowOut />
             </a>
           )}
@@ -61,7 +60,7 @@ export default function DownloadField({ release, id = "download" }: { release: R
 
           <div className="mt-8 grid gap-10 border-t border-line pt-8 md:grid-cols-2">
             <div>
-              <h3 className="text-sm font-medium text-bone">Install</h3>
+              <h3 className="text-sm font-medium text-bone">{copy.install}</h3>
               <ol className="mt-4 flex flex-col gap-3">
                 {installSteps(copy.steps, gatekeeper).map((step, i) => (
                   <li key={step} className="flex gap-4 text-bone-2">
@@ -74,7 +73,7 @@ export default function DownloadField({ release, id = "download" }: { release: R
               </ol>
             </div>
             <div>
-              <h3 className="text-sm font-medium text-bone">Requirements</h3>
+              <h3 className="text-sm font-medium text-bone">{copy.requirements}</h3>
               <ul className="mt-4 flex flex-col gap-1.5 text-bone-2">
                 {requirements.map((line) => (
                   <li key={line}>{line}</li>
@@ -83,10 +82,10 @@ export default function DownloadField({ release, id = "download" }: { release: R
               {release && (
                 <p className="mt-5 flex flex-wrap items-baseline gap-x-4 gap-y-2 text-sm text-bone-3">
                   <span className="font-mono tabular-nums">
-                    v{release.version}, {releaseDate(release.publishedAt)}
+                    v{release.version}, {releaseDate(release.publishedAt, t.dateLocale)}
                   </span>
                   <a href={release.url} className={link}>
-                    What changed
+                    {copy.whatChanged}
                   </a>
                 </p>
               )}
@@ -95,7 +94,7 @@ export default function DownloadField({ release, id = "download" }: { release: R
         </div>
 
         <div id="faq" className="mt-[clamp(4rem,8vw,7rem)] grid scroll-mt-24 gap-x-10 gap-y-8 md:grid-cols-12">
-          <h3 className="display text-h3 md:col-span-4">Questions</h3>
+          <h3 className="display text-h3 md:col-span-4">{copy.questions}</h3>
           <ul className="md:col-span-8">
             {questions.map((item, i) => (
               <li key={item.q} className="border-b border-line first:border-t">

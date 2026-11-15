@@ -4,7 +4,7 @@ import { useRef } from "react";
 import { useGSAP } from "@gsap/react";
 import { gsap, MQ, setupGsap } from "@/lib/motion";
 import { CLIPS } from "@/data/media";
-import { CHAPTERS } from "@/data/site";
+import { useDict } from "@/i18n/DictProvider";
 import VideoLoop from "@/components/ui/VideoLoop";
 import Tilt from "@/components/ui/Tilt";
 import Window from "@/components/ui/Window";
@@ -15,6 +15,7 @@ const DEPTH = { back: [40, -40], front: [160, -140] } as const;
 
 export default function CapturesStage() {
   const scope = useRef<HTMLDivElement>(null);
+  const t = useDict();
 
   useGSAP(
     () => {
@@ -49,7 +50,7 @@ export default function CapturesStage() {
         </Tilt>
         <figcaption className="mt-4 flex items-center gap-3 text-sm text-bone-2">
           <span className="h-px w-6 bg-[var(--accent)]" aria-hidden />
-          {CHAPTERS.captures.attribution}
+          {t.captures.attribution}
         </figcaption>
       </figure>
     </div>

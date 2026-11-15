@@ -1,12 +1,9 @@
-import { CHAPTERS } from "@/data/site";
+import { getDictionary } from "@/i18n/dictionaries";
 import { CLIPS } from "@/data/media";
 import ChapterLabel from "@/components/ui/ChapterLabel";
 import ArriveClip from "./effects/ArriveClip";
 import ChainSlots from "./effects/ChainSlots";
 import Reveal, { Line } from "./effects/Reveal";
-
-const copy = CHAPTERS.more;
-const [plugins, lanes, presets] = copy.items;
 
 function Item({ title, body, index, children }: { title: string; body: string; index: number; children: React.ReactNode }) {
   return (
@@ -27,7 +24,9 @@ function Item({ title, body, index, children }: { title: string; body: string; i
   );
 }
 
-export default function More() {
+export default async function More() {
+  const copy = (await getDictionary()).more;
+  const [plugins, lanes, presets] = copy.items;
   return (
     <section id="more" className="gutter relative py-[9svh]">
       <div className="mx-auto max-w-[110rem]">

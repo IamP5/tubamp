@@ -6,6 +6,7 @@ import { useLenis } from "lenis/react";
 import { gsap, MQ, ScrollTrigger, setupGsap } from "@/lib/motion";
 import VideoLoop from "@/components/ui/VideoLoop";
 import Window from "@/components/ui/Window";
+import { useDict } from "@/i18n/DictProvider";
 import { EFFECT_PANELS } from "./panels";
 
 const N = EFFECT_PANELS.length;
@@ -29,6 +30,7 @@ export default function EffectsDrum({ header }: { header: React.ReactNode }) {
   const [active, setActive] = useState(0);
   const lenis = useLenis();
   const { block } = EFFECT_PANELS[active];
+  const does = useDict().blocks;
 
   useGSAP(
     () => {
@@ -150,7 +152,7 @@ export default function EffectsDrum({ header }: { header: React.ReactNode }) {
               </div>
               <div className="mx-auto mt-2 flex max-w-[calc((100svh-25rem)*1.85)] items-baseline justify-between gap-8">
                 <p key={block.id} className="drum-caption text-lead text-bone">
-                  {block.does}
+                  {does[block.id]}
                 </p>
                 <p className="label shrink-0">
                   <span className="text-[var(--accent)]">{pad(active + 1)}</span> / {pad(N)}
@@ -173,7 +175,7 @@ export default function EffectsDrum({ header }: { header: React.ReactNode }) {
                 <span className="size-1.5 rounded-full bg-[var(--accent)]" aria-hidden />
                 {b.name}
               </h3>
-              <p className="mt-2 text-bone-2">{b.does}</p>
+              <p className="mt-2 text-bone-2">{does[b.id]}</p>
             </li>
           ))}
         </ul>

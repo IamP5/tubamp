@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { en } from "../../../i18n/en.ts";
+import { ptBR } from "../../../i18n/pt-br.ts";
 import { archOrder, ctaHref, installSteps, macOS, releaseDate, releaseMeta, shortHash, unsigned } from "./format.ts";
 
 test("release date is day, short month, year in UTC", () => {
-  assert.equal(releaseDate("2026-11-14T09:30:00Z"), "14 Nov 2026");
-  assert.equal(releaseDate("2026-11-14T23:59:00-05:00"), "15 Nov 2026");
+  assert.equal(releaseDate("2026-11-14T09:30:00Z", "en-GB"), "14 Nov 2026");
+  assert.equal(releaseDate("2026-11-14T23:59:00-05:00", "en-GB"), "15 Nov 2026");
+  assert.equal(releaseDate("2026-11-14T09:30:00Z", "pt-BR"), "14 de nov. de 2026");
 });
 
 test("hash is shortened to its first twelve characters", () => {
@@ -30,13 +33,14 @@ test("a download button names an installer only for a detected architecture", ()
 });
 
 test("the reassurance line always says no account, with or without a release", () => {
-  assert.deepEqual(releaseMeta(null), ["No account", "macOS 11 or later", "Apple Silicon and Intel"]);
-  assert.deepEqual(releaseMeta({ version: "0.1.0", minimumMacOS: "12.0" }), [
+  assert.deepEqual(releaseMeta(null, en.release), ["No account", "macOS 11 or later", "Apple Silicon and Intel"]);
+  assert.deepEqual(releaseMeta({ version: "0.1.0", minimumMacOS: "12.0" }, en.release), [
     "No account",
     "v0.1.0",
     "macOS 12 or later",
     "Apple Silicon and Intel",
   ]);
+  assert.deepEqual(releaseMeta(null, ptBR.release), ["Sem conta", "macOS 11 ou posterior", "Apple Silicon e Intel"]);
 });
 
 test("the Gatekeeper step shows for an unsigned release and for no release at all", () => {

@@ -1,10 +1,9 @@
-import { CHAPTERS } from "@/data/site";
+import { getDictionary } from "@/i18n/dictionaries";
 import ChapterLabel from "@/components/ui/ChapterLabel";
 import EffectsDrum from "./effects/EffectsDrum";
 
-const copy = CHAPTERS.effects;
-
-export default function Effects() {
+export default async function Effects() {
+  const copy = (await getDictionary()).effects;
   const header = (
     <header className="grid gap-y-6 md:grid-cols-12 md:items-end md:gap-x-10">
       <div className="md:col-span-7">

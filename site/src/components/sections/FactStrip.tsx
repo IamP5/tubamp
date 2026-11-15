@@ -1,12 +1,13 @@
-import { FACTS } from "@/data/site";
+import { getDictionary } from "@/i18n/dictionaries";
 import Reveal from "./effects/Reveal";
 
-export default function FactStrip() {
+export default async function FactStrip() {
+  const { label, items } = (await getDictionary()).facts;
   return (
-    <section aria-label="At a glance" className="gutter relative border-y border-line bg-ink">
+    <section aria-label={label} className="gutter relative border-y border-line bg-ink">
       <Reveal start="top 95%" stagger={0.06}>
         <ul className="mx-auto grid max-w-[110rem] sm:grid-cols-2 lg:grid-cols-4">
-          {FACTS.map((fact) => (
+          {items.map((fact) => (
             <li
               key={fact.big}
               data-line
