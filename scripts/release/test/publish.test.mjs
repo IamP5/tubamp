@@ -64,6 +64,17 @@ function publish(gh, dir, { extra = [], env = {}, updates = 'off' } = {}) {
 
 const assetNames = (release) => release.assets.map((a) => a.name).sort();
 
+test('a draft that GitHub does not list straight away is still found and published', () => {
+  const gh = github();
+  const dir = releaseAssets();
+  const result = publish(gh, dir, { env: { FAKE_GH_LIST_LAG: '2' } });
+  assert.equal(result.code, 0, result.stderr);
+  const [release] = gh.state().releases;
+  assert.equal(release.draft, false);
+  assert.deepEqual(assetNames(release), [...ALL].sort());
+  assert.equal(gh.state().releases.length, 1);
+});
+
 test('a fresh publish uploads everything to a draft, manifest last, then publishes', () => {
   const gh = github();
   const dir = releaseAssets();

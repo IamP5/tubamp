@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Stands in for the gh CLI: keeps GitHub's tags and releases, asset bytes included, in the
 // JSON file named by FAKE_GH_STATE. FAKE_GH_CRASH_ON=<asset name> makes that asset's
-// upload die first.
+// upload die first. FAKE_GH_LIST_LAG=<n> hides a release from the first n listings after
+// it is created, as GitHub's own list sometimes does.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
@@ -29,6 +30,11 @@ if (args[0] === 'api' && args.includes('DELETE')) {
   } else if (path.includes('/releases?')) {
     const tag = /tag_name == "([^"]+)"/.exec(args[args.indexOf('--jq') + 1])[1];
     for (const r of state.releases.filter((x) => x.tag_name === tag)) {
+      if (r.hiddenFor > 0) {
+        r.hiddenFor -= 1;
+        save();
+        continue;
+      }
       const assets = r.assets.map(({ name, state }) => ({ name, state }));
       process.stdout.write(`${JSON.stringify({ id: r.id, draft: r.draft, target: r.target, assets })}\n`);
     }
@@ -39,7 +45,7 @@ if (args[0] === 'api' && args.includes('DELETE')) {
 } else if (args[0] === 'release' && args[1] === 'create') {
   const tag = args[2];
   if (!args.includes('--draft')) process.exit(1);
-  state.releases.push({ id: Math.max(0, ...state.releases.map((r) => r.id)) + 1, tag_name: tag, draft: true, target: args[args.indexOf('--target') + 1], assets: [] });
+  state.releases.push({ id: Math.max(0, ...state.releases.map((r) => r.id)) + 1, tag_name: tag, draft: true, target: args[args.indexOf('--target') + 1], assets: [], hiddenFor: Number(process.env.FAKE_GH_LIST_LAG ?? 0) });
   save();
 } else if (args[0] === 'release' && args[1] === 'upload') {
   const release = byTag(args[2]);
