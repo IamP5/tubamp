@@ -10,15 +10,15 @@ export const en = {
   /** Locale for dates. en-GB prints "14 Nov 2026". */
   dateLocale: "en-GB",
   meta: {
-    title: "tubamp. Your next amp is a file.",
+    title: "tubamp. The whole rig, in one plugin.",
     description:
-      "A free Audio Unit for Logic Pro that plays neural captures of real amps in a signal chain you build yourself. Apple Silicon and Intel.",
+      "A free Audio Unit for Logic Pro: neural captures of real amps, cab impulse responses and a chain of effects you put in any order. Apple Silicon and Intel.",
   },
   hero: {
-    line: "An amp plugin for Logic Pro.",
+    line: "Amp, cab and effects for Logic Pro.",
     /** Two lines: the first sets up, the second lands. */
-    headline: ["Your next amp", "is a file."],
-    what: "tubamp plays captures of real amplifiers in Logic Pro. Build the rest of the rig around them in any order, with room for your own plugins.",
+    headline: ["The whole rig,", "in one plugin."],
+    what: "A neural capture of a real amp, a cab and seven effects. Put them in any order and add your own plugins.",
     download: "Download free for Mac",
     tryIt: "Try it in the browser",
   },
@@ -51,7 +51,7 @@ export const en = {
     /** What a visitor needs to know before the first scroll. Each is true of the plugin today. */
     items: [
       { big: "TONE3000", small: "The capture library, browsed inside the plugin. Powered by TONE3000." },
-      { big: "9", small: "Blocks in a chain, in any order." },
+      { big: "9", small: "Blocks in the chain: an amp, a cab and seven effects, in any order." },
       { big: "A2", small: "The newer NAM capture format. A1 and your own .nam files load too." },
       { big: "3", small: "Slots that host your own Audio Unit effects." },
     ],
@@ -59,7 +59,7 @@ export const en = {
   chain: {
     kicker: "Chain",
     headline: ["Build the chain.", "Any order."],
-    body: "Nine blocks on a board. Drag one somewhere else, remove it, add it again, add a second delay. The order is part of the sound and it is saved with your project.",
+    body: "The amp is one block of nine. Drag any of them somewhere else, remove it, add it again, add a second delay. The order is part of the sound and it is saved with your project.",
     board: {
       label: "The chain. Drag a block, or focus one and use the arrow keys, to change the order.",
       waveform: "The signal this order gives.",
@@ -76,7 +76,7 @@ export const en = {
   captures: {
     kicker: "Captures",
     headline: ["A real amp,", "captured."],
-    body: "A capture is a file that holds how one real amplifier responds to a guitar. tubamp plays Neural Amp Modeler captures, the newer A2 format included. Browse the TONE3000 library inside the plugin with your own TONE3000 API key, or load any .nam file with no setup.",
+    body: "A capture is a file that holds how one real amplifier responds to a guitar. tubamp plays Neural Amp Modeler captures, the newer A2 format included. Browse the TONE3000 library inside the plugin, or load any .nam file you already have.",
     facts: [
       "NAM A1, A2, slimmable and LSTM captures",
       "Resamples when the session rate differs from the capture",
@@ -89,7 +89,7 @@ export const en = {
   effects: {
     kicker: "Effects",
     headline: ["Every block shows you", "what it is doing."],
-    body: "Each editor draws the effect from the same numbers the knobs set: the gate's threshold over your playing, the compressor's curve, the delay's repeats, the reverb's tail. Grab the picture or grab the knob.",
+    body: "The effects come with the plugin; there is no store and nothing to unlock. Each editor draws its effect from the same numbers the knobs set: the gate's threshold over your playing, the compressor's curve, the delay's repeats, the reverb's tail. Grab the picture or grab the knob.",
   },
   more: {
     kicker: "More",
@@ -172,7 +172,11 @@ export const en = {
   faq: [
     {
       q: "Do I need my own captures?",
-      a: "No. Paste your own TONE3000 API key into the plugin's settings and it browses the TONE3000 library and loads a capture with one click. Any .nam file you already have loads with no setup. Cab impulse responses work the same way.",
+      a: "No. Sign in with a TONE3000 account and the plugin browses the TONE3000 library and loads a capture with one click. Any .nam file you already have loads with no account. Cab impulse responses work the same way.",
+    },
+    {
+      q: "Do I need other plugins to get a full sound?",
+      a: "No. The amp, the cab and the effects are all in tubamp, so one insert on a track is the whole rig. The three Audio Unit slots are for plugins you already own and want in the chain.",
     },
     {
       q: "Is it really free?",

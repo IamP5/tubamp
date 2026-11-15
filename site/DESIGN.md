@@ -7,8 +7,10 @@ and how it moves.
 ## What the page has to do
 
 A guitarist who has never heard of tubamp lands here. Within one screen they
-know what it is (an Audio Unit for Logic Pro that plays neural captures of
-real amps in a chain you build yourself, with room for your own plugins). By
+know what it is (an Audio Unit for Logic Pro that is a whole guitar rig: a
+neural capture of a real amp, a cab and seven effects in a chain you put in
+any order, with room for your own plugins). The page sells the rig, never
+the amp alone. By
 the end they have seen the real editor move, reordered a chain with their own
 hand, tried the editor in the page, and clicked Download for their Mac.
 
@@ -94,8 +96,8 @@ with a cause.**
 
 ## Voice
 
-Plain, short, concrete, a little dry. Say what the thing does. "Your next amp
-is a file." "Build the chain. Any order." No "unleash", "revolutionary",
+Plain, short, concrete, a little dry. Say what the thing does. "The whole rig,
+in one plugin." "Build the chain. Any order." No "unleash", "revolutionary",
 "seamless", "next-level", no exclamation marks, no emoji. Sentence case
 everywhere. Every factual claim must be true of the plugin today; the
 sentences live in `src/i18n/en.ts` and came from the repository's README and
