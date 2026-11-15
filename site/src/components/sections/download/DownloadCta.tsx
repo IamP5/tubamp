@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import ButtonLink, { buttonClass } from "@/components/ui/Button";
-import { SHARE, SITE } from "@/data/site";
+import { SITE } from "@/data/site";
+import { useDict } from "@/i18n/DictProvider";
 import { ctaHref } from "./format";
 import { useDetectedArch, useNotAMac } from "./useDetectedArch";
 
 export default function DownloadCta({
-  label = "Download for Mac",
-  shareLabel = SHARE.label,
+  label,
+  shareLabel,
   className = "",
 }: {
   label?: string;
@@ -17,10 +18,11 @@ export default function DownloadCta({
 }) {
   const arch = useDetectedArch();
   const away = useNotAMac();
-  if (away) return <SendLink label={shareLabel} className={className} />;
+  const t = useDict();
+  if (away) return <SendLink label={shareLabel ?? t.share.label} className={className} />;
   return (
     <ButtonLink href={ctaHref(arch)} className={className}>
-      {label}
+      {label ?? t.nav.downloadMac}
     </ButtonLink>
   );
 }
@@ -28,6 +30,7 @@ export default function DownloadCta({
 /** A phone cannot install a Mac plugin, so its button gets the page to the Mac instead. */
 function SendLink({ label, className }: { label: string; className: string }) {
   const [copied, setCopied] = useState(false);
+  const t = useDict();
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
 
@@ -54,7 +57,7 @@ function SendLink({ label, className }: { label: string; className: string }) {
 
   return (
     <button type="button" onClick={send} className={buttonClass("signal", `cursor-pointer ${className}`)}>
-      <span aria-live="polite">{copied ? SHARE.copied : label}</span>
+      <span aria-live="polite">{copied ? t.share.copied : label}</span>
     </button>
   );
 }

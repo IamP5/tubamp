@@ -1,25 +1,26 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CHAPTERS } from "@/data/site";
+import { ARCH_LABELS } from "@/data/site";
+import { fill } from "@/i18n/config";
+import { useDict } from "@/i18n/DictProvider";
 import { formatSize, type Arch, type Download } from "@/lib/release-schema";
 import { archOrder, shortHash } from "./format";
 import { ArrowDown, fieldButton } from "./parts";
 import { useDetectedArch } from "./useDetectedArch";
 
-const { archLabels } = CHAPTERS.download;
-
 export default function ArchButtons({ downloads }: { downloads: Record<Arch, Download> }) {
   const detected = useDetectedArch();
   const order = archOrder(detected);
+  const t = useDict().download;
   return (
     <ul className="grid gap-8 sm:grid-cols-2 sm:gap-4">
       {order.map((arch, i) => (
         <li key={arch} className="flex flex-col gap-3">
           <a href={`/download/${arch}`} className={fieldButton(detected !== null && i === 0)}>
             <span>
-              <span className="sr-only">Download for </span>
-              {archLabels[arch]}
+              <span className="sr-only">{t.downloadFor} </span>
+              {ARCH_LABELS[arch]}
             </span>
             <ArrowDown />
           </a>
@@ -30,7 +31,7 @@ export default function ArchButtons({ downloads }: { downloads: Record<Arch, Dow
               <span className="text-bone-3">SHA-256 </span>
               {shortHash(downloads[arch].sha256)}
             </span>
-            <CopyHash sha256={downloads[arch].sha256} label={archLabels[arch]} />
+            <CopyHash sha256={downloads[arch].sha256} label={ARCH_LABELS[arch]} />
           </p>
         </li>
       ))}
@@ -40,6 +41,7 @@ export default function ArchButtons({ downloads }: { downloads: Record<Arch, Dow
 
 function CopyHash({ sha256, label }: { sha256: string; label: string }) {
   const [copied, setCopied] = useState(false);
+  const t = useDict().download;
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
 
@@ -59,10 +61,10 @@ function CopyHash({ sha256, label }: { sha256: string; label: string }) {
       type="button"
       onClick={copy}
       className="-my-1 inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-bone-2 transition-colors duration-150 ease-ui hover:bg-ink-3 hover:text-bone"
-      aria-label={`Copy the full SHA-256 of the ${label} installer`}
+      aria-label={fill(t.copyHash, { arch: label })}
     >
       {copied ? <Check /> : <CopyIcon />}
-      <span aria-live="polite">{copied ? "Copied" : "Copy"}</span>
+      <span aria-live="polite">{copied ? t.copied : t.copy}</span>
     </button>
   );
 }

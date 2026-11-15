@@ -1,7 +1,9 @@
 import { ImageResponse } from "next/og";
 import { SITE } from "@/data/site";
+import { DEFAULT_LOCALE, hasLocale } from "@/i18n/config";
+import { DICTIONARIES } from "@/i18n/dictionaries";
 
-export const alt = `${SITE.name}. ${SITE.tagline}`;
+export const alt = SITE.name;
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -17,7 +19,9 @@ const wave = Array.from({ length: 61 }, (_, i) => {
   return `${i === 0 ? "M" : "L"}${x} ${y.toFixed(1)}`;
 }).join(" ");
 
-export default function Image() {
+export default async function Image({ params }: { params: Promise<{ lang: string }> }) {
+  const { lang } = await params;
+  const [line1, line2] = DICTIONARIES[hasLocale(lang) ? lang : DEFAULT_LOCALE].hero.headline;
   return new ImageResponse(
     (
       <div
@@ -34,8 +38,8 @@ export default function Image() {
       >
         <div style={{ display: "flex", fontSize: 34, letterSpacing: "-0.04em", color: BONE_2 }}>{SITE.name}</div>
         <div style={{ display: "flex", flexDirection: "column", fontSize: 124, lineHeight: 0.92, letterSpacing: "-0.05em" }}>
-          <span>Your next amp</span>
-          <span>is a file.</span>
+          <span>{line1}</span>
+          <span>{line2}</span>
         </div>
         <svg width="1200" height="80" viewBox="0 0 1200 80" style={{ marginLeft: -72, marginBottom: 36 }}>
           <path d={wave} fill="none" stroke={SIGNAL} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />

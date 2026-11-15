@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { CHAPTERS } from "@/data/site";
+import { useDict } from "@/i18n/DictProvider";
 import { EASE } from "@/lib/motion";
 import { installSteps } from "./sections/download/format";
 
@@ -12,7 +12,8 @@ import { installSteps } from "./sections/download/format";
  */
 export default function InstallGuide({ gatekeeper }: { gatekeeper: boolean }) {
   const [open, setOpen] = useState(false);
-  const steps = installSteps(CHAPTERS.download.steps, gatekeeper).slice(1);
+  const t = useDict();
+  const steps = installSteps(t.download.steps, gatekeeper).slice(1);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -42,12 +43,12 @@ export default function InstallGuide({ gatekeeper }: { gatekeeper: boolean }) {
           <div className="flex items-start justify-between gap-4">
             <p className="flex items-center gap-2.5 font-medium text-bone">
               <span className="size-1.5 rounded-full bg-signal" aria-hidden />
-              Your download has started
+              {t.guide.started}
             </p>
             <button
               type="button"
               onClick={() => setOpen(false)}
-              aria-label="Close"
+              aria-label={t.guide.close}
               className="-m-1.5 cursor-pointer rounded-full p-1.5 text-bone-3 transition-colors duration-150 ease-ui hover:text-bone"
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>

@@ -1,13 +1,12 @@
-import { CHAPTERS } from "@/data/site";
+import { getDictionary } from "@/i18n/dictionaries";
 import { CAPTURE_SEQUENCE, FILMS } from "@/data/media";
 import ChapterLabel from "@/components/ui/ChapterLabel";
 import CapturesStage from "./effects/CapturesStage";
 import Reveal from "./effects/Reveal";
 import ScrubFilm from "./captures/ScrubFilm";
 
-const copy = CHAPTERS.captures;
-
-export default function Captures() {
+export default async function Captures() {
+  const copy = (await getDictionary()).captures;
   return (
     <section id="captures" data-family="gain" aria-labelledby="captures-title" className="relative">
       <ScrubFilm sequence={CAPTURE_SEQUENCE} loop={FILMS.capture}>

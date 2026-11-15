@@ -4,14 +4,16 @@ import { useEffect, useReducer, useRef, useSyncExternalStore, type KeyboardEvent
 import { animate, MotionConfig, Reorder } from "motion/react";
 import { useReducedMotion } from "@/components/SmoothScroll";
 import { buttonClass } from "@/components/ui/Button";
-import { CHAIN, CHAPTERS } from "@/data/site";
+import { CHAIN } from "@/data/site";
+import { fill } from "@/i18n/config";
+import { useDict } from "@/i18n/DictProvider";
+import type { Dictionary } from "@/i18n/en";
 import { EASE } from "@/lib/motion";
 import Glyph from "./Glyph";
 import { initialBoard, isHome, lit, reduce, type Action, type Board, type Note } from "./board";
 import { blend, drawWave, samples } from "./draw";
 import { isStage, type Stage } from "./signal";
 
-const copy = CHAPTERS.chain.board;
 const HOME: readonly Stage[] = CHAIN.map((b) => b.id).filter(isStage);
 const BLOCKS = new Map(CHAIN.map((b) => [b.id, b]));
 const name = (id: Stage) => BLOCKS.get(id)?.name ?? id;
@@ -23,10 +25,7 @@ const DEMO = { wait: 900, hold: 1100 } as const;
 const SPRING = { type: "spring", stiffness: 420, damping: 34, mass: 0.8 } as const;
 const MORPH = 0.5;
 
-const fill = (template: string, values: Record<string, string | number>) =>
-  template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key]));
-
-function caption(note: Note): string {
+function caption(note: Note, copy: Dictionary["chain"]["board"]): string {
   switch (note.kind) {
     case "rest":
       return copy.rest;
@@ -48,6 +47,7 @@ const subscribeRow = (cb: () => void) => {
 export default function ChainBoard() {
   const [board, dispatch] = useReducer((b: Board, a: Action) => reduce(b, a, HOME), HOME, initialBoard);
   const foot = useRef<HTMLDivElement>(null);
+  const copy = useDict().chain.board;
   const reduced = useReducedMotion();
   const row = useSyncExternalStore(subscribeRow, () => window.matchMedia(ROW).matches, () => false);
   const phase = board.phase.kind;
@@ -152,8 +152,8 @@ export default function ChainBoard() {
 
         <div ref={foot} className="flex min-h-10 items-start justify-between gap-6">
           <p aria-live="polite" className="max-w-[48rem] text-base text-bone md:text-lead">
-            <span key={caption(board.note)} className="drum-caption block">
-              {caption(board.note)}
+            <span key={caption(board.note, copy)} className="drum-caption block">
+              {caption(board.note, copy)}
             </span>
           </p>
           {!isHome(board, HOME) && (
@@ -189,6 +189,7 @@ function Wave({ order, instant }: { order: readonly Stage[]; instant: boolean })
   const canvas = useRef<HTMLCanvasElement>(null);
   const shown = useRef<{ from: Float32Array; to: Float32Array; mix: number } | null>(null);
   const latest = useRef(order);
+  const label = useDict().chain.board.waveform;
 
   useEffect(() => {
     latest.current = order;
@@ -252,7 +253,7 @@ function Wave({ order, instant }: { order: readonly Stage[]; instant: boolean })
 
   return (
     <div className="relative h-[clamp(96px,17svh,180px)]">
-      <canvas ref={canvas} role="img" aria-label={CHAPTERS.chain.board.waveform} className="absolute inset-0 size-full" />
+      <canvas ref={canvas} role="img" aria-label={label} className="absolute inset-0 size-full" />
     </div>
   );
 }

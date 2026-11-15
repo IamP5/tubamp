@@ -58,6 +58,32 @@ A new release reaches the page within about five minutes of the next request
 after the cache goes stale: with no visitors, nothing refreshes it. To see a
 new release sooner, redeploy from the Vercel dashboard.
 
+## Languages
+
+The page is in English (`/`) and Brazilian Portuguese (`/pt-br`).
+
+- `src/i18n/en.ts` and `src/i18n/pt-br.ts` hold every sentence. They have the
+  same shape, and `src/i18n/i18n.test.ts` fails when one has a string, or a
+  `{slot}`, the other lacks. Server Components read them with
+  `getDictionary()`; Client Components with `useDict()`.
+- Both pages are prerendered from `src/app/[lang]/`. English is rendered as
+  `/en` and `src/proxy.ts` serves it at `/`; a request for `/en` redirects
+  to `/`.
+- `src/proxy.ts` decides what `/` shows (`pickLocale()` in
+  `src/i18n/config.ts`). A visitor whose request comes from Brazil
+  (`x-vercel-ip-country: BR`, a header Vercel sets) is redirected to `/pt-br`.
+  Everyone else gets English. The header is absent in local development; to
+  try it, `curl -I -H "x-vercel-ip-country: BR" http://localhost:3000/`.
+- The footer links to the other language and sets a `locale` cookie. From then
+  on `/` shows that language, whatever the country.
+- `/pt-br` always shows Portuguese and never redirects, so a shared link opens
+  in the language it was shared in.
+- The in-page demo and the clips show the plugin, which is in English only.
+
+To add a language: add it to `LOCALES`, `LANG_TAG`, `OG_LOCALE` and
+`LOCALE_NAME` in `src/i18n/config.ts`, write its dictionary, register it in
+`src/i18n/dictionaries.ts`, and map its countries in `BY_COUNTRY`.
+
 ## Media
 
 The page uses two kinds of footage.
@@ -130,10 +156,12 @@ product and git ignores it. To build another copy of the editor, pass
 
 | Path | What it holds |
 | --- | --- |
-| `src/app/page.tsx` | the page: the chapters in order |
+| `src/app/[lang]/page.tsx` | the page: the chapters in order |
 | `src/components/hero/`, `src/components/sections/` | one file or folder per chapter |
 | `src/components/ui/` | shared pieces: `ButtonLink`, `VideoLoop`, `Window`, `ChapterLabel` |
-| `src/data/site.ts` | every string and fact the page states about the plugin |
+| `src/i18n/` | every sentence the page says, per language, and the locale rules |
+| `src/proxy.ts` | picks the language for `/` |
+| `src/data/site.ts` | what reads the same in every language: block names, families, addresses |
 | `src/data/media.ts` | the clips of the real editor and the generated film |
 | `src/lib/motion.ts` | GSAP setup, media-query conditions, easings |
 | `src/lib/release*.ts`, `src/lib/platform.ts` | release data and architecture detection |
