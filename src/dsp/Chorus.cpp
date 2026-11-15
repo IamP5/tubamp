@@ -1821,6 +1821,17 @@ void ChorusFx::reset()
     s.snapParams = true;
 }
 
+chain::Why ChorusFx::stereoWhy (int mode, float depth, float width, float mix) noexcept
+{
+    // Classic is one voice on both channels. The others offset the right side's LFO (Wide,
+    // CE), run their lines in antiphase (Dimension) or mix different voices per side (Tri),
+    // all of it in the wet side signal that width scales.
+    if (juce::jlimit (0, numModes - 1, mode) == (int) Mode::classic)
+        return chain::Why::none;
+
+    return depth > 0.0f && width > 0.0f && mix > 0.0f ? chain::Why::chorus : chain::Why::none;
+}
+
 void ChorusFx::setParameters (const ChorusParams& params)
 {
     auto& s = *impl;

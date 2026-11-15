@@ -44,6 +44,7 @@ export function useBlockToggles(): BlockToggles {
   const split = useToggleParam("split_on");
   const mix = useToggleParam("mix_on");
   const amp2 = useToggleParam("amp2_on");
+  const cab2 = useToggleParam("cab2_on");
   return {
     gate,
     comp,
@@ -73,6 +74,7 @@ export function useBlockToggles(): BlockToggles {
     lane2: split,
     mix,
     amp2,
+    cab2,
   };
 }
 

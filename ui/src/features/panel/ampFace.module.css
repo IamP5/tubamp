@@ -1,0 +1,250 @@
+/* The amp's face: the lead of the amp editor (./AmpFace.tsx). Tokens only. */
+
+.face {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── the amp: a photo, or the default amp; it is the menu's button ── */
+
+/* One step DOWN (the window colour), like a display: the picture sits in a
+   recess rather than in a box inside the band. */
+.stage {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 96px;
+  display: block;
+  padding: 0;
+  border-radius: var(--ds-r-3);
+  background: var(--ds-bg);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+/* The hairline is drawn over the picture, so a photo's edge never meets the
+   band's surface raw. */
+.stage::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: inherit;
+  box-shadow: var(--ds-ring-line);
+  pointer-events: none;
+  transition: box-shadow var(--ds-t-fast) var(--ds-ease);
+}
+
+.stage:hover::after,
+.stage[aria-expanded="true"]::after {
+  box-shadow: var(--ds-ring-line-strong);
+}
+
+.stage:focus-visible {
+  outline: none;
+  box-shadow: var(--ds-focus);
+}
+
+.picture {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+}
+
+.photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  -webkit-user-drag: none;
+}
+
+/* ── the default amp ── */
+
+.amp {
+  width: 100%;
+  height: 100%;
+}
+
+.ampBody {
+  fill: var(--ds-surface-2);
+  stroke: var(--ds-line-strong);
+}
+
+.ampHandle,
+.ampFoot {
+  fill: var(--ds-surface-3);
+}
+
+.ampCloth {
+  fill: var(--ds-bg);
+  stroke: var(--ds-line-strong);
+}
+
+.ampPanel {
+  fill: var(--ds-surface-3);
+  stroke: var(--ds-line-strong);
+}
+
+.ampKnob {
+  fill: var(--ds-surface-1);
+  stroke: var(--ds-line-strong);
+}
+
+.ampPointer {
+  stroke: var(--ds-text-2);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.ampJack {
+  fill: var(--ds-bg);
+  stroke: var(--ds-line-strong);
+}
+
+.ampLamp {
+  fill: var(--ds-surface-1);
+  stroke: var(--ds-line-strong);
+  transition: fill var(--ds-t-base) var(--ds-ease);
+}
+
+.ampLampLit {
+  fill: var(--ds-accent);
+  stroke: none;
+}
+
+/* "Choose an amp", where the amp's badge would be: centred on the grille
+   (40% down the drawing). */
+.call {
+  position: absolute;
+  top: 40%;
+  left: 0;
+  right: 0;
+  transform: translateY(-50%);
+  text-align: center;
+  font-size: var(--ds-fs-body);
+  font-weight: 500;
+  color: var(--ds-text-2);
+  transition: color var(--ds-t-fast) var(--ds-ease);
+}
+
+.stage:hover .call {
+  color: var(--ds-text);
+}
+
+/* A TONE3000 download in flight for this slot: along the amp's bottom edge. */
+.progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--ds-line);
+}
+
+.progressFill {
+  display: block;
+  height: 100%;
+  background: var(--ds-accent);
+  transform-origin: left center;
+  transition: transform var(--ds-t-base) var(--ds-ease);
+}
+
+/* ── the plate under it: what is loaded, and the library's steps ── */
+
+.plate {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-2);
+  min-width: 0;
+  height: 40px;
+}
+
+/* The outgoing and incoming identity share one grid cell while they crossfade. */
+.identityStack {
+  flex: 1 1 0;
+  display: grid;
+  min-width: 0;
+}
+
+.identityStack > * {
+  grid-area: 1 / 1;
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-1);
+  min-width: 0;
+}
+
+.face .titleAnchor {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--ds-fs-title);
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--ds-text);
+}
+
+.titleText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.warnIcon {
+  flex: none;
+  color: var(--ds-warn);
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 16px;
+  font-size: var(--ds-fs-label);
+  line-height: 16px;
+  color: var(--ds-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.metaItem {
+  display: inline-flex;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.metaSep {
+  flex: none;
+  padding: 0 6px;
+}
+
+.metaWarn {
+  color: var(--ds-warn);
+}
+
+.steps {
+  flex: none;
+  display: flex;
+  align-items: center;
+}

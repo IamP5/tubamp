@@ -73,7 +73,7 @@ import {
   sanitizeStructure,
 } from "../../chain/structure";
 import { useRigCab } from "../../hooks";
-import { useStore } from "../../store";
+import { AMP_SLOTS, CAB_SLOTS, isAmpToken, isCabToken, useStore } from "../../store";
 import { BLOCK_INFO } from "../../theme/blocks";
 import { stagger, tween } from "../../theme/motion";
 import {
@@ -88,13 +88,16 @@ import {
 import type { MenuEntry } from "../../components";
 import { BlockCard } from "./BlockCard";
 import { Connectors } from "./Connectors";
+import { linkWidths, turnText } from "./wires";
 import {
   AddBlockButton,
   AddNode,
   InsertNode,
   LaneAddNode,
   LaneLabel,
+  OutInfo,
   Terminal,
+  TurnPort,
   canAddBlock,
   pickerKinds,
   type SplitOption,
@@ -115,6 +118,7 @@ import {
   sameOrder,
   slotOf,
   type LaneRegion,
+  type NodeId,
   type Slot,
 } from "./layout";
 import { laneHint, useLaneNames, useXoverHz, type LaneSide } from "./lanes";
@@ -179,19 +183,18 @@ export function Board() {
      get, a second cab stacked on a full-rig capture, a plugin not running. */
   const warningFor = useCallback(
     (id: BlockId): string | undefined => {
-      if (id === "amp" && missing.model)
-        return `Capture not found: ${fileName(missing.model)}`;
-      if (id === "amp2" && missing.modelB)
-        return `Capture not found: ${fileName(missing.modelB)}`;
-      if (id === "cab") {
-        if (missing.ir) return `IR not found: ${fileName(missing.ir)}`;
-        if (rigCab.doubleCab)
+      const lost = isAmpToken(id) ? missing[AMP_SLOTS[id].missing] : null;
+      if (lost) return `Capture not found: ${fileName(lost)}`;
+      if (isCabToken(id)) {
+        const lostIr = missing[CAB_SLOTS[id].missing];
+        if (lostIr) return `IR not found: ${fileName(lostIr)}`;
+        if (id === "cab" && rigCab.doubleCab)
           return "The capture already includes a cab, so this IR stacks a second one.";
       }
       const slot = fxSlotIndexOf(id);
       return slot === -1 ? undefined : fxWarning(fxSlots[slot]);
     },
-    [fxSlots, missing.ir, missing.model, missing.modelB, rigCab.doubleCab],
+    [fxSlots, missing, rigCab.doubleCab],
   );
 
   const removeFromChain = useCallback(
@@ -295,6 +298,19 @@ export function Board() {
   const slots = board.slots;
   const wireBox = useMemo(() => connectorBox(contentBox(slots)), [slots]);
   const inserts = useMemo(() => insertPoints(board.links), [board.links]);
+  const width = useStore((st) => st.width);
+  const widths = useMemo(() => linkWidths(width, board.links), [width, board.links]);
+  const turns = useMemo(() => {
+    if (!width) return [];
+    const points: { key: string; x: number; y: number; text: string }[] = [];
+    for (const step of width.steps) {
+      const text = turnText(step);
+      const slot = text ? slotOf(slots, step.block as NodeId) : undefined;
+      if (text && slot)
+        points.push({ key: step.block, x: slot.x + slot.w, y: slot.y, text });
+    }
+    return points;
+  }, [slots, width]);
 
   /* Every node springs onto its slot; the dragged/settling card is exempt. */
   useLayoutEffect(() => {
@@ -521,9 +537,11 @@ export function Board() {
             <div className={s.wireLayer}>
               <Connectors
                 links={board.links}
+                widths={widths}
                 region={board.region}
                 box={wireBox}
                 nodes={nodes}
+                reduced={reduced}
               />
             </div>
 
@@ -619,7 +637,16 @@ export function Board() {
                 />
               ))}
 
-            <Terminal kind="out" node={nodes.get("out")} reduced={reduced} />
+            {/* Static like the inserts, and hidden while a card is in flight
+                for the same reason. */}
+            {!drag.dragId &&
+              turns.map((turn) => (
+                <TurnPort key={`turn-${turn.key}`} x={turn.x} y={turn.y} text={turn.text} />
+              ))}
+
+            <Terminal kind="out" node={nodes.get("out")} reduced={reduced}>
+              {width?.host.out === 1 && width.wouldBeStereo && <OutInfo />}
+            </Terminal>
           </motion.div>
         </div>
       </motion.div>

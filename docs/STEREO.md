@@ -15,6 +15,29 @@ confirms mono-only core, NeuralAmpModelerPlugin issue #108; stereo = dual mono i
    wet width control.
 3. **Reverb width** — expose `juce::Reverb`'s already-wired `width` field as a param.
 
+## Host layouts
+
+The plugin offers three layouts (`isBusesLayoutSupported`): mono in and mono out, mono in
+and stereo out, stereo in and stereo out. `auval` reports them as `[1, 1] [1, 2] [2, 2]`, and
+Logic lists the middle one as "Mono->Stereo" on a mono track.
+
+With one input and two outputs the host hands `processBlock` a two-channel buffer whose
+second channel is silent. `processBlock` copies the input onto it before anything else runs,
+so the chain behaves exactly as it does for a stereo host fed the same signal on both sides
+(smoke test "mono in, stereo out"). Without the copy every block that averages the channels
+(the amp, the gate detector, the ping-pong seed, the analyser) would read 6 dB low.
+
+Where the chain is mono and where it is stereo is computed by `chain::planWidth`
+(`src/dsp/WidthMap.h`) on the message thread and sent to the editor as `width`
+(docs/REACT-UI.md). "Stereo" means left and right carry different signals. Each engine's
+widening rule is a `stereoWhy` beside its process code, and the cab's stereo verdict on the
+audio thread shares `chain::ampFoldsAfter` with the map. The smoke test "width map matches
+the rendered output" renders each case in all three layouts and fails when a rule and the
+DSP disagree.
+
+Logic picks up a changed set of layouts only when the component version changes (reported
+on the JUCE forum, and what happened here going from 0.1.0 to 0.2.0).
+
 Out of scope (deliberate, note in docs): amp pan/spread/polarity switches, tape delay
 mode, reverb pre-delay/freeze, stereo mod. (Parallel chain paths were out of scope here
 and are the subject of docs/SPLIT.md.)
@@ -53,8 +76,9 @@ Everything below this line survived the supersession and is still the contract:
   `captureStateVar`, `applyStateVar` (missing key = empty = no B model; old state loads
   unchanged). Member `loadedModelPathB` under the existing `pathLock`.
 - Processor API: `loadModelB(file)`, `clearModelB()`, `getModelInfoB()` mirroring the
-  A-side methods. Second `NamEngine namEngineB` member. `collectGarbage()` mirrored.
-  `setSlimSize()` fans out to BOTH engines (single UI control).
+  A-side methods. The engines are `ampEngines[2]` (`namEngine` / `namEngineB` name
+  them). `collectGarbage()` mirrored. Each engine takes its own amp's slim (`amp_slim`,
+  `amp2_slim`).
 - `namEngineB.applyStaging()` runs first-thing every block alongside A's, whatever the
   chain contains — a staged swap must never sit stale because amp2 is out of the chain.
 - `hasLiveModel()` is an audio-thread-safe query (std::atomic<bool>, published by
@@ -69,6 +93,8 @@ Everything below this line survived the supersession and is still the contract:
   prewarm + staged swap). No dspData sharing across engines (parse twice; acceptable —
   load is a UI action, and NAM core offers no weight sharing anyway).
 - Clearing model A does NOT clear B; an empty B just makes amp2 a pass-through.
+- The cab has a second instance too (`cab2`, docs/SPLIT.md §2a), so each lane of a
+  dual-amp rig can end in its own cab and IR.
 - Model B failing validation surfaces the same error string path as A.
 
 ### What was removed with the stereo path
@@ -99,8 +125,9 @@ Everything below this line survived the supersession and is still the contract:
 lengths: `delaySamplesL` (existing) and `delaySamplesR` (= L x ratio in Dual, = L
 otherwise). Process becomes sample-major when channels == 2 and mode != Stereo:
 
-- **Stereo** (mode 0): keep the existing per-channel loop verbatim — bit-identical
-  output for old sessions.
+- **Stereo** (mode 0): one line per channel. For every type but Tape the right line's
+  modulation runs a quarter cycle behind the left (`Delay.cpp`), so with `delay_mod` above 0
+  (the default is 0.2) the repeats differ left to right even from a mono source.
 - **Ping-Pong**: input seeds line L summed to mono; cross-feedback:
   ```
   dl = pop(0, tL); dr = pop(1, tL)          // both lines at the L time
@@ -144,9 +171,8 @@ UiState: add `modelB` (same ModelInfo shape as `model`, null when empty); poll i
 UI components:
 
 - ~~**AmpBody**: a STEREO toggle + Model B row~~ — SUPERSEDED by docs/SPLIT.md §5: the
-  model-B management (library picker, "Use model A", clear, status) moves to `Amp2Body`
-  and AmpBody loses the section entirely. Slim-size stays a single control on AmpBody
-  (it applies to both engines).
+  model-B management moves to the `amp2` block, which opens the same `AmpBody` bound to
+  its own `amp2_*` controls, and AmpBody loses the STEREO section entirely. Each amp has its own slim control.
 - **DelayBody** (new, modeled on ModBody): `${token}_mode` ParamMenu + KnobRow. Extend
   `BASE_KNOB_SPECS.delay` with ratio + width knobs; instances inherit via blockRecord.
 - **Reverb**: extend `BASE_KNOB_SPECS.reverb` with width (generic KnobRow, no body).
@@ -157,7 +183,7 @@ UI components:
 Dual A2 inference is linear 2x with no shared-compute discount, but A2-Full is 30-40%
 cheaper than A1-Standard with the fast path (`NAM_ENABLE_A2_FAST`, on by default);
 an Apple M-series machine runs ~64 A2-Full instances real-time, so stereo dual-amp is
-~1/32 of headroom on target hardware. Slim-size control scales both sides together.
+~1/32 of headroom on target hardware. Each amp's slim control scales its own engine.
 Denormals: `ScopedNoDenormals` already covers the whole processBlock — includes B.
 
 ## 6. Tests

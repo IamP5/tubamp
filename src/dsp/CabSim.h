@@ -2,6 +2,8 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include "WidthMap.h"
+
 #include <atomic>
 #include <memory>
 
@@ -108,6 +110,11 @@ public:
     /** In place. `allowStereo` is false when something downstream folds the path to
         mono (an enabled amp), which makes true stereo pointless there. */
     void process (juce::dsp::AudioBlock<float> block, bool allowStereo);
+
+    /** Why a cab makes left and right differ from a mono input with two channels to run
+        on: a two-channel IR running as true stereo (`allowStereo` as process() gets it)
+        with some of it in the mix. */
+    static chain::Why stereoWhy (bool irStereo, bool allowStereo, float mix01) noexcept;
 
 private:
     struct Engine;

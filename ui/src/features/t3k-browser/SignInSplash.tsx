@@ -14,7 +14,6 @@ import s from "./t3k.module.css";
 
 export function SignInSplash({ onClose }: { onClose(): void }) {
   const configured = useStore((st) => st.t3k.configured);
-  const t3kConfigure = useStore((st) => st.t3kConfigure);
   const [waiting, setWaiting] = useState(false);
 
   useEffect(() => {
@@ -37,9 +36,9 @@ export function SignInSplash({ onClose }: { onClose(): void }) {
         <p className={s.splashCopy}>
           {configured
             ? "Sign in to browse the community’s amp captures and cab IRs and load them straight into the chain. Sign-in opens in your browser."
-            : "Add a TONE3000 publishable key first. Create one at tone3000.com under Settings, API Keys."}
+            : "This build of tubamp has no TONE3000 key, so the library is unavailable."}
         </p>
-        {configured ? (
+        {configured && (
           <Button
             variant="primary"
             icon={waiting ? <Spinner size={14} /> : undefined}
@@ -50,10 +49,6 @@ export function SignInSplash({ onClose }: { onClose(): void }) {
             }}
           >
             {waiting ? "Waiting for browser…" : "Sign in to TONE3000"}
-          </Button>
-        ) : (
-          <Button variant="primary" onClick={() => void t3kConfigure()}>
-            Set publishable key…
           </Button>
         )}
       </div>

@@ -85,6 +85,13 @@ constexpr int kVersionHint3 = 3;
     hint sorts the whole group after every shipped id in the AU parameter list. */
 constexpr int kVersionHint4 = 4;
 
+/** Hint for the second amp's own output mode, calibration, slim and tone stack, added after
+    the hint-4 set shipped. */
+constexpr int kVersionHint5 = 5;
+
+/** Hint for the second cab's parameters, added after the hint-5 set. */
+constexpr int kVersionHint6 = 6;
+
 /** Range whose normalised 0.5 point sits at the geometric mean — the natural
     feel for frequency / time / ratio controls. */
 juce::NormalisableRange<float> logRange (float minValue, float maxValue, float interval)
@@ -460,6 +467,25 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
         addFloat (layout, modWaveIds[k],  name + " Wave",  { 0.0f, 1.0f, 0.001f }, kTremStart.wave,    {}, kVersionHint4);
         addBool (layout, modColorIds[k], name + " Color", kPhaserStart.color, kVersionHint4);
     }
+
+    // --- the second amp's own controls, hint 5, each a verbatim copy of the first amp's.
+    // State saved before they existed restores them from the first amp's (amp2_out_mode
+    // absent: kAmp2FollowsAmp in PluginProcessor.cpp).
+    addChoice (layout, amp2OutMode, "Amp 2 Output Mode", ampOutModeChoices, (int) OutputMode::normalized, kVersionHint5);
+    addBool  (layout, amp2CalInput, "Amp 2 Calibrate Input", false, kVersionHint5);
+    addFloat (layout, amp2CalLevel, "Amp 2 Cal Level", { -60.0f, 60.0f, 0.1f }, 12.0f, "dBu", kVersionHint5);
+    addFloat (layout, amp2Slim,     "Amp 2 Slim",      { 0.0f, 1.0f, 0.01f },   0.0f,  {},    kVersionHint5);
+    addBool  (layout, amp2EqOn,     "Amp 2 EQ On",     true, kVersionHint5);
+    addFloat (layout, amp2EqBass,   "Amp 2 EQ Bass",   { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint5);
+    addFloat (layout, amp2EqMid,    "Amp 2 EQ Middle", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint5);
+    addFloat (layout, amp2EqTreble, "Amp 2 EQ Treble", { 0.0f, 10.0f, 0.1f }, 5.0f, {}, kVersionHint5);
+
+    // --- the second cab, hint 6, each a verbatim copy of the first cab's. State saved before
+    // it existed has no cab2 in its chain, so the defaults are all such a state needs.
+    addBool  (layout, cab2On,      "Cab 2 On",       true, kVersionHint6);
+    addFloat (layout, cab2LowCut,  "Cab 2 Low Cut",  logRange (20.0f, 500.0f, 1.0f),      80.0f, "Hz", kVersionHint6);
+    addFloat (layout, cab2HighCut, "Cab 2 High Cut", logRange (2000.0f, 20000.0f, 1.0f), 8000.0f, "Hz", kVersionHint6);
+    addFloat (layout, cab2Mix,     "Cab 2 Mix",      { 0.0f, 100.0f, 0.1f }, 100.0f, "%", kVersionHint6);
 
     return layout;
 }

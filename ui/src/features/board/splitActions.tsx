@@ -21,7 +21,7 @@ import {
   swapLanes,
   type SplitRemoval,
 } from "../../chain/structure";
-import { useStore } from "../../store";
+import { copyAmpSettings, useStore } from "../../store";
 import { BLOCK_INFO } from "../../theme/blocks";
 import type { MenuEntry } from "../../components";
 import {
@@ -94,9 +94,10 @@ export function canBuildDualAmp(order: readonly BlockId[]): boolean {
 /**
  * The one-click dual-amp rig: amp in lane A, amp2 in lane B (see
  * `dualAmpOrder`), then split mode Copy, lane A hard left, lane B hard right,
- * engine B seeded with engine A's capture when it has none (so both lanes
- * sound right immediately), and amp2 selected so its panel opens on the
- * second-capture picker. `at` is the picker's position; it only matters when
+ * and the second amp starting as a copy of the first: its capture when it has
+ * none, and every control, so both lanes sound right and loudness-matched
+ * immediately. amp2 is selected so its panel opens on the second-capture
+ * picker. `at` is the picker's position; it only matters when
  * the chain has no amp to wrap.
  */
 export function buildDualAmp(at?: { index: number; row: number }): boolean {
@@ -129,8 +130,9 @@ export function buildDualAmp(at?: { index: number; row: number }): boolean {
   writeSlider("mix_blevel", 0);
   writeSlider("mix_level", 0);
   setLanePans(-1, 1);
-  const { model, modelB, loadModelB } = state;
-  if (model && !modelB) void loadModelB(model.path);
+  const { model, modelB, loadModel } = state;
+  if (model && !modelB) void loadModel(model.path, "amp2");
+  copyAmpSettings("amp", "amp2");
   useStore.getState().selectBlock("amp2");
   return true;
 }

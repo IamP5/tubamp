@@ -12,6 +12,7 @@
  * coloured. Not instance-aware: split is a singleton.
  */
 import { useComboParam, useSliderParam } from "../../hooks";
+import { useStore } from "../../store";
 import { SPLIT_LR, SPLIT_XOVER, laneNames } from "../board/lanes";
 import {
   FreqGrid,
@@ -34,6 +35,15 @@ import l from "./lanes.module.css";
 
 export function SplitBody() {
   const mode = useComboParam("split_mode").index;
+  // L/R needs two input channels. A mono input (Mono, or Mono → Stereo) gives
+  // both lanes the same signal; without a width map the layout is unknown.
+  const hostIn = useStore((st) => st.width?.host.in);
+  const note =
+    mode !== SPLIT_LR
+      ? "Both lanes carry the full signal"
+      : hostIn === 1
+        ? "Both lanes carry the same mono input"
+        : "Lane L carries the left channel, lane R the right";
   return (
     <>
       <HeaderSlot>
@@ -49,11 +59,13 @@ export function SplitBody() {
         <div className={l.note}>
           <p
             className={l.noteText}
-            title={mode === SPLIT_LR ? "On a mono track both lanes get the same signal" : undefined}
+            title={
+              mode === SPLIT_LR && hostIn === undefined
+                ? "On a mono input both lanes get the same signal"
+                : undefined
+            }
           >
-            {mode === SPLIT_LR
-              ? "Lane L carries the left channel, lane R the right"
-              : "Both lanes carry the full signal"}
+            {note}
           </p>
         </div>
       )}

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -18,6 +19,8 @@ const SHOW_DELAY_MS = 400;
 /** Gap between trigger and tip, and the tip's own height (4+11×1.4+4, rounded). */
 const TIP_GAP = 6;
 const TIP_H = 24;
+/** Least distance between a tip and the window's edge. */
+const EDGE = 8;
 
 type Placement = "top" | "bottom";
 
@@ -89,6 +92,19 @@ export function Tooltip({
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
 
+  /* Centred on its trigger, a tip near the window's edge would be cut off;
+     slide it back inside. Measured once per show, written to the DOM. */
+  const tipRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const tip = tipRef.current;
+    if (!pos || !tip) return;
+    tip.style.marginLeft = "0px";
+    const r = tip.getBoundingClientRect();
+    const over = r.right - (window.innerWidth - EDGE);
+    const under = EDGE - r.left;
+    tip.style.marginLeft = `${over > 0 ? -over : under > 0 ? under : 0}px`;
+  }, [pos]);
+
   const show = useCallback(
     (element: HTMLElement) => {
       if (disabled) return;
@@ -125,6 +141,7 @@ export function Tooltip({
         <AnimatePresence>
           {pos && (
             <motion.div
+              ref={tipRef}
               role="tooltip"
               className={s.tooltip}
               style={{

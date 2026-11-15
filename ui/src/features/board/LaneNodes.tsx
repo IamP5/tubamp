@@ -13,6 +13,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
@@ -27,6 +28,7 @@ import { BLOCK_BASES, addableKinds } from "../../store";
 import {
   BlockIcon,
   Button,
+  InfoIcon,
   PlusIcon,
   Scrim,
   Tooltip,
@@ -47,6 +49,7 @@ import {
   type InsertPoint,
 } from "./layout";
 import type { LaneSide } from "./lanes";
+import { MONO_INSTANCE_TEXT } from "./wires";
 import type { NodeMotion } from "./nodes";
 import s from "./board.module.css";
 
@@ -56,10 +59,12 @@ export interface TerminalProps {
   kind: "in" | "out";
   node: NodeMotion;
   reduced: boolean;
+  /** After the word: the mono-instance mark (`OutInfo`), when it applies. */
+  children?: ReactNode;
 }
 
 /** "In" / "Out": the word at the wire's end, nothing else. */
-export function Terminal({ kind, node, reduced }: TerminalProps) {
+export function Terminal({ kind, node, reduced, children }: TerminalProps) {
   return (
     <motion.div
       className={s.node}
@@ -81,9 +86,119 @@ export function Terminal({ kind, node, reduced }: TerminalProps) {
           className={cx(s.terminal, kind === "in" ? s.terminalIn : s.terminalOut)}
         >
           {kind === "in" ? "In" : "Out"}
+          {children}
         </span>
       </motion.div>
     </motion.div>
+  );
+}
+
+/* ──────────────────────── mono instance, at Out ───────────────────────── */
+
+/** Popover edge clearance from the window, and its gap to the mark. */
+const POP_MARGIN = 8;
+const POP_GAP = 6;
+
+/**
+ * An info mark after "Out" in a mono-out instance whose chain would be stereo:
+ * the one fact on the board that changes what the user does next (re-insert
+ * the plugin as Mono → Stereo). Neutral, not a warning: nothing is broken. A
+ * click opens two sentences; an outside click or Escape closes them.
+ */
+export function OutInfo() {
+  const { ref, anchor, open, toggle, close } = useMenu<HTMLButtonElement>();
+  const popRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  useLayoutEffect(() => {
+    if (!open || !anchor || !popRef.current) return;
+    const a = anchor.getBoundingClientRect();
+    const p = popRef.current.getBoundingClientRect();
+    const below = a.bottom + POP_GAP;
+    const top =
+      below + p.height > window.innerHeight - POP_MARGIN
+        ? Math.max(POP_MARGIN, a.top - POP_GAP - p.height)
+        : below;
+    const left = Math.min(
+      Math.max(POP_MARGIN, a.left + a.width / 2 - p.width / 2),
+      window.innerWidth - p.width - POP_MARGIN,
+    );
+    setPos({ top, left });
+  }, [anchor, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [close, open]);
+
+  return (
+    <>
+      <button
+        type="button"
+        ref={ref}
+        className={s.outInfo}
+        aria-label="Stereo on a mono track"
+        aria-expanded={open}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={toggle}
+      >
+        <InfoIcon size={12} />
+      </button>
+      {createPortal(
+        <AnimatePresence>
+          {open && (
+            <>
+              <Scrim className={kit.menuScrim} onPointerDown={close} />
+              <motion.div
+                ref={popRef}
+                role="dialog"
+                aria-label="Stereo on a mono track"
+                className={s.outInfoPop}
+                style={{ top: pos.top, left: pos.left }}
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: duration.fast, ease: ease.standard }}
+              >
+                {MONO_INSTANCE_TEXT.map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+/* ─────────────────────────────── width turns ───────────────────────────── */
+
+/** Matches `.turnPortMark`. */
+const TURN_PORT_W = 16;
+const TURN_PORT_H = 24;
+
+export interface TurnPortProps {
+  /** The tile's exit port, in lane units. */
+  x: number;
+  y: number;
+  text: string;
+}
+
+/** Hovering the exit of a tile that turns the width says why. Nothing shows
+ *  at rest: the rails starting or merging there are the mark. */
+export function TurnPort({ x, y, text }: TurnPortProps) {
+  return (
+    <div className={s.turnPort} style={{ left: x - TURN_PORT_W / 2, top: y - TURN_PORT_H / 2 }}>
+      <Tooltip label={text} placement="top">
+        <span className={s.turnPortMark} aria-label={text} />
+      </Tooltip>
+    </div>
   );
 }
 
@@ -151,7 +266,7 @@ interface PickerSection {
 /** The picker's sections, in reading order, split over two columns. */
 const SECTIONS: readonly { id: string; label: string; kinds: BaseBlockId[] }[] = [
   { id: "dynamics", label: "Dynamics", kinds: ["gate", "comp"] },
-  { id: "gain", label: "Gain", kinds: ["drive", "amp", "amp2"] },
+  { id: "gain", label: "Gain", kinds: ["drive", "amp"] },
   { id: "tone", label: "Tone", kinds: ["cab", "eq"] },
   { id: "time", label: "Modulation and time", kinds: ["mod", "delay", "reverb"] },
   { id: "plugins", label: "Plugins", kinds: ["fx1", "fx2", "fx3"] },

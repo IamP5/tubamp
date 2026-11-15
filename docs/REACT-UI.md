@@ -47,7 +47,7 @@ ui/                         # the SPA (npm workspace root for the frontend)
       panel/                # param dock: generic bodies + amp + cab + mod
       header/               # brand, preset pill, A/B, t3k status, settings
       footer/               # status bar: I/O meters, trim/level fields, engine status
-      settings/             # settings sheet (t3k key via native prompt, sign out)
+      settings/             # settings sheet (t3k sign out, updates)
       update/               # in-plugin update: Settings rows, toasts, words
     App.tsx  main.tsx
 src/WebEditor.h/.cpp        # new editor: WebBrowserComponent + relays + native fns + events
@@ -71,7 +71,7 @@ original id (`comp_threshold`), instances 2 and 3 get `<kind>2_<key>` /
 pre-existing id keeps its index. The amp's own tone stack (`amp_eq_*`) lives at
 the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`.
 
-- Sliders (184): the 29 v1 ids — input_trim, output_level, gate_threshold,
+- Sliders (192): the 29 v1 ids — input_trim, output_level, gate_threshold,
   comp_threshold, comp_ratio, comp_attack, comp_release, comp_makeup, drive_gain,
   drive_tone, drive_level, amp_input, amp_output, amp_cal_level, amp_slim,
   cab_lowcut, cab_highcut, eq_bass, eq_mid, eq_treble, mod_rate, mod_depth,
@@ -92,17 +92,21 @@ the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`
   appended for the gate/comp/drive/EQ/mod engines (docs/FX-ENGINES.md §2.7.1, hint 4):
   `gate_release|hold|range|sc_hpf` (4), `comp{,2,3}_knee|mix|sc_hpf` (9),
   `eq{,2,3}_lowcut|highcut|mid_freq|mid_q|tilt|level|g100|g200|g400|g800|g1k6|g3k2|g6k4`
-  (39), then `mod{,2,3}_width|tone|shape|wave` (12).
-- Toggles (36): the 13 v1 ids — gate_on, comp_on, drive_on, amp_on, cab_on, eq_on,
+  (39), then `mod{,2,3}_width|tone|shape|wave` (12), and, appended for the second
+  amp's own controls (version hint 5, docs/SPLIT.md §2): `amp2_cal_level`, `amp2_slim`,
+  `amp2_eq_bass`, `amp2_eq_mid`, `amp2_eq_treble`, then the second cab's (hint 6,
+  docs/SPLIT.md §2a): `cab2_lowcut`, `cab2_highcut`, `cab2_mix`.
+- Toggles (39): the 13 v1 ids — gate_on, comp_on, drive_on, amp_on, cab_on, eq_on,
   mod_on, delay_on, reverb_on, amp_cal_input, fx1_on, fx2_on, fx3_on — plus every
   instance's bypass (`comp2_on`, `comp3_on`, `drive2_on`, `drive3_on`, `eq2_on`,
   `eq3_on`, `mod2_on`, `mod3_on`, `delay2_on`, `delay3_on`, `reverb2_on`,
   `reverb3_on`), `amp_eq_on`, and, appended for split/mix (docs/SPLIT.md §2):
   `amp2_on`, `split_on`, `mix_on`, `mix_bphase`, then, appended for the engines
-  (docs/FX-ENGINES.md §2.7.1): `comp{,2,3}_auto_makeup`, `mod{,2,3}_color`.
+  (docs/FX-ENGINES.md §2.7.1): `comp{,2,3}_auto_makeup`, `mod{,2,3}_color`, then
+  (hint 5) `amp2_cal_input`, `amp2_eq_on`, then (hint 6) `cab2_on`.
   `amp_stereo` (docs/STEREO.md §1) is REMOVED — never shipped, superseded by `amp2` as
   an ordinary chain block.
-- Combos (42): amp_out_mode, mod_type, mod2_type, mod3_type — mod is the only v1
+- Combos (43): amp_out_mode, mod_type, mod2_type, mod3_type — mod is the only v1
   duplicable kind with a choice parameter — plus `delay_mode`/`delay2_mode`/
   `delay3_mode` (stereo chain, docs/STEREO.md §4) and `split_mode`
   (docs/SPLIT.md §2, choices FROZEN: Copy | L/R | X-Over), then, appended
@@ -110,7 +114,8 @@ the same tail — eq-shaped, but owned by the amp block, not an instance of `eq`
   `delay2_sync`, `delay3_type`, `delay3_sync`, `reverb_type`, `reverb2_type`,
   `reverb3_type`, then, appended (docs/FX-ENGINES.md §2.7.1, choices FROZEN):
   `gate_mode`, `comp{,2,3}_type`, `drive{,2,3}_type`, `eq{,2,3}_type|voice` (6), and
-  `mod{,2,3}_chorus_mode|phaser_model|trem_voice|sync` (12).
+  `mod{,2,3}_chorus_mode|phaser_model|trem_voice|sync` (12), then (hint 5)
+  `amp2_out_mode`. 274 parameters in all (`tests/golden/params-v6.tsv`).
 
 JS uses `getSliderState(id)` etc. from the vendored frontend lib; wrap in hooks
 (`useSliderParam`, `useToggleParam`, `useComboParam`) that subscribe to BOTH
@@ -140,7 +145,8 @@ automatable APVTS toggle.
 **Split/mix (docs/SPLIT.md)** adds four more singleton tokens: `split` and `mix` are
 ordinary tiles with panels (SplitBody/MixBody, below); `amp2` is a second,
 freely-placeable NAM engine block — inside a lane or anywhere serially, like any
-other block; `lane2` is a hidden STRUCTURAL token marking the lane-A/lane-B boundary
+other block; `cab2` (docs/SPLIT.md §2a) is the cab's second instance in the same way,
+with its own IR; `lane2` is a hidden STRUCTURAL token marking the lane-A/lane-B boundary
 — it is never rendered as a card, never selectable, never has a panel, and its
 `BlockInfo` exists purely so `getUiState`/`setChainOrder` round-trip it losslessly.
 A flat order fully encodes the fork: `..., split, <lane A ids...>, lane2, <lane B
@@ -170,7 +176,7 @@ hand-listing 24 entries twice:
 - `instanceOf(id)` — 0-based instance number, mirroring `chain::instanceOf` (`comp` is
   0, `comp3` is 2); user-facing text shows `instanceOf(id) + 1`.
 - `instanceTokensOfKind(kind)` — a kind's instance tokens, instance 1 first.
-- `blockRecord(make)` — builds a `Record<BlockId, T>` from one factory over all 24
+- `blockRecord(make)` — builds a `Record<BlockId, T>` from one factory over all 29
   tokens; every identity table (`BLOCK_INFO`, `BLOCK_GLYPH`) is written this way so
   an instance can never drift from its kind's name or glyph.
 
@@ -193,18 +199,22 @@ loadModelB(path: string): { error?: string }        // engine B (docs/STEREO.md 
 clearModelB(): void
 loadIr(path: string): { error?: string }
 clearIr(): void
-importModel(): { path?: string; name?: string; error?: string }  // FileChooser (.nam); installs AND loads
-importIr(): { path?: string; name?: string; error?: string }     // FileChooser (.wav); installs AND loads
+loadIrB(path: string): { error?: string }   // the second cab (`cab2`); same surface as loadIr
+clearIrB(): void
+importModel(target?: "amp" | "amp2"): { path?: string; name?: string; error?: string }
+                                            // FileChooser (.nam); installs AND loads into
+                                            // engine A ("amp", default) or B ("amp2"),
+                                            // then modelChanged / modelBChanged
+importIr(target?: "cab" | "cab2"): { path?: string; name?: string; error?: string }
+                                            // FileChooser (.wav); installs AND loads into
+                                            // the first cab ("cab", default) or the second,
+                                            // then irChanged / irBChanged
 loadPreset(path: string): { error?: string }
 savePresetAs(): { error?: string }          // native AlertWindow text prompt (Logic kbd limitation), saves
 deletePreset(path: string): { error?: string }
 setPresetFavorite(path: string, favorite: boolean): void
 abCapture(slot: 0 | 1): void
 abRecall(slot: 0 | 1): void
-t3kConfigure(): { error?: string }          // native AlertWindow prompt for publishable key
-                                            // (optional override — a default client_id is baked
-                                            // in via CMake TUBAMP_T3K_CLIENT_ID, so t3k is
-                                            // configured out of the box; empty input restores it)
 t3kSignOut(): void
 t3kStartSelectFlow(): void                  // async; results arrive as events
 t3kDownloadModel(model: T3kModel, tone?: T3kTone): void
@@ -213,6 +223,15 @@ t3kDownloadModel(model: T3kModel, tone?: T3kTone): void
                                             // toneId, modelId, title, modelName, creator, RAW
                                             // gear, format, size, architecture, license) on the
                                             // download thread BEFORE libraryChanged/t3kComplete
+                                            // The tone's `imageUrl` is kept in the sidecar and
+                                            // the photo itself saved as <file>.t3k.art (best
+                                            // effort, https, <= 8 MB, must sniff as an image)
+t3kEnsureArt(path: string, imageUrl: string | null): void
+                                            // a library copy downloaded before photos were kept:
+                                            // fetch its tone's photo (no-op when it has one, has
+                                            // no sidecar or is outside the library). Always
+                                            // resolves; the store calls it before re-loading an
+                                            // installed copy picked in the browser
 t3kSignIn(): void                           // standard OAuth flow; t3kStatus/t3kError follow
 t3kBrowse(req: T3kBrowseRequest): T3kBrowseResult      // one catalog page (or {error})
                                             // req: { kind: "models"|"irs",
@@ -244,6 +263,12 @@ eqAnalyserSet(prefs: { on?, resolution?, speed? }): void  // stores the analyser
                                                       // the FFT size (2048 / 4096 / 8192 at 48 kHz)
                                                       // (the default when the editor opens)
 
+// --- stereo width map, see `width` in UiState
+ackNotice(kind: "monoHost"): void                     // the user has seen the mono-instance notice;
+                                                      // it is not offered again in this instance
+                                                      // (saved with the plugin state, not presets).
+                                                      // widthChanged follows with notice: null
+
 // --- window size + embedded hosted editor, see §Window size and embedding
 getEditorSize(): EditorSizeLimits
 setEditorSize(w: number, h: number): EditorSize            // clamped; returns what was applied
@@ -269,9 +294,13 @@ interface UiState {
                                 //   outputLevelDbu?, gearType?, includesCab,
                                 //   isSlimmable, latencySamples, tone? }
                                 //   `tone` = the file's TONE3000 sidecar: { toneId,
-                                //   title, creator, gear, size, license, url }
-  modelB: ModelInfo | null      // engine B, managed from Amp2Body (docs/SPLIT.md §5),
-                                //   not an AmpBody STEREO section (removed). Same shape
+                                //   title, creator, gear, size, license, url, imageUrl }
+                                //   `imageUrl` = the saved photo (<file>.t3k.art), served
+                                //   by the plugin's own resource provider at
+                                //   <root>t3k-art/<hex of the media path>-<mtime>, or null;
+                                //   the amp editor shows it (AmpFace), else the default amp
+  modelB: ModelInfo | null      // engine B, managed from the Amp 2 editor (`AmpBody
+                                //   engine="b"`, docs/SPLIT.md §5). Same shape
                                 //   as `model`, null when no B model is loaded.
                                 //   `latencySamples` is the same combined scalar as
                                 //   `model`'s — reported host latency is serial-section
@@ -281,7 +310,14 @@ interface UiState {
                                 //   gainDb, truncated, image, tone? } — `image` is
                                 //   "none" | "stereo" | "mono-file" | "mono-path"
                                 //   (docs/NAM-IR.md §3)
-  missingMedia: MissingMedia    // { model, modelB, ir }: the path a restored session
+  irB: IrInfo | null            // the second cab's IR (`cab2`), same shape as `ir`;
+                                //   tracked whether or not `cab2` is in the chain
+  width?: WidthView             // where the chain is mono and where stereo, and why
+                                //   (src/dsp/WidthMap.h). Derived by C++ from the order and
+                                //   the parameters, never measured: it holds in silence.
+                                //   "stereo" = left and right carry different signals; one
+                                //   lane panned alone is mono. Absent from older builds
+  missingMedia: MissingMedia    // { model, modelB, ir, irB }: the path a restored session
                                 //   or preset named and could not get, else null
                                 //   (docs/NAM-IR.md §4)
   models: FileEntry[]
@@ -322,6 +358,35 @@ interface FxSlotState {
   hasEditor: boolean  // ships its own editor window
   params: FxParamInfo[]   // empty until live
 }
+type Width = "mono" | "stereo"
+type WidthTurn = "keeps"      // out == in
+               | "widens"     // mono in, stereo out, because of `why`
+               | "folds"      // stereo in, mono out, because of `why`
+               | "monoHost"   // would widen with two output channels; this instance has one
+type WidthWhy = "pingPong" | "dualRatio" | "delayMod" | "diffuse"   // delay: mode, Dual ratio,
+                                                                    // modulated lines, Diffuse type
+              | "reverb" | "chorus" | "tremolo"                     // width > 0 (and mix > 0 where read)
+              | "stereoIr"                                          // two-channel IR, no amp folds after it
+              | "lanes"     // mixer: two different mono lanes panned apart (widens); split L/R
+                            // of a stereo input, or a mixer with every lane hard to one side (folds)
+              | "plugin"    // a live hosted AU on our width, fed mono (assumed to widen)
+              | "amp" | "amp2" | "pluginMono"                       // folds
+interface WidthStep {
+  block: string        // chain token, e.g. "delay2", "split", "lane2", "mix"
+  out: Width           // the wire leaving this block (split: lane A's entry; lane2: lane B's)
+  outB?: Width         // split only: lane B's entry
+  turn: WidthTurn
+  why?: WidthWhy       // absent for keeps
+}
+interface WidthView {
+  host: { in: 1 | 2; out: 1 | 2 }  // this instance's channel layout
+  input: Width                      // stereo exactly when the host gives two input channels
+  steps: WidthStep[]                // one per chainOrder entry, same order
+  output: Width
+  wouldBeStereo: boolean            // the same walk with two output channels is stereo
+  notice: "monoHost" | null         // C++'s decision: show the one-time notice now
+                                    // (out 1, wouldBeStereo, not yet acknowledged)
+}
 interface T3kModel { id: number; name: string; modelUrl: string; size: string;
                      architecture: string; kind: "nam" | "wav" }
 // browser types (full definitions in ui/src/bridge/types.ts):
@@ -335,7 +400,10 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
 ### Events (C++ → JS, `emitEventIfBrowserIsVisible`)
 
 ```
-"meters"         { in: number, out: number }        // 30 Hz editor timer, linear peaks
+"meters"         { in: number, out: number, outL: number, outR: number }
+                                                    // 30 Hz editor timer, linear peaks. out is
+                                                    // the larger of outL/outR; a one-channel
+                                                    // instance reports its channel as both
 "dynMeters"      { gate: { state: -1|0|1|2, gr: number, level: number },
                    comp: [number, number, number] } // same tick, right after "meters"
                                                     // (docs/FX-ENGINES.md §2.8). gr and
@@ -354,12 +422,16 @@ interface T3kModel { id: number; name: string; modelUrl: string; size: string;
 "libraryChanged" { models, irs }
 "presetChanged"  { presets, currentPresetName, ab }
 "modelChanged"   { model: ModelInfo | null }
-"modelBChanged"  { modelB: ModelInfo | null }        // engine B, Amp2Body's model
+"modelBChanged"  { modelB: ModelInfo | null }        // engine B, the Amp 2 editor's model
                                                      // (docs/SPLIT.md §5); same "poll
                                                      // and emit on change" reasoning as
                                                      // modelChanged
 "irChanged"      { ir: IrInfo | null }               // also when only `image` moved
                                                      // (the chain changed around the cab)
+"irBChanged"     { irB: IrInfo | null }              // the second cab, same rule
+"widthChanged"   { width: WidthView }               // checked every meters tick, sent only when
+                                                    // the map or the notice changed (and once
+                                                    // after the editor opens)
 "missingMediaChanged" { missingMedia: MissingMedia }
 "t3kStatus"      { configured, authenticated, username }
 "t3kToneSelected"{ toneId: number, models: T3kModel[] }
@@ -672,16 +744,34 @@ count badges, card and drawer sizes — `ui/DESIGN.md` supersedes them:
   in `features/panel/typeDefaults.ts`, mirroring the C++ ones), amp (model mgmt + status + T3K + knobs + out-mode + slim when
   isSlimmable + a **Tone** section — Bass/Mid/Treble knobs on `amp_eq_bass/mid/treble`
   plus a power toggle on `amp_eq_on`, KnobRow-style; the amp has its own tone stack
-  whether or not an `eq` block is in the chain — AmpBody owns ENGINE A ONLY: model B
-  management lives in Amp2Body, not here, see below), amp2 (`Amp2Body`: model B
-  management moved wholesale from AmpBody's former STEREO section, docs/STEREO.md §1,
-  SUPERSEDED — model picker over the library list, "Use model A" shortcut that calls
-  `loadModelB` with A's loaded path, clear, status — plus `amp2_input`/`amp2_output`
-  knobs; NO tone stack of its own, the panel notes that users add an `eq` instance if
-  they want one, docs/SPLIT.md §3), split (`SplitBody`: `split_mode` ParamMenu
+  whether or not an `eq` block is in the chain). `amp2` is the amp kind's second
+  instance (`KIND_INSTANCES.amp = ["amp", "amp2"]`, exactly two), named "Amp" like the
+  first: the same `AmpBody block={token}` with the same controls, each bound to
+  `${token}_*` (`amp2_out_mode`, `amp2_cal_input`, `amp2_eq_bass`, …). The tile's
+  subtitle, the capture's name, tells the two apart. The picker has one "Amp" row that
+  adds the first free instance. `ui/src/store/amps.ts` (`AMP_SLOTS`) is the one place
+  that knows which bridge slot holds each amp's capture (`model`/`modelB`,
+  `loadModel`/`loadModelB`, `missingMedia.model`/`.modelB`); "Import file" passes the
+  token to `importModel(target)`. The lead is `AmpFace` — the capture's photo or the
+  default amp, "Choose an amp" when empty; the amp itself and the ⋯ button open one
+  menu: Browse TONE3000, Import file, the library, Remove capture; ‹ › step the
+  library. "Dual amp" seeds the second amp from the first on creation only: its
+  capture when it has none, and every control (`copyAmpSettings`). Where a sentence
+  must say which amp (the TONE3000 target, load toasts), it says "Amp 1" / "Amp 2"
+  only while both are placed, plain "Amp" otherwise), split (`SplitBody`: `split_mode` ParamMenu
   {Copy, L/R, X-Over} + `split_xover` knob, shown only in X-Over mode), mix
-  (`MixBody`: A/B level + pan knobs, phase-B toggle, master `mix_level`), cab (IR mgmt
-  + cut knobs), fx1/fx2/fx3 (`fxSlotIndexOf`; plugin picker or loaded-plugin header +
+  (`MixBody`: A/B level + pan knobs, phase-B toggle, master `mix_level`), cab (`CabBody
+  block={token}`: the IR and Low cut, High cut, Mix on `${token}_lowcut|highcut|mix`).
+  `cab2` is the cab kind's second instance (`KIND_INSTANCES.cab = ["cab", "cab2"]`,
+  exactly two), named "Cab" like the first and told apart by its IR's name on the tile;
+  the picker's one "Cab" row adds the first free instance. `ui/src/store/cabs.ts`
+  (`CAB_SLOTS`) is the one place that knows which bridge slot holds each cab's IR
+  (`ir`/`irB`, `loadIr`/`loadIrB`, `missingMedia.ir`/`.irB`, `importIr(target)`). The
+  lead is the amp's `AmpFace` with `kind="cab"`: the IR's TONE3000 photo
+  (`ir.tone.imageUrl`, the same art pipeline as a capture's), else the default cabinet,
+  "Choose an IR" when empty; the picture and ⋯ open one menu (Browse TONE3000, Import
+  file, the library, Remove IR), ‹ › step the library. The "capture already has a cab"
+  note is the first cab's only, since it reads the first amp's capture. fx1/fx2/fx3 (`fxSlotIndexOf`; plugin picker or loaded-plugin header +
   "Show editor here" (embed, see §Window size and embedding) + "Open plugin window" +
   a generic knob grid over `FxSlotState.params` — see §External AudioUnit slots; never
   `useSliderParam`). `lane2` never opens a panel — it is filtered out of selection
@@ -722,19 +812,20 @@ count badges, card and drawer sizes — `ui/DESIGN.md` supersedes them:
   `data-t3k-open` on the root, the block editor (`.dock`) ends at the drawer's
   left edge instead of running under it, and toasts shift left of it
   (`--t3k-inset`); the band's height and everything anchored to it are unchanged.
-  Opened from the header's TONE3000 button as well as from the Amp / Amp 2 / Cab
+  Opened from the header's TONE3000 button as well as from the amp and cab
   editors. Rows are 56px (thumbnail, title, creator · gear, downloads; favourite
   and a Load → progress → Loaded / Retry control); the detail view lists the
   pack's files with the same control per file.
-  - **Target.** Opened from AmpBody (`openT3kBrowser("models")`), CabBody
-    (`"irs"`) or — for Amp 2 — `openT3kBrowser("models", "amp2")` (without a
-    target, models go to `amp2` when the amp2 block is the selected one). The
-    header always says where a load lands: "Loading into Amp | Amp 2 | Cab";
-    with `amp2` in the chain a segmented switch picks the NAM engine
-    (`loadModel` vs `loadModelB`; `selectT3kTarget` falls back to Amp once amp2
-    leaves the chain). IRs always load into the cab. "Loaded"/"in Amp 2"
-    markers compare the target slot's path with the tone's files (sidecars from
-    `t3kInstalled` + this session's downloads).
+  - **Target.** Opened from AmpBody (`openT3kBrowser("models", block)`) or
+    CabBody (`"irs"`); without a target, models go to the selected block when
+    it is an amp, else `amp`. The header always says where a load lands: "Into
+    Amp" / "Into Cab", and with both amps placed a segmented switch "Amp 1 |
+    Amp 2" picks the engine. `selectT3kTarget` falls back to whichever amp is
+    placed. IRs load into a cab the same way: `browser.cabTarget`, the cab the
+    browser was opened from, and with both cabs placed a "Cab 1 | Cab 2" switch.
+    "Loaded"/"in Amp 2" markers compare
+    the target slot's path with the tone's files (sidecars from `t3kInstalled`
+    + this session's downloads), placed amps only.
   - **Level 1 (browse).** Models/IRs segmented + Sort menu (Best match — only
     with a query, the default while searching —, Trending, Newest, Most
     downloaded, Oldest; plus "Calibrated only" for models on All, shown as a
@@ -755,8 +846,8 @@ count badges, card and drawer sizes — `ui/DESIGN.md` supersedes them:
     NAM tones with no A2 files show "No A2". Row body opens level 2.
     Paging: IntersectionObserver 320px ahead of the end, one page request per
     list at a time; a Load more / Retry row is the fallback.
-  - **Level 2 (detail).** Banner with gear/format and "In Amp/Amp 2/Cab"
-    pills, creator/stats/heart, primary "Load into …" (same default + states),
+  - **Level 2 (detail).** Banner with gear/format and "In Amp/Cab" pills
+    ("Amp 1"/"Amp 2" with both amps placed), creator/stats/heart, primary "Load into …" (same default + states),
     description, make/tag chips, license label (when the API sends one), "Open
     on tone3000.com" (`openExternal`), files sorted default-first with
     size/architecture badges, "default" and "in library" notes, Get/Load →
@@ -826,5 +917,5 @@ one rAF driver; `prefers-reduced-motion` respected for entrance/zoom/A-B.
 
 Preset browser overlay with search/tags. Split/mix (docs/SPLIT.md) covers exactly
 ONE split region, no nesting, no more than two lanes, no dynamic split, no split/mix
-instance pools, no amp2 tone stack, no per-lane FxHost pools beyond the existing 3
+instance pools, no per-lane FxHost pools beyond the existing 3
 shared slots — see docs/SPLIT.md §6 for the full v1 scope line.

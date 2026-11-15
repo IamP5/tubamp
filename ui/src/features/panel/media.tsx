@@ -1,5 +1,5 @@
 /**
- * The media card: the `lead` of the Amp, Amp 2 and Cab editors — what is
+ * The media card: the `lead` of the amp and cab editors — what is
  * loaded in the block, named by its title, with the library one click away.
  *
  *   JCM800 2203 — Full Stack Roar              title (the tone's, else the file's)

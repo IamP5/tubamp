@@ -9,7 +9,13 @@
  * also checked to be a fixed point of `sanitizeStructure`: that is the contract
  * that lets the board publish its result in one write.
  */
-import type { BlockId } from "../bridge/types";
+import {
+  BLOCK_KINDS,
+  instanceOf,
+  instanceTokensOfKind,
+  kindOf,
+  type BlockId,
+} from "../bridge/types";
 import {
   MAX_CHAIN_LENGTH,
   blocksDroppedBy,
@@ -92,6 +98,24 @@ const full: BlockId[] = Array.from({ length: MAX_CHAIN_LENGTH - 4 }, () => "eq")
 ok("wrap fits at cap-4", dualAmpOrder(["amp", ...full.slice(1)], 0) !== null);
 ok("insert needs five free", dualAmpOrder(full, 0) === null);
 ok("insert fits with five free", dualAmpOrder(full.slice(1), 0) !== null);
+
+/* the amp kind: `amp2` is its second and last instance */
+ok("amp2 is an amp", kindOf("amp2") === "amp");
+ok("amp2 is instance 1", instanceOf("amp2") === 1);
+eq("amp has two instances", instanceTokensOfKind("amp"), ["amp", "amp2"]);
+ok("amp2 is no kind of its own", !(BLOCK_KINDS as readonly string[]).includes("amp2"));
+
+/* the cab kind: `cab2` is its second and last instance, an ordinary block */
+ok("cab2 is a cab", kindOf("cab2") === "cab");
+ok("cab2 is instance 1", instanceOf("cab2") === 1);
+eq("cab has two instances", instanceTokensOfKind("cab"), ["cab", "cab2"]);
+ok("cab2 is no kind of its own", !(BLOCK_KINDS as readonly string[]).includes("cab2"));
+
+const dualRig: BlockId[] = ["gate", "split", "amp", "cab", "lane2", "amp2", "cab2", "mix", "reverb"];
+eq("a cab in each lane is well formed", sanitizeStructure(dualRig), dualRig);
+eq("keepA keeps the first cab", removeSplit(dualRig, "keepA"), ["gate", "amp", "cab", "reverb"]);
+eq("keepB keeps the second cab", removeSplit(dualRig, "keepB"), ["gate", "amp2", "cab2", "reverb"]);
+eq("cab2 survives a flatten", removeSplit(["split", "cab", "cab2"], "keepA"), ["cab", "cab2"]);
 
 if (failures > 0) {
   console.error(`${failures} failed, ${passes} passed`);

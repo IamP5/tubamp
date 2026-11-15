@@ -122,7 +122,12 @@ const char* const kSliderIds[] = {
     params::mod2Width,       params::mod2Tone,       params::mod2Shape,
     params::mod2Wave,
     params::mod3Width,       params::mod3Tone,       params::mod3Shape,
-    params::mod3Wave };
+    params::mod3Wave,
+    // The second amp's own controls (hint 5).
+    params::amp2CalLevel,    params::amp2Slim,
+    params::amp2EqBass,      params::amp2EqMid,      params::amp2EqTreble,
+    // The second cab (hint 6).
+    params::cab2LowCut,      params::cab2HighCut,    params::cab2Mix };
 
 const char* const kToggleIds[] = {
     params::gateOn,  params::compOn,  params::driveOn, params::ampOn,
@@ -141,7 +146,11 @@ const char* const kToggleIds[] = {
     params::amp2On,  params::splitOn,  params::mixOn,  params::mixBPhase,
     // Engine switches (docs/FX-ENGINES.md §2.7.1), appended in spec order.
     params::compAutoMakeup, params::comp2AutoMakeup, params::comp3AutoMakeup,
-    params::modColor,       params::mod2Color,       params::mod3Color };
+    params::modColor,       params::mod2Color,       params::mod3Color,
+    // The second amp's own switches (hint 5).
+    params::amp2CalInput,   params::amp2EqOn,
+    // The second cab's enable (hint 6).
+    params::cab2On };
 
 const char* const kComboIds[] = { params::ampOutMode, params::modType,
                                   params::mod2Type,   params::mod3Type,
@@ -166,11 +175,13 @@ const char* const kComboIds[] = { params::ampOutMode, params::modType,
                                   params::mod2ChorusMode, params::mod2PhaserModel, params::mod2TremVoice,
                                   params::mod2Sync,
                                   params::mod3ChorusMode, params::mod3PhaserModel, params::mod3TremVoice,
-                                  params::mod3Sync };
+                                  params::mod3Sync,
+                                  // the second amp's output mode (hint 5)
+                                  params::amp2OutMode };
 
-static_assert (std::size (kSliderIds) == 184, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params + 30 reverb/delay engine params + cab_mix + 64 gate/comp/EQ/mod engine params");
-static_assert (std::size (kToggleIds) == 36, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables + 4 split/mix enables (amp_stereo removed) + comp_auto_makeup x3 + mod_color x3");
-static_assert (std::size (kComboIds) == 42, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode + delay type/sync x3 + reverb type x3 + 25 gate/comp/drive/EQ/mod engine choices");
+static_assert (std::size (kSliderIds) == 192, "29 frozen float params + 43 v2 instance / amp-EQ params + 9 stereo-chain params + 8 split/mix params + 30 reverb/delay engine params + cab_mix + 64 gate/comp/EQ/mod engine params + 5 amp 2 params + 3 cab 2 params");
+static_assert (std::size (kToggleIds) == 39, "10 frozen bool params + 3 fx-slot bypasses + 13 v2 enables + 4 split/mix enables (amp_stereo removed) + comp_auto_makeup x3 + mod_color x3 + amp2_cal_input + amp2_eq_on + cab2_on");
+static_assert (std::size (kComboIds) == 43, "2 frozen choice params + the mod 2/3 types + delay_mode x3 + split_mode + delay type/sync x3 + reverb type x3 + 25 gate/comp/drive/EQ/mod engine choices + amp2_out_mode");
 
 /** Upper bound on hosted parameters surfaced to the UI. A handful of plugins publish
     thousands; serializing all of them into every slot payload would cost more than it
@@ -237,6 +248,34 @@ juce::var fileEntryVar (const juce::File& file, const juce::String& displayName)
     return makeObject ({ { "path", file.getFullPathName() }, { "name", displayName } });
 }
 
+const juce::String kToneArtRoute { "t3k-art/" };
+
+/** A library file (models/ or irs/) and nothing else: the art route and the art
+    fetch take a path from the page, so it is checked before it is used. */
+bool isLibraryMedia (const juce::File& media)
+{
+    return media.isAChildOf (ModelLibrary::getModelsDir()) || media.isAChildOf (ModelLibrary::getIrsDir());
+}
+
+/** Where the page finds the photo saved beside `media` (ToneSidecar art), served
+    by getResource(): <root>t3k-art/<the media path as hex of its UTF-8>. Null when
+    the file has none. The art's modification time rides along so a photo fetched
+    later replaces a cached miss. */
+juce::var toneArtUrlVar (const juce::File& media)
+{
+    const auto art = ToneSidecar::artFileFor (media);
+
+    if (! art.existsAsFile())
+        return {};   // JSON null, like nullableStringVar
+
+    const auto path = media.getFullPathName();
+    const auto utf8 = path.toRawUTF8();
+
+    return juce::WebBrowserComponent::getResourceProviderRoot() + kToneArtRoute
+           + juce::String::toHexString (utf8, (int) std::strlen (utf8), 0)
+           + "-" + juce::String::toHexString (art.getLastModificationTime().toMilliseconds());
+}
+
 /** What TONE3000 said about a downloaded file, from its sidecar: who made it and
     which tone it belongs to. Void for a file that did not come from there. */
 juce::var toneRefVar (const juce::String& mediaPath)
@@ -249,13 +288,14 @@ juce::var toneRefVar (const juce::String& mediaPath)
     if (! sidecar.has_value())
         return {};
 
-    return makeObject ({ { "toneId",  sidecar->toneId },
-                         { "title",   sidecar->title },
-                         { "creator", sidecar->creator },
-                         { "gear",    sidecar->gear },
-                         { "size",    sidecar->size },
-                         { "license", sidecar->license },
-                         { "url",     sidecar->toneUrl() } });
+    return makeObject ({ { "toneId",   sidecar->toneId },
+                         { "title",    sidecar->title },
+                         { "creator",  sidecar->creator },
+                         { "gear",     sidecar->gear },
+                         { "size",     sidecar->size },
+                         { "license",  sidecar->license },
+                         { "url",      sidecar->toneUrl() },
+                         { "imageUrl", toneArtUrlVar (juce::File (mediaPath)) } });
 }
 
 const char* irImageName (CabSim::Image image) noexcept
@@ -267,6 +307,46 @@ const char* irImageName (CabSim::Image image) noexcept
         case CabSim::Image::monoPath: return "mono-path";
         case CabSim::Image::none:
         default:                      return "none";
+    }
+}
+
+const char* widthName (chain::Width width) noexcept
+{
+    return width == chain::Width::stereo ? "stereo" : "mono";
+}
+
+const char* turnName (chain::Turn turn) noexcept
+{
+    switch (turn)
+    {
+        case chain::Turn::widens:   return "widens";
+        case chain::Turn::folds:    return "folds";
+        case chain::Turn::monoHost: return "monoHost";
+        case chain::Turn::keeps:
+        default:                    return "keeps";
+    }
+}
+
+/** Null for Why::none: the bridge omits `why` then. */
+const char* whyName (chain::Why why) noexcept
+{
+    switch (why)
+    {
+        case chain::Why::pingPong:   return "pingPong";
+        case chain::Why::dualRatio:  return "dualRatio";
+        case chain::Why::delayMod:   return "delayMod";
+        case chain::Why::diffuse:    return "diffuse";
+        case chain::Why::reverb:     return "reverb";
+        case chain::Why::chorus:     return "chorus";
+        case chain::Why::tremolo:    return "tremolo";
+        case chain::Why::stereoIr:   return "stereoIr";
+        case chain::Why::lanes:      return "lanes";
+        case chain::Why::plugin:     return "plugin";
+        case chain::Why::amp:        return "amp";
+        case chain::Why::amp2:       return "amp2";
+        case chain::Why::pluginMono: return "pluginMono";
+        case chain::Why::none:
+        default:                     return nullptr;
     }
 }
 
@@ -348,6 +428,9 @@ ToneSidecar t3kSidecarFor (const Tone3000Client::Model& model, const juce::var& 
             sidecar.format = format;
         if (! license.isVoid())
             sidecar.license = license.toString();
+
+        if (const auto image = object->getProperty ("imageUrl"); image.isString())
+            sidecar.imageUrl = image.toString();
     }
 
     return sidecar;
@@ -564,6 +647,7 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
     lastModelPath = proc.getLoadedModelPath();
     lastModelPathB = proc.getLoadedModelPathB();
     lastIrPath = proc.getLoadedIrPath();
+    lastIrPathB = proc.getLoadedIrPathB();
     lastLatencySamples = proc.getLatencySamples();
     lastT3kAuthenticated = proc.tone3000.isAuthenticated(); // what getUiState will report
 
@@ -571,8 +655,10 @@ WebEditor::WebEditor (TubampAudioProcessor& p)
     // with the window closed they accumulate the loudest moment of the whole
     // session. Discard that backlog now or the first frame after reopening slams
     // both meters to whatever the loudest passage was.
-    proc.inputPeak .exchange (0.0f);
-    proc.outputPeak.exchange (0.0f);
+    proc.inputPeak  .exchange (0.0f);
+    proc.outputPeak .exchange (0.0f);
+    proc.outputPeakL.exchange (0.0f);
+    proc.outputPeakR.exchange (0.0f);
     proc.gateGrDb   .exchange (0.0f);
     proc.gateLevelDb.exchange (TubampAudioProcessor::kDynMeterFloorDb);
 
@@ -983,16 +1069,17 @@ juce::var WebEditor::modelVarB() const
                          { "latencySamples", proc.getLatencySamples() } });
 }
 
-juce::var WebEditor::irVar() const
+juce::var WebEditor::irVar (int cabIndex) const
 {
-    const auto path = proc.getLoadedIrPath();
+    const auto path = cabIndex == 0 ? proc.getLoadedIrPath() : proc.getLoadedIrPathB();
 
     if (path.isEmpty())
         return {};
 
     // A FileEntry (path, name) plus what the cab made of the file.
     const juce::File file { path };
-    const auto info = proc.cab.getInfo();
+    const auto& cabSim = proc.cabs[(size_t) cabIndex];
+    const auto info = cabSim.getInfo();
 
     return makeObject ({ { "path",         path },
                          { "name",         file.getFileNameWithoutExtension() },
@@ -1002,8 +1089,50 @@ juce::var WebEditor::irVar() const
                          { "reverbLike",   info.reverbLike },
                          { "gainDb",       (double) info.gainDb },
                          { "truncated",    info.truncated },
-                         { "image",        irImageName (proc.cab.getImage()) },
+                         { "image",        irImageName (cabSim.getImage()) },
                          { "tone",         toneRefVar (path) } });
+}
+
+juce::var WebEditor::widthVar (const chain::WidthMap& map) const
+{
+    juce::Array<juce::var> steps;
+
+    for (int i = 0; i < map.length; ++i)
+    {
+        const auto& step = map.steps[(size_t) i];
+        auto entry = makeObject ({ { "block", chain::infoFor (step.id).token },
+                                   { "out",   widthName (step.out) },
+                                   { "turn",  turnName (step.turn) } });
+        auto* object = entry.getDynamicObject();
+
+        if (step.id == chain::BlockId::split)
+            object->setProperty ("outB", widthName (step.outB));
+
+        if (const auto* why = whyName (step.why))
+            object->setProperty ("why", why);
+
+        steps.add (entry);
+    }
+
+    return makeObject ({ { "host",          makeObject ({ { "in", (int) map.host.in }, { "out", (int) map.host.out } }) },
+                         { "input",         widthName (map.input) },
+                         { "steps",         steps },
+                         { "output",        widthName (map.output) },
+                         { "wouldBeStereo", map.wouldBeStereo },
+                         { "notice",        proc.isMonoHostNoticeDue (map) ? juce::var ("monoHost") : juce::var() } });
+}
+
+void WebEditor::pollWidth()
+{
+    const auto map = proc.getWidthMap();
+    const bool notice = proc.isMonoHostNoticeDue (map);
+
+    if (lastWidth.has_value() && *lastWidth == map && lastWidthNotice == notice)
+        return;
+
+    lastWidth = map;
+    lastWidthNotice = notice;
+    emit ("widthChanged", makeObject ({ { "width", widthVar (map) } }));
 }
 
 juce::var WebEditor::missingMediaVar() const
@@ -1012,7 +1141,8 @@ juce::var WebEditor::missingMediaVar() const
 
     return makeObject ({ { "model",  nullableStringVar (proc.getMissingMediaPath (Media::model)) },
                          { "modelB", nullableStringVar (proc.getMissingMediaPath (Media::modelB)) },
-                         { "ir",     nullableStringVar (proc.getMissingMediaPath (Media::ir)) } });
+                         { "ir",     nullableStringVar (proc.getMissingMediaPath (Media::ir)) },
+                         { "irB",    nullableStringVar (proc.getMissingMediaPath (Media::irB)) } });
 }
 
 juce::var WebEditor::t3kVar() const
@@ -1029,6 +1159,8 @@ juce::var WebEditor::uiStateVar() const
                                { "model",             modelVar() },
                                { "modelB",            modelVarB() },
                                { "ir",                irVar() },
+                               { "irB",               irVar (1) },
+                               { "width",             widthVar (proc.getWidthMap()) },
                                { "missingMedia",      missingMediaVar() },
                                { "models",            modelsVar() },
                                { "irs",               irsVar() },
@@ -1174,6 +1306,13 @@ void WebEditor::emitIrChanged()
     emit ("irChanged", makeObject ({ { "ir", irVar() } }));
 }
 
+void WebEditor::emitIrBChanged()
+{
+    lastIrPathB = proc.getLoadedIrPathB();
+    lastIrImageB = (int) proc.cabB.getImage();
+    emit ("irBChanged", makeObject ({ { "irB", irVar (1) } }));
+}
+
 void WebEditor::emitMissingMediaChanged()
 {
     const auto missing = missingMediaVar();
@@ -1218,16 +1357,18 @@ void WebEditor::closeFxWindow (int slot)
         gestureSlot = gestureParam = -1;
 }
 
-juce::String WebEditor::loadIrFromUi (const juce::File& wavFile)
+juce::String WebEditor::loadIrFromUi (const juce::File& wavFile, int cabIndex)
 {
-    const bool wasEmpty = proc.getLoadedIrPath().isEmpty();
-    const auto error = proc.loadIr (wavFile);
+    const bool second = cabIndex == 1;
+    const bool wasEmpty = (second ? proc.getLoadedIrPathB() : proc.getLoadedIrPath()).isEmpty();
+    const auto error = second ? proc.loadIrB (wavFile) : proc.loadIr (wavFile);
 
     // Only into an empty block: swapping one IR for another keeps the mix the user
     // dialled in, and so does every restore (which does not come through here).
     if (error.isEmpty() && wasEmpty)
-        if (auto* mix = proc.apvts.getParameter (params::cabMix))
-            mix->setValueNotifyingHost (mix->convertTo0to1 (proc.cab.getInfo().reverbLike ? 50.0f : 100.0f));
+        if (auto* mix = proc.apvts.getParameter (params::cabMixIds[second ? 1 : 0]))
+            mix->setValueNotifyingHost (mix->convertTo0to1 (
+                proc.cabs[second ? 1 : 0].getInfo().reverbLike ? 50.0f : 100.0f));
 
     return error;
 }
@@ -1237,6 +1378,7 @@ void WebEditor::pollModelAndIr (bool forceEmit)
     const auto modelPath = proc.getLoadedModelPath();
     const auto modelPathB = proc.getLoadedModelPathB();
     const auto irPath = proc.getLoadedIrPath();
+    const auto irPathB = proc.getLoadedIrPathB();
     const auto latency = proc.getLatencySamples();
 
     // Sampled once, before either emitter: both of them refresh lastLatencySamples, so
@@ -1255,6 +1397,9 @@ void WebEditor::pollModelAndIr (bool forceEmit)
     if (forceEmit || irPath != lastIrPath || (int) proc.cab.getImage() != lastIrImage)
         emitIrChanged();
 
+    if (forceEmit || irPathB != lastIrPathB || (int) proc.cabB.getImage() != lastIrImageB)
+        emitIrBChanged();
+
     if (forceEmit || juce::JSON::toString (missingMediaVar(), true) != lastMissingMedia)
         emitMissingMediaChanged();
 }
@@ -1264,8 +1409,14 @@ void WebEditor::timerCallback()
     // Reset-on-read, exactly as the old native editor did (PluginEditor.cpp:127-128):
     // each frame reports the peak accumulated since the previous frame, and the
     // decay/ballistics live in the UI.
-    emit ("meters", makeObject ({ { "in",  (double) proc.inputPeak .exchange (0.0f) },
-                                  { "out", (double) proc.outputPeak.exchange (0.0f) } }));
+    emit ("meters", makeObject ({ { "in",   (double) proc.inputPeak  .exchange (0.0f) },
+                                  { "out",  (double) proc.outputPeak .exchange (0.0f) },
+                                  { "outL", (double) proc.outputPeakL.exchange (0.0f) },
+                                  { "outR", (double) proc.outputPeakR.exchange (0.0f) } }));
+
+    // The map follows the order and every parameter it reads, none of which notifies
+    // here; it is cheap to derive, so each frame checks and only a change is sent.
+    pollWidth();
 
     // Gate and compressor meters (docs/FX-ENGINES.md §2.8), on the same reset-on-read
     // terms. The gate's state is not a peak: it is whatever the last block left.
@@ -1503,8 +1654,24 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
             emitIrChanged();
             complete ({});
         })
-        .withNativeFunction ("importModel", [this] (auto&, auto complete)
+        .withNativeFunction ("loadIrB", [this] (const juce::Array<juce::var>& args, auto complete)
         {
+            const auto error = loadIrFromUi (juce::File (args[0].toString()), 1);
+            emitIrBChanged();
+            complete (resultVar (error));
+        })
+        .withNativeFunction ("clearIrB", [this] (auto&, auto complete)
+        {
+            proc.clearIrB();
+            emitIrBChanged();
+            complete ({});
+        })
+        // importModel([target]): target "amp" (default) or "amp2" picks the engine the
+        // installed file loads into.
+        .withNativeFunction ("importModel", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            const bool intoB = args.size() > 0 && args[0].toString() == "amp2";
+
             if (chooserActive)
             {
                 complete (resultVar ("A file dialog is already open."));
@@ -1517,7 +1684,7 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
             fileChooser = std::make_unique<juce::FileChooser> ("Import NAM model", juce::File(), "*.nam");
             fileChooser->launchAsync (juce::FileBrowserComponent::openMode
                                           | juce::FileBrowserComponent::canSelectFiles,
-                [safeThis, complete] (const juce::FileChooser& fc)
+                [safeThis, complete, intoB] (const juce::FileChooser& fc)
                 {
                     if (safeThis == nullptr)
                         return;
@@ -1540,8 +1707,13 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                         return;
                     }
 
-                    const auto loadError = safeThis->proc.loadModel (installed);
-                    safeThis->emitModelChanged();
+                    const auto loadError = intoB ? safeThis->proc.loadModelB (installed)
+                                                 : safeThis->proc.loadModel (installed);
+
+                    if (intoB)
+                        safeThis->emitModelBChanged();
+                    else
+                        safeThis->emitModelChanged();
 
                     if (loadError.isNotEmpty())
                     {
@@ -1552,8 +1724,12 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                     complete (fileEntryVar (installed, installed.getFileNameWithoutExtension()));
                 });
         })
-        .withNativeFunction ("importIr", [this] (auto&, auto complete)
+        // importIr([target]): target "cab" (default) or "cab2" picks the cab the
+        // installed file loads into.
+        .withNativeFunction ("importIr", [this] (const juce::Array<juce::var>& args, auto complete)
         {
+            const bool intoB = args.size() > 0 && args[0].toString() == "cab2";
+
             if (chooserActive)
             {
                 complete (resultVar ("A file dialog is already open."));
@@ -1566,7 +1742,7 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
             fileChooser = std::make_unique<juce::FileChooser> ("Import impulse response", juce::File(), "*.wav");
             fileChooser->launchAsync (juce::FileBrowserComponent::openMode
                                           | juce::FileBrowserComponent::canSelectFiles,
-                [safeThis, complete] (const juce::FileChooser& fc)
+                [safeThis, complete, intoB] (const juce::FileChooser& fc)
                 {
                     if (safeThis == nullptr)
                         return;
@@ -1589,8 +1765,12 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                         return;
                     }
 
-                    const auto loadError = safeThis->loadIrFromUi (installed);
-                    safeThis->emitIrChanged();
+                    const auto loadError = safeThis->loadIrFromUi (installed, intoB ? 1 : 0);
+
+                    if (intoB)
+                        safeThis->emitIrBChanged();
+                    else
+                        safeThis->emitIrChanged();
 
                     if (loadError.isNotEmpty())
                     {
@@ -1670,44 +1850,13 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
             pollModelAndIr (true);
             complete ({});
         })
-        .withNativeFunction ("t3kConfigure", [this] (auto&, auto complete)
-        {
-            auto* alert = new juce::AlertWindow ("TONE3000",
-                                                 "Paste your TONE3000 publishable key:",
-                                                 juce::MessageBoxIconType::NoIcon);
-            alert->addTextEditor ("key", proc.tone3000.getClientId());
-            alert->getTextEditor ("key")->setTextToShowWhenEmpty ("t3k_pub_...", juce::Colours::grey);
-            alert->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
-            alert->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
-
-            juce::Component::SafePointer<WebEditor> safeThis (this);
-
-            alert->enterModalState (true, juce::ModalCallbackFunction::create (
-                [safeThis, alert, complete] (int result)
-                {
-                    const std::unique_ptr<juce::AlertWindow> owned (alert);
-
-                    if (safeThis == nullptr)
-                        return;
-
-                    if (result != 1)
-                    {
-                        complete (resultVar ({}));
-                        return;
-                    }
-
-                    safeThis->proc.tone3000.setClientId (alert->getTextEditorContents ("key").trim());
-                    safeThis->emitT3kStatus();
-                    complete (resultVar ({}));
-                }), false);
-        })
         .withNativeFunction ("t3kSignIn", [this] (auto&, auto complete)
         {
             complete ({});   // fire and forget: the result arrives as an event
 
             if (! proc.tone3000.isConfigured())
             {
-                emitT3kError ("Add your TONE3000 publishable key in Settings to sign in.");
+                emitT3kError ("This build of tubamp has no TONE3000 key.");
                 return;
             }
 
@@ -1737,7 +1886,7 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
 
             if (! proc.tone3000.isConfigured())
             {
-                emitT3kError ("Add your TONE3000 publishable key in Settings to browse.");
+                emitT3kError ("This build of tubamp has no TONE3000 key.");
                 return;
             }
 
@@ -1779,7 +1928,7 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
         {
             if (! proc.tone3000.isConfigured())
             {
-                complete (resultVar ("Add your TONE3000 publishable key in Settings to browse."));
+                complete (resultVar ("This build of tubamp has no TONE3000 key."));
                 return;
             }
 
@@ -2050,6 +2199,17 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
 
             complete ({});
         })
+        .withNativeFunction ("ackNotice", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            // ackNotice(kind): the user has seen it; it does not come back in this instance.
+            if (! args.isEmpty() && args[0].toString() == "monoHost")
+            {
+                proc.acknowledgeMonoHostNotice();
+                pollWidth();
+            }
+
+            complete ({});
+        })
         .withNativeFunction ("fxWatchSlot", [this] (const juce::Array<juce::var>& args, auto complete)
         {
             const int slot = (int) args[0];
@@ -2122,6 +2282,35 @@ juce::WebBrowserComponent::Options WebEditor::buildOptions()
                     if (safeThis != nullptr)
                         complete (resultVar (error));
                 });
+        })
+        .withNativeFunction ("t3kEnsureArt", [this] (const juce::Array<juce::var>& args, auto complete)
+        {
+            // t3kEnsureArt(path, imageUrl): a library copy that was downloaded
+            // before photos were kept gets its tone's photo when the user picks
+            // that tone again. Resolves either way; the page loads the file after.
+            const juce::File media (args[0].toString());
+            const auto imageUrl = args.size() > 1 && args[1].isString() ? args[1].toString() : juce::String();
+
+            if (imageUrl.isEmpty() || ! isLibraryMedia (media) || ! media.existsAsFile()
+                || ! ToneSidecar::fileFor (media).existsAsFile()
+                || ToneSidecar::artFileFor (media).existsAsFile())
+            {
+                complete ({});
+                return;
+            }
+
+            juce::Component::SafePointer<WebEditor> safeThis (this);
+
+            juce::Thread::launch ([safeThis, complete, media, imageUrl]
+            {
+                ToneSidecar::fetchArt (imageUrl, media);
+
+                juce::MessageManager::callAsync ([safeThis, complete]
+                {
+                    if (safeThis != nullptr)
+                        complete ({});
+                });
+            });
         })
         .withNativeFunction ("t3kDownloadModel", [this] (const juce::Array<juce::var>& args, auto complete)
         {
@@ -2225,6 +2414,30 @@ std::optional<juce::WebBrowserComponent::Resource> WebEditor::getResource (const
     // "/index.html", "/assets/index-abc123.js", ...
     const auto relative = (path == "/" ? juce::String ("index.html")
                                        : path.fromFirstOccurrenceOf ("/", false, false));
+
+    // A downloaded tone's photo (toneArtUrlVar). Only art that sits beside a library
+    // file and really is an image is ever served.
+    if (relative.startsWith (kToneArtRoute))
+    {
+        juce::MemoryBlock pathBytes;
+        pathBytes.loadFromHexString (relative.fromFirstOccurrenceOf (kToneArtRoute, false, false)
+                                             .upToFirstOccurrenceOf ("-", false, false));
+
+        const juce::File media (juce::String::fromUTF8 ((const char*) pathBytes.getData(), (int) pathBytes.getSize()));
+        juce::MemoryBlock art;
+
+        if (! isLibraryMedia (media) || ! ToneSidecar::artFileFor (media).loadFileAsData (art))
+            return std::nullopt;
+
+        const auto* mime = ToneSidecar::imageMime (art.getData(), art.getSize());
+
+        if (mime == nullptr)
+            return std::nullopt;
+
+        std::vector<std::byte> bytes (art.getSize());
+        std::memcpy (bytes.data(), art.getData(), art.getSize());
+        return juce::WebBrowserComponent::Resource { std::move (bytes), juce::String (mime) };
+    }
 
    #if TUBAMP_BUNDLED_UI
     if (auto* zip = webUiZip())

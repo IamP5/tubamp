@@ -13,9 +13,8 @@ namespace tubamp
 
     Auth: OAuth 2.0 + PKCE (S256). The publishable key (t3k_pub_..., the OAuth
     client_id — safe to embed client-side) is baked in at compile time via the
-    CMake cache entry TUBAMP_T3K_CLIENT_ID, so users need no configuration; a
-    key entered in Settings overrides it and is stored in tone3000.json along
-    with the refresh token. Access is per-user, per the TONE3000 API ToS: models
+    CMake cache entry TUBAMP_T3K_CLIENT_ID, so users need no configuration and
+    cannot change it; the refresh token is stored in tone3000.json. Access is per-user, per the TONE3000 API ToS: models
     are downloaded only on explicit user request, never bulk-fetched or cached
     beyond the user's own library.
 
@@ -137,10 +136,8 @@ public:
                       std::function<void()> onSuccess,
                       std::function<void (juce::String)> onError);
 
-    // --- configuration (persisted in ~/Library/Application Support/tubamp/tone3000.json)
-    void setClientId (const juce::String& publishableKey);
-    juce::String getClientId() const;
-    bool isConfigured() const;   // client id present
+    // --- state (sign-in persisted in ~/Library/Application Support/tubamp/tone3000.json)
+    bool isConfigured() const;   // the build carries a client id
     bool isAuthenticated() const; // has a refresh token
 
     /** Opens the Select flow in the system browser. When the user picks a tone,

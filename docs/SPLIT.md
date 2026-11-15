@@ -17,8 +17,14 @@ Helix/QC-style parallel lanes expressed as ordinary chain tokens on the existing
 
 - `split`, `mix` are new singleton tiles (with panels); the lane boundary is a hidden
   structural token `lane2` (never rendered as a tile, never has a panel).
-- `amp2` is a new singleton block tile: the second NAM engine (engine B) as a
-  freely-placeable chain block — inside a lane, or anywhere serially.
+- `amp2` is a new singleton block tile: a second instance of the amp, running engine B,
+  as a freely-placeable chain block — inside a lane, or anywhere serially. It has every
+  control the amp has (gains, output mode, calibration, slim, tone stack), each its own
+  parameter.
+- `cab2` (added later, §2a) is the cab's second instance, the same kind of ordinary
+  block: its own IR and parameters. With it a lane can end in its own cab,
+  `split, amp, cab, lane2, amp2, cab2, mix`, or two cabs can sit side by side behind
+  one amp, `amp, split, cab, lane2, cab2, mix`. One cab after the mixer works as before.
 - The flat order fully encodes the structure:
   `..., split, <laneA ids...>, lane2, <laneB ids...>, mix, ...`
   Empty lanes are legal (`split, lane2, mix` = passthrough fork).
@@ -44,7 +50,9 @@ mix   = 26,   // token "mix",    "Mixer",     "MIX",    enable "mix_on"
 amp2  = 27,   // token "amp2",   "NAM Amp 2", "AMP 2",  enable "amp2_on"
 ```
 
-- `numBlockTypes` 24 → 28 (≤ 31 assert unchanged, still gates growth).
+- `numBlockTypes` 24 → 28 (≤ 31 assert unchanged, still gates growth). The second cab
+  (§2a) is `cab2 = 28`, token "cab2", enable "cab2_on": 29 ids, and the tail assert is
+  `cab2 == numBlockTypes - 1`.
 - **Decouple the length cap**: `inline constexpr int maxChainLength = 24;` — no longer
   derived from numBlockTypes (5 + 5*24 = 125 ≤ 128 stays true). Rewrite the adjacent
   comment: it is a chosen cap now, not an id-space consequence.
@@ -105,6 +113,47 @@ Relay deltas vs current (81/27/7): sliders 81 −0 +8 = **89**, toggles 27 −1 
 combos 7 +1 = **8**. Match amp2_input/output range+default to amp_input/amp_output's
 existing spec (verify in Parameters.cpp — mirror exactly).
 
+The rest of amp 2's controls came later, at version hint 5, appended after the hint-4
+set (270 parameters in all), each a verbatim copy of the first amp's: `amp2_out_mode`,
+`amp2_cal_input`, `amp2_cal_level`, `amp2_slim`, `amp2_eq_on`, `amp2_eq_bass`,
+`amp2_eq_mid`, `amp2_eq_treble`. In the processor every amp field is an array indexed by
+amp (`params::amp*Ids[2]`, index 0 = `amp`, 1 = `amp2`), like the instance pools.
+
+State saved before they existed ran amp 2 on the first amp's output mode, calibration and
+slim, with no tone stack. A restore that lacks `amp2_out_mode` (absent, not present at
+its default) sets `amp2_out_mode`, `amp2_cal_input`, `amp2_cal_level` and `amp2_slim` to
+the first amp's restored values and `amp2_eq_on` off, the tone knobs at default. Both
+restore paths do it: host state (into the APVTS tree before `replaceState`) and presets /
+A/B (`applyStateVar`, after the default fill). A fresh instance takes the plain defaults,
+which equal the first amp's.
+
+### 2a. The second cab
+
+`cab2` is to the cab what `amp2` is to the amp: one block type, placeable twice, the
+second copy with the full parameter set and engine path (`CabSim`) of the first. Four
+parameters at version hint 6, appended after the hint-5 set (274 in all,
+`tests/golden/params-v6.tsv`), each a verbatim copy of the first cab's:
+
+| id | type | range | default |
+|---|---|---|---|
+| `cab2_on` | bool | | true |
+| `cab2_lowcut` | float Hz, log | 20..500 | 80 |
+| `cab2_highcut` | float Hz, log | 2000..20000 | 8000 |
+| `cab2_mix` | float % | 0..100 | 100 |
+
+In the processor every cab field is an array indexed by cab (`params::cab*Ids[2]`,
+`cabs[2]`, index 0 = `cab`, 1 = `cab2`). The block dispatcher runs both ids through one
+case. Each cab's staged IR is adopted every callback whether or not the block is in the
+chain, and its swap goes through the same `EngineHandoff` as the first cab's
+(docs/NAM-IR.md §3). True stereo is decided per cab from its own position: an enabled
+amp later in the order folds that cab to its left kernel, except that lane B is not
+downstream of lane A. The second IR is the media slot `irB` (`irPathB`, §4).
+
+No migration is needed: state saved before `cab2` existed has no `cab2` token and no
+`cab2_*` ids, so the chain loads as it was and the four parameters take their defaults;
+an absent `irPathB` clears the second cab. An older build that reads newer state drops
+the unknown `cab2` token (`parseOrder`) and ignores the ids and the `irB` media child.
+
 ## 3. DSP execution (processBlock)
 
 **Factor the per-id dispatch** out of the loop body into a member helper
@@ -115,14 +164,12 @@ AudioBlock except:
 - FxHost: takes AudioBuffer& — pass the lane buffer; its `hostChannels != channels`
   gate passes because lane buffers are sized to the host channel count.
 - Amp: refactor the mono-collapse path to collapse ITS TARGET BUFFER's channels into a
-  caller-provided mono scratch, process, expand back to the target buffer. `amp` case
-  uses engine A + amp_input/amp_output + ampEq; `amp2` case uses engine B +
-  amp2_input/amp2_output and NO tone stack (users add an eq instance; note in docs).
-  amp2's gains are calibrated like amp's — `amp2InputDb()`/`amp2OutputDb()` add engine
-  B's own input-calibration and output-mode compensation, sharing the amp block's
-  `amp_out_mode`/`amp_cal_input`/`amp_cal_level` knobs (amp2 has no duplicates of
-  them). This is what keeps two lanes loudness-matched by default; without it lane B
-  sits at the model's raw level, an arbitrary tens-of-dB imbalance.
+  caller-provided mono scratch, process, expand back to the target buffer. Both cases
+  run `processAmpMono (amp, ...)` with their own index: engine, gains, output mode,
+  calibration, slim and tone stack are amp `amp`'s. `ampInputDb (amp)` /
+  `ampOutputDb (amp)` add that engine's own input-calibration and output-mode
+  compensation from that amp's own knobs; with both on the same defaults (Normalized)
+  two lanes are loudness-matched. The tone stack runs only where engine B processes.
   `amp2` gates on `namEngineB.hasLiveModel()` (pass-through otherwise, latency 0 —
   matches the latency rule below). Both engines' `applyStaging()` still run first-thing
   every block unconditionally.
@@ -187,6 +234,8 @@ correct for it). `kMaxResetsPerCallback` stays 2.
 Nothing new: the order string simply contains the new tokens, riding the existing
 chainOrderV2 scheme (ids ≥ 12 already route there; v1-safe writer already emits "-").
 `modelPathB` serialization from STEREO.md stays verbatim (it is amp2's model now).
+`irPathB` is the second cab's IR, written beside `irPath` in host state and in the
+preset / A-B state var, with its own embedded `MEDIA` child (slot `irB`).
 chainRows stays layout-only. A/B + presets get structure for free via the order string.
 Structural sanitize runs at every restore boundary (see §1) — a hand-edited preset with
 a dangling `split` flattens to serial, never errors.
@@ -279,9 +328,9 @@ channels / fork + low- and high-pass sketches, lane badges at the ends), and the
 knob only in X-Over mode (it grows in). `MixBody` — two lane strips (badge, Level, Pan,
 knobs in the lane's colour; lane B's strip holds the "Ø Invert" toggle), then Master, then
 quick actions: Center, Wide (lit when the pans already match) and Swap lanes. Pans read
-`C` / `40L` / `100R` through the Knob primitive's optional `format`. `Amp2Body` (model B
-management: picker over the library list, "Use model A", clear, status, amp2 in/out
-knobs). AmpBody has no STEREO section. Mock bridge: mirrors the new params, carries a
+`C` / `40L` / `100R` through the Knob primitive's optional `format`. `amp2` opens the
+same `AmpBody` as `amp`, bound to its own `amp2_*` controls (docs/REACT-UI.md). AmpBody
+has no STEREO section. Mock bridge: mirrors the new params, carries a
 malformed-structure preset fixture (dangling split) for the TS sanitizer, keeps modelB.
 
 ## 6. CPU / scope notes
@@ -289,7 +338,7 @@ malformed-structure preset fixture (dangling split) for the TS sanitizer, keeps 
 amp + amp2 = the same 2 NAM instances the stereo amp used — no budget change. Lanes are
 sequential on the audio thread (no threading); ScopedNoDenormals already covers both.
 Out of scope v1 (document): nesting, >2 lanes, split/mix instance pools, dynamic split,
-amp2 tone stack, per-lane FxHost pools beyond the existing 3 shared slots (each slot id
+per-lane FxHost pools beyond the existing 3 shared slots (each slot id
 lives in exactly one lane at a time — already single-stream).
 
 ## 7. Tests (extend ProcessorSmokeTest)
@@ -306,3 +355,7 @@ lives in exactly one lane at a time — already single-stream).
   (impulse alignment test through an fx-latency mock or two different-rate models).
 - State: order with structure round-trips get/set + capture/apply; amp_stereo absent
   from the param tree.
+- Dual cab (`tests/EngineTests.cpp`, `runDualCabTests`): two cabs in series, a cab in
+  each lane with and without the two amps, one cab after the mixer; each cab's own IR
+  and parameters; per-cab true stereo; the second IR saved, rebuilt from the session,
+  reported missing and healed; state and presets from before `cab2`.

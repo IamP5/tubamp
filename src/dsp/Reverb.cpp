@@ -779,6 +779,13 @@ void ReverbFx::reset()
     impl->snapEngine = true;
 }
 
+chain::Why ReverbFx::stereoWhy (float mix, float width) noexcept
+{
+    // Every engine's two outputs differ from a mono input (lattice taps alternate sides, the
+    // spring has two outer springs); width 0 sends the wet out as its mid alone.
+    return mix > 0.0f && width > 0.0f ? chain::Why::reverb : chain::Why::none;
+}
+
 void ReverbFx::setParameters (const ReverbParams& params)
 {
     impl->params = params;

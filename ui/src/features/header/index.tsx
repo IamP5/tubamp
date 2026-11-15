@@ -460,8 +460,8 @@ function T3kButton() {
   const status = t3k.authenticated
     ? `Signed in${t3k.username ? ` as ${t3k.username}` : ""}`
     : t3k.configured
-      ? "Key configured"
-      : "Not configured";
+      ? "Signed out"
+      : "Unavailable in this build";
 
   return (
     <Tooltip label={`Browse TONE3000 · ${status}`} placement="bottom">

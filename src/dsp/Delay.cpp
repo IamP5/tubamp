@@ -527,6 +527,33 @@ float DelayFx::resolveTimeMs (const DelayParams& params) noexcept
     return juce::jlimit (20.0f, 2000.0f, (float) (kDelaySyncBeats[sync] * 60000.0 / bpm));
 }
 
+chain::Why DelayFx::stereoWhy (int mode, int type, float ratioPct, float width, float mix, float mod) noexcept
+{
+    // Impl::process: no wet without mix, and width 0 sends the wet out as its mid alone.
+    if (mix <= 0.0f || width <= 0.0f)
+        return chain::Why::none;
+
+    const auto m = (Mode) juce::jlimit (0, 2, mode);
+    const auto t = (Type) juce::jlimit (0, numTypes - 1, type);
+
+    if (m == Mode::pingPong)
+        return chain::Why::pingPong;
+
+    if (m == Mode::dual && ! juce::approximatelyEqual (ratioPct, 100.0f))
+        return chain::Why::dualRatio;
+
+    // The two lines' diffusers have different lengths.
+    if (t == Type::diffuse)
+        return chain::Why::diffuse;
+
+    // The right line's chorus runs a quarter cycle behind the left's, in Stereo mode too;
+    // Tape's wow and flutter move one transport, both lines together.
+    if (t != Type::tape && mod > 0.0f)
+        return chain::Why::delayMod;
+
+    return chain::Why::none;
+}
+
 void DelayFx::prepare (const juce::dsp::ProcessSpec& spec)
 {
     impl->engine.prepare (spec);

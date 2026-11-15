@@ -31,6 +31,7 @@ struct ToneSidecar
     juce::String size;          // standard | lite | feather | nano | custom
     juce::String architecture;  // "1" | "2" | "custom" | empty
     juce::String license;       // t3k | cc-by | ... (empty when the API did not say)
+    juce::String imageUrl;      // the tone's first catalog image (empty when it has none)
 
     /** `<media>.t3k.json`, beside the media file. The full file name is kept (not
         just the stem) so `a.nam` and `a.wav` can never share a sidecar. */
@@ -42,8 +43,23 @@ struct ToneSidecar
     /** Writes (replaces) the sidecar for `media`. False when the write failed. */
     bool write (const juce::File& media) const;
 
-    /** Removes the sidecar of a media file that is being deleted. */
+    /** Removes the sidecar (and the art) of a media file that is being deleted. */
     static void remove (const juce::File& media);
+
+    // --- art: the tone's photo, kept beside the file as `<media>.t3k.art` so the
+    // amp editor can show it offline. Like the sidecar it exists only for a file
+    // the user downloaded, and goes with it.
+
+    static juce::File artFileFor (const juce::File& media);
+
+    /** The image type of `data` by its leading bytes (image/jpeg, image/png,
+        image/gif, image/webp, image/avif), or nullptr when it is none of them. */
+    static const char* imageMime (const void* data, size_t numBytes) noexcept;
+
+    /** Fetches `imageUrl` (https only, at most 8 MB, must be an image) and saves it
+        as the art of `media`. Blocking: call from a background thread. False when
+        there was nothing to fetch or it failed; the media file is never touched. */
+    static bool fetchArt (const juce::String& imageUrl, const juce::File& media);
 
     /** https://www.tone3000.com/tones/<id>, or empty without a tone id. */
     juce::String toneUrl() const;

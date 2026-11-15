@@ -305,6 +305,19 @@ bool FxHost::isLive (int index) const noexcept
     return slots[(size_t) index]->live_.load (std::memory_order_acquire);
 }
 
+int FxHost::mainChannelsFor (int index) const noexcept
+{
+    if (! validIndex (index))
+        return 0;
+
+    const auto* newest = slots[(size_t) index]->newest;
+
+    if (newest == nullptr || newest->configEpoch != configEpoch.load (std::memory_order_relaxed))
+        return 0;
+
+    return newest->mainChannels;
+}
+
 juce::AudioProcessor* FxHost::peekInstance (int index) const noexcept
 {
     if (! validIndex (index))

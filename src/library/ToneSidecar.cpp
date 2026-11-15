@@ -1,5 +1,7 @@
 #include "ToneSidecar.h"
 
+#include <cstring>
+
 namespace tubamp
 {
 juce::File ToneSidecar::fileFor (const juce::File& media)
@@ -30,6 +32,55 @@ bool ToneSidecar::write (const juce::File& media) const
 void ToneSidecar::remove (const juce::File& media)
 {
     fileFor (media).deleteFile();
+    artFileFor (media).deleteFile();
+}
+
+juce::File ToneSidecar::artFileFor (const juce::File& media)
+{
+    return media.getSiblingFile (media.getFileName() + ".t3k.art");
+}
+
+const char* ToneSidecar::imageMime (const void* data, size_t numBytes) noexcept
+{
+    const auto* bytes = static_cast<const unsigned char*> (data);
+    const auto startsWith = [&] (size_t offset, const char* text)
+    {
+        const auto length = std::strlen (text);
+        return numBytes >= offset + length && std::memcmp (bytes + offset, text, length) == 0;
+    };
+
+    if (startsWith (0, "\xff\xd8\xff"))               return "image/jpeg";
+    if (startsWith (0, "\x89PNG\r\n\x1a\n"))          return "image/png";
+    if (startsWith (0, "GIF8"))                       return "image/gif";
+    if (startsWith (0, "RIFF") && startsWith (8, "WEBP")) return "image/webp";
+    if (startsWith (4, "ftypavif"))                   return "image/avif";
+    return nullptr;
+}
+
+bool ToneSidecar::fetchArt (const juce::String& imageUrl, const juce::File& media)
+{
+    constexpr int kTimeoutMs = 6000;
+    constexpr size_t kMaxBytes = 8 * 1024 * 1024;
+
+    if (! imageUrl.startsWithIgnoreCase ("https://"))
+        return false;
+
+    int statusCode = 0;
+    const auto stream = juce::URL (imageUrl).createInputStream (
+        juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+            .withConnectionTimeoutMs (kTimeoutMs)
+            .withStatusCode (&statusCode));
+
+    if (stream == nullptr || statusCode != 200)
+        return false;
+
+    juce::MemoryBlock data;
+    const auto read = stream->readIntoMemoryBlock (data, (juce::int64) kMaxBytes + 1);
+
+    if (read == 0 || data.getSize() > kMaxBytes || imageMime (data.getData(), data.getSize()) == nullptr)
+        return false;
+
+    return artFileFor (media).replaceWithData (data.getData(), data.getSize());
 }
 
 juce::String ToneSidecar::toneUrl() const
@@ -50,6 +101,7 @@ juce::var ToneSidecar::toVar() const
     object->setProperty ("size", size);
     object->setProperty ("architecture", architecture);
     object->setProperty ("license", license);
+    object->setProperty ("imageUrl", imageUrl);
     return juce::var (object);
 }
 
@@ -75,6 +127,7 @@ ToneSidecar ToneSidecar::fromVar (const juce::var& object)
     sidecar.size         = object["size"].toString();
     sidecar.architecture = object["architecture"].toString();
     sidecar.license      = object["license"].toString();
+    sidecar.imageUrl     = object["imageUrl"].toString();
     return sidecar;
 }
 } // namespace tubamp

@@ -887,7 +887,38 @@ bool runSessionMediaTests (const juce::File& modelFile, const juce::File& dir, d
     sidecar.title = "Test Room";
     sidecar.creator = "someone";
     sidecar.gear = "space";
+    sidecar.imageUrl = "https://example.invalid/amp.jpg";
     sidecar.write (ir);
+
+    // The tone's photo (the amp editor's picture): the URL round-trips, only real
+    // images count as art, and the art goes when the file's sidecar does.
+    {
+        const auto readBack = tubamp::ToneSidecar::read (ir);
+        ok &= expect (readBack.has_value() && readBack->imageUrl == sidecar.imageUrl, "the sidecar keeps the tone's image URL");
+
+        const unsigned char jpeg[] = { 0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 'J', 'F', 'I', 'F' };
+        const unsigned char png[] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0 };
+        const char webp[] = "RIFF\0\0\0\0WEBPVP8 ";
+        const char html[] = "<!doctype html><title>not an image</title>";
+        ok &= expect (juce::String (tubamp::ToneSidecar::imageMime (jpeg, sizeof (jpeg))) == "image/jpeg"
+                      && juce::String (tubamp::ToneSidecar::imageMime (png, sizeof (png))) == "image/png"
+                      && juce::String (tubamp::ToneSidecar::imageMime (webp, sizeof (webp))) == "image/webp",
+                      "art is recognised by its leading bytes");
+        ok &= expect (tubamp::ToneSidecar::imageMime (html, sizeof (html)) == nullptr
+                      && tubamp::ToneSidecar::imageMime (jpeg, 2) == nullptr,
+                      "...and anything else is not art");
+        ok &= expect (! tubamp::ToneSidecar::fetchArt ("http://example.invalid/amp.jpg", ir)
+                      && ! tubamp::ToneSidecar::fetchArt ({}, ir),
+                      "art is only fetched over https");
+
+        const auto probe = dir.getChildFile ("art-probe.wav");
+        probe.replaceWithText ("x");
+        const auto art = tubamp::ToneSidecar::artFileFor (probe);
+        art.replaceWithData (png, sizeof (png));
+        tubamp::ToneSidecar::remove (probe);
+        ok &= expect (! art.exists(), "removing a file's sidecar removes its art");
+        probe.deleteFile();
+    }
 
     juce::MemoryBlock state;
 
@@ -1042,6 +1073,410 @@ bool runSessionMediaTests (const juce::File& modelFile, const juce::File& dir, d
 
 //==============================================================================
 /** Things that looked right and were not, each found by review and pinned here. */
+//==============================================================================
+/** The cab block placed twice: `cab` and `cab2` are two instances of one block, each
+    with its own IR, parameters and saved file. */
+bool runDualCabTests (const juce::File& modelFile, const juce::File& dir, double sampleRate, int blockSize)
+{
+    std::printf ("dual cab:\n");
+    bool ok = true;
+
+    // Two cabinet IRs told apart by level: 0.5 and 0.25, each under unit energy (so not
+    // normalized) and each padded by 18 dB.
+    const auto irA = dir.getChildFile ("dual-a.wav");
+    const auto irB = dir.getChildFile ("dual-b.wav");
+    writeWav (irA, { impulseKernel (2400, 0.5f) }, sampleRate);
+    writeWav (irB, { impulseKernel (2400, 0.25f) }, sampleRate);
+
+    const double pad = std::pow (10.0, -18.0 / 20.0);
+    const double a = 0.5 * pad, b = 0.25 * pad;
+
+    const auto openCabs = [] (Proc& proc)
+    {
+        for (int c = 0; c < params::numCabs; ++c)
+        {
+            setBool (proc, params::cabOnIds[c], true);
+            setFloat (proc, params::cabLowCutIds[c], 20.0f);
+            setFloat (proc, params::cabHighCutIds[c], 20000.0f);
+            setFloat (proc, params::cabMixIds[c], 100.0f);
+        }
+    };
+
+    const auto near = [] (double measured, double wanted) { return std::abs (toDb (measured / wanted)) < 0.3; };
+
+    // --- two cabs in series: each convolves with its own IR.
+    {
+        Proc proc;
+        proc.setChainOrder ({ BlockId::cab, BlockId::cab2 }, {});
+        openCabs (proc);
+        proc.prepareToPlay (sampleRate, blockSize);
+        const double dry = settledRms (proc, sampleRate, blockSize);
+
+        ok &= expect (proc.loadIr (irA).isEmpty() && proc.loadIrB (irB).isEmpty(), "each cab loads its own IR");
+        ok &= expect (proc.getLoadedIrPath() == irA.getFullPathName() && proc.getLoadedIrPathB() == irB.getFullPathName()
+                      && proc.cab.getInfo().filePath != proc.cabB.getInfo().filePath,
+                      "...and reports its own file");
+
+        const double both = settledRms (proc, sampleRate, blockSize) / dry;
+        std::printf ("  cab -> cab2: %.2f dB re dry (want %.2f)\n", toDb (both), toDb (a * b));
+        ok &= expect (near (both, a * b), "two cabs in series are the two IRs one after the other");
+
+        // The second cab's own parameters, with the first cab's untouched.
+        setFloat (proc, params::cab2Mix, 0.0f);
+        ok &= expect (near (settledRms (proc, sampleRate, blockSize) / dry, a), "cab2_mix at 0 % leaves the first cab alone in the path");
+        setFloat (proc, params::cab2Mix, 100.0f);
+        setFloat (proc, params::cabMix, 0.0f);
+        ok &= expect (near (settledRms (proc, sampleRate, blockSize) / dry, b), "cab_mix at 0 % leaves the second cab alone in the path");
+        setFloat (proc, params::cabMix, 100.0f);
+
+        setBool (proc, params::cab2On, false);
+        ok &= expect (near (settledRms (proc, sampleRate, blockSize) / dry, a), "cab2_on bypasses the second cab only");
+        setBool (proc, params::cab2On, true);
+
+        setFloat (proc, params::cab2HighCut, 2000.0f);
+        SineRun treble (proc, sampleRate, blockSize, 0.3f, 8000.0);
+        treble.runFor (0.4);
+        treble.forget();
+        treble.runFor (0.1);
+        const double cutRms = SineRun::rms (treble.left);
+        setFloat (proc, params::cab2HighCut, 20000.0f);
+        treble.runFor (0.4);
+        treble.forget();
+        treble.runFor (0.1);
+        ok &= expect (toDb (cutRms / SineRun::rms (treble.left)) < -6.0, "cab2_highcut filters the second cab's signal");
+
+        // Clearing one never touches the other.
+        proc.clearIr();
+        ok &= expect (near (settledRms (proc, sampleRate, blockSize) / dry, b) && proc.cabB.hasImpulseResponse()
+                      && ! proc.cab.hasImpulseResponse(),
+                      "clearing the first cab's IR leaves the second playing");
+        proc.loadIr (irA);
+        proc.clearIrB();
+        ok &= expect (near (settledRms (proc, sampleRate, blockSize) / dry, a) && proc.cab.hasImpulseResponse(),
+                      "clearing the second cab's IR leaves the first playing");
+
+        // A second cab on its own, and a swap through the same handoff as the first cab's.
+        proc.setChainOrder ({ BlockId::cab2 }, {});
+        proc.loadIrB (irB);
+        ok &= expect (near (settledRms (proc, sampleRate, blockSize) / dry, b), "cab2 alone in the chain runs its IR");
+
+        SineRun run (proc, sampleRate, blockSize, 0.5f, 220.0);
+        run.runFor (0.3);
+        const double before = SineRun::peak (run.left, run.tail());
+        run.forget();
+        ok &= expect (proc.loadIrB (irA).isEmpty(), "cab2 takes another IR while it plays");
+        run.runFor (0.3);
+        const double after = SineRun::peak (run.left, run.tail());
+        ok &= expect (std::abs (toDb (after / before) - toDb (a / b)) < 0.3, "...and plays the new one");
+        ok &= expect (SineRun::peak (run.left) <= 1.05 * std::max (before, after)
+                      && SineRun::hasQuietRun (run.left, 0.05 * before, (int) (0.001 * sampleRate)),
+                      "...swapped through silence, never louder than either IR");
+        ok &= expect (proc.getTailLengthSeconds() >= proc.cabB.getTailSeconds(), "the host's tail covers the second cab's IR");
+    }
+
+    // --- a split with a cab in each lane, no amps: the mixer sums the two cabs.
+    {
+        Proc proc;
+        proc.setChainOrder ({ BlockId::split, BlockId::cab, BlockId::lane2, BlockId::cab2, BlockId::mix }, {});
+        openCabs (proc);
+        setFloat (proc, params::splitMode, 0.0f);
+        setBool (proc, params::splitOn, true);
+        setBool (proc, params::mixOn, true);
+        proc.prepareToPlay (sampleRate, blockSize);
+        const double dry = settledRms (proc, sampleRate, blockSize);    // both lanes dry
+
+        proc.loadIr (irA);
+        proc.loadIrB (irB);
+        const double sum = settledRms (proc, sampleRate, blockSize) / dry;
+        std::printf ("  cab | cab2 in a split: %.2f dB re two dry lanes (want %.2f)\n", toDb (sum), toDb ((a + b) / 2.0));
+        ok &= expect (near (sum, (a + b) / 2.0), "a cab in each lane: the mix is the two IRs side by side");
+
+        proc.clearIrB();
+        ok &= expect (near (settledRms (proc, sampleRate, blockSize) / dry, (a + 1.0) / 2.0),
+                      "...lane B dry again once its cab is cleared");
+        proc.loadIrB (irB);
+        proc.clearIr();
+        ok &= expect (near (settledRms (proc, sampleRate, blockSize) / dry, (1.0 + b) / 2.0),
+                      "...and lane A dry once its cab is cleared");
+        proc.loadIr (irA);
+
+        // The lanes are told apart at the output by muting one in the mixer.
+        setFloat (proc, params::mixALevel, -60.0f);
+        const double laneB = settledRms (proc, sampleRate, blockSize);
+        setFloat (proc, params::mixALevel, 0.0f);
+        setFloat (proc, params::mixBLevel, -60.0f);
+        const double laneA = settledRms (proc, sampleRate, blockSize);
+        setFloat (proc, params::mixBLevel, 0.0f);
+        ok &= expect (std::abs (toDb (laneA / laneB) - toDb (a / b)) < 0.5, "lane A carries the first cab's IR, lane B the second's");
+
+        // The existing shape: one cab after the mixer.
+        proc.setChainOrder ({ BlockId::split, BlockId::lane2, BlockId::mix, BlockId::cab }, {});
+        ok &= expect (near (settledRms (proc, sampleRate, blockSize) / dry, a), "a single cab after the mixer still runs");
+    }
+
+    // --- true stereo is judged per cab, from where each one sits.
+    {
+        const auto stereo = dir.getChildFile ("dual-stereo.wav");
+        writeWav (stereo, { impulseKernel (2400, 0.5f), impulseKernel (2400, -0.25f) }, sampleRate);
+
+        Proc proc;
+        proc.setChainOrder ({ BlockId::split, BlockId::amp, BlockId::cab, BlockId::lane2, BlockId::cab2, BlockId::mix }, {});
+        openCabs (proc);
+        setBool (proc, params::splitOn, true);
+        setBool (proc, params::mixOn, true);
+        setBool (proc, params::ampOn, true);
+        proc.prepareToPlay (sampleRate, blockSize);
+        proc.loadIr (stereo);
+        proc.loadIrB (stereo);
+        settledRms (proc, sampleRate, blockSize);
+        ok &= expect (proc.cab.getImage() == tubamp::CabSim::Image::stereo
+                      && proc.cabB.getImage() == tubamp::CabSim::Image::stereo,
+                      "a cab in each lane runs a stereo IR as true stereo");
+
+        proc.setChainOrder ({ BlockId::cab2, BlockId::amp, BlockId::cab }, {});
+        settledRms (proc, sampleRate, blockSize);
+        ok &= expect (proc.cabB.getImage() == tubamp::CabSim::Image::monoPath
+                      && proc.cab.getImage() == tubamp::CabSim::Image::stereo,
+                      "an amp after one cab folds that cab only");
+    }
+
+    // --- dual amp with a cab in each lane.
+    if (modelFile.existsAsFile())
+    {
+        Proc proc;
+        const tubamp::chain::Order rig { BlockId::split, BlockId::amp, BlockId::cab, BlockId::lane2,
+                                         BlockId::amp2, BlockId::cab2, BlockId::mix };
+        proc.setChainOrder (rig, {});
+        openCabs (proc);
+        setFloat (proc, params::splitMode, 0.0f);
+        setBool (proc, params::splitOn, true);
+        setBool (proc, params::mixOn, true);
+        setBool (proc, params::ampOn, true);
+        setBool (proc, params::amp2On, true);
+        proc.prepareToPlay (sampleRate, blockSize);
+        ok &= expect (proc.getChainOrder() == rig, "split, amp, cab | amp2, cab2, mix is a chain the processor accepts");
+        ok &= expect (proc.loadModel (modelFile).isEmpty() && proc.loadModelB (modelFile).isEmpty(), "both amps load a model");
+
+        const auto level = [&] (float mixA, float mixB)
+        {
+            setFloat (proc, params::mixALevel, mixA);
+            setFloat (proc, params::mixBLevel, mixB);
+            SineRun run (proc, sampleRate, blockSize, 0.3f, 220.0);
+            run.runFor (0.5);
+            run.forget();
+            run.runFor (0.2);
+
+            bool finite = true;
+
+            for (float v : run.left)
+                finite = finite && std::isfinite (v);
+
+            return finite ? SineRun::rms (run.left) : -1.0;
+        };
+
+        const double bareA = level (0.0f, -60.0f), bareB = level (-60.0f, 0.0f);
+        ok &= expect (bareA > 1.0e-5 && bareB > 1.0e-5, "both lanes make sound before any IR is loaded");
+
+        proc.loadIr (irA);
+        proc.loadIrB (irB);
+        const double cabA = level (0.0f, -60.0f), cabB = level (-60.0f, 0.0f);
+        std::printf ("  dual amp: lane A %.2f dB, lane B %.2f dB re their amps alone (want %.2f, %.2f)\n",
+                     toDb (cabA / bareA), toDb (cabB / bareB), toDb (a), toDb (b));
+        ok &= expect (std::abs (toDb (cabA / bareA) - toDb (a)) < 0.5, "lane A is amp -> its cab's IR");
+        ok &= expect (std::abs (toDb (cabB / bareB) - toDb (b)) < 0.5, "lane B is amp 2 -> the second cab's IR");
+
+        const double mixed = level (0.0f, 0.0f);
+        ok &= expect (mixed > 1.0e-6, "the dual-amp, dual-cab rig renders audio at the mixer");
+
+        proc.loadIrB (irA);
+        ok &= expect (std::abs (toDb (level (-60.0f, 0.0f) / bareB) - toDb (a)) < 0.5
+                      && std::abs (toDb (level (0.0f, -60.0f) / cabA)) < 0.3,
+                      "swapping lane B's IR changes lane B and leaves lane A as it was");
+    }
+    else
+    {
+        ok &= expect (true, "skipped: no test model for the dual-amp rig");
+    }
+
+    // --- the session: the second IR is saved, rebuilt, and reported missing like the first.
+    {
+        const auto elsewhere = dir.getChildFile ("dual-elsewhere");
+        elsewhere.createDirectory();
+        const auto first = elsewhere.getChildFile ("dual-session-a.wav");
+        const auto second = elsewhere.getChildFile ("dual-session-b.wav");
+        irA.copyFileTo (first);
+        irB.copyFileTo (second);
+
+        juce::MemoryBlock secondBytes;
+        second.loadFileAsData (secondBytes);
+
+        const tubamp::chain::Order order { BlockId::split, BlockId::cab, BlockId::lane2, BlockId::cab2, BlockId::mix };
+        juce::MemoryBlock state;
+        juce::var preset;
+
+        {
+            Proc proc;
+            proc.prepareToPlay (sampleRate, blockSize);
+            proc.setChainOrder (order, {});
+            proc.loadIr (first);
+            proc.loadIrB (second);
+            setFloat (proc, params::cab2Mix, 42.0f);
+            setFloat (proc, params::cab2LowCut, 120.0f);
+            setBool (proc, params::cab2On, false);
+            proc.getStateInformation (state);
+            preset = proc.captureStateVar();
+        }
+
+        {
+            Proc proc;
+            proc.prepareToPlay (sampleRate, blockSize);
+            proc.setStateInformation (state.getData(), (int) state.getSize());
+            ok &= expect (proc.getChainOrder() == order, "a session with two cabs restores its chain");
+            ok &= expect (proc.getLoadedIrPath() == first.getFullPathName()
+                          && proc.getLoadedIrPathB() == second.getFullPathName(),
+                          "...and each cab's own IR");
+
+            const auto plain = [&proc] (const char* id)
+            {
+                auto* p = proc.apvts.getParameter (id);
+                return p->convertFrom0to1 (p->getValue());
+            };
+
+            ok &= expect (std::abs (plain (params::cab2Mix) - 42.0f) < 0.05f && std::abs (plain (params::cab2LowCut) - 120.0f) < 0.6f
+                          && plain (params::cab2On) < 0.5f && plain (params::cabMix) > 99.9f && plain (params::cabOn) > 0.5f,
+                          "...and the second cab's parameters, apart from the first's");
+
+            // Presets and A/B slots carry the second IR by reference.
+            proc.clearIrB();
+            setFloat (proc, params::cab2Mix, 100.0f);
+            proc.applyStateVar (preset);
+            ok &= expect (proc.getLoadedIrPathB() == second.getFullPathName() && std::abs (plain (params::cab2Mix) - 42.0f) < 0.05f,
+                          "a preset restores the second cab's IR and parameters");
+        }
+
+        // The second file is gone: rebuilt from the session into the library.
+        second.deleteFile();
+        const auto rebuilt = tubamp::ModelLibrary::getIrsDir().getChildFile (second.getFileName());
+
+        {
+            Proc proc;
+            proc.prepareToPlay (sampleRate, blockSize);
+            proc.setStateInformation (state.getData(), (int) state.getSize());
+            juce::MemoryBlock bytes;
+            rebuilt.loadFileAsData (bytes);
+            ok &= expect (proc.cabB.hasImpulseResponse() && proc.getLoadedIrPathB() == rebuilt.getFullPathName()
+                          && bytes == secondBytes,
+                          "a missing second IR is rebuilt from the session, byte for byte");
+            ok &= expect (proc.getLoadedIrPath() == first.getFullPathName()
+                          && proc.getMissingMediaPath (Proc::Media::irB).isEmpty(),
+                          "...the first cab's file is untouched and nothing is reported missing");
+        }
+
+        rebuilt.deleteFile();
+
+        // No embedded copy and no file: reported missing, and the reference survives a save.
+        const auto legacy = withoutEmbeddedMedia (state);
+        juce::MemoryBlock resaved;
+
+        {
+            Proc proc;
+            proc.prepareToPlay (sampleRate, blockSize);
+            proc.setStateInformation (legacy.getData(), (int) legacy.getSize());
+            ok &= expect (! proc.cabB.hasImpulseResponse() && proc.getLoadedIrPathB().isEmpty()
+                          && proc.getMissingMediaPath (Proc::Media::irB) == second.getFullPathName(),
+                          "a second IR that is nowhere is reported missing, by path");
+            ok &= expect (proc.cab.hasImpulseResponse() && proc.getMissingMediaPath (Proc::Media::ir).isEmpty(),
+                          "...while the first cab loads as usual");
+            proc.getStateInformation (resaved);
+
+            const auto missingPreset = proc.captureStateVar();
+            ok &= expect (missingPreset["irPathB"].toString() == second.getFullPathName(),
+                          "...and a preset saved now still names it");
+        }
+
+        second.replaceWithData (secondBytes.getData(), secondBytes.getSize());
+
+        {
+            Proc proc;
+            proc.prepareToPlay (sampleRate, blockSize);
+            proc.setStateInformation (resaved.getData(), (int) resaved.getSize());
+            ok &= expect (proc.getLoadedIrPathB() == second.getFullPathName() && proc.cabB.hasImpulseResponse()
+                          && proc.getMissingMediaPath (Proc::Media::irB).isEmpty(),
+                          "the session heals when the second IR's file returns");
+
+            proc.clearIrB();
+            ok &= expect (proc.getMissingMediaPath (Proc::Media::irB).isEmpty() && proc.getLoadedIrPath() == first.getFullPathName(),
+                          "clearing the second cab leaves the first cab's file loaded");
+        }
+
+        // A session from before the second cab existed: one cab, no irPathB, no cab2 ids.
+        {
+            auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), (int) state.getSize());
+            auto tree = juce::ValueTree::fromXml (*xml);
+            tree.removeProperty ("irPathB", nullptr);
+            tree.setProperty ("chainOrder", "amp,cab", nullptr);
+            tree.removeProperty ("chainOrderV2", nullptr);
+            tree.setProperty ("chainRows", "", nullptr);
+
+            for (int i = tree.getNumChildren(); --i >= 0;)
+                if (tree.getChild (i).hasType (tubamp::EmbeddedMedia::treeType)
+                    && tree.getChild (i).getProperty (tubamp::EmbeddedMedia::slotProperty).toString() == "irB")
+                    tree.removeChild (i, nullptr);
+
+            auto paramTree = tree.getChild (0);
+
+            for (int i = 0; i < tree.getNumChildren(); ++i)
+                if (tree.getChild (i).getChildWithProperty ("id", params::cabOn).isValid())
+                    paramTree = tree.getChild (i);
+
+            for (const auto* id : { params::cab2On, params::cab2LowCut, params::cab2HighCut, params::cab2Mix })
+                paramTree.removeChild (paramTree.getChildWithProperty ("id", id), nullptr);
+
+            juce::MemoryBlock older;
+            juce::AudioProcessor::copyXmlToBinary (*tree.createXml(), older);
+
+            Proc proc;
+            proc.prepareToPlay (sampleRate, blockSize);
+            proc.loadIrB (second);                 // whatever was there before the restore
+            setFloat (proc, params::cab2Mix, 10.0f);
+            proc.setStateInformation (older.getData(), (int) older.getSize());
+
+            const auto plain = [&proc] (const char* id)
+            {
+                auto* p = proc.apvts.getParameter (id);
+                return p->convertFrom0to1 (p->getValue());
+            };
+
+            ok &= expect (proc.getChainOrder() == tubamp::chain::Order { BlockId::amp, BlockId::cab }
+                          && proc.getLoadedIrPath() == first.getFullPathName(),
+                          "a one-cab session from before cab2 restores its chain and its IR");
+            ok &= expect (proc.getLoadedIrPathB().isEmpty() && ! proc.cabB.hasImpulseResponse()
+                          && proc.getMissingMediaPath (Proc::Media::irB).isEmpty(),
+                          "...with the second cab empty and nothing missing");
+            ok &= expect (plain (params::cab2Mix) > 99.9f && plain (params::cab2On) > 0.5f,
+                          "...and the second cab's parameters at their defaults");
+
+            // The same for a preset written before the second cab.
+            auto olderPreset = preset.clone();
+            olderPreset.getDynamicObject()->removeProperty ("irPathB");
+            auto* olderParams = olderPreset["params"].getDynamicObject();
+
+            for (const auto* id : { params::cab2On, params::cab2LowCut, params::cab2HighCut, params::cab2Mix })
+                olderParams->removeProperty (juce::Identifier (id));
+
+            proc.loadIrB (second);
+            setFloat (proc, params::cab2Mix, 10.0f);
+            proc.applyStateVar (olderPreset);
+            ok &= expect (proc.getLoadedIrPathB().isEmpty() && plain (params::cab2Mix) > 99.9f,
+                          "a preset from before cab2 clears the second cab and resets its parameters");
+        }
+
+        elsewhere.deleteRecursively();
+    }
+
+    return ok;
+}
+
 bool runTransitionEdgeTests (const juce::File& modelFile, const juce::File& dir, double sampleRate)
 {
     std::printf ("transition edges:\n");
@@ -1596,6 +2031,7 @@ bool runEngineTests (const juce::File& modelFile, double sampleRate, int blockSi
     ok &= runNamMetadataTests (modelFile, dir, sampleRate);
     ok &= runNamLatencyTests (modelFile, sampleRate);
     ok &= runSessionMediaTests (modelFile, dir, sampleRate, blockSize);
+    ok &= runDualCabTests (modelFile, dir, sampleRate, blockSize);
     ok &= runTransitionEdgeTests (modelFile, dir, sampleRate);
     ok &= runMediaEdgeTests (modelFile, dir, sampleRate, blockSize);
     ok &= runSpectrumTests (sampleRate, blockSize);

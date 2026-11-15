@@ -98,6 +98,11 @@ public:
         configuration (i.e. it is actually processing). */
     bool isLive (int index) const noexcept;
 
+    /** The width the slot's instance negotiated its main bus to: getNumChannels(), or 1
+        for a plugin that would only take mono in a stereo chain. 0 while the slot has no
+        instance prepared for the current configuration (it passes audio through). */
+    int mainChannelsFor (int index) const noexcept;
+
     /** Negotiates `instance`'s bus layout against the current configuration, prepares
         it, restores `stateToRestore` into it and publishes it into the slot, retiring
         whatever was there. Returns an empty string on success, or a message describing

@@ -9,6 +9,12 @@
  * output meter on the last stretch into Out. Nothing travels and nothing
  * loops; the wires lift while you play and settle when you stop.
  *
+ * Width. Where the processor's width map says the signal is stereo (left and
+ * right differ), the wire is two thin rails instead of one stroke, left above
+ * right, each lifted by its own output channel — so a ping-pong breathes on
+ * one rail, then the other. Rails start or merge at the exit of the tile that
+ * turns the width; the tooltip there says why (index.tsx `TurnPort`).
+ *
  * Geometry is read straight off the nodes' motion values on a frame callback
  * that is only scheduled when something actually moves, so wires stay glued to
  * the tiles through drag, reflow and settle without a single
@@ -29,8 +35,9 @@
  * EMPTY lane's wire bow out of Split, along its own track and back into Mixer.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { cancelFrame, frame } from "motion/react";
+import { cancelFrame, frame, type MotionValue } from "motion/react";
 import { useMeters } from "../../hooks";
+import type { Width } from "../../bridge/types";
 import {
   REGION_PAD_X,
   REGION_R,
@@ -39,24 +46,22 @@ import {
   type Link,
 } from "./layout";
 import type { NodeMotionRegistry } from "./nodes";
+import { RAIL_OFFSET, bowPath, straightPath, wrapPath } from "./wires";
 import s from "./board.module.css";
 
 export interface ConnectorsProps {
   links: readonly Link[];
+  /** Each link's width (`wires.linkWidths`), or null to draw every wire as one
+   *  stroke. */
+  widths: readonly Width[] | null;
   /** The split container's frame, when the board has one. */
   region: LaneRegion | null;
   /** SVG box in lane units (see layout.connectorBox). */
   box: Box;
   nodes: NodeMotionRegistry;
+  /** No signal strokes under reduced motion; the wires and rails stay. */
+  reduced: boolean;
 }
-
-/** How far a wrap runs straight out of the row end / into the next row start.
- *  Less than FIRST_CARD_X - TERMINAL_W, so the return stays left of row 1's
- *  first tile. */
-const WRAP_LEAD = 20;
-/** Corner radius of the wrap's four turns. Fits the row gap: the return lane
- *  runs down its middle, ROW_GAP / 2 clear of both rows. */
-const WRAP_R = 10;
 
 /** Meter position (0..1 over −60…+6 dB) where a wire starts to lift, and how
  *  bright it gets at full scale. Below about −40 dB a wire is at rest. */
@@ -73,66 +78,28 @@ function carriesOutput(link: Link): boolean {
   return link.to.id === "out" || link.to.id === "add" || link.from.id === "add";
 }
 
-/** How far an empty lane's bow runs out of Split before it reaches its track. */
-const BOW_LEAD = 20;
+/** Which meter lifts a stroke: a mono wire's one stroke follows the input along
+ *  the chain and the output on the last stretch; a stereo wire's rails follow
+ *  the output's left and right channels. */
+type Lift = "in" | "out" | "left" | "right";
 
-function straightPath(x1: number, y1: number, x2: number, y2: number): string {
-  if (Math.abs(y1 - y2) < 0.5) return `M${x1} ${y1}H${x2}`;
-  // A tile lifted by a drag, and the split's fan-out / the mixer's converge: a
-  // gentle S between two near-horizontal anchors.
-  const mid = (x1 + x2) / 2;
-  return `M${x1} ${y1}C${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`;
+/** Rail offsets of a mono wire (its centre line) and a stereo one (left above,
+ *  right below). */
+const MONO_RAILS = [0] as const;
+const STEREO_RAILS = [RAIL_OFFSET, -RAIL_OFFSET] as const;
+
+function railsOf(width: Width | undefined): readonly number[] {
+  return width === "stereo" ? STEREO_RAILS : MONO_RAILS;
 }
 
-/**
- * Out past the end of the row, down into the gutter, back along it, then down
- * into the start of the next row — four rounded right angles. A single curve
- * between the two anchors would sweep backwards across every card in the row it
- * is leaving; this route only ever runs through empty board.
- */
-function wrapPath(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  mid: number,
-): string {
-  const out = x1 + WRAP_LEAD;
-  const back = x2 - WRAP_LEAD;
-  const r = Math.min(WRAP_R, Math.abs(out - back) / 2, Math.abs(mid - y1));
-  return (
-    `M${x1} ${y1}H${out - r}` +
-    `Q${out} ${y1} ${out} ${y1 + r}` +
-    `V${mid - r}` +
-    `Q${out} ${mid} ${out - r} ${mid}` +
-    `H${back + r}` +
-    `Q${back} ${mid} ${back} ${mid + r}` +
-    `V${y2 - r}` +
-    `Q${back} ${y2} ${back + r} ${y2}` +
-    `H${x2}`
-  );
+function liftOf(link: Link, stereo: boolean, rail: number): Lift {
+  if (stereo) return rail === 0 ? "left" : "right";
+  return carriesOutput(link) ? "out" : "in";
 }
 
-/** An empty lane: out of SPLIT, along the lane's own track, back into MIX. */
-function bowPath(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  track: number,
-): string {
-  const out = Math.min(x1 + BOW_LEAD, (x1 + x2) / 2);
-  const back = Math.max(x2 - BOW_LEAD, (x1 + x2) / 2);
-  return (
-    `M${x1} ${y1}C${out} ${y1} ${out} ${track} ${out + 1} ${track}` +
-    `H${back - 1}` +
-    `C${back} ${track} ${back} ${y2} ${x2} ${y2}`
-  );
-}
-
-export function Connectors({ links, region, box, nodes }: ConnectorsProps) {
-  const paths = useRef<(SVGPathElement | null)[]>([]);
-  const signals = useRef<(SVGPathElement | null)[]>([]);
+export function Connectors({ links, widths, region, box, nodes, reduced }: ConnectorsProps) {
+  const wires = useRef<(SVGPathElement | null)[][]>([]);
+  const signals = useRef<(SVGPathElement | null)[][]>([]);
   const frameEl = useRef<SVGRectElement | null>(null);
   const meters = useMeters();
 
@@ -150,14 +117,17 @@ export function Connectors({ links, region, box, nodes }: ConnectorsProps) {
       // line and its neighbours' wires must stay straight, and a fan-out is a
       // legitimate Δy that is not a wrap.
       const bowed = !link.wrap && link.via !== undefined;
-
-      const d = link.wrap
-        ? wrapPath(x1, y1, x2, y2, link.via ?? (y1 + y2) / 2)
-        : bowed
-          ? bowPath(x1, y1, x2, y2, link.via!)
-          : straightPath(x1, y1, x2, y2);
-      paths.current[i]?.setAttribute("d", d);
-      signals.current[i]?.setAttribute("d", d);
+      const rails = railsOf(widths?.[i]);
+      for (let k = 0; k < rails.length; k += 1) {
+        const o = rails[k]!;
+        const d = link.wrap
+          ? wrapPath(x1, y1, x2, y2, link.via ?? (y1 + y2) / 2, o)
+          : bowed
+            ? bowPath(x1, y1, x2, y2, link.via!, o)
+            : straightPath(x1, y1, x2, y2, o);
+        wires.current[i]?.[k]?.setAttribute("d", d);
+        signals.current[i]?.[k]?.setAttribute("d", d);
+      }
     }
 
     const rect = frameEl.current;
@@ -168,7 +138,7 @@ export function Connectors({ links, region, box, nodes }: ConnectorsProps) {
       rect.setAttribute("x", `${left}`);
       rect.setAttribute("width", `${Math.max(right - left, 0)}`);
     }
-  }, [links, nodes, region]);
+  }, [links, nodes, region, widths]);
 
   useLayoutEffect(() => {
     let queued = false;
@@ -208,27 +178,40 @@ export function Connectors({ links, region, box, nodes }: ConnectorsProps) {
 
   /* The signal strokes: opacity written straight to the DOM whenever a meter's
      smoothed level moves, which is at most once a frame and not at all in
-     silence. */
+     silence. Which meter lifts each stroke is resolved once per links/widths
+     change, so a frame only walks its own strokes. Under reduced motion the
+     strokes are not drawn at all. */
   useEffect(() => {
-    const paint = (output: boolean, level: number): void => {
-      const opacity = signalOpacity(level);
-      for (let i = 0; i < links.length; i += 1) {
-        const link = links[i];
-        if (link && carriesOutput(link) === output) {
-          const el = signals.current[i];
-          if (el) el.style.opacity = opacity;
-        }
+    if (reduced) return;
+    const byLift: Record<Lift, SVGPathElement[]> = { in: [], out: [], left: [], right: [] };
+    for (let i = 0; i < links.length; i += 1) {
+      const link = links[i];
+      if (!link) continue;
+      const stereo = widths?.[i] === "stereo";
+      const rails = railsOf(widths?.[i]);
+      for (let k = 0; k < rails.length; k += 1) {
+        const el = signals.current[i]?.[k];
+        if (el) byLift[liftOf(link, stereo, k)].push(el);
       }
+    }
+    const sources: Record<Lift, MotionValue<number>> = {
+      in: meters.input.level,
+      out: meters.output.level,
+      left: meters.outputL.level,
+      right: meters.outputR.level,
     };
-    paint(false, meters.input.level.get());
-    paint(true, meters.output.level.get());
-    const offIn = meters.input.level.on("change", (v) => paint(false, v));
-    const offOut = meters.output.level.on("change", (v) => paint(true, v));
+    const offs = (Object.keys(sources) as Lift[]).map((lift) => {
+      const paint = (level: number): void => {
+        const opacity = signalOpacity(level);
+        for (const el of byLift[lift]) el.style.opacity = opacity;
+      };
+      paint(sources[lift].get());
+      return sources[lift].on("change", paint);
+    });
     return () => {
-      offIn();
-      offOut();
+      for (const off of offs) off();
     };
-  }, [links, meters]);
+  }, [links, meters, reduced, widths]);
 
   return (
     <svg
@@ -253,24 +236,31 @@ export function Connectors({ links, region, box, nodes }: ConnectorsProps) {
         />
       )}
 
-      {links.map((link, i) => (
-        <path
-          key={link.key}
-          ref={(el) => {
-            paths.current[i] = el;
-          }}
-          className={s.wire}
-        />
-      ))}
-      {links.map((link, i) => (
-        <path
-          key={link.key}
-          ref={(el) => {
-            signals.current[i] = el;
-          }}
-          className={s.wireSignal}
-        />
-      ))}
+      {links.map((link, i) => {
+        const stereo = widths?.[i] === "stereo";
+        return railsOf(widths?.[i]).map((_, k) => (
+          <path
+            key={`${link.key}#${stereo ? k : "c"}`}
+            ref={(el) => {
+              (wires.current[i] ??= [])[k] = el;
+            }}
+            className={stereo ? s.rail : s.wire}
+          />
+        ));
+      })}
+      {!reduced &&
+        links.map((link, i) => {
+          const stereo = widths?.[i] === "stereo";
+          return railsOf(widths?.[i]).map((_, k) => (
+            <path
+              key={`${link.key}#${stereo ? k : "c"}`}
+              ref={(el) => {
+                (signals.current[i] ??= [])[k] = el;
+              }}
+              className={stereo ? s.railSignal : s.wireSignal}
+            />
+          ));
+        })}
     </svg>
   );
 }

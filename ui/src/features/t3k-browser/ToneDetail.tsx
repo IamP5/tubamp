@@ -22,7 +22,7 @@ import {
   bestDefaultFile,
   findInstalledPath,
   loadedPathOf,
-  selectT3kTarget,
+  targetForTone,
   useStore,
 } from "../../store";
 import { ExternalIcon, HeartButton } from "./parts";
@@ -42,8 +42,7 @@ export function ToneDetail({ tone, onBack, onClose }: ToneDetailProps) {
   const toggleFavorite = useStore((st) => st.t3kToggleFavorite);
   const openExternal = useStore((st) => st.t3kOpenExternal);
   const loadTone = useStore((st) => st.t3kLoadTone);
-  const drawerTarget = useStore(selectT3kTarget);
-  const target = tone.format === "ir" ? "cab" : drawerTarget === "cab" ? "amp" : drawerTarget;
+  const target = useStore((st) => targetForTone(st, tone));
   const busy = useStore((st) => {
     const load = st.t3kLoads[tone.id];
     return load !== undefined && load.phase !== "failed";

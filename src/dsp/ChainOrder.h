@@ -69,16 +69,21 @@ enum class BlockId : int
     split,
     lane2,
     mix,
-    amp2
+    amp2,
+
+    // The second cab: like amp2 an ordinary block, the second instance of the cab with
+    // its own IR and parameters. Appended, so every id above keeps its value.
+    cab2
 };
 
-inline constexpr int numBlockTypes = 28;
+inline constexpr int numBlockTypes = 29;
 
 /** Ids below this are the twelve that a build without the instance pool knows how to
     read; the chainOrderV2 scheme in PluginProcessor.cpp keys off the same number. */
 inline constexpr int numV1BlockIds = 12;
 
-/** Instances of a duplicable kind. Singletons (gate, amp, cab, fx1-3) have one. */
+/** Instances of a duplicable kind. gate and fx1-3 have one; the amp and the cab have a
+    second one each as ids of their own (amp2, cab2), outside this pool. */
 inline constexpr int maxInstancesPerKind = 3;
 
 /** Chosen cap on chain length — a UI board this deep is already unwieldy to page
@@ -93,8 +98,8 @@ inline constexpr int numFxSlots = 3;
 
 static_assert ((int) BlockId::fx3 == 11,
                "isFxSlot's range test needs the fx slots to stay the last v1 ids");
-static_assert ((int) BlockId::amp2 == numBlockTypes - 1,
-               "the instance pairs and the split/lane2/mix/amp2 ids must fill the enum "
+static_assert ((int) BlockId::cab2 == numBlockTypes - 1,
+               "the instance pairs and the split/lane2/mix/amp2/cab2 ids must fill the enum "
                "up to numBlockTypes");
 static_assert ((int) BlockId::split == 24,
                "split's token is persisted (state, presets); this pins its id so a "
@@ -145,14 +150,15 @@ constexpr BlockId kindOf (BlockId id) noexcept
         case BlockId::split:
         case BlockId::lane2:
         case BlockId::mix:
-        case BlockId::amp2:    break;
+        case BlockId::amp2:
+        case BlockId::cab2:    break;
     }
 
     return id;
 }
 
 /** 0-based instance number: 0 for every singleton and for instance 1 of a duplicable
-    kind (which keeps the kind's own id), 1 for comp2, 2 for comp3. split/lane2/mix/amp2
+    kind (which keeps the kind's own id), 1 for comp2, 2 for comp3. split/lane2/mix/amp2/cab2
     sit above reverb3, outside the instance-pair block, and are singletons like gate or
     amp — the pair arithmetic below must not run on them. */
 constexpr int instanceOf (BlockId id) noexcept
@@ -197,7 +203,8 @@ constexpr int numInstancesOf (BlockId kind) noexcept
         case BlockId::split:
         case BlockId::lane2:
         case BlockId::mix:
-        case BlockId::amp2:    break;
+        case BlockId::amp2:
+        case BlockId::cab2:    break;
     }
 
     return 1;
@@ -240,7 +247,8 @@ constexpr BlockId instanceId (BlockId kind, int instance) noexcept
         case BlockId::split:
         case BlockId::lane2:
         case BlockId::mix:
-        case BlockId::amp2:    break;
+        case BlockId::amp2:
+        case BlockId::cab2:    break;
     }
 
     return kind;
@@ -284,6 +292,7 @@ inline constexpr std::array<BlockInfo, numBlockTypes> blockInfos { {
     { BlockId::lane2,   "lane2",   "Lane B",        "LANE B",   "split_on" },
     { BlockId::mix,     "mix",     "Mixer",         "MIX",      "mix_on" },
     { BlockId::amp2,    "amp2",    "NAM Amp 2",     "AMP 2",    "amp2_on" },
+    { BlockId::cab2,    "cab2",    "Cab IR 2",      "CAB 2",    "cab2_on" },
 } };
 
 inline const BlockInfo& infoFor (BlockId id) noexcept
@@ -426,8 +435,8 @@ inline Structure findStructure (const Order& order) noexcept
          hand-built/persisted orders may not have).
       2. If split < lane2 < mix all occur, the structure is kept as-is.
       3. Otherwise every structural id is stripped and the order flattens to plain
-         serial. amp2 is not structural — it is an ordinary block and survives the
-         flatten untouched, wherever it sat.
+         serial. amp2 and cab2 are not structural — they are ordinary blocks and
+         survive the flatten untouched, wherever they sat.
     Never errors: a garbled structure degrades to no structure, not a rejected load. */
 inline Order sanitizeStructure (Order order)
 {

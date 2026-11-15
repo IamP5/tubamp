@@ -62,7 +62,8 @@ function laneReadout(name: string, db: number, pan: number, invert: boolean): st
   return parts.join(" ");
 }
 
-/** "A 100L · B 100R"; "Unity sum" while the mixer is off. */
+/** "A 100L · B 100R"; "Mono sum" in a mono-out instance; "Unity sum" while
+ *  the mixer is off. */
 export function MixCard(props: StructureCardProps) {
   const { names } = useLaneNames();
   const aLevel = useSliderParam("mix_alevel").scaled;
@@ -73,9 +74,14 @@ export function MixCard(props: StructureCardProps) {
   const on = useToggleParam("mix_on").value;
   const removeEntries = useRemoveEntries(names);
 
-  const detail = on
-    ? `${laneReadout(names.a, aLevel, aPan, false)} · ${laneReadout(names.b, bLevel, bPan, invert)}`
-    : "Unity sum";
+  // A mono-out instance sums the lanes into one channel, so pans do nothing.
+  const monoOut = useStore((st) => st.width?.host.out === 1);
+
+  const detail = !on
+    ? "Unity sum"
+    : monoOut
+      ? "Mono sum"
+      : `${laneReadout(names.a, aLevel, aPan, false)} · ${laneReadout(names.b, bLevel, bPan, invert)}`;
 
   const extraEntries = useMemo<MenuEntry[]>(
     () => [

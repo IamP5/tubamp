@@ -15,8 +15,8 @@ import { noMotion, tween } from "../../theme/motion";
 import {
   loadedPathOf,
   loadedTargetsOf,
-  selectT3kTarget,
-  T3K_TARGET_LABELS,
+  targetForTone,
+  t3kTargetLabel,
   tonePaths,
   useStore,
 } from "../../store";
@@ -24,12 +24,6 @@ import type { T3kTarget, T3kTone } from "../../bridge";
 import { HeartButton, RowProgress, Thumb } from "./parts";
 import { formatCount, GEAR_LABELS, includesCab } from "./labels";
 import s from "./t3k.module.css";
-
-/** The slot a tone of this format loads into, given the drawer's target. */
-export function targetFor(tone: T3kTone, target: T3kTarget): T3kTarget {
-  if (tone.format === "ir") return "cab";
-  return target === "cab" ? "amp" : target;
-}
 
 /** A tone's one-click load as the row shows it. `pct` is 0..1 while the file
  *  downloads, null in the phases without a percentage. */
@@ -79,14 +73,16 @@ export function ToneRow({
   onOpen(tone: T3kTone): void;
   onToggleFavorite(tone: T3kTone): void;
 }) {
-  const drawerTarget = useStore(selectT3kTarget);
-  const target = targetFor(tone, drawerTarget);
+  const target = useStore((st) => targetForTone(st, tone));
   const loadedHere = useStore((st) => {
     const path = loadedPathOf(st, target);
     return path !== null && tonePaths(st, tone.id).includes(path);
   });
   const loadedElsewhere = useStore(
     (st) => loadedTargetsOf(st, tone.id).find((t) => t !== target) ?? null,
+  );
+  const elsewhereLabel = useStore((st) =>
+    loadedElsewhere ? t3kTargetLabel(loadedElsewhere, st.chainOrder) : "",
   );
   const { load, busy, pct } = useRowLoad(tone.id);
   const error = load?.phase === "failed" ? load.error : null;
@@ -137,7 +133,7 @@ export function ToneRow({
                   {includesCab(tone.gear) && " · with cab"}
                 </span>
                 {includesCab(tone.gear) && !loadedElsewhere ? null : loadedElsewhere ? (
-                  <span className={s.rowCount}>in {T3K_TARGET_LABELS[loadedElsewhere]}</span>
+                  <span className={s.rowCount}>in {elsewhereLabel}</span>
                 ) : (
                   <span className={s.rowCount} title="Downloads">
                     <DownloadIcon size={12} />
@@ -191,7 +187,7 @@ function LoadControl({
 }) {
   const installed = useStore((st) => st.t3kInstalled.some((f) => f.toneId === tone.id));
   const loadTone = useStore((st) => st.t3kLoadTone);
-  const label = T3K_TARGET_LABELS[target];
+  const label = useStore((st) => t3kTargetLabel(target, st.chainOrder));
   const unavailable = tone.format === "nam" && tone.modelsCount === 0;
   const stop = (e: React.SyntheticEvent): void => e.stopPropagation();
 

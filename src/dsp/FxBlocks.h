@@ -366,6 +366,9 @@ public:
         lines hold enough history (at most 34 + 10 ms); a phaser or tremolo settles in 30 ms
         (the phaser's own switch warms its incoming voicing that long). */
     static int crossfadeHoldSamples (const ModParams& params, double sampleRate) noexcept;
+    /** Why the engine mod_type picks makes left and right differ from a mono input with two
+        channels to run on, or Why::none. The phaser runs one sweep on both channels. */
+    static chain::Why stereoWhy (int type, int chorusMode, int tremVoice, float depth, float width, float mix) noexcept;
 
     void prepare (const juce::dsp::ProcessSpec& spec);
     void reset();

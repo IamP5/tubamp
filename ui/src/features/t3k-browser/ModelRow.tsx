@@ -11,7 +11,7 @@ import { Button, CheckIcon, Spinner, cx } from "../../components";
 import {
   findInstalledPath,
   loadedPathOf,
-  T3K_TARGET_LABELS,
+  t3kTargetLabel,
   useStore,
 } from "../../store";
 import type { T3kModel, T3kTarget, T3kTone } from "../../bridge";
@@ -43,7 +43,7 @@ export function ModelRow({
   const mine = rowLoad?.modelId === model.id ? rowLoad : undefined;
   const busyElsewhere = rowLoad !== undefined && rowLoad.phase !== "failed" && !mine;
   const busy = progress !== undefined || (mine !== undefined && mine.phase !== "failed");
-  const label = T3K_TARGET_LABELS[target];
+  const label = useStore((st) => t3kTargetLabel(target, st.chainOrder));
 
   const meta = isIr
     ? ["WAV"]

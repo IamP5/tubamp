@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.24)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
 # Release builds pass the version computed from git tags (docs/RELEASING.md).
-set(TUBAMP_VERSION "0.1.0" CACHE STRING "Plugin version, X.Y.Z")
+set(TUBAMP_VERSION "0.2.0" CACHE STRING "Plugin version, X.Y.Z")
 project(tubamp VERSION ${TUBAMP_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -93,8 +93,8 @@ option(TUBAMP_WEBUI_DEV "Load the Vite dev server (http://localhost:5173) instea
 
 # TONE3000 OAuth client_id baked into the binary so users need zero setup.
 # Publishable keys (t3k_pub_...) are designed to be safe client-side — they only
-# identify the app; user auth still happens per-user via PKCE. A key entered in
-# Settings (t3kConfigure) overrides this at runtime. Rotate via the cache entry
+# identify the app; user auth still happens per-user via PKCE. It is the only key the plugin
+# uses: there is no runtime override. Rotate via the cache entry
 # or the TUBAMP_T3K_CLIENT_ID environment variable at configure time.
 set(tubamp_t3k_client_id_default "t3k_pub_U1hZrLKf19O7-jl0wTbPyhERpluPpFcj")
 if(DEFINED ENV{TUBAMP_T3K_CLIENT_ID})

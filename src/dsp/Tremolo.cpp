@@ -1037,6 +1037,16 @@ void TremoloFx::reset()
     impl->snapVoice = true;
 }
 
+chain::Why TremoloFx::stereoWhy (int voice, float depth, float width) noexcept
+{
+    // Voices 1-4 put the right LFO 180 degrees x width behind the left; Classic has no width.
+    // Their mix is not read (only Classic takes one).
+    if (juce::jlimit (0, numVoices - 1, voice) == (int) Voice::classic)
+        return chain::Why::none;
+
+    return depth > 0.0f && width > 0.0f ? chain::Why::tremolo : chain::Why::none;
+}
+
 void TremoloFx::setParameters (const TremoloParams& params)
 {
     const TremoloParams defaults;

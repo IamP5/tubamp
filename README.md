@@ -23,7 +23,9 @@ chain and drop a third-party AudioUnit effect into it.
 - **Cab IRs** load and sit at the same level as in the TONE3000 plugin: unit-energy
   normalization, a −18 dB pad for cabinets and none for rooms, true stereo for stereo
   IRs wherever the path stays stereo, zero latency, and a dry/wet mix
-  (`docs/NAM-IR.md`).
+  (`docs/NAM-IR.md`). The amp and the cab can each be placed twice, so a split chain
+  can run a dual rig: an amp and a cab, each with its own capture and IR, in both
+  lanes (`docs/SPLIT.md`).
 - **Split paths**: one fork per chain — two lanes between a splitter (copy, L/R or
   crossover) and a mixer — with a one-click dual-amp stereo rig (`docs/SPLIT.md`).
 - **Sessions carry their files**: the loaded model and IR are saved inside the
@@ -32,9 +34,8 @@ chain and drop a third-party AudioUnit effect into it.
 - **TONE3000**: search and browse the catalog in the plugin (OAuth 2.0 + PKCE,
   A2-first: `architecture=2`), load a tone with one click, and keep the creator's
   credit with every downloaded file.
-  Requires your own TONE3000 publishable API key (Settings gear → paste
-  `t3k_pub_…` key; create one at tone3000.com → Settings → API Keys, redirect URI
-  `http://127.0.0.1:53682/callback`). Manual `.nam`/IR import works with no setup.
+  The TONE3000 key is built in, so there is nothing to configure: sign in with a
+  TONE3000 account and browse. Manual `.nam`/IR import works with no account.
 - **FX slots**: three blocks that host your own AudioUnit effects (AUv2, effects
   only) anywhere in the chain — picked from a menu that never instantiates
   anything to build itself, saved with the project including each plugin's own
